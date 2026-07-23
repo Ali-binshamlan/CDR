@@ -61,11 +61,7 @@ interface ProjectCard {
   originalData: any;
 }
 
-interface ProjectsPageProps {
-  onOpenProject?: (project: any) => void;
-}
-
-export default function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
+export default function ProjectsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -150,12 +146,12 @@ export default function ProjectsPage({ onOpenProject }: ProjectsPageProps) {
           <button className="w-full sm:w-auto bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors">
             <Filter className="w-4 h-4" /> فرز
           </button>
-          <button 
-            onClick={() => onOpenProject?.({ action: 'new' })}
+          <Link
+            href="/dashboard/Projects/create"
             className="w-full sm:w-auto bg-[#3995FF] hover:bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors"
           >
             <Plus className="w-4 h-4" strokeWidth={3} /> إضافة مشروع
-          </button>
+          </Link>
         </div>
       </div>
 
