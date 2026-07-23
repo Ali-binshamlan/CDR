@@ -65,25 +65,21 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
     if (!startDate || !endDate) return null;
     if (endDate < startDate) return 'تاريخ النهاية يجب أن يكون بعد تاريخ البداية أو يساويه.';
 
-    // 1) فحص أيام العمل: كل الأيام ضمن مدى النشاط يجب أن تقع ضمن أيام عمل
-    // المشروع — نتحقق من كل تاريخ بين startDate وendDate (بحد أقصى معقول
-    // لتفادي حلقة طويلة جداً لمدى خاطئ بالغلط).
+    // 1) فحص أيام العمل: يوم البداية ويوم النهاية تحديداً يجب أن يقعا ضمن
+    // أيام عمل المشروع (نشاط لا يصح أن يبدأ أو ينتهي في يوم إجازة). أيام
+    // الإجازة الواقعة بين البداية والنهاية مسموحة — النشاط "يتوقف" فيها
+    // تلقائياً، وتُستبعد من حساب المدة الفعلية (راجع countActiveDaysInRange)
+    // بدل رفض الحفظ بالكامل.
     const workDays = project.work_days_list;
     if (Array.isArray(workDays) && workDays.length > 0) {
-      const start = new Date(`${startDate}T00:00:00`);
-      const end = new Date(`${endDate}T00:00:00`);
-      const maxDaysToCheck = 370;
-      let violatingDay: string | null = null;
-      for (let i = 0, d = new Date(start); d <= end && i < maxDaysToCheck; d.setDate(d.getDate() + 1), i++) {
-        const dayId = WEEK_DAY_IDS[d.getDay()];
-        if (!workDays.includes(dayId)) {
-          violatingDay = WEEK_DAY_LABELS_AR[dayId] || dayId;
-          break;
-        }
+      const startDayId = WEEK_DAY_IDS[new Date(`${startDate}T00:00:00`).getDay()];
+      const endDayId = WEEK_DAY_IDS[new Date(`${endDate}T00:00:00`).getDay()];
+      const allowed = workDays.map((d) => WEEK_DAY_LABELS_AR[d] || d).join('، ');
+      if (!workDays.includes(startDayId)) {
+        return `تاريخ البداية يقع في يوم ${WEEK_DAY_LABELS_AR[startDayId] || startDayId} وهو ليس من أيام عمل المشروع. أيام العمل: ${allowed}.`;
       }
-      if (violatingDay) {
-        const allowed = workDays.map((d) => WEEK_DAY_LABELS_AR[d] || d).join('، ');
-        return `مدى النشاط يشمل يوم ${violatingDay} الذي ليس من أيام عمل المشروع. أيام العمل: ${allowed}.`;
+      if (!workDays.includes(endDayId)) {
+        return `تاريخ النهاية يقع في يوم ${WEEK_DAY_LABELS_AR[endDayId] || endDayId} وهو ليس من أيام عمل المشروع. أيام العمل: ${allowed}.`;
       }
     }
 

@@ -258,29 +258,64 @@ export function DustStep({
                         <p className="text-[11px] font-bold text-[#061B40]/50">
                           هذا التوقيت خاص بهذا النشاط التنظيمي فقط.
                         </p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div>
-                            <label className={labelClass}>تاريخ بداية النشاط</label>
-                            <input
-                              required
-                              type="date"
-                              value={item.startDate}
-                              onChange={(e) => updateRegulatoryActivityTiming(item.id, 'startDate', e.target.value)}
-                              className={getInputClass(false)}
-                            />
-                          </div>
-                          <div>
-                            <label className={labelClass}>تاريخ نهاية النشاط</label>
-                            <input
-                              required
-                              type="date"
-                              min={item.startDate || undefined}
-                              value={item.endDate}
-                              onChange={(e) => updateRegulatoryActivityTiming(item.id, 'endDate', e.target.value)}
-                              className={getInputClass(false)}
-                            />
-                          </div>
-                        </div>
+                        {(() => {
+                          const WEEK_DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                          const WEEK_DAY_LABELS_AR: Record<string, string> = {
+                            sun: 'الأحد', mon: 'الاثنين', tue: 'الثلاثاء', wed: 'الأربعاء', thu: 'الخميس', fri: 'الجمعة', sat: 'السبت',
+                          };
+                          const workDays = project.work_days_list;
+                          // يوم البداية/النهاية تحديداً يجب أن يقعا ضمن أيام
+                          // عمل المشروع — أيام الإجازة بينهما مسموحة (النشاط
+                          // يتوقف فيها تلقائياً، لا يُرفض الحفظ بسببها).
+                          const isNonWorkDay = (dateStr: string) => {
+                            if (!dateStr || !Array.isArray(workDays) || workDays.length === 0) return false;
+                            const dayId = WEEK_DAY_IDS[new Date(`${dateStr}T00:00:00`).getDay()];
+                            return !workDays.includes(dayId);
+                          };
+                          const startInvalid = isNonWorkDay(item.startDate);
+                          const endInvalid = isNonWorkDay(item.endDate);
+                          const invalidInputClass =
+                            'w-full border-2 border-red-500 rounded-lg p-2 text-sm bg-red-50 text-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 transition-all';
+                          const allowedDaysAr = Array.isArray(workDays) ? workDays.map((d) => WEEK_DAY_LABELS_AR[d] || d).join('، ') : '';
+                          return (
+                            <>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                  <label className={labelClass}>تاريخ بداية النشاط</label>
+                                  <input
+                                    required
+                                    type="date"
+                                    value={item.startDate}
+                                    onChange={(e) => updateRegulatoryActivityTiming(item.id, 'startDate', e.target.value)}
+                                    className={startInvalid ? invalidInputClass : getInputClass(false)}
+                                  />
+                                </div>
+                                <div>
+                                  <label className={labelClass}>تاريخ نهاية النشاط</label>
+                                  <input
+                                    required
+                                    type="date"
+                                    min={item.startDate || undefined}
+                                    value={item.endDate}
+                                    onChange={(e) => updateRegulatoryActivityTiming(item.id, 'endDate', e.target.value)}
+                                    className={endInvalid ? invalidInputClass : getInputClass(false)}
+                                  />
+                                </div>
+                              </div>
+                              {(startInvalid || endInvalid) && (
+                                <p className="text-[11px] font-bold text-red-600">
+                                  ⛔ {startInvalid && endInvalid
+                                    ? 'تاريخا البداية والنهاية يقعان في أيام إجازة'
+                                    : startInvalid
+                                    ? 'تاريخ البداية يقع في يوم إجازة'
+                                    : 'تاريخ النهاية يقع في يوم إجازة'}
+                                  {' '}— يجب أن يبدأ وينتهي النشاط في يوم عمل. أيام العمل: {allowedDaysAr}.
+                                  (أيام الإجازة بين البداية والنهاية مسموحة).
+                                </p>
+                              )}
+                            </>
+                          );
+                        })()}
 
                         {/* اختيار نوع الساعات اليومية — وردية جاهزة أو وقت
                             مخصص، خيار واحد فقط. لا يظهر اختيار الوردية إن لم
@@ -330,43 +365,90 @@ export function DustStep({
                             </select>
                             <p className="text-[11px] text-[#061B40]/50 mt-1">وقت النشاط اليومي = وقت الوردية نفسه، لا حاجة لإدخال إضافي.</p>
                           </div>
-                        ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className={labelClass}>وقت البداية اليومي</label>
-                              <input
-                                required
-                                type="time"
-                                value={item.customStartTime}
-                                min={project.work_hours_start ? project.work_hours_start.slice(0, 5) : undefined}
-                                max={project.work_hours_end ? project.work_hours_end.slice(0, 5) : undefined}
-                                onChange={(e) => updateRegulatoryActivityTiming(item.id, 'customStartTime', e.target.value)}
-                                className={getInputClass(false)}
-                              />
+                        ) : (() => {
+                          const toMin = (hhmm: string) => {
+                            const [h, m] = hhmm.split(':').map(Number);
+                            return (h || 0) * 60 + (m || 0);
+                          };
+                          const workStart = project.work_hours_start ? project.work_hours_start.slice(0, 5) : null;
+                          const workEnd = project.work_hours_end ? project.work_hours_end.slice(0, 5) : null;
+                          const isOutOfRange = (t: string) => {
+                            if (!t || !workStart || !workEnd) return false;
+                            const m = toMin(t);
+                            return m < toMin(workStart) || m > toMin(workEnd);
+                          };
+                          const startInvalid = isOutOfRange(item.customStartTime);
+                          const endInvalid = isOutOfRange(item.customEndTime);
+                          const orderInvalid =
+                            item.customStartTime && item.customEndTime && toMin(item.customEndTime) <= toMin(item.customStartTime);
+                          const invalidInputClass =
+                            'w-full border-2 border-red-500 rounded-lg p-2 text-sm bg-red-50 text-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 transition-all';
+                          return (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className={labelClass}>وقت البداية اليومي</label>
+                                <input
+                                  required
+                                  type="time"
+                                  value={item.customStartTime}
+                                  min={workStart || undefined}
+                                  max={workEnd || undefined}
+                                  onChange={(e) => updateRegulatoryActivityTiming(item.id, 'customStartTime', e.target.value)}
+                                  className={startInvalid ? invalidInputClass : getInputClass(false)}
+                                />
+                              </div>
+                              <div>
+                                <label className={labelClass}>وقت النهاية اليومي</label>
+                                <input
+                                  required
+                                  type="time"
+                                  value={item.customEndTime}
+                                  min={workStart || undefined}
+                                  max={workEnd || undefined}
+                                  onChange={(e) => updateRegulatoryActivityTiming(item.id, 'customEndTime', e.target.value)}
+                                  className={endInvalid || orderInvalid ? invalidInputClass : getInputClass(false)}
+                                />
+                              </div>
+                              {(startInvalid || endInvalid) && workStart && workEnd && (
+                                <p className="text-[11px] font-bold text-red-600 md:col-span-2">
+                                  ⛔ الوقت المحدد خارج دوام المشروع (<span dir="ltr">{workStart} – {workEnd}</span>) — الرجاء التعديل قبل الحفظ.
+                                </p>
+                              )}
+                              {!startInvalid && !endInvalid && orderInvalid && (
+                                <p className="text-[11px] font-bold text-red-600 md:col-span-2">
+                                  ⛔ وقت النهاية يجب أن يكون بعد وقت البداية.
+                                </p>
+                              )}
+                              {!startInvalid && !endInvalid && !orderInvalid && workStart && workEnd && (
+                                <p className="text-[11px] text-[#061B40]/50 md:col-span-2">
+                                  يجب أن يقع الوقت ضمن دوام المشروع: <span dir="ltr" className="font-bold">{workStart} – {workEnd}</span>
+                                </p>
+                              )}
                             </div>
-                            <div>
-                              <label className={labelClass}>وقت النهاية اليومي</label>
-                              <input
-                                required
-                                type="time"
-                                value={item.customEndTime}
-                                min={project.work_hours_start ? project.work_hours_start.slice(0, 5) : undefined}
-                                max={project.work_hours_end ? project.work_hours_end.slice(0, 5) : undefined}
-                                onChange={(e) => updateRegulatoryActivityTiming(item.id, 'customEndTime', e.target.value)}
-                                className={getInputClass(false)}
-                              />
-                            </div>
-                            {project.work_hours_start && project.work_hours_end && (
-                              <p className="text-[11px] text-[#061B40]/50 md:col-span-2">
-                                يجب أن يقع الوقت ضمن دوام المشروع: <span dir="ltr" className="font-bold">{project.work_hours_start.slice(0, 5)} – {project.work_hours_end.slice(0, 5)}</span>
-                              </p>
-                            )}
-                          </div>
-                        )}
+                          );
+                        })()}
 
                         {/* المدة الإجمالية — معلوماتية فقط، تُحسب تلقائياً
-                            (ساعات اليوم × عدد أيام العمل ضمن المدى) */}
+                            (ساعات اليوم × عدد أيام العمل ضمن المدى). لا تُعرض
+                            إطلاقاً إن كان الوقت المخصص خارج دوام المشروع أو
+                            غير منطقي (نهاية قبل بداية)، حتى لا تُوهم المستخدم
+                            برقم محسوب على أساس وقت لن يُقبل عند الحفظ أصلاً. */}
                         {(() => {
+                          const toMin = (hhmm: string) => {
+                            const [h, m] = hhmm.split(':').map(Number);
+                            return (h || 0) * 60 + (m || 0);
+                          };
+                          if (item.timingMode === 'custom') {
+                            const workStart = project.work_hours_start ? project.work_hours_start.slice(0, 5) : null;
+                            const workEnd = project.work_hours_end ? project.work_hours_end.slice(0, 5) : null;
+                            const isOutOfRange = (t: string) => {
+                              if (!t || !workStart || !workEnd) return false;
+                              const m = toMin(t);
+                              return m < toMin(workStart) || m > toMin(workEnd);
+                            };
+                            if (isOutOfRange(item.customStartTime) || isOutOfRange(item.customEndTime)) return null;
+                            if (item.customStartTime && item.customEndTime && toMin(item.customEndTime) <= toMin(item.customStartTime)) return null;
+                          }
                           const daily =
                             item.timingMode === 'shift'
                               ? (() => {
@@ -377,10 +459,6 @@ export function DustStep({
                               ? { start: item.customStartTime, end: item.customEndTime }
                               : null;
                           if (!daily || !item.startDate || !item.endDate) return null;
-                          const toMin = (hhmm: string) => {
-                            const [h, m] = hhmm.split(':').map(Number);
-                            return (h || 0) * 60 + (m || 0);
-                          };
                           const dailyHours = (toMin(daily.end) - toMin(daily.start)) / 60;
                           if (dailyHours <= 0) return null;
                           const start = new Date(`${item.startDate}T00:00:00`);
