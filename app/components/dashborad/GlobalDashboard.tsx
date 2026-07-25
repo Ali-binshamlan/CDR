@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/app/lib/apiClient';
 import type { ProjectPoint } from './ProjectsMap';
+import { dviLevelToDecision } from '@/app/lib/decisionMeta';
 import { Loader2, Map as MapIcon } from 'lucide-react';
 
 // خريطة Leaflet تحتاج window، فلازم تُحمَّل داخل المتصفح فقط بدون SSR
@@ -17,36 +18,29 @@ const ProjectsMap = dynamic(() => import('./ProjectsMap'), {
   ),
 });
 
-type Decision = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
+interface GlobalDashboardProps {
+  // نقطة البيانات — افتراضياً بيانات المستخدم الحالي فقط. جهة المراقبة
+  // (viewer) تمرر '/viewer/dashboard' (نفس شكل الاستجابة تماماً، بلا فلترة
+  // user_id) لعرض كل المشاريع عبر كل المستخدمين بنفس منطق الخريطة والنقاط.
+  apiEndpoint?: string;
+}
 
-// خرائط قيمة "risk_level" (كما تُخزَّن في alerts) إلى القرار الخماسي —
-// تحدد لون نقطة المشروع على الخريطة
-const riskLevelToDecision = (risk?: string | null): Decision => {
-  switch (risk) {
-    case 'أسود': return 'stopped';
-    case 'أحمر': return 'postpone';
-    case 'برتقالي': return 'restricted';
-    case 'أصفر': return 'caution';
-    default: return 'safe';
-  }
-};
-
-export default function GlobalDashboard() {
+export default function GlobalDashboard({ apiEndpoint = '/dashboard/global' }: GlobalDashboardProps) {
   const router = useRouter();
 
   const [projects, setProjects] = useState<any[]>([]);
   const [todayActivities, setTodayActivities] = useState<any[]>([]);
-  const [recentAlerts, setRecentAlerts] = useState<any[]>([]);
+  const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, any>>({});
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
         setIsLoading(true);
-        const { data: dash } = await apiClient.get('/dashboard/global');
+        const { data: dash } = await apiClient.get(apiEndpoint);
         setProjects(dash?.projects || []);
         setTodayActivities(dash?.dustActivities || []);
-        setRecentAlerts(dash?.alerts || []);
+        setLiveActivityByProjectId(dash?.liveActivityByProjectId || {});
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
       } finally {
@@ -55,17 +49,18 @@ export default function GlobalDashboard() {
     };
 
     fetchDashboardData();
-  }, []);
+  }, [apiEndpoint]);
 
-  // نقاط الخريطة — كل مشروع بموقعه وحالة قراره (من آخر تنبيه)، حالته
-  // الإدارية (project_status)، وعدد الأنشطة المجدولة/النشطة اليوم
+  // نقاط الخريطة — القرار يأتي حصراً من النشاط الجاري فعلياً الآن (القرار
+  // الموحد للنشاط: DVI + الامتثال التنظيمي، راجع computeUnifiedActivityDecision
+  // في dustEvaluation.ts وliveActivityByProjectId في route.ts). لا يوجد أي
+  // fallback لأخطر تنبيه — مشروع بلا نشاط جارٍ الآن تكون نقطته محايدة بلا
+  // قرار إطلاقاً، بطلب صريح من المستخدم.
   const mapPoints: ProjectPoint[] = useMemo(() => {
     return projects
       .filter((p) => typeof p.latitude === 'number' && typeof p.longitude === 'number')
       .map((p) => {
-        const projectAlerts = recentAlerts.filter((a) => a.project_id === p.id);
-        const latest = projectAlerts[0];
-        const decision = latest ? riskLevelToDecision(latest.risk_level) : 'safe';
+        const liveActivity = liveActivityByProjectId[p.id];
         const todayActivitiesCount = todayActivities.filter((a) => a.project_id === p.id).length;
         return {
           id: p.id,
@@ -73,12 +68,15 @@ export default function GlobalDashboard() {
           city: p.city,
           latitude: p.latitude,
           longitude: p.longitude,
-          decision,
+          decision: liveActivity ? dviLevelToDecision(liveActivity.level, liveActivity.mandatoryStop) : null,
           projectStatus: p.project_status,
           todayActivitiesCount,
+          hasLiveActivity: !!liveActivity,
+          statusLabel: liveActivity?.decisionLabelAr,
+          statusReason: liveActivity?.shortReason,
         };
       });
-  }, [projects, recentAlerts, todayActivities]);
+  }, [projects, todayActivities, liveActivityByProjectId]);
 
   if (isLoading) {
     return (

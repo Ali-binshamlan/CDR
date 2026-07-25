@@ -14,6 +14,10 @@ const ALERTS_POLL_INTERVAL_MS = 5 * 60 * 1000;
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [userData, setUserData] = useState<{ name: string; email: string } | undefined>(undefined);
+  // مُشتق من is_super_admin وaccount_role معاً — يتحكم بمحتوى السايدبار
+  // بالكامل (قائمة عناصر مختلفة لكل حالة، راجع Sidebar.tsx). undefined =
+  // لم يُجلَب بعد (لا نعرض قائمة أي دور أثناء التحميل).
+  const [accountRole, setAccountRole] = useState<'user' | 'super_admin' | 'viewer' | undefined>(undefined);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -26,6 +30,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       const { data: profileResp } = await apiClient.get('/profile');
       const profile = profileResp?.data;
+
+      // account_role='viewer' يفوز على is_super_admin عمداً لو تعارضا (لن
+      // يحدث تحت إجراء المنح الحالي، لكن هذا يضمن أن أي تضارب بيانات مستقبلي
+      // يُفقِد الوصول الإداري بدل منحه بالخطأ).
+      const role = profile?.account_role === 'viewer' ? 'viewer' : profile?.is_super_admin ? 'super_admin' : 'user';
+      setAccountRole(role);
 
       // أعمدة profiles الفعلية: username/company_name (لا first_name/last_name)
       if (profile?.username) {
@@ -75,7 +85,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen w-full bg-[#F4F7FB] overflow-hidden" dir="rtl">
-      <Sidebar user={userData} onLogout={handleLogout} />
+      <Sidebar user={userData} onLogout={handleLogout} accountRole={accountRole} />
       <main className="flex-1 h-screen overflow-y-auto">
         {children}
       </main>

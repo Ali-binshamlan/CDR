@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
+import { translateActivityType, ALL_ACTIVITY_LABELS_AR } from '@/app/lib/activityLabels';
 import {
   MapPin,
   Layers,
@@ -20,6 +21,7 @@ import {
   Search,
   Activity,
   AlertOctagon,
+  AlertTriangle,
   User,
   MessageCircle,
   PauseCircle,
@@ -34,7 +36,7 @@ type AlertState = 'NEW' | 'REVIEWED' | 'ACTION_TAKEN' | 'CLOSED';
 type AlertKind =
   | 'BEFORE_2H' | 'BEFORE_1H' | 'BEFORE_START'
   | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH'
-  | 'NO_DECISION_YET';
+  | 'NO_DECISION_YET' | 'PM10_APPROACHING_LIMIT';
 type Severity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 const timingLabel: Record<AlertTiming, string> = { BEFORE: 'قبل التنفيذ', DURING: 'أثناء التنفيذ' };
@@ -66,6 +68,7 @@ const alertKindIcon: Record<AlertKind, React.ElementType> = {
   DUST: Wind,
   SAFETY_BREACH: ShieldAlert,
   NO_DECISION_YET: AlertOctagon,
+  PM10_APPROACHING_LIMIT: AlertTriangle,
 };
 
 const alertKindLabel: Record<AlertKind, string> = {
@@ -76,6 +79,7 @@ const alertKindLabel: Record<AlertKind, string> = {
   DUST: 'عاصفة غبارية محتملة',
   SAFETY_BREACH: 'تجاوز حدود السلامة',
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
+  PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
 };
 
 interface AlertItem {
@@ -100,7 +104,7 @@ interface AlertItem {
 // ============================================================
 function getSeverity(kind: AlertKind): Severity {
   if (['SAFETY_BREACH'].includes(kind)) return 'CRITICAL';
-  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET'].includes(kind)) return 'WARNING';
+  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT'].includes(kind)) return 'WARNING';
   return 'INFO';
 }
 
@@ -113,52 +117,21 @@ function getFallbackRecommendedAction(kind: AlertKind): string {
       return 'هذا تجاوز لحد سلامة صارم — أوقف النشاط فورًا وراجع تفاصيل الحد الذي تم تجاوزه.';
     case 'NO_DECISION_YET':
       return 'النشاط قيد التنفيذ ولم يُسجَّل له أي قرار بعد — راجعه في لوحة التحكم واتّخذ القرار المناسب (اعتماد/تقييد/تأجيل).';
+    case 'PM10_APPROACHING_LIMIT':
+      return 'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة.';
     default:
       return 'راجع خطة النشاط والتأكد من تجهيزات السلامة قبل البدء أو الاستمرار.';
   }
 }
 
 // ============================================================
-// قاموس الترجمة ودوال المعالجة
+// قاموس الترجمة ودوال المعالجة — نقطة الحقيقة الواحدة في
+// app/lib/activityLabels.ts، لا نسخة محلية
 // ============================================================
-const ACTIVITY_TRANSLATIONS: Record<string, string> = {
-  'GENERAL_OUTDOOR_WORK': 'أعمال خارجية عامة',
-  'INDOOR_WORK': 'أعمال داخلية وخارجية خفيفة',
-  'EARTHWORKS': 'أعمال حفر وتربة',
-  'CLEANING_WORK': 'أعمال تنظيف وموقع',
-  'CONCRETE_POURING': 'صب وتجهيز الخرسانة',
-  'ROAD_PAVING': 'رصف الطرق والأسفلت',
-  'ASPHALT_PAVING': 'سفلتة',
-  'HIGH_ALTITUDE_WORK': 'أعمال على ارتفاعات عالية',
-  'WORK_AT_HEIGHT': 'أعمال على ارتفاع',
-  'COATING': 'أعمال طلاء وعزل',
-  'ROAD_WORKS': 'أعمال طرق ومسارات',
-  'WELDING': 'أعمال لحام',
-  'SCAFFOLDING': 'أعمال سقالات',
-  'MATERIAL_TRANSPORT': 'نقل مواد',
-  'HEAVY_EQUIPMENT_MOVEMENT': 'حركة معدات ثقيلة',
-  'MEP_EXTERNAL_WORK': 'أعمال ميكانيكية/كهربائية',
-  'EXTERNAL_PAINTING': 'دهانات وعزل خارجي',
-  'GRADING': 'أعمال تسوية وترابية',
-  'EXCAVATION': 'أعمال حفر'
-};
-
-function translateActivityType(code: string | null | undefined): string {
-  if (!code) return 'نشاط غير مسمى';
-  const normalized = String(code).trim().toUpperCase();
-
-  if (ACTIVITY_TRANSLATIONS[normalized]) return ACTIVITY_TRANSLATIONS[normalized];
-
-  const withUnderscores = normalized.replace(/ /g, '_');
-  if (ACTIVITY_TRANSLATIONS[withUnderscores]) return ACTIVITY_TRANSLATIONS[withUnderscores];
-
-  return String(code).replace(/_/g, ' ').trim();
-}
-
 function translateAlertMessage(msg: string | null | undefined): string {
   if (!msg) return '';
   let translatedMsg = String(msg);
-  Object.entries(ACTIVITY_TRANSLATIONS).forEach(([key, val]) => {
+  Object.entries(ALL_ACTIVITY_LABELS_AR).forEach(([key, val]) => {
     const regex1 = new RegExp(key, 'gi');
     const regex2 = new RegExp(key.replace(/_/g, ' '), 'gi');
     translatedMsg = translatedMsg.replace(regex1, val).replace(regex2, val);
@@ -212,7 +185,7 @@ export default function AlertsPage() {
           projectId: a.project_id,
           activity: activityLabelMap.get(`${a.activity_source}:${a.activity_id}`) || 'نشاط غير معروف',
           state: (a.state as AlertState) || 'NEW',
-          time: new Date(a.created_at).toLocaleString('ar-SA', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          time: new Date(a.created_at).toLocaleString('ar-SA', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', calendar: 'gregory' }),
           message: translateAlertMessage(a.message),
           created_at: a.created_at,
           metrics,

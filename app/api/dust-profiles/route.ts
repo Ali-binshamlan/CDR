@@ -18,6 +18,17 @@ export async function POST(request: NextRequest) {
   const owns = await verifyProjectOwnership(insert.project_id, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  // منع جدولة نشاط في تاريخ ماضٍ على مستوى السيرفر أيضاً (لا نعتمد على فحص
+  // الواجهة وحده) — تقييم DVI/الامتثال يعتمد على توقّع طقس ساعي لا يخدم
+  // الماضي، فنشاط بتاريخ سابق لا يملك بيانات ساعية. المقارنة بتوقيت الرياض
+  // (+03:00) حتى لا يختلف يوم "اليوم" حسب منطقة السيرفر الزمنية.
+  if (insert.planned_date) {
+    const todayRiyadh = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
+    if (String(insert.planned_date) < todayRiyadh) {
+      return NextResponse.json({ error: 'لا يمكن جدولة نشاط في تاريخ سابق لليوم.' }, { status: 400 });
+    }
+  }
+
   const { error } = await supabaseAdmin.from('project_dust_profiles').insert(insert);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });

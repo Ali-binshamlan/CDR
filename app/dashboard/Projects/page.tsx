@@ -2,40 +2,18 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
-import { 
-  Search, 
-  Filter, 
-  Plus, 
-  MapPin, 
+import { decisionMeta, alertKindToDecision, pickMostSevereAlert, type Decision } from '@/app/lib/decisionMeta';
+import {
+  Search,
+  Filter,
+  Plus,
+  MapPin,
   Activity,
   Bell,
   ArrowLeft,
   CloudRain,
   Loader2
 } from 'lucide-react';
-
-// ============================================================
-// القرار الخماسي (نفس منطق لوحة التحكم — يُفضّل نقله لملف مشترك لاحقاً)
-// ============================================================
-type Decision = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
-
-const decisionMeta: Record<Decision, { label: string; text: string; bg: string; border: string; dot: string }> = {
-  safe: { label: 'آمن', text: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', dot: 'bg-emerald-500' },
-  caution: { label: 'مناسب بحذر', text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', dot: 'bg-amber-500' },
-  restricted: { label: 'مقيد', text: 'text-orange-700', bg: 'bg-orange-50', border: 'border-orange-200', dot: 'bg-orange-500' },
-  postpone: { label: 'يفضل التأجيل', text: 'text-rose-700', bg: 'bg-rose-50', border: 'border-rose-200', dot: 'bg-rose-500' },
-  stopped: { label: 'إيقاف', text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200', dot: 'bg-red-700' },
-};
-
-const riskLevelToDecision = (risk?: string | null): Decision => {
-  switch (risk) {
-    case 'أسود': return 'stopped';
-    case 'أحمر': return 'postpone';
-    case 'برتقالي': return 'restricted';
-    case 'أصفر': return 'caution';
-    default: return 'safe';
-  }
-};
 
 const DecisionBadge = ({ decision }: { decision: Decision }) => {
   const meta = decisionMeta[decision];
@@ -77,11 +55,11 @@ export default function ProjectsPage() {
         const allActivities = [...(list?.dustActivities || [])];
 
         const processedProjects: ProjectCard[] = (dbProjects || []).map((p: any) => {
-          const projectAlerts = (alerts || []).filter((a: any) => a.project_id === p.id);
-          const latestAlert = projectAlerts[0];
-          const decision = latestAlert ? riskLevelToDecision(latestAlert.risk_level) : 'safe';
-          const lastDecisionText = latestAlert
-            ? (latestAlert.action_taken || latestAlert.message || 'يرجى مراجعة التنبيه')
+          const projectAlerts: any[] = (alerts || []).filter((a: any) => a.project_id === p.id);
+          const worstAlert = pickMostSevereAlert(projectAlerts);
+          const decision = worstAlert ? alertKindToDecision(worstAlert.kind) : 'safe';
+          const lastDecisionText = worstAlert
+            ? (worstAlert.action_taken || worstAlert.message || 'يرجى مراجعة التنبيه')
             : 'لا يوجد قرار مسجل بعد';
           const totalActivitiesCount = allActivities.filter((a) => a.project_id === p.id).length;
 

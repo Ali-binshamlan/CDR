@@ -274,6 +274,10 @@ export function DustStep({
                           };
                           const startInvalid = isNonWorkDay(item.startDate);
                           const endInvalid = isNonWorkDay(item.endDate);
+                          // أدنى تاريخ مسموح = اليوم بتوقيت الرياض — يمنع
+                          // منتقي التاريخ من اختيار يوم ماضٍ (نشاط بتاريخ ماضٍ
+                          // لا يملك توقعاً ساعياً فتظهر شبكة الساعات فارغة).
+                          const todayRiyadh = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
                           const invalidInputClass =
                             'w-full border-2 border-red-500 rounded-lg p-2 text-sm bg-red-50 text-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 transition-all';
                           const allowedDaysAr = Array.isArray(workDays) ? workDays.map((d) => WEEK_DAY_LABELS_AR[d] || d).join('، ') : '';
@@ -285,6 +289,7 @@ export function DustStep({
                                   <input
                                     required
                                     type="date"
+                                    min={todayRiyadh}
                                     value={item.startDate}
                                     onChange={(e) => updateRegulatoryActivityTiming(item.id, 'startDate', e.target.value)}
                                     className={startInvalid ? invalidInputClass : getInputClass(false)}
@@ -295,7 +300,7 @@ export function DustStep({
                                   <input
                                     required
                                     type="date"
-                                    min={item.startDate || undefined}
+                                    min={item.startDate || todayRiyadh}
                                     value={item.endDate}
                                     onChange={(e) => updateRegulatoryActivityTiming(item.id, 'endDate', e.target.value)}
                                     className={endInvalid ? invalidInputClass : getInputClass(false)}

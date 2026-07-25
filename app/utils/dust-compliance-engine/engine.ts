@@ -12,6 +12,9 @@ import {
   classifyProject,
   classifyWind,
   decisionFromRules,
+  enhancedSuppressionRule,
+  pm10ThresholdRule,
+  REGULATORY_ACTIVITY_LABEL_AR,
 } from './rulebook';
 import type {
   DustComplianceContext,
@@ -50,7 +53,7 @@ function shortReasonFor(
 function buildMonitoringObligations(
   ctx: DustComplianceContext,
   riskClass: DustRiskClass
-): { obligations: DustMonitoringObligation[]; nonCompliantHit: DustRuleHit | null } {
+): { obligations: DustMonitoringObligation[] } {
   const { project } = ctx;
   // الحد الأدنى لعدد محطات الرصد يختلف حسب فئة المشروع — محطتان للفئة
   // الثالثة (مع تحديد مواقعهما حسب وردة الرياح لاحقاً)، ومحطة واحدة للفئة
@@ -138,17 +141,7 @@ function buildMonitoringObligations(
     },
   ];
 
-  const nonCompliant = obligations.find((o) => o.required && o.status === 'NON_COMPLIANT');
-  const nonCompliantHit: DustRuleHit | null = nonCompliant
-    ? {
-        code: `MONITORING-${nonCompliant.key}`,
-        severity: 'RESTRICT_ACTIVITY',
-        messageAr: `التزام رصد غير مكتمل: ${nonCompliant.descriptionAr}`,
-        actionAr: `استوفِ التزام الرصد المطلوب: ${nonCompliant.descriptionAr}`,
-      }
-    : null;
-
-  return { obligations, nonCompliantHit };
+  return { obligations };
 }
 
 function calculateComplianceConfidence(ctx: DustComplianceContext, missingCriticalInputs: string[]): number {
@@ -266,17 +259,22 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     );
   }
 
+  // 15-25 كم/س — تثبيط معزز عام (دون إيقاف)، و حدود PM10 التنظيمية —
+  // "الاستخراج التنظيمي من المرفق" القسم 5-6. راجع rulebook.ts للتفاصيل.
+  ruleHits.push(...enhancedSuppressionRule(ctx.activity.isDustGenerating, ctx.activity.isEnclosedOperation, windBand));
+  ruleHits.push(...pm10ThresholdRule(ctx.pm10UgM3));
+
   // --- قواعد النشاط التنظيمي المحدد (القسم 9.4-9.10) ---
   ruleHits.push(...applyActivityRules(ctx.project, riskClass, windBand, ctx.activity, ctx.windSpeedKmh));
 
-  // --- التزامات الرصد (القسم 10) — تُبنى دائماً للعرض؛ فقط الفئتان
-  // الثانية والثالثة تُلزَمان فعلياً بها (عدم الامتثال لمشروع فئة أولى
-  // لا يُنتج قاعدة تقييد).
-  const { obligations, nonCompliantHit } = buildMonitoringObligations(ctx, riskClass);
+  // --- التزامات الرصد (القسم 10) — تُبنى دائماً للعرض التوعوي فقط. لا
+  // تؤثر على القرار (decisionCategory) إطلاقاً: لا نملك وسيلة فعلية للتحقق
+  // من أن المستخدم ضبط محطة الرصد/الكاميرات/الخريطة فعلياً على أرض الواقع
+  // (هذي حقول تصريح يدوي لا قياس مباشر)، فبناء قرار تقييد/إيقاف عليها قد
+  // يعاقب مستخدماً ضبط كل شي فعلياً لكن نسي تحديث الحقل، بخلاف بقية القواعد
+  // (رياح/PM10/مسافات) المبنية على قياسات حية فعلية.
+  const { obligations } = buildMonitoringObligations(ctx, riskClass);
   const monitoringApplies = riskClass === 'CATEGORY_II_MEDIUM' || riskClass === 'CATEGORY_III_HIGH';
-  if (monitoringApplies && nonCompliantHit) {
-    ruleHits.push(nonCompliantHit);
-  }
 
   let decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
 
@@ -321,6 +319,10 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     engineType: 'RIYADH_DUST_COMPLIANCE',
     engineVersion: ENGINE_VERSION,
     rulebookVersion: RULEBOOK_VERSION,
+
+    regulatoryActivity: ctx.activity.regulatoryActivity,
+    regulatoryActivityLabelAr:
+      REGULATORY_ACTIVITY_LABEL_AR[ctx.activity.regulatoryActivity] ?? REGULATORY_ACTIVITY_LABEL_AR.OTHER,
 
     riskClass,
     riskClassReasonAr,

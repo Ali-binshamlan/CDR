@@ -8,7 +8,7 @@ import { apiClient } from '@/app/lib/apiClient';
 import {
   Home, FolderKanban, Bell,
   FileText, ChevronLeft, ChevronRight, Menu, X,
-  LogOut
+  LogOut, ShieldCheck, CalendarDays, Settings
 } from 'lucide-react';
 
 // ==========================================
@@ -23,6 +23,11 @@ export interface UserData {
 export interface SidebarProps {
   user?: UserData; // بيانات المستخدم
   onLogout?: () => void; // دالة تسجيل الخروج
+  // 'user' | 'super_admin' | 'viewer' | undefined (أثناء التحميل) — يحدد
+  // قائمة عناصر السايدبار بالكامل. جهة المراقبة (viewer) قائمة منفصلة
+  // كلياً (3 عناصر: لوحة تحكم/تنبيهات/تقارير فقط، بلا مشاريع ولا إدارة)،
+  // لا نسخة مُصفّاة من قائمة المستخدم العادي.
+  accountRole?: 'user' | 'super_admin' | 'viewer';
 }
 
 export interface MenuItem {
@@ -157,7 +162,7 @@ const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, 
 // ==========================================
 // 5. المكون الرئيسي (Sidebar Main Container)
 // ==========================================
-export default function Sidebar({ user, onLogout }: SidebarProps) {
+export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [alertsCount, setAlertsCount] = useState<number>(0);
@@ -200,12 +205,25 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
     };
   }, []);
 
-  const menuItems: MenuItem[] = [
-    { id: 'home', name: 'لوحة التحكم', href: '/dashboard', icon: Home },
-    { id: 'projects', name: 'المشاريع', href: '/dashboard/Projects', icon: FolderKanban },
-    { id: 'alerts', name: 'التنبيهات', href: '/dashboard/alerts', icon: Bell, badge: alertsCount },
-    { id: 'reports', name: 'التقارير', href: '/dashboard/reports', icon: FileText },
-  ];
+  // جهة المراقبة (viewer) قائمة منفصلة كلياً — 3 عناصر فقط بروابط /dashboard/
+  // viewer/**، بلا "المشاريع" ولا "الإدارة" إطلاقاً. المستخدم العادي/الأدمن
+  // يشتركان بنفس القائمة الأساسية، مع "الإدارة" الإضافية للأدمن فقط.
+  const menuItems: MenuItem[] = accountRole === 'viewer'
+    ? [
+        { id: 'home', name: 'لوحة التحكم', href: '/dashboard/viewer', icon: Home },
+        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/viewer/alerts', icon: Bell, badge: alertsCount },
+        { id: 'reports', name: 'التقارير', href: '/dashboard/viewer/reports', icon: FileText },
+      ]
+    : [
+        { id: 'home', name: 'لوحة التحكم', href: '/dashboard', icon: Home },
+        { id: 'projects', name: 'المشاريع', href: '/dashboard/Projects', icon: FolderKanban },
+        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/alerts', icon: Bell, badge: alertsCount },
+        { id: 'schedule', name: 'جدول الأسبوع', href: '/dashboard/schedule', icon: CalendarDays },
+        { id: 'settings', name: 'الإعدادات', href: '/dashboard/settings', icon: Settings },
+        // "الإدارة" عنصر واحد فقط لسوبر أدمن — نفس نمط "المشاريع" (عنصر
+        // رئيسي واحد رغم وجود صفحات فرعية كثيرة تحته)
+        ...(accountRole === 'super_admin' ? [{ id: 'admin', name: 'الإدارة', href: '/dashboard/admin', icon: ShieldCheck }] : []),
+      ];
 
   // تحديد العنصر النشط بناءً على المسار الحالي (route) بدل state داخلي
   const isItemActive = (href: string) => {

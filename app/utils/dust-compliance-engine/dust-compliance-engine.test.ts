@@ -378,6 +378,68 @@ describe('محرك امتثال الغبار — قواعد الهدم', () => {
   });
 });
 
+// "الاستخراج التنظيمي من المرفق" القسم 5 — نطاق 15-25 كم/س يستوجب تثبيطاً
+// معززاً (دون إيقاف) على أي نشاط مكشوف مولّد للغبار، بصرف النظر عن النشاط
+// التنظيمي المحدد. regulatoryActivity: 'OTHER' الافتراضي يعزل القاعدة عن
+// أي قاعدة نشاط أشد (كإيقاف الهدم الصارم بنفس النطاق).
+describe('محرك امتثال الغبار — تثبيط معزز عام (15-25 كم/س)', () => {
+  it('نشاط مكشوف مولّد للغبار عند رياح 18 كم/س → ALLOW_WITH_CONTROLS مع رسالة التثبيط المعزز', () => {
+    const r = evaluateDustCompliance(context({ windSpeedKmh: 18 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
+  });
+
+  it('نشاط مغلق (isEnclosedOperation) عند رياح 18 كم/س → لا تثبيط معزز', () => {
+    const r = evaluateDustCompliance(
+      context({ windSpeedKmh: 18, activity: activityProfile({ isEnclosedOperation: true }) })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(false);
+  });
+
+  it('رياح هادئة (10 كم/س) → لا تثبيط معزز', () => {
+    const r = evaluateDustCompliance(context({ windSpeedKmh: 10 }));
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(false);
+  });
+
+  it('هدم مكشوف عند رياح 18 كم/س → يبقى إيقافاً إلزامياً (لا يُخفَّف بالتثبيط المعزز)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 18,
+        activity: activityProfile({ regulatoryActivity: 'DEMOLITION', isEnclosedOperation: false }),
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+  });
+});
+
+// "الاستخراج التنظيمي من المرفق" القسم 6 — حدود PM10 التنظيمية (250 تحذير،
+// 340 مخالفة/إيقاف)، بالإضافة لتنبيه استباقي عند 300 بطلب صريح من المستخدم
+// لحمايته من الغرامة قبل الوصول لحد المخالفة الفعلي.
+describe('محرك امتثال الغبار — حدود PM10 التنظيمية', () => {
+  it('PM10=310 (بين 300-339) → ALLOW_WITH_CONTROLS مع تنبيه استباقي', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 310 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-EARLY-WARNING-007')).toBe(true);
+  });
+
+  it('PM10=260 (بين 250-299) → ALLOW_WITH_CONTROLS مع تحذير', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 260 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+  });
+
+  it('PM10=345 (≥340) → STOP_AFFECTED_ACTIVITY (بدل السماح حتى 500 سابقاً)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 345 }));
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+  });
+
+  it('PM10=200 (دون 250) → لا قاعدة PM10 تنظيمية مفعّلة', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 200 }));
+    expect(r.triggeredRules.some((h) => h.code.startsWith('PM10-'))).toBe(false);
+  });
+});
+
 describe('محرك امتثال الغبار — أعلى من 25 كم/س (بروتوكول الرياح)', () => {
   it('نشاط مكشوف مع رياح فوق 25 كم/س وبلا رصد ساعي → تقييد على الأقل', () => {
     const r = evaluateDustCompliance(
@@ -902,7 +964,11 @@ describe('محرك امتثال الغبار — عدد محطات الرصد ح
     expect(obligation?.status).toBe('COMPLIANT');
   });
 
-  it('فئة ثالثة بمحطة واحدة فقط → غير مكتمل (يلزم محطتان)', () => {
+  it('فئة ثالثة بمحطة واحدة فقط → غير مكتمل (يلزم محطتان)، لكن للعرض التوعوي فقط — لا تؤثر على القرار', () => {
+    // بطلب صريح من المستخدم: لا يمكن الجزم بأن المستخدم ضبط محطة الرصد
+    // فعلياً على أرض الواقع (حقل تصريح يدوي لا قياس مباشر)، فالتزامات الرصد
+    // تبقى معلومة توعوية بحتة ولا تُخفِّض القرار (على عكس رياح/PM10/مسافات
+    // المبنية على قياسات حية فعلية).
     const r = evaluateDustCompliance(
       context({
         project: projectProfile({ siteAreaM2: 6000, monitoringStationCount: 1 }),
@@ -910,7 +976,7 @@ describe('محرك امتثال الغبار — عدد محطات الرصد ح
     );
     const obligation = r.monitoringObligations.find((o) => o.key === 'MONITORING_STATION_COUNT');
     expect(obligation?.status).toBe('NON_COMPLIANT');
-    expect(r.decisionCategory).not.toBe('ALLOW');
+    expect(r.triggeredRules.some((h) => h.code.startsWith('MONITORING-'))).toBe(false);
   });
 
   it('فئة ثالثة بمحطتين → مكتمل', () => {
@@ -1001,7 +1067,7 @@ describe('محرك امتثال الغبار — عدم كسر بنية النت
   it('rulebookVersion وengineType ثابتان في كل نتيجة', () => {
     const r = evaluateDustCompliance(context());
     expect(r.engineType).toBe('RIYADH_DUST_COMPLIANCE');
-    expect(r.rulebookVersion).toBe('RCRC-NCEC-RIYADH-DUST-2026.1');
+    expect(r.rulebookVersion).toBe('RCRC-NCEC-RIYADH-DUST-2026.2');
   });
 
   it('canOverride = false عند MANDATORY_STOP', () => {

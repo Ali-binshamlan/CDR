@@ -256,7 +256,19 @@ export default function ComplianceWidgetCard({
 
   const isFutureActivity = !!windowStartIso && new Date(windowStartIso).getTime() > Date.now();
 
-  const activityLabel = (ACTIVITY_LABEL_AR as Record<string, string>)[activityType] ?? EXTENDED_ACTIVITY_LABEL[activityType] ?? activityType;
+  // العنوان الفرعي = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) من قرار
+  // الامتثال، لا التصنيف الفيزيائي العام (حركة معدات ثقيلة). نجمع كل الأنشطة
+  // التنظيمية المميّزة في البطاقة (قد تضم أكثر من واحد) ونرجع للفيزيائي فقط
+  // إن غابت كلها.
+  const physicalActivityLabel = (ACTIVITY_LABEL_AR as Record<string, string>)[activityType] ?? EXTENDED_ACTIVITY_LABEL[activityType] ?? activityType;
+  const regulatoryLabels = Array.from(
+    new Set(
+      complianceEntries
+        .map((c) => c.regulatoryActivityLabelAr)
+        .filter((l): l is string => !!l && l !== 'نشاط غبار عام')
+    )
+  );
+  const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
 
   useEffect(() => {
     async function fetchInitialData() {
@@ -354,11 +366,11 @@ export default function ComplianceWidgetCard({
                   <p className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5" dir="ltr">
                     <Clock className="w-3 h-3" />
                     <span dir="rtl">
-                      {new Date(windowStartIso).toLocaleDateString('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh' })}
+                      {new Date(windowStartIso).toLocaleDateString('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                       {' '}
-                      {new Date(windowStartIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })}
+                      {new Date(windowStartIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                       {' ← '}
-                      {new Date(windowEndIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })}
+                      {new Date(windowEndIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                       {durationHours ? ` (${formatHoursLabel(durationHours)})` : ''}
                     </span>
                   </p>
@@ -587,7 +599,12 @@ export default function ComplianceWidgetCard({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                     <div className="bg-white/70 rounded-lg p-2">
                       <div className="text-xs text-[#061B40]/60">النشاط</div>
-                      <div className="font-bold text-[#061B40] truncate" title={aei.activityLabelAr}>{aei.activityLabelAr}</div>
+                      <div
+                        className="font-bold text-[#061B40] truncate"
+                        title={worst?.regulatoryActivityLabelAr ?? aei.activityLabelAr}
+                      >
+                        {worst?.regulatoryActivityLabelAr ?? aei.activityLabelAr}
+                      </div>
                     </div>
                     <div className="bg-white/70 rounded-lg p-2">
                       <div className="text-xs text-[#061B40]/60">درجة السلامة</div>
@@ -727,37 +744,7 @@ export default function ComplianceWidgetCard({
                           </div>
                         )}
 
-                        {compliance.monitoringObligations.length > 0 && (
-                          <div>
-                            <div className="text-xs font-bold text-[#061B40]/60 mb-1">التزامات الرصد</div>
-                            <ul className="space-y-1 text-[13px] text-[#061B40]">
-                              {compliance.monitoringObligations.map((ob, idx) => {
-                                const statusStyle =
-                                  ob.status === 'COMPLIANT' ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                                  : ob.status === 'NON_COMPLIANT' ? 'text-red-700 bg-red-50 border-red-200'
-                                  : ob.status === 'NOT_APPLICABLE' ? 'text-slate-500 bg-slate-50 border-slate-200'
-                                  : 'text-amber-700 bg-amber-50 border-amber-200';
-                                const statusLabel =
-                                  ob.status === 'COMPLIANT' ? 'مطابق'
-                                  : ob.status === 'NON_COMPLIANT' ? 'غير مطابق'
-                                  : ob.status === 'NOT_APPLICABLE' ? 'غير منطبق'
-                                  : 'غير معروف';
-                                return (
-                                  <li key={idx} className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-1.5 ${statusStyle}`}>
-                                    <span className="font-medium">{ob.descriptionAr}</span>
-                                    <span className="text-[10px] font-black shrink-0">{statusLabel}</span>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          </div>
-                        )}
-
-                        {compliance.missingCriticalInputs.length > 0 && (
-                          <div className="text-xs font-bold text-amber-700 bg-white border border-amber-200 rounded-lg p-2">
-                            بيانات ناقصة تحد من دقة القرار: {compliance.missingCriticalInputs.join('، ')}
-                          </div>
-                        )}
+                       
 
                         {entryBlocks && (
                           <div className="bg-white border border-current/20 p-2 rounded-lg text-[11px] font-bold text-center flex items-center justify-center gap-1">

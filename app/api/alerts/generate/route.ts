@@ -36,6 +36,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
 import type { DustEngineInput } from '@/app/utils/dust-engine/types';
+import { translateActivityType } from '@/app/lib/activityLabels';
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
 // (يُستدعى من Cron)، فيحتاج مفتاح الخدمة لتجاوز RLS والقراءة من كل
@@ -226,7 +227,7 @@ export async function checkDustActivities(projectIds?: string[]) {
     const lon = profile.projects?.longitude ?? 46.6753;
     const durationMinutes = Number(profile.duration_hours) ? Number(profile.duration_hours) * 60 : (profile.duration_minutes || 60);
     const { startIso, endIso } = computeWindow(profile.planned_date, profile.planned_time, durationMinutes);
-    const label = profile.activity_type || 'نشاط غبار';
+    const label = translateActivityType(profile.activity_type) || 'نشاط غبار';
 
     await checkBeforeAlerts(profile.project_id, 'dust', profile.id, label, startIso);
     await checkNoDecisionAlert(profile.project_id, 'dust', profile.id, label, startIso, endIso);
@@ -262,6 +263,26 @@ export async function checkDustActivities(projectIds?: string[]) {
             message: `انخفاض حاد في الرؤية أثناء تنفيذ نشاط "${label}".`,
             metricLabel: 'مؤشر الرؤية/الغبار', metricActual: `${worst.score}/100`, metricThreshold: '65/100 (تقييد شديد)',
             recommendedAction: worst.decisionLabelAr,
+          });
+        }
+      }
+
+      // تنبيه استباقي PM10 — "الاستخراج التنظيمي من المرفق" القسم 6: حد
+      // المخالفة/الإيقاف التنظيمي 340 ميكروجرام/م³. بلا بث مستمر لتتبع
+      // الشرط الزمني الحرفي بالوثيقة ("لأكثر من دقيقتين")، فيُنبَّه المستخدم
+      // استباقياً عند الاقتراب (300-339) ليتصرف قبل الوصول لحد المخالفة
+      // الفعلي ويتجنب التعرض لغرامة أرصاد. منفصل عن تنبيه DUST أعلاه (مصدره
+      // score الفيزيائي العام لا PM10 التنظيمي تحديداً)، فقد يظهر الاثنان
+      // معاً أو أحدهما فقط حسب الحالة.
+      const pm10Value = worst.rawWeatherSample?.pm10;
+      if (pm10Value !== null && pm10Value !== undefined && pm10Value >= 300 && pm10Value < 340) {
+        if (!(await alertExists('dust', profile.id, 'PM10_APPROACHING_LIMIT', true))) {
+          await insertAlert({
+            projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
+            timing: 'DURING', kind: 'PM10_APPROACHING_LIMIT',
+            message: `تركيز الغبار (PM10) يقترب من الحد التنظيمي أثناء تنفيذ نشاط "${label}" — إجراء وقائي فوري يجنّبك المخالفة.`,
+            metricLabel: 'PM10', metricActual: `${pm10Value} ميكروجرام/م³`, metricThreshold: '340 ميكروجرام/م³ (حد المخالفة)',
+            recommendedAction: 'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة.',
           });
         }
       }

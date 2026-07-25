@@ -15,7 +15,25 @@ import type {
   DustWindBand,
 } from './types';
 
-export const RULEBOOK_VERSION = 'RCRC-NCEC-RIYADH-DUST-2026.1';
+export const RULEBOOK_VERSION = 'RCRC-NCEC-RIYADH-DUST-2026.2';
+
+// تسمية عربية لكل نشاط تنظيمي (RegulatoryDustActivity) — تُعرض في بطاقة
+// الامتثال بدل مسمى نشاط DVI الفيزيائي (activity_type)، لأن المستخدم يهتم
+// بالنشاط التنظيمي المحدد الذي تُبنى عليه قرارات الإيقاف/التقييد (هدم/كسارة/
+// حركة شاحنات...)، لا التصنيف الفيزيائي العام.
+export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = {
+  EARTHWORKS: 'أعمال الحفر والترابية',
+  SITE_TRAFFIC: 'حركة الشاحنات والطرق الداخلية',
+  ENTRY_EXIT: 'نقاط الدخول والخروج',
+  MATERIAL_HANDLING_STOCKPILE: 'مناولة وتخزين المواد والأكوام',
+  DEMOLITION: 'الهدم والترميم',
+  CRUSHER: 'الكسارة',
+  BATCHING_PLANT: 'محطة خلط الخرسانة',
+  STONE_CUTTING: 'قطع الأحجار والصخور',
+  CD_WASTE_TRANSPORT: 'نقل مخلفات الهدم والبناء',
+  IDLE_SURFACE: 'الأسطح المكشوفة غير النشطة',
+  OTHER: 'نشاط غبار عام',
+};
 
 // حد الكسارة من المستقبِل الحساس: الدليل التنظيمي يذكر 200م في موضع (القسم
 // 3.5، تخزين المواد) و500م في موضع آخر (القسم 3.8، مناطق الكسارات تحديداً).
@@ -48,6 +66,15 @@ const BATCHING_PM10_FILTER_MIN_PERCENT = 99;
 // A4 — سرعة الرياح التي تستوجب فحص أغطية الأسطح غير النشطة وإصلاحها فوراً
 // (مختلفة عن عتبات 15/25 كم/س العامة — خاصة بحالة الأغطية تحديداً).
 const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = 20;
+
+// حدود PM10 التنظيمية — "الاستخراج التنظيمي من المرفق" القسم 6 (250 تحذير،
+// 340 مخالفة/إيقاف). PM10_EARLY_WARNING_UG_M3 إضافة وقائية بطلب صريح من
+// المستخدم: النظام يقيّم لحظة واحدة لا بثاً مستمراً، فلا يمكن تطبيق شرط
+// الوثيقة الزمني حرفياً ("لأكثر من دقيقتين")؛ بدلاً منه تنبيه استباقي قبل
+// حد المخالفة الفعلي يحمي المستخدم من التعرض لغرامة أرصاد مفاجئة.
+const PM10_EARLY_WARNING_UG_M3 = 300;
+const PM10_WARNING_UG_M3 = 250;
+const PM10_VIOLATION_STOP_UG_M3 = 340;
 
 // -----------------------------------------------------------------------
 // تصنيف فئة مخاطر المشروع (القسم 6 من "مرقاب"، جدول 1 من الدليل التنظيمي)
@@ -167,6 +194,70 @@ function ruleHit(
   actionAr: string
 ): DustRuleHit {
   return { code, severity, messageAr, actionAr };
+}
+
+// بوابة عامة على كل الأنشطة المكشوفة المولّدة للغبار — "الاستخراج التنظيمي
+// من المرفق" القسم 5: رياح 15-25 كم/س تستوجب تثبيطاً معززاً (رش ساعي،
+// تغطية الأكوام، خفض ارتفاع التفريغ لمتر، تشديد تنظيف الطرق وغسيل
+// الإطارات)، دون إيقاف كامل — بخلاف GATE-WIND-ABOVE-25-004 (نفس النطاق
+// المكشوف/المولّد للغبار لكن فوق 25 كم/س، إيقاف فعلي). أولويتها الدنيا
+// (ALLOW_WITH_CONTROLS) تعني أنها لا تتجاوز أي قاعدة نشاط أشد قائمة أصلاً
+// على نفس نطاق الرياح (مثال: إيقاف الهدم الصارم DEMO-WIND-STOP-001 عند
+// نفس النطاق يبقى الأعلى أولوية).
+export function enhancedSuppressionRule(
+  isDustGenerating: boolean,
+  isEnclosedOperation: boolean,
+  windBand: DustWindBand
+): DustRuleHit[] {
+  if (windBand !== 'FROM_15_TO_25' || !isDustGenerating || isEnclosedOperation) return [];
+  return [
+    ruleHit(
+      'GATE-WIND-15-25-ENHANCED-005',
+      'ALLOW_WITH_CONTROLS',
+      'تثبيط معزز مطلوب: سرعة الرياح بين 15-25 كم/س',
+      'فعّل الرش الساعي، غطِّ الأكوام، اخفض ارتفاع التفريغ إلى متر واحد، وشدّد تنظيف الطرق وغسيل الإطارات'
+    ),
+  ];
+}
+
+// حدود PM10 التنظيمية العامة — "الاستخراج التنظيمي من المرفق" القسم 6.
+// منفصلة تماماً عن بوابات DVI الفيزيائية (DVI-PM10-ACTION-003 وDVI-DUST-
+// ACTIVITY-STOP-004 في dust-engine/engine.ts) — هذه عتبات تنظيمية رسمية
+// من الوثيقة مباشرة، لا تقديرات فيزيائية.
+export function pm10ThresholdRule(pm10UgM3: number | null): DustRuleHit[] {
+  if (pm10UgM3 === null || pm10UgM3 === undefined) return [];
+
+  if (pm10UgM3 >= PM10_VIOLATION_STOP_UG_M3) {
+    return [
+      ruleHit(
+        'PM10-VIOLATION-STOP-006',
+        'STOP_AFFECTED_ACTIVITY',
+        `مخالفة تنظيمية: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
+        'أوقف النشاط المسبب للغبار فوراً وفعّل إجراءات التصحيح (تقليل واجهات العمل، خفض ارتفاع التفريغ، تقييد حركة الشاحنات، زيادة الرش) حتى يزول التجاوز'
+      ),
+    ];
+  }
+  if (pm10UgM3 >= PM10_EARLY_WARNING_UG_M3) {
+    return [
+      ruleHit(
+        'PM10-EARLY-WARNING-007',
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه استباقي: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) يقترب من حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
+        'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة'
+      ),
+    ];
+  }
+  if (pm10UgM3 >= PM10_WARNING_UG_M3) {
+    return [
+      ruleHit(
+        'PM10-WARNING-008',
+        'ALLOW_WITH_CONTROLS',
+        `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
+        'فعّل التثبيط المعزز (رش ساعي، تغطية الأكوام) وراقب التركيز عن كثب'
+      ),
+    ];
+  }
+  return [];
 }
 
 // A1 — تجهيز الموقع وأعمال الحفر والأعمال الترابية (الحفر، التسوية، الردم،

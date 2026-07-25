@@ -142,9 +142,13 @@ export default function MultiIndicatorActivityBox({
     const status: 'upcoming' | 'ongoing' | 'past' = nowTs < startTs ? 'upcoming' : nowTs <= endTs ? 'ongoing' : 'past';
     const derivedDurationMinutes = durationMinutes ?? Math.round((endTs - startTs) / 60000);
 
-    const dateLabel = start.toLocaleDateString('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh' });
-    const startLabel = start.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' });
-    const endLabel = end.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' });
+    // calendar: 'gregory' صراحةً — بعض المتصفحات (Edge/Windows) تجعل ar-SA
+    // تعرض بالتقويم الهجري (أم القرى) افتراضياً، فيظهر يوم مختلف تماماً عن
+    // التاريخ الميلادي المقصود (مثال: ٢٦ يوليو ميلادي يظهر "٦" هجري). نُثبّت
+    // الميلادي حتى يتطابق العرض مع planned_date المخزَّن في كل البيئات.
+    const dateLabel = start.toLocaleDateString('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh', calendar: 'gregory' });
+    const startLabel = start.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' });
+    const endLabel = end.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' });
 
     let statusLabel: string;
     let statusColor: string;

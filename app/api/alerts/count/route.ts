@@ -6,15 +6,28 @@ import { requireUserId } from '@/app/lib/apiAuth';
 // يعدّ فقط تنبيهات مشاريع المستخدم الحالي غير المغلقة (state != CLOSED)،
 // عبر JOIN على projects.user_id بدل الاعتماد على RLS وحده. اشتراك
 // Realtime في Sidebar.tsx يبقى كما هو ويستدعي هذا المسار عند كل تغيير.
+// جهة المراقبة (account_role='viewer') لا تملك أي مشروع، فبدون هذا
+// الاستثناء كان العداد يطلع صفر دائماً رغم وجود تنبيهات نشطة فعلياً عبر
+// كل المشاريع — لذا تُعدّ لها كل التنبيهات النشطة بلا فلترة user_id.
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
 
-  const { count, error } = await supabaseAdmin
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('account_role')
+    .eq('id', auth.userId)
+    .maybeSingle();
+  const isViewer = profile?.account_role === 'viewer';
+
+  let query = supabaseAdmin
     .from('alerts')
     .select('id, projects!inner(user_id)', { count: 'exact', head: true })
-    .neq('state', 'CLOSED')
-    .eq('projects.user_id', auth.userId);
+    .neq('state', 'CLOSED');
+  if (!isViewer) {
+    query = query.eq('projects.user_id', auth.userId);
+  }
+  const { count, error } = await query;
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ count: count ?? 0 });

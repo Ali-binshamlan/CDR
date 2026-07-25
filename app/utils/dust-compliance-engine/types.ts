@@ -308,6 +308,11 @@ export interface DustComplianceResult {
   engineVersion: string;
   rulebookVersion: string;
 
+  // النشاط التنظيمي المحدد (هدم/كسارة/حركة شاحنات...) الذي بُني عليه القرار
+  // — تُعرض تسميته العربية في بطاقة الامتثال بدل مسمى نشاط DVI الفيزيائي.
+  regulatoryActivity: RegulatoryDustActivity;
+  regulatoryActivityLabelAr: string;
+
   riskClass: DustRiskClass;
   riskClassReasonAr: string;
   windBand: DustWindBand;

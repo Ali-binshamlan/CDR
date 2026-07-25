@@ -200,8 +200,12 @@ function applyMandatoryGates(
     if (decision === 'ALLOW' || decision === 'ALLOW_WITH_MONITORING') decision = 'RESTRICT';
   }
 
+  // حد الإيقاف 340 (بدل 500 سابقاً) ليطابق حد المخالفة التنظيمي في
+  // "الاستخراج التنظيمي من المرفق" (PM10-VIOLATION-STOP-006 بمحرك
+  // الامتثال) — DVI الفيزيائي لا يجوز أن "يسمح" حتى نقطة يوقفها الامتثال
+  // التنظيمي فعلياً، وإلا يظهر تناقض بين المحركين.
   const rule4Triggered =
-    (pm10 !== null && pm10 >= 500) ||
+    (pm10 !== null && pm10 >= 340) ||
     (visibilityKm !== null && visibilityKm < 1 && input.site.hasEarthworks && (effectiveWindKmh ?? 0) > 40);
   if (rule4Triggered && isDustActivity) {
     rules.push('DVI-DUST-ACTIVITY-STOP-004');
@@ -472,37 +476,60 @@ export async function evaluateDustVisibilityHourly(
 // النشاط المجدولة) — نفس مفهوم evaluateHeatStressWorkDayHourly في محرك
 // الحرارة، يجيب على "هل أقدر أشتغل فيها؟" لكل ساعة دوام.
 // -------------------------------------------------------------
-export async function evaluateDustVisibilityWorkDayHourly(input: DustEngineInput): Promise<DviHourlyEvaluation[]> {
-  const now = new Date();
-  // تاريخ "اليوم" يجب أن يكون بتوقيت الرياض لا UTC: في الساعات المبكرة من
-  // صباح الرياض (00:00-02:59) يكون تاريخ UTC هو اليوم السابق، فيُحسب يوم
-  // العمل ونافذته للتاريخ الخطأ. نزيح +3 ساعات قبل أخذ التاريخ.
-  const dateStr = new Date(now.getTime() + 3 * 3600000).toISOString().slice(0, 10);
+export async function evaluateDustVisibilityWorkDayHourly(
+  input: DustEngineInput,
+  // وقت بداية النشاط المجدول (ISO UTC) — إن مُرِّر، تُبنى شبكة "توقعات
+  // الساعات القادمة" لنافذة دوام *يوم النشاط* تحديداً (planned_date)، لا
+  // ليوم فتح الصفحة. بلا هذا، نشاط مجدول لبكرة/بعد يومين كان يعرض توقعات
+  // اليوم الحالي (خطأ)، أو خانة واحدة يتيمة لو فُتحت الصفحة بعد انتهاء دوام
+  // اليوم. غيابه يُبقي السلوك الافتراضي: نافذة دوام "اليوم" مع الانتقال
+  // للغد إذا انتهت.
+  activityStartIso?: string
+): Promise<DviHourlyEvaluation[]> {
+  const nowMs = Date.now();
+  // مرجع اليوم: يوم النشاط المجدول إن توفّر، وإلا "اليوم" الحالي. بتوقيت
+  // الرياض لا UTC: في الساعات المبكرة من صباح الرياض (00:00-02:59) يكون
+  // تاريخ UTC هو اليوم السابق، فيُحسب يوم العمل ونافذته للتاريخ الخطأ.
+  // نزيح +3 ساعات قبل أخذ التاريخ.
+  const anchorMs = activityStartIso ? new Date(activityStartIso).getTime() : nowMs;
+  const dateStr = new Date(anchorMs + 3 * 3600000).toISOString().slice(0, 10);
 
-  const horizonHours = 36;
-  const samples = await fetchDustWeatherHourly(input.latitude, input.longitude, horizonHours);
+  // أفق الجلب يجب أن يصل ليوم النشاط كاملاً حتى لو كان مستقبلياً — نجلب من
+  // "الآن" حتى نهاية دوام يوم النشاط + هامش، بحد أدنى 36 ساعة.
+  // work_hours قد تأتي من قاعدة البيانات بصيغة 'HH:MM:SS' (عمود Postgres
+  // time) — نقتطعها إلى 'HH:MM' وإلا ينتج نص تاريخ فاسد (…T07:00:00:00+03:00)
+  // فيصبح startMs/endMs = NaN، فيرمي الفلتر كل العينات وترجع الشبكة فارغة
+  // (وتسقط للاحتياطي = نافذة النشاط بدل كامل الدوام). هذا كان سبب ظهور ساعة
+  // واحدة/ساعات النشاط فقط بدل كامل دوام المشروع.
+  const workHoursStart = (input.workHoursStart || '06:00').slice(0, 5);
+  const workHoursEnd = (input.workHoursEnd || '18:00').slice(0, 5);
+  let startMs = new Date(`${dateStr}T${workHoursStart}:00+03:00`).getTime();
+  let endMs = new Date(`${dateStr}T${workHoursEnd}:00+03:00`).getTime();
+  if (endMs <= startMs) endMs += 24 * 3600000;
+
+  // إن لم يُمرَّر يوم نشاط صريح، ونافذة دوام اليوم انتهت فعلياً، ننتقل
+  // لنافذة الغد بنفس التوقيتين — وإلا تعرض الشبكة فراغاً كل مساء بعد انتهاء
+  // الدوام رغم توفر توقعات الغد.
+  if (!activityStartIso && nowMs > endMs) {
+    startMs += 24 * 3600000;
+    endMs += 24 * 3600000;
+  }
+
+  // مرجع الجلب: بداية دوام *يوم النشاط* إن مُرِّر يوم صريح — بلا هذا كانت
+  // fetchDustWeatherHourly تبدأ دائماً من "الآن" وتجلب طقس اليوم الحالي، ثم
+  // يرمي فلتر workDaySamples أدناه كل العينات لأنها لا تطابق يوم النشاط،
+  // فترجع الشبكة فارغة وتسقط للاحتياطي (نافذة النشاط = ساعة واحدة). نفس
+  // إصلاح anchorIso المُطبَّق أصلاً في evaluateDustVisibilityWindow. بلا يوم
+  // صريح نبقى على السلوك القديم (يبدأ من الآن) لتغطية بقية دوام اليوم.
+  const anchorIso = activityStartIso ? new Date(startMs).toISOString() : undefined;
+  const fetchFromMs = anchorIso ? startMs : nowMs;
+  const horizonHours = Math.max(36, Math.ceil((endMs - fetchFromMs) / 3600000) + 2);
+  const samples = await fetchDustWeatherHourly(input.latitude, input.longitude, horizonHours, anchorIso);
   if (samples.length === 0) return [];
-
-  // ورديات حقيقية (إن وُجدت) تحل محل نافذة workHoursStart/workHoursEnd
-  // الواحدة — كل وردية تُبنى كنطاق [بداية، نهاية] مستقل بنفس منطق التعامل
-  // مع عبور منتصف الليل، ثم تُؤخذ العينات ضمن اتحاد كل النطاقات (union)،
-  // لا نطاق واحد فقط. مشروع بلا ورديات (shifts فارغة/غائبة) يسلك بالضبط
-  // نفس المسار القديم: نافذة واحدة من workHoursStart إلى workHoursEnd.
-  const shiftWindows =
-    input.shifts && input.shifts.length > 0
-      ? input.shifts
-      : [{ startTime: input.workHoursStart || '06:00', endTime: input.workHoursEnd || '18:00' }];
-
-  const ranges = shiftWindows.map(({ startTime, endTime }) => {
-    const startMs = new Date(`${dateStr}T${startTime}:00+03:00`).getTime();
-    let endMs = new Date(`${dateStr}T${endTime}:00+03:00`).getTime();
-    if (endMs <= startMs) endMs += 24 * 3600000;
-    return { startMs, endMs };
-  });
 
   const workDaySamples = samples.filter((s) => {
     const t = new Date(s.time).getTime();
-    return ranges.some((r) => t >= r.startMs && t <= r.endMs);
+    return t >= startMs && t <= endMs;
   });
   if (workDaySamples.length === 0) return [];
 

@@ -27,7 +27,11 @@ export async function requireUserId(
 
 // تحقق أن project_id يخص المستخدم الحالي فعلاً — إلزامي قبل أي قراءة أو
 // كتابة على جدول يرتبط بـ project_id، لأن supabaseAdmin لن يمنع الوصول
-// لمشروع مستخدم آخر تلقائياً كما كانت RLS تفعل
+// لمشروع مستخدم آخر تلقائياً كما كانت RLS تفعل. السوبر أدمن (is_super_admin)
+// يتجاوز فحص الملكية المباشرة ويُعامَل كمالك لأي مشروع موجود — هذا يمنح
+// الأدمن صلاحية كتابة كاملة (تعديل/حذف/إضافة) على كل مشروع تلقائياً في كل
+// موقع يستدعي هذه الدالة (decisions/dust-profiles/alerts/[projectId] PATCH
+// و DELETE)، بلا حاجة لتعديل كل موقع استدعاء على حدة.
 export async function verifyProjectOwnership(
   projectId: string,
   userId: string
@@ -38,7 +42,21 @@ export async function verifyProjectOwnership(
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle();
-  return !!data;
+  if (data) return true;
+
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('is_super_admin')
+    .eq('id', userId)
+    .maybeSingle();
+  if (!profile?.is_super_admin) return false;
+
+  const { data: exists } = await supabaseAdmin
+    .from('projects')
+    .select('id')
+    .eq('id', projectId)
+    .maybeSingle();
+  return !!exists;
 }
 
 // تحقق صلاحية "سوبر أدمن" — عمود is_super_admin في profiles، يُمنح يدوياً
@@ -58,6 +76,30 @@ export async function requireSuperAdmin(
 
   if (!profile?.is_super_admin) {
     return { error: NextResponse.json({ error: 'هذه الصفحة مخصصة للسوبر أدمن فقط' }, { status: 403 }) };
+  }
+
+  return { userId: auth.userId };
+}
+
+// تحقق صلاحية "جهة مراقبة" — عمود account_role='viewer' في profiles، حساب
+// قراءة فقط يرى كل المشاريع عبر كل المستخدمين (خريطة/تنبيهات/تقارير) بلا
+// أي صلاحية تعديل. مستقل تماماً عن is_super_admin — بوابتان منفصلتان
+// لغرضين مختلفين (الأدمن قراءة+كتابة، المراقب قراءة فقط فقط)، الأدمن لا
+// يُعامَل تلقائياً كمراقب هنا (عنده أصلاً وصول أوسع عبر /api/admin/**).
+export async function requireViewer(
+  request: Request
+): Promise<{ userId: string } | { error: NextResponse }> {
+  const auth = await requireUserId(request);
+  if ('error' in auth) return auth;
+
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('account_role')
+    .eq('id', auth.userId)
+    .maybeSingle();
+
+  if (profile?.account_role !== 'viewer') {
+    return { error: NextResponse.json({ error: 'هذه الصفحة مخصصة لجهة المراقبة فقط' }, { status: 403 }) };
   }
 
   return { userId: auth.userId };

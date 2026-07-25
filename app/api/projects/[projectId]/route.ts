@@ -15,41 +15,22 @@ import {
   riyadhLocalToUtcIso,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
-import { requireUserId } from '@/app/lib/apiAuth';
+import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { buildProjectZoneFromRow, distanceToZoneBoundaryM, polygonCentroid } from '@/app/utils/geo/zone';
 import { fetchNearbySensitiveReceptorsFromOsm } from '@/app/utils/geo/overpassReceptors';
+import { translateActivityType } from '@/app/lib/activityLabels';
+import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 
-const ACTIVITY_TRANSLATIONS: Record<string, string> = {
-  'GENERAL_OUTDOOR_WORK': 'أعمال خارجية عامة',
-  'INDOOR_WORK': 'أعمال داخلية وخارجية خفيفة',
-  'EARTHWORKS': 'أعمال حفر وتربة',
-  'CLEANING_WORK': 'أعمال تنظيف وموقع',
-  'اعمال تنظيف': 'أعمال تنظيف وموقع',
-  'CONCRETE_POURING': 'صب وتجهيز الخرسانة',
-  'ROAD_PAVING': 'رصف الطرق والأسفلت',
-  'ASPHALT_PAVING': 'سفلتة',
-  'HIGH_ALTITUDE_WORK': 'أعمال على ارتفاعات عالية',
-  'WORK_AT_HEIGHT': 'أعمال على ارتفاع',
-  'COATING': 'أعمال طلاء وعزل',
-  'ROAD_WORKS': 'أعمال طرق ومسارات',
-  'WELDING': 'أعمال لحام',
-  'SCAFFOLDING': 'أعمال سقالات',
-  'CRANE_LIFTING': 'عمليات رفع وتحريك أحمال',
-  'MATERIAL_TRANSPORT': 'نقل مواد',
-  'HEAVY_EQUIPMENT_MOVEMENT': 'حركة معدات ثقيلة',
-  'MEP_EXTERNAL_WORK': 'أعمال ميكانيكية/كهربائية',
-  'EXTERNAL_PAINTING': 'دهانات وعزل خارجي',
-  'GRADING': 'أعمال تسوية وترابية',
-  'EXCAVATION': 'أعمال حفر'
-};
-
-function translateActivityType(type: string | undefined | null): string {
-  if (!type) return 'نشاط عام';
-  const trimmed = String(type).trim();
-  if (ACTIVITY_TRANSLATIONS[trimmed]) return ACTIVITY_TRANSLATIONS[trimmed];
-  const normalized = trimmed.toUpperCase().replace(/[\s-]+/g, '_');
-  if (ACTIVITY_TRANSLATIONS[normalized]) return ACTIVITY_TRANSLATIONS[normalized];
-  return trimmed;
+// عنوان بطاقة النشاط المعروض = النشاط التنظيمي المختار فعلياً (كسارة/هدم/
+// محطة خلط...) لا التصنيف الفيزيائي العام (حركة معدات ثقيلة). regulatory_activity
+// هو ما اختاره المستخدم في نموذج الإضافة وعليه تُبنى قرارات الإيقاف/التقييد،
+// فهو الأنسب للعرض. نرجع للتصنيف الفيزيائي فقط إن غاب/كان OTHER.
+function activityTitleFromRow(row: any): string {
+  const reg = row?.regulatory_activity;
+  if (reg && reg !== 'OTHER' && REGULATORY_ACTIVITY_LABEL_AR[reg]) {
+    return REGULATORY_ACTIVITY_LABEL_AR[reg];
+  }
+  return translateActivityType(row?.activity_type);
 }
 
 // DCR: مؤشر واحد فقط (dust) — لا heat ولا crane.
@@ -130,6 +111,10 @@ function buildRecentActivities(
   type Acc = {
     activityGroupId: string;
     activityTitle: string;
+    // كل التسميات التنظيمية المميّزة ضمن هذه المجموعة — النشاط الواحد قد يضم
+    // أكثر من نشاط تنظيمي (هدم + كسارة مثلاً)، فنعرضها كلها في العنوان بدل
+    // أول واحد فقط. يحافظ على ترتيب أول ظهور.
+    regulatoryTitles: string[];
     kinds: Array<'dust'>;
     summaries: IndicatorSummaryLike[];
     decisionTargets: any[];
@@ -164,7 +149,8 @@ function buildRecentActivities(
     if (!acc) {
       acc = {
         activityGroupId: groupId,
-        activityTitle: translateActivityType(row.activity_type),
+        activityTitle: activityTitleFromRow(row),
+        regulatoryTitles: [],
         kinds: [],
         summaries: [],
         decisionTargets: [],
@@ -177,6 +163,13 @@ function buildRecentActivities(
     }
 
     if (!acc.kinds.includes(kind)) acc.kinds.push(kind);
+
+    // اجمع التسمية التنظيمية لهذا الصف (كسارة/هدم/...) دون تكرار — تُدمج
+    // لاحقاً في عنوان البطاقة.
+    const rowTitle = activityTitleFromRow(row);
+    if (rowTitle && !acc.regulatoryTitles.includes(rowTitle)) {
+      acc.regulatoryTitles.push(rowTitle);
+    }
 
     // أحدث صف بين المؤشرات المرتبطة يحدد التوقيت المعروض في رأس البطاقة
     if (row.created_at && row.created_at > acc.latestCreatedAt) {
@@ -241,6 +234,7 @@ function buildRecentActivities(
 
   return Array.from(groups.values())
     .sort((a, b) => (a.latestCreatedAt < b.latestCreatedAt ? 1 : -1))
+    .slice(0, 6) // أحدث 6 مجموعات نشاط (لا 6 صفوف) — يحافظ على نية limit السابقة
     .map((acc) => {
       // إيقاف إلزامي إن قال أي مؤشر (حي أو موثّق) بذلك — وزن 3 يشمل الأحمر/الأسود
       const mandatoryStop =
@@ -248,9 +242,15 @@ function buildRecentActivities(
         acc.summaries.some((s) => s.decisionLabel === 'إيقاف إلزامي نظامي');
       const isFutureActivity = acc.windowStartIso ? new Date(acc.windowStartIso).getTime() > nowMs : false;
 
+      // العنوان النهائي = كل الأنشطة التنظيمية المميّزة مدموجة (مثال:
+      // "الكسارة + الهدم")، وإلا العنوان الأول المحسوب عند إنشاء المجموعة.
+      const activityTitle = acc.regulatoryTitles.length > 0
+        ? acc.regulatoryTitles.join(' + ')
+        : acc.activityTitle;
+
       return {
         activityGroupId: acc.activityGroupId,
-        activityTitle: acc.activityTitle,
+        activityTitle,
         kinds: acc.kinds,
         summaries: acc.summaries,
         decisionTargets: acc.decisionTargets,
@@ -290,12 +290,10 @@ export async function GET(
     // 2. جلب البيانات المرتبطة
     const [
       { data: dustProfiles },
-      { data: recentDust },
       { data: recentDecisions },
       { data: projectShifts },
     ] = await Promise.all([
       supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).order('id', { ascending: false }),
-      supabaseAdmin.from('project_dust_profiles').select('id, activity_type, created_at, planned_date, planned_time, duration_hours, activity_group_id').eq('project_id', projectId).order('created_at', { ascending: false }).limit(6),
       supabaseAdmin.from('decision_records').select('activity_id, activity_source, status').eq('project_id', projectId).order('created_at', { ascending: false }),
       supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
     ]);
@@ -465,9 +463,13 @@ export async function GET(
 
     // 5. معالجة الأنشطة الحديثة (Recent Activities) — البانر يعكس الآن قرار
     // المحرك الحي عبر الخريطة أعلاه، ويرجع لـ decision_records عند غيابه.
+    // نمرّر قائمة الغبار الكاملة (dustProfiles) لا المقتطعة بـ limit(6): الحد
+    // كان يقصّ صفوفاً فردية فيضيع أحياناً صف نشاط تنظيمي ضمن مجموعة تضم أكثر
+    // من نشاط (كسارة + هدم)، فيظهر عنوان المجموعة ناقصاً. buildRecentActivities
+    // يجمع حسب activity_group_id ويقصّ إلى أحدث 6 مجموعات داخلياً.
     const recentActivitiesRaw: any[] = buildRecentActivities(
       projectId,
-      recentDust || [],
+      dustProfiles || [],
       latestDecisionsMap,
       dustByGroup
     );
@@ -501,14 +503,20 @@ export async function PATCH(
 
   const { projectId } = await params;
 
-  // تحقق الملكية قبل أي تعديل
-  const { data: owned } = await supabaseAdmin
+  // تحقق الملكية — يقبل السوبر أدمن كذلك (راجع verifyProjectOwnership في
+  // apiAuth.ts)، فنحتاج صف المشروع نفسه (name/user_id) لتحديد لاحقاً هل
+  // الفاعل هو المالك المباشر أم أدمن يعدّل مشروع غيره (لتسجيل admin_audit_log)
+  const { data: project } = await supabaseAdmin
     .from('projects')
-    .select('id')
+    .select('id, name, user_id')
     .eq('id', projectId)
-    .eq('user_id', auth.userId)
     .maybeSingle();
-  if (!owned) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
+  if (!project) return NextResponse.json({ error: 'المشروع غير موجود' }, { status: 404 });
+
+  const owns = await verifyProjectOwnership(projectId, auth.userId);
+  if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
+
+  const isDirectOwner = project.user_id === auth.userId;
 
   const body = await request.json();
   const updates = { ...body };
@@ -524,6 +532,19 @@ export async function PATCH(
 
   const { error } = await supabaseAdmin.from('projects').update(updates).eq('id', projectId);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // تسجيل تدقيق: فقط عندما أدمن يعدّل مشروعاً لا يملكه — عمليات المالك
+  // المباشر على مشاريعه الخاصة لا تُسجَّل هنا (موجودة وموثوقة أصلاً)
+  if (!isDirectOwner) {
+    await supabaseAdmin.from('admin_audit_log').insert({
+      admin_user_id: auth.userId,
+      action: 'project_update',
+      target_project_id: projectId,
+      target_project_name: project.name,
+      target_owner_user_id: project.user_id,
+      details: updates,
+    });
+  }
 
   // استبدال كامل لصفوف الورديات (حذف ثم إعادة إدراج) — أبسط وأصح من
   // مطابقة/تحديث كل صف على حدة لقائمة صغيرة يعدّلها المستخدم يدوياً بالكامل
@@ -567,13 +588,17 @@ export async function DELETE(
 
   const { projectId } = await params;
 
-  const { data: owned } = await supabaseAdmin
+  const { data: project } = await supabaseAdmin
     .from('projects')
-    .select('id')
+    .select('id, name, user_id')
     .eq('id', projectId)
-    .eq('user_id', auth.userId)
     .maybeSingle();
-  if (!owned) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
+  if (!project) return NextResponse.json({ error: 'المشروع غير موجود' }, { status: 404 });
+
+  const owns = await verifyProjectOwnership(projectId, auth.userId);
+  if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
+
+  const isDirectOwner = project.user_id === auth.userId;
 
   // الجداول الفرعية أولاً (ترتيب لا يهم بينها، فكلها تُشير لـ project_id
   // مباشرة)، ثم جدول المشروع نفسه أخيراً.
@@ -603,6 +628,18 @@ export async function DELETE(
   if (projectError) {
     console.error(`فشل حذف صف المشروع ${projectId}:`, projectError.code, projectError.message);
     return NextResponse.json({ error: projectError.message }, { status: 500 });
+  }
+
+  // تسجيل تدقيق: فقط عندما أدمن يحذف مشروعاً لا يملكه (راجع نفس المنطق في PATCH أعلاه)
+  if (!isDirectOwner) {
+    await supabaseAdmin.from('admin_audit_log').insert({
+      admin_user_id: auth.userId,
+      action: 'project_delete',
+      target_project_id: projectId,
+      target_project_name: project.name,
+      target_owner_user_id: project.user_id,
+      details: null,
+    });
   }
 
   return NextResponse.json({ success: true });

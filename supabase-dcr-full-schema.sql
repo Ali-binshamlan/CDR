@@ -85,7 +85,7 @@ create policy "profiles_owner_all"
 --   • site_area_m2 .. sensitivity_map_prepared (كتلة امتثال الغبار
 --     التنظيمي): supabase-dust-compliance-migration.sql (القسم 1)
 -- لا يوجد أي عمود crane_*/heat_* هنا (مستبعدة عمداً من نطاق DCR).
-create table if not exists public.projects (
+create table if not exists public.projecats (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
 
@@ -706,11 +706,34 @@ create policy "decision_records_owner_all"
 
 
 -- =====================================================================
+-- 10) admin_audit_log — سجل تدقيق لعمليات الكتابة التي ينفّذها سوبر أدمن
+-- (is_super_admin=true) على مشروع لا يملكه. لا يُسجَّل أي شيء لعمليات
+-- المالك العادي على مشاريعه الخاصة — فقط تدخّلات الأدمن على ملكية الغير،
+-- راجع PATCH/DELETE في app/api/projects/[projectId]/route.ts.
+-- =====================================================================
+create table if not exists public.admin_audit_log (
+  id uuid primary key default gen_random_uuid(),
+  admin_user_id uuid not null references auth.users(id),
+  action text not null,          -- 'project_update' | 'project_delete'
+  target_project_id uuid,        -- لا FK صارم: قد يكون المشروع محذوفاً فعلاً وقت القراءة لاحقاً
+  target_project_name text,      -- لقطة الاسم وقت التنفيذ، يبقى مفيداً بعد الحذف
+  target_owner_user_id uuid,
+  details jsonb,                 -- لقطة الحقول المعدَّلة (PATCH) أو null (DELETE)
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_admin_audit_log_admin on public.admin_audit_log (admin_user_id);
+
+alter table public.admin_audit_log enable row level security;
+-- عمداً بلا أي سياسة RLS للقراءة/الكتابة العادية — supabaseAdmin (service
+-- role) فقط يقرأ/يكتب هذا الجدول عبر مسارات API المحمية بـ requireSuperAdmin.
+
+-- =====================================================================
 -- نهاية الملف — تحقق سريع بعد التنفيذ:
 --   select table_name from information_schema.tables
 --   where table_schema = 'public' order by table_name;
--- يجب أن يُرجع: alerts, current_dust_compliance_decisions,
+-- يجب أن يُرجع: admin_audit_log, alerts, current_dust_compliance_decisions,
 -- current_dust_decisions, decision_records, dust_compliance_evaluations,
 -- dust_evaluations, profiles, project_dust_profiles, project_shifts,
--- projects, sensitive_receptors  (11 جدولاً)
+-- projects, sensitive_receptors  (12 جدولاً)
 -- =====================================================================

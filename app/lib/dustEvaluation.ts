@@ -119,9 +119,9 @@ export async function computeDustResults(dustRows: any[], project: any) {
         );
         const aei: AeiEvaluationResult = evaluateAei(windowEval.worst, input.activityType as any);
 
-        // توقعات ساعية عبر كامل ساعات دوام المشروع لليوم الحالي؛ فشلها لا
-        // يُسقط تقييم النشاط بأكمله.
-        const workDayHourly = await evaluateDustVisibilityWorkDayHourly(input).catch(() => []);
+        // توقعات ساعية عبر كامل ساعات دوام *يوم النشاط المجدول* (startIso)،
+        // لا يوم فتح الصفحة؛ فشلها لا يُسقط تقييم النشاط بأكمله.
+        const workDayHourly = await evaluateDustVisibilityWorkDayHourly(input, startIso).catch(() => []);
 
         // وسم كل ساعة (نافذة النشاط + كامل يوم الدوام) ببوابة الرياح
         // التنظيمية حتى تتماشى شبكة "توقعات الطقس طوال فترة الدوام" مع
@@ -460,6 +460,44 @@ export function applyComplianceGatesToDustAei(dustResults: any[]): void {
       r.aei = applyComplianceGateToAei(r.aei, r.compliance ?? null);
     }
   });
+}
+
+// -----------------------------------------------------------------------
+// "القرار الموحد للنشاط" — نفس دمج DVI+الامتثال المستخدم في summaryFromDust
+// (app/api/projects/[projectId]/route.ts، البانر العلوي لصفحة تفاصيل
+// المشروع)، لكن هنا كدالة مشتركة يستهلكها أيضاً حساب حالة نقطة الخريطة
+// (dashboard/global وviewer/dashboard) حتى تطابق النقطة على الخريطة تماماً
+// قرار البانر: قرار الامتثال (MANDATORY_STOP/STOP_AFFECTED_ACTIVITY) له
+// الأولوية القصوى على توصية DVI الفيزيائي، تماماً كما في صفحة المشروع.
+export interface UnifiedActivityDecision {
+  decisionLabelAr: string;
+  shortReason: string;
+  level: string;
+  mandatoryStop: boolean;
+}
+
+export function computeUnifiedActivityDecision(
+  dviWorst: { decisionLabelAr: string; shortReason: string; level: string; mandatoryStop: boolean },
+  compliance: DustComplianceResult | null
+): UnifiedActivityDecision {
+  const complianceBlocks =
+    compliance && (compliance.decisionCategory === 'MANDATORY_STOP' || compliance.decisionCategory === 'STOP_AFFECTED_ACTIVITY');
+
+  if (complianceBlocks) {
+    return {
+      decisionLabelAr: 'إيقاف إلزامي نظامي',
+      shortReason: compliance!.shortReasonAr || '',
+      level: 'BLACK',
+      mandatoryStop: true,
+    };
+  }
+
+  return {
+    decisionLabelAr: dviWorst.mandatoryStop ? 'إيقاف إلزامي نظامي' : dviWorst.decisionLabelAr,
+    shortReason: dviWorst.shortReason || '',
+    level: dviWorst.level,
+    mandatoryStop: dviWorst.mandatoryStop,
+  };
 }
 
 export async function persistDustComplianceEvaluations(

@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
   const { data: profile } = await supabaseAdmin
     .from('profiles')
-    .select('company_name, username, phone_number, role, is_super_admin')
+    .select('company_name, username, phone_number, role, is_super_admin, account_role')
     .eq('id', auth.userId)
     .single();
 

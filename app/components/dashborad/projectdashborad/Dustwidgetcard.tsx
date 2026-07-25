@@ -465,11 +465,11 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                   <p className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5" dir="ltr">
                     <Clock className="w-3 h-3" />
                     <span dir="rtl">
-                      {new Date(windowEval.windowStartIso).toLocaleDateString('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh' })}
+                      {new Date(windowEval.windowStartIso).toLocaleDateString('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                       {' '}
-                      {new Date(windowEval.windowStartIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })}
+                      {new Date(windowEval.windowStartIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                       {' ← '}
-                      {new Date(windowEval.windowEndIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })}
+                      {new Date(windowEval.windowEndIso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                       {' '}({formatHoursLabel(windowEval.durationHours)})
                     </span>
                   </p>
@@ -541,7 +541,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
               <p className="text-[11px] font-bold text-blue-700 leading-relaxed">
                 فيه وقت أفضل قريب:{' '}
                 <span className="font-black">
-                  {new Date(windowEval.bestWindowStartIso!).toLocaleString('ar-SA', { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })}
+                  {new Date(windowEval.bestWindowStartIso!).toLocaleString('ar-SA', { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' })}
                 </span>
                 {' '}— درجة خطر أقل ({windowEval.bestWindowWorst!.score} بدل {result.score})
               </p>
