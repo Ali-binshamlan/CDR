@@ -151,6 +151,65 @@ export function distanceToZoneBoundaryM(point: LatLng, zone: ProjectZone): numbe
   return null;
 }
 
+// أقرب مسافة (م) بين نقطة مفردة (كسارة/أكوام/مركز مشروع دائري) وأي نقطة من
+// مجموعة نقاط حدودية (boundary عنصر OSM كبير مثل landuse=residential) —
+// بديل عن مسافة المركز (centroid) وحده، الذي قد يبالغ في تقدير المسافة
+// لعناصر ممتدة (حي سكني كامل قد يمتد كيلومترات عن مركزه). fallback لمصفوفة
+// فارغة/غير متوفرة: المستدعي يستخدم نقطة centroid العادية بدلاً منها.
+export function nearestDistanceToBoundaryM(point: LatLng, boundary: LatLng[]): number | null {
+  if (!boundary || boundary.length === 0) return null;
+  let minDist = Infinity;
+  for (const b of boundary) {
+    const d = haversineDistanceM(point, b);
+    if (d < minDist) minDist = d;
+  }
+  return minDist;
+}
+
+// أقرب مسافة (م) بين حدود منطقة المشروع (مضلع/دائرة) وأي نقطة من مجموعة
+// نقاط حدودية لعنصر خارجي (مستقبِل حساس مكتشف من OSM) — يأخذ أدنى قيمة عبر
+// كل نقاط boundary بدل الاكتفاء بنقطة centroid واحدة، لنفس سبب
+// nearestDistanceToBoundaryM أعلاه لكن من جهة حدود المشروع بدل نقطة مفردة.
+export function zoneToBoundaryDistanceM(zone: ProjectZone, boundary: LatLng[]): number | null {
+  if (!boundary || boundary.length === 0) return null;
+  let minDist = Infinity;
+  for (const b of boundary) {
+    const d = distanceToZoneBoundaryM(b, zone);
+    if (d !== null && d < minDist) minDist = d;
+  }
+  return minDist === Infinity ? null : minDist;
+}
+
+// نقاط بحث ممثِّلة على حدود منطقة المشروع الفعلية (لا مركزها) — تُستخدم
+// كنقاط انطلاق متعددة لاستعلامات Overpass الخارجية بدل استعلام واحد من
+// مركز تمثيلي (centroid/circleCenter) بنصف قطر موسَّع، وهو تقريب قد يفوت
+// مستقبِلات قريبة فعلياً من حافة مضلع ممدود أو دائرة كبيرة. للمضلع: كل
+// رؤوسه (كافية عملياً لمواقع إنشائية، بلا حاجة لتكثيف إضافي). للدائرة: نقاط
+// موزَّعة على محيطها الفعلي (لا مركزها فقط) بجانب المركز نفسه، بنفس مبدأ
+// موقع الكسارة/الهدم المحسوب من موقعها الفعلي لا من مركز المشروع.
+export function zoneSearchAnchorPoints(zone: ProjectZone, circlePerimeterSamples = 8): LatLng[] {
+  if (zone.zoneType === 'polygon' && zone.polygon && zone.polygon.length >= 3) {
+    return zone.polygon;
+  }
+  if (zone.zoneType === 'circle' && zone.circleCenter && zone.circleRadiusM) {
+    const { circleCenter: center, circleRadiusM: radiusM } = zone;
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const metersPerDegLat = 111320;
+    const metersPerDegLng = 111320 * Math.cos(toRad(center.lat));
+    const points: LatLng[] = [center];
+    for (let i = 0; i < circlePerimeterSamples; i++) {
+      const angle = (2 * Math.PI * i) / circlePerimeterSamples;
+      points.push({
+        lat: center.lat + (radiusM * Math.cos(angle)) / metersPerDegLat,
+        lng: center.lng + (radiusM * Math.sin(angle)) / metersPerDegLng,
+      });
+    }
+    return points;
+  }
+  if (zone.zoneType === 'point' && zone.circleCenter) return [zone.circleCenter];
+  return [];
+}
+
 // مركز ثقل مضلع (لأغراض توسيط الخريطة وعرض نقطة تمثيلية)
 export function polygonCentroid(polygon: LatLng[]): LatLng {
   const sum = polygon.reduce(

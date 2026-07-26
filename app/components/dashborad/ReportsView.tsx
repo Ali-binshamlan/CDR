@@ -109,10 +109,11 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     const stoppedActivities = filteredDecisions.filter(d => d.status === 'stopped' || d.status === 'postpone').length;
 
     const totalAlerts = filteredAlerts.length;
-    // DCR: كل الأنشطة والتنبيهات مصدرها الغبار فقط — التنبيه الحرج الوحيد
-    // هو تجاوز حد صارم (SAFETY_BREACH)
+    // DCR: كل الأنشطة والتنبيهات مصدرها الغبار فقط — التنبيهات الحرجة هي
+    // تجاوز فيزيائي صارم (SAFETY_BREACH) أو مخالفة تنظيمية فعلية توقف
+    // النشاط (COMPLIANCE_VIOLATION، من محرك الامتثال).
     const criticalAlerts = filteredAlerts.filter(a =>
-      a.severity === 'CRITICAL' || ['SAFETY_BREACH'].includes(a.kind)
+      a.severity === 'CRITICAL' || ['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(a.kind)
     ).length;
 
     // حساب المشروع الأكثر تضرراً

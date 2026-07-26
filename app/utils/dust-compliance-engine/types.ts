@@ -358,6 +358,11 @@ export interface DustComplianceContext {
   dviScore: number;
   dviDecision: DviDecisionCategory;
   dviMandatoryStop: boolean;
+  // السبب النصي المحدَّد لتوقف DVI (مثال: "PM10 = 1806.8")، من
+  // DviEvaluationResult.shortReason — يُستخدم في رسالة GATE-DVI-002 بدل نص
+  // عام لا يذكر الرقم/السبب الفعلي. اختياري: null/undefined يبقيان الرسالة
+  // العامة كما كانت (فشل آمن، لا كسر لأي مستهلك حالي للسياق).
+  dviShortReason?: string | null;
   dviConfidenceScore: number;
   windSpeedKmh: number | null;
   windGustKmh: number | null;
@@ -366,4 +371,11 @@ export interface DustComplianceContext {
   pm25UgM3: number | null;
   dataSource: 'open-meteo' | 'onsite' | 'project-station' | 'none';
   sensitiveReceptors: SensitiveReceptor[];
+
+  // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
+  // current_dust_compliance_decisions) — يُستخدم لمنع الاستئناف التلقائي
+  // الفوري بعد إيقاف (راجع RESUME_STABILITY_MINUTES في engine.ts). null/
+  // undefined تعني "لا قرار سابق"، فلا قيد يُطبَّق (سلوك المحرك بلا تغيير).
+  previousDecisionCategory?: DustComplianceDecisionCategory | null;
+  previousDecisionUpdatedAt?: string | null;
 }

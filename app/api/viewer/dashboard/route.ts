@@ -68,10 +68,10 @@ export async function GET(request: NextRequest) {
         const project = projectById.get(projectId);
         if (!project) return null;
         try {
-          const dustResults = await computeDustResults([row], project);
+          const dustResults = await computeDustResults([row], project, supabaseAdmin);
           const result = dustResults[0];
           if (!result) return null;
-          const complianceResults: any[] = computeDustComplianceResults([row], project, dustResults, sensitiveReceptors);
+          const complianceResults: any[] = await computeDustComplianceResults([row], project, dustResults, sensitiveReceptors, supabaseAdmin);
           const compliance = complianceResults[0]?.result ?? null;
           const unified = computeUnifiedActivityDecision(result.windowEval.worst, compliance);
           return { projectId, ...unified };

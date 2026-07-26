@@ -25,11 +25,19 @@ export const decisionMeta: Record<
 // app/dashboard/alerts/page.tsx: SAFETY_BREACH حرج، DUST/BEFORE_START/
 // NO_DECISION_YET تحذير، BEFORE_1H/BEFORE_2H معلوماتي بحت.
 export const ALERT_KIND_WEIGHT: Record<string, number> = {
+  // مخالفة تنظيمية فعلية توقف النشاط (محرك الامتثال — مسافة كسارة، كفاءة
+  // فلتر، بوابة رياح، DMP، إلخ) بنفس خطورة SAFETY_BREACH (تجاوز فيزيائي
+  // صارم من DVI): كلاهما يعني "لا يجوز الاستمرار الآن"، بصرف النظر عن كون
+  // السبب تنظيمياً أو فيزيائياً.
   SAFETY_BREACH: 4,
+  COMPLIANCE_VIOLATION: 4,
   DUST: 3,
   // تنبيه استباقي PM10 (300-339 ميكروجرام/م³، قبل حد المخالفة التنظيمي
   // 340) — أخطر من "نشاط بلا قرار" لكن أقل من DUST/SAFETY_BREACH الفعليين.
   PM10_APPROACHING_LIMIT: 2,
+  // قرار امتثال أخف من الإيقاف (تقييد النشاط أو تحقق ميداني مطلوب) — مخالفة
+  // قاعدة فعلية لكن دون إيقاف كامل، فتُصنَّف تحذيراً متوسطاً لا حرجاً.
+  COMPLIANCE_RESTRICTION: 2,
   NO_DECISION_YET: 2,
   BEFORE_START: 1,
   BEFORE_1H: 0,
@@ -39,7 +47,9 @@ export const ALERT_KIND_WEIGHT: Record<string, number> = {
 export function alertKindToDecision(kind: string): Decision {
   switch (kind) {
     case 'SAFETY_BREACH': return 'stopped';
+    case 'COMPLIANCE_VIOLATION': return 'stopped';
     case 'DUST': return 'postpone';
+    case 'COMPLIANCE_RESTRICTION': return 'restricted';
     case 'PM10_APPROACHING_LIMIT': return 'caution';
     case 'NO_DECISION_YET': return 'caution';
     case 'BEFORE_START': return 'caution';
@@ -61,6 +71,8 @@ export const alertKindLabelAr: Record<string, string> = {
   BEFORE_START: 'بدء النشاط الآن',
   DUST: 'عاصفة غبارية محتملة',
   SAFETY_BREACH: 'تجاوز حدود السلامة',
+  COMPLIANCE_VIOLATION: 'مخالفة تنظيمية (امتثال الغبار)',
+  COMPLIANCE_RESTRICTION: 'تقييد تنظيمي (امتثال الغبار)',
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
 };

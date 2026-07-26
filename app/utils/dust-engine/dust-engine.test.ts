@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { classifyCause } from './engine';
-import type { DustWeatherSample } from './types';
+import { classifyCause, computeDviResult } from './engine';
+import type { DustEngineInput, DustWeatherSample } from './types';
 
 // عيّنة طقس أساسية "صافية" — كل اختبار يعدّل ما يلزم لسبب محدد
 function sample(overrides: Partial<DustWeatherSample> = {}): DustWeatherSample {
@@ -62,5 +62,89 @@ describe('classifyCause — تصنيف سبب ضعف الرؤية', () => {
   it('رطوبة عالية مع غبار كثيف (pm10≥100) لا تُحسب FOG (الغبار له الأولوية)', () => {
     // fogSignal مشروط بـ pm10 < 100، فمع pm10=200 يبقى DUST فقط لا MIXED
     expect(classifyCause(sample({ weatherSymbol: 'CLEAR', relativeHumidityPercent: 97 }), 200)).toBe('DUST');
+  });
+});
+
+// -----------------------------------------------------------------------
+// computeDviResult — أولوية 3 مستويات: قراءة جهاز حية > onsite_* يدوي >
+// تقدير الطقس (Open-Meteo). راجع خطة "ربط أجهزة الرصد بالمشاريع".
+// -----------------------------------------------------------------------
+function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
+  return {
+    activityType: 'GENERAL_OUTDOOR_WORK',
+    latitude: 24.7136,
+    longitude: 46.6753,
+    site: {
+      hasEarthworks: false,
+      internalDirtRoads: false,
+      heavyEquipmentMovement: false,
+      looseMaterials: false,
+      largeExposedArea: false,
+      drySurface: false,
+      surfaceWet: false,
+      wateringAvailable: true,
+      stockpilesCovered: true,
+      speedLimitApplied: true,
+      wheelWashAvailable: true,
+      dustScreensAvailable: true,
+      fieldMonitoringAvailable: true,
+      receptorType: 'NONE',
+      receptorDistance: 'FAR',
+      receptorIsDownwind: false,
+      visibleDustPlumeReported: false,
+      openConcretePour: false,
+    },
+    ...overrides,
+  } as DustEngineInput;
+}
+
+describe('computeDviResult — أولوية قراءة الجهاز > onsite_* > الطقس', () => {
+  it('بلا onsite_* وبلا جهاز، يعتمد على عينة الطقس فقط (سلوك قديم بلا تغيير)', () => {
+    const r = computeDviResult(baseInput(), sample({ visibilityM: 5000, pm10: 40, pm25: 15, windSpeedKmh: 12, windGustKmh: 18 }));
+    expect(r.visibilityKm).toBe(5);
+    expect(r.effectiveWindKmh).toBeCloseTo(Math.max(12, 0.85 * 18), 5);
+  });
+
+  it('onsiteVisibilityM/onsitePm10/onsitePm25 يتغلبون على الطقس عند غياب الجهاز (سلوك قديم محفوظ)', () => {
+    const input = baseInput({ onsiteVisibilityM: 800, onsitePm10: 900, onsitePm25: 300 });
+    const r = computeDviResult(input, sample({ visibilityM: 10000, pm10: 20, pm25: 10 }));
+    expect(r.visibilityKm).toBeCloseTo(0.8, 5);
+    // نفس الحساب من computeDviResult ذاته للتأكد أن pm10 المستخدَم فعلياً هو
+    // onsitePm10 (900) لا weather.pm10 (20) — عبر مقارنة بنتيجة مكافئة تُبنى
+    // مباشرة من weather.pm10=900 بلا onsite إطلاقاً.
+    const equivalent = computeDviResult(baseInput(), sample({ visibilityM: 800, pm10: 900, pm25: 300 }));
+    expect(r.score).toBe(equivalent.score);
+  });
+
+  it('deviceVisibilityM/devicePm10/devicePm25 يتغلبون على onsite_* المحدد أيضاً (لا 2 مستوى فقط)', () => {
+    const input = baseInput({
+      onsiteVisibilityM: 800,
+      onsitePm10: 900,
+      onsitePm25: 300,
+      deviceVisibilityM: 400,
+      devicePm10: 1500,
+      devicePm25: 500,
+    });
+    const r = computeDviResult(input, sample({ visibilityM: 10000, pm10: 20, pm25: 10 }));
+    expect(r.visibilityKm).toBeCloseTo(0.4, 5);
+  });
+
+  it('deviceWindSpeedKmh/deviceWindGustKmh يتغلبون على قيم الطقس مباشرة (لا طبقة onsite وسطى للرياح أصلاً)', () => {
+    const input = baseInput({ deviceWindSpeedKmh: 40, deviceWindGustKmh: 60 });
+    const r = computeDviResult(input, sample({ windSpeedKmh: 10, windGustKmh: 15 }));
+    expect(r.effectiveWindKmh).toBeCloseTo(Math.max(40, 0.85 * 60), 5);
+  });
+
+  it('حقول الجهاز null/undefined بالكامل تساوي تماماً السلوك القديم (onsite_* فقط)', () => {
+    const withDeviceNulls = computeDviResult(
+      baseInput({ onsiteVisibilityM: 800, onsitePm10: 900, onsitePm25: 300, deviceVisibilityM: null, devicePm10: null, devicePm25: null }),
+      sample()
+    );
+    const withoutDeviceFields = computeDviResult(
+      baseInput({ onsiteVisibilityM: 800, onsitePm10: 900, onsitePm25: 300 }),
+      sample()
+    );
+    expect(withDeviceNulls.score).toBe(withoutDeviceFields.score);
+    expect(withDeviceNulls.visibilityKm).toBe(withoutDeviceFields.visibilityKm);
   });
 });

@@ -168,7 +168,7 @@ export function DustStep({
             راجع GENERAL_ALERTS_AR أعلاه). */}
         <div className="space-y-3 border-t border-[#061B40]/10 pt-4">
           <h3 className={sectionTitleClass + ' flex items-center gap-1.5'}>
-            الأنشطة التنظيمية ({regulatoryActivities.length})
+            النشاط التنظيمي
           </h3>
 
           {/* خريطة واحدة موحدة لكل الأنشطة معاً — نقطة لكل نشاط عادي، أو
@@ -729,7 +729,7 @@ export function DustStep({
             <Wind className="w-5 h-5" />
             {dustLoading
               ? 'جاري التقييم...'
-              : `حفظ وتقييم كل الأنشطة (${regulatoryActivities.length})`}
+              : 'حفظ وتقييم النشاط'}
           </button>
         </div>
       </form>

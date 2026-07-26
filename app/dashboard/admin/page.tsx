@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { alertKindLabelAr, alertKindToDecision, decisionMeta } from '@/app/lib/decisionMeta';
+import { DUST_RULES_CATALOG } from '@/app/utils/dust-compliance-engine/rulesCatalog';
 import {
   Loader2,
   ShieldCheck,
@@ -14,6 +15,7 @@ import {
   ClipboardList,
   ArrowLeft,
   ShieldAlert,
+  Scale,
 } from 'lucide-react';
 
 const PROJECT_STATUS_LABEL_AR: Record<string, string> = {
@@ -81,11 +83,14 @@ export default function AdminOverviewPage() {
 
   if (!stats) return null;
 
+  const totalRulesCount = DUST_RULES_CATALOG.reduce((sum, section) => sum + section.rules.length, 0);
+
   const subPages = [
     { href: '/dashboard/admin/projects', label: 'المشاريع', icon: FolderKanban, count: stats.totalProjects },
     { href: '/dashboard/admin/users', label: 'المستخدمون', icon: Users, count: stats.totalUsers },
     { href: '/dashboard/admin/alerts', label: 'التنبيهات', icon: Bell, count: stats.totalActiveAlerts },
     { href: '/dashboard/admin/decisions', label: 'القرارات', icon: ClipboardList, count: stats.totalDecisions },
+    { href: '/dashboard/admin/rules', label: 'قواعد الامتثال', icon: Scale, count: totalRulesCount },
   ];
 
   return (
@@ -95,7 +100,7 @@ export default function AdminOverviewPage() {
         <h1 className="text-3xl font-black text-[#061B40]">الإدارة</h1>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         {subPages.map((s) => (
           <Link
             key={s.href}

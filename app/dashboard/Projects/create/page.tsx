@@ -16,8 +16,8 @@ const ZonePicker = dynamic(() => import('@/app/components/dashborad/ZonePicker')
   loading: () => <div className="flex h-full w-full items-center justify-center bg-gray-200 text-[#061B40] text-sm font-semibold">جاري تحميل الخريطة...</div>
 });
 import type { ZonePickerValue } from '@/app/components/dashborad/ZonePicker';
-import { polygonCentroid, projectZoneAreaM2, isPointInProjectZone } from '@/app/utils/geo/zone';
-import { parseKmlPolygon, parseKmlPoints, KmlParseError } from '@/app/utils/geo/kml';
+import { polygonCentroid, projectZoneAreaM2 } from '@/app/utils/geo/zone';
+import { parseKmlPolygon, KmlParseError } from '@/app/utils/geo/kml';
 import { isValidPhoneNumber, parsePhoneNumberFromString } from 'libphonenumber-js';
 
 // أيام الأسبوع بمعرّفات ثابتة تطابق getDay() في JS (0=الأحد ... 6=السبت)
@@ -103,7 +103,6 @@ export default function CreateProjectPage() {
     // (NOT_STARTED هنا) توقف النشاط فعلياً إن كان المشروع "جاري".
     dmp_approval_status: 'UNKNOWN' as
       | 'NOT_REQUIRED' | 'NOT_STARTED' | 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'UNKNOWN',
-    monitoring_station_count: '' as string | number,
 
     // إقرار المستخدم بصحة البيانات وتحمّل المسؤولية الكاملة عنها
     data_accuracy_confirmed: false,
@@ -112,11 +111,6 @@ export default function CreateProjectPage() {
   // مساحة الموقع — تُحسب تلقائياً من منطقة المشروع المرسومة (KML)، لكن
   // تبقى قابلة للتعديل اليدوي إن اختلفت المساحة الفعلية عن المحسوبة.
   const [siteAreaAutoFilled, setSiteAreaAutoFilled] = useState(false);
-
-  // مواقع محطات رصد الغبار — نقطة واحدة لكل محطة، تُدخَل يدوياً (رقمين)
-  // أو تُستورد دفعة واحدة من ملف KML يحتوي نقاطاً (Placemark من نوع Point).
-  interface MonitoringStation { lat: string; lng: string; label: string }
-  const [monitoringStations, setMonitoringStations] = useState<MonitoringStation[]>([]);
 
   // ورديات عمل حقيقية (اختياري) — إضافية بحتة على "بداية/نهاية الدوام"
   // أعلاه، اللذين يبقيان الدوام الافتراضي لمشروع لا يريد ورديات متعددة.
@@ -321,62 +315,6 @@ export default function CreateProjectPage() {
     setProjectForm(prev => ({ ...prev, [name]: value }));
   };
 
-  // عدد محطات الرصد المُدخَل يدوياً يتحكم بعدد صفوف الإحداثيات المعروضة —
-  // يضيف/يحذف صفوفاً فارغة عند تغييره، مع الحفاظ على ما أُدخل مسبقاً.
-  const handleStationCountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value;
-    setProjectForm((prev) => ({ ...prev, monitoring_station_count: raw }));
-    const count = raw === '' ? 0 : Math.max(0, Math.min(20, parseInt(raw, 10) || 0));
-    setMonitoringStations((prev) => {
-      if (count === prev.length) return prev;
-      if (count < prev.length) return prev.slice(0, count);
-      return [...prev, ...Array.from({ length: count - prev.length }, () => ({ lat: '', lng: '', label: '' }))];
-    });
-  };
-
-  const updateMonitoringStation = (index: number, field: keyof MonitoringStation, value: string) => {
-    setMonitoringStations((prev) => prev.map((s, i) => (i === index ? { ...s, [field]: value } : s)));
-
-    // تنبيه فوري إن اكتملت الإحداثيات (خط عرض + خط طول) لهذه المحطة ووقعت
-    // خارج منطقة المشروع المرسومة — محطة رصد خارج الحدود لا تعكس ظروف
-    // الموقع فعلياً، فيجب تنبيه المستخدم فور الإدخال لا عند الحفظ فقط.
-    if ((field === 'lat' || field === 'lng') && zoneValue.zoneType !== 'point') {
-      const station = monitoringStations[index];
-      const lat = Number(field === 'lat' ? value : station?.lat);
-      const lng = Number(field === 'lng' ? value : station?.lng);
-      if (Number.isFinite(lat) && Number.isFinite(lng) && !isPointInProjectZone({ lat, lng }, zoneValue)) {
-        toast.error(`إحداثيات محطة الرصد ${index + 1} تقع خارج حدود منطقة المشروع.`);
-      }
-    }
-  };
-
-  const handleMonitoringKmlUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const points = parseKmlPoints(text);
-      const stations = points.map((p) => ({ lat: String(p.lat), lng: String(p.lng), label: p.label || '' }));
-      setMonitoringStations(stations);
-      setProjectForm((prev) => ({ ...prev, monitoring_station_count: stations.length }));
-      toast.success(`تم استيراد ${stations.length} محطة رصد من ملف KML.`);
-
-      // نفس فحص الحدود أعلاه، مطبَّقاً دفعة واحدة على كل نقاط KML المستوردة —
-      // ملف قد يحوي نقاطاً خارج الموقع بالخطأ (نسخة قديمة، رفع ملف خاطئ...).
-      if (zoneValue.zoneType !== 'point') {
-        const outsideCount = points.filter((p) => !isPointInProjectZone({ lat: p.lat, lng: p.lng }, zoneValue)).length;
-        if (outsideCount > 0) {
-          toast.error(`${outsideCount} من محطات الرصد المستوردة تقع خارج حدود منطقة المشروع.`);
-        }
-      }
-    } catch (error) {
-      const message = error instanceof KmlParseError ? error.message : 'تعذّر قراءة ملف KML لمحطات الرصد.';
-      console.error('🚨 فشل استيراد KML لمحطات الرصد:', error);
-      toast.error(message);
-    }
-  };
-
   // فحص امتثال الغبار التنظيمي المشترك — نفس منطق تصنيف الفئة والتزامات
   // الرصد الموجود فعلياً في dust-compliance-engine (classifyProject +
   // buildMonitoringObligations)، معاد استخدامه هنا حرفياً لأغراض التنبيه
@@ -385,7 +323,6 @@ export default function CreateProjectPage() {
   const complianceCheck = () => {
     const areaM2 = projectForm.site_area_m2 === '' ? null : Number(projectForm.site_area_m2);
     const truckMovements = projectForm.daily_truck_movements === '' ? null : Number(projectForm.daily_truck_movements);
-    const stationCount = projectForm.monitoring_station_count === '' ? null : Number(projectForm.monitoring_station_count);
 
     // نفس ترتيب الأولوية بالضبط في classifyProject (rulebook.ts) — بما فيه
     // نفس "حماية التصنيف الكاذب": نقص بيانات محفزات الفئة الثالثة تحديداً
@@ -403,10 +340,12 @@ export default function CreateProjectPage() {
     else if (areaM2 >= 2000) riskClass = 'CATEGORY_II_MEDIUM';
     else riskClass = 'CATEGORY_I_LOW';
 
-    // الحد الأدنى لمحطات الرصد: لا حاجة للفئة الأولى، محطة واحدة للثانية،
-    // محطتان للثالثة — لا يُفرض شيء إن كانت الفئة غير مصنَّفة بعد (بيانات ناقصة)
-    const minStations =
-      riskClass === 'CATEGORY_III_HIGH' ? 2 : riskClass === 'CATEGORY_II_MEDIUM' ? 1 : 0;
+    // الحد الأدنى لأجهزة الرصد: نفس صيغة buildMonitoringObligations
+    // (dust-compliance-engine/engine.ts) حرفياً — بوابة monitoringApplies
+    // أولاً (لا التزام إطلاقاً للفئتين المنخفضتين مهما كان العدد)، ثم رقم
+    // الحد الفعلي (2 للفئة الثالثة، 1 للثانية) فقط إن انطبقت البوابة.
+    const monitoringApplies = riskClass === 'CATEGORY_II_MEDIUM' || riskClass === 'CATEGORY_III_HIGH';
+    const minStations = monitoringApplies ? (riskClass === 'CATEGORY_III_HIGH' ? 2 : 1) : 0;
 
     const warnings: string[] = [];
 
@@ -419,8 +358,11 @@ export default function CreateProjectPage() {
       warnings.push('حركة الشاحنات اليومية غير مُدخلة — مطلوبة لتصنيف فئة مخاطر الغبار للمشروع.');
     }
 
-    if (minStations > 0 && (stationCount === null || stationCount < minStations)) {
-      warnings.push(`الحد الأدنى التنظيمي لعدد محطات رصد الغبار لهذه الفئة هو ${minStations} — ${stationCount === null ? 'لم يُدخَل عدد بعد' : `لديك حالياً ${stationCount}`}.`);
+    // لا وجود لأجهزة رصد قبل حفظ المشروع (project_id غير متوفر بعد) — هذا
+    // تذكير توعوي فقط، لا تحقق فعلي من عدد حقيقي؛ الفحص الإلزامي الحقيقي
+    // ينتقل لصفحة الإعدادات بعد إنشاء المشروع حيث توجد أجهزة فعلية للعدّ.
+    if (minStations > 0) {
+      warnings.push(`الفئة ${riskClass === 'CATEGORY_III_HIGH' ? 'الثالثة' : 'الثانية'} تتطلب ${minStations} جهاز رصد على الأقل — سجّلها من صفحة إعدادات المشروع بعد الحفظ.`);
     }
     if (truckMovements !== null && truckMovements > 50) {
       warnings.push(`حركة الشاحنات اليومية (${truckMovements} رحلة) تتجاوز 50 رحلة -يتطلب محطتي رصد على الاقل.`);
@@ -468,7 +410,7 @@ export default function CreateProjectPage() {
       infoNotices.push('خريطة حساسية بيئية (GIS) مُعدة.');
     }
 
-    return { riskClass, minStations, stationCount, dmpMissing, warnings, infoNotices };
+    return { riskClass, minStations, dmpMissing, warnings, infoNotices };
   };
 
   // الحقول الأربعة الأساسية (اسم/منطقة KML/يوم عمل/الإقرار) إلزامية دائماً
@@ -506,20 +448,6 @@ export default function CreateProjectPage() {
       errors.push('تاريخ الانتهاء المتوقع لا يمكن أن يكون قبل تاريخ البدء.');
     }
 
-    // محطات رصد خارج حدود منطقة المشروع لا تمثّل ظروف الموقع فعلياً — تمنع
-    // الحفظ فعلياً (لا مجرد تنبيه بصري) لأن قرار الامتثال يعتمد على قراءات
-    // هذه المحطات، وقراءة خارج الحدود تُفسد الأساس الذي يُبنى عليه القرار.
-    if (zoneValue.zoneType !== 'point') {
-      const outsideStations = monitoringStations.filter((s) => {
-        const lat = Number(s.lat);
-        const lng = Number(s.lng);
-        return Number.isFinite(lat) && Number.isFinite(lng) && !isPointInProjectZone({ lat, lng }, zoneValue);
-      });
-      if (outsideStations.length > 0) {
-        errors.push(`${outsideStations.length} من محطات رصد الغبار تقع خارج حدود منطقة المشروع — صحّح إحداثياتها أو احذفها قبل الحفظ.`);
-      }
-    }
-
     errors.push(...validateShifts());
 
     // مشروع "جاري" فعلياً يعني أن العمل بدأ في الموقع — لا يجوز أن يبدأ
@@ -536,15 +464,16 @@ export default function CreateProjectPage() {
         errors.push('رقم التواصل (للطوارئ) يجب أن يكون رقم هاتف صحيح مع مفتاح الدولة (مثال: 966501234567+).');
       }
 
-      const { minStations, stationCount, dmpMissing } = complianceCheck();
+      const { dmpMissing } = complianceCheck();
       if (projectForm.site_area_m2 === '') errors.push('مساحة الموقع (م²) مطلوبة.');
       if (projectForm.daily_truck_movements === '') errors.push('حركة الشاحنات اليومية مطلوبة.');
       if (dmpMissing) {
         errors.push('لا يمكن إنشاء مشروع بحالة "جاري" بلا خطة معتمدة لإدارة الغبار (DMP) — حدّث حالة اعتماد DMP أو اختر حالة "لم يبدأ".');
       }
-      if (minStations > 0 && (stationCount === null || stationCount < minStations)) {
-        errors.push(`لا يمكن إنشاء مشروع بحالة "جاري" بعدد محطات رصد أقل من الحد التنظيمي (${minStations} لهذه الفئة) — أضف بيانات المحطات أو اختر حالة "لم يبدأ".`);
-      }
+      // لا فحص إلزامي لعدد أجهزة الرصد هنا — الأجهزة لا يمكن أن توجد قبل
+      // حفظ المشروع (project_id غير متوفر بعد). البوابة الإلزامية الحقيقية
+      // انتقلت لصفحة الإعدادات (settings/page.tsx)، حيث توجد أجهزة فعلية
+      // للتحقق منها بعد الحفظ. راجع complianceCheck() أعلاه للتذكير التوعوي.
     }
 
     return errors;
@@ -616,11 +545,10 @@ export default function CreateProjectPage() {
           has_onsite_crusher: projectForm.has_onsite_crusher,
           has_onsite_batching_plant: projectForm.has_onsite_batching_plant,
           dmp_approval_status: projectForm.dmp_approval_status,
-          monitoring_station_count:
-            projectForm.monitoring_station_count === '' ? null : Number(projectForm.monitoring_station_count),
-          monitoring_station_locations: monitoringStations
-            .filter((s) => s.lat !== '' && s.lng !== '' && Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)))
-            .map((s) => ({ lat: Number(s.lat), lng: Number(s.lng), label: s.label || null })),
+          // أجهزة الرصد (project_devices) لم تعد تُدخَل في هذه الصفحة —
+          // تُسجَّل بعد الحفظ من صفحة الإعدادات (تحتاج project_id موجوداً
+          // مسبقاً لتوليد مفتاح API لكل جهاز). راجع complianceCheck() أعلاه
+          // للتذكير التوعوي بالحد الأدنى المطلوب حسب فئة المشروع.
           // التزامات الرصد التنظيمية (رصد أساسي/فترة تسجيل/ارتفاع
           // المقياس/كاميرات الدخول-الخروج/خريطة الحساسية) لم تعد تُدخَل في
           // هذه الصفحة — تُعرض كتذكير نصي ثابت فقط (راجع complianceCheck)،
@@ -644,6 +572,10 @@ export default function CreateProjectPage() {
       }
 
       toast.success('تم تأسيس بيانات المشروع الأساسية بنجاح!');
+      const { minStations } = complianceCheck();
+      if (minStations > 0) {
+        toast(`لا تنسَ تسجيل ${minStations} جهاز رصد على الأقل من صفحة الإعدادات.`, { icon: '📡' });
+      }
       router.push(`/dashboard/Projects/${insertedProject.id}`);
 
     } catch (error: any) {
@@ -835,57 +767,16 @@ export default function CreateProjectPage() {
               </div>
             </div>
 
-            {/* محطات رصد الغبار/PM10 — مقفلة حتى تُحدَّد منطقة المشروع (KML)
-                أولاً: بلا حدود مرسومة لا يمكن التحقق أن إحداثيات المحطة
-                داخل الموقع فعلاً، فلا معنى لإدخالها قبل ذلك. الشرط الثاني
-                (DMP معتمد) يبقى كما هو — لا معنى لمحطات رصد بلا خطة أصلاً. */}
-            {zoneValue.zoneType === 'point' ? (
-              <p className="text-[11px] font-bold text-[#061B40]/40 bg-[#F4F7FB] border border-dashed border-[#061B40]/15 rounded-lg p-3">
-                حدّد منطقة المشروع (KML) أولاً من اللوحة المقابلة لإظهار حقول محطات الرصد.
-              </p>
-            ) : projectForm.dmp_approval_status === 'APPROVED' ? (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-start">
-                  <div>
-                    <label className={labelClass}>عدد محطات رصد الغبار</label>
-                    <input type="number" min={0} max={20} placeholder="مثال: 2" value={projectForm.monitoring_station_count} onChange={handleStationCountChange} className={inputClass} />
-                  </div>
-                  <div className="md:col-span-3 flex items-end gap-3">
-                    <label className="flex-1 flex items-center justify-center gap-2 bg-[#F4F7FB] hover:bg-[#e8eef7] text-[#061B40] text-xs font-bold px-3 py-2.5 rounded-lg border border-dashed border-[#061B40]/20 cursor-pointer transition-colors">
-                      <span className="text-[#3995FF]">📁</span>
-                      استيراد مواقع المحطات من ملف KML
-                      <input type="file" accept=".kml" onChange={handleMonitoringKmlUpload} className="hidden" />
-                    </label>
-                  </div>
-                </div>
-
-                {monitoringStations.length > 0 && (
-                  <div className="space-y-2">
-                    {monitoringStations.map((station, idx) => {
-                      const lat = Number(station.lat);
-                      const lng = Number(station.lng);
-                      const isOutside =
-                        Number.isFinite(lat) && Number.isFinite(lng) &&
-                        !isPointInProjectZone({ lat, lng }, zoneValue);
-                      return (
-                        <div key={idx}>
-                          <div className={`grid grid-cols-3 gap-2 p-2 rounded-lg border ${isOutside ? 'bg-red-50 border-red-300' : 'bg-[#F4F7FB] border-[#061B40]/10'}`}>
-                            <input type="text" placeholder={`اسم/رقم المحطة ${idx + 1}`} value={station.label} onChange={(e) => updateMonitoringStation(idx, 'label', e.target.value)} className={inputClass} />
-                            <input type="number" step="0.000001" placeholder="خط العرض" value={station.lat} onChange={(e) => updateMonitoringStation(idx, 'lat', e.target.value)} className={`${inputClass} ${isOutside ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : ''}`} />
-                            <input type="number" step="0.000001" placeholder="خط الطول" value={station.lng} onChange={(e) => updateMonitoringStation(idx, 'lng', e.target.value)} className={`${inputClass} ${isOutside ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : ''}`} />
-                          </div>
-                          {isOutside && (
-                            <p className="text-[10px] font-bold text-red-500 mt-1">تقع هذه الإحداثيات خارج حدود منطقة المشروع.</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            ) : (
-              <p className="text-[11px] font-bold text-[#061B40]/40 bg-[#F4F7FB] border border-dashed border-[#061B40]/15 rounded-lg p-3">
-                حدّد "لديه خطة" لخطة إدارة الغبار (DMP) أعلاه أولاً لإظهار حقول محطات الرصد.
+            {/* أجهزة الرصد الحية (project_devices) لا يمكن تسجيلها هنا —
+                تحتاج project_id موجوداً مسبقاً لتوليد مفتاح API لكل جهاز، وهو
+                غير متوفر قبل حفظ المشروع. بطاقة توعوية ثابتة بدل حقول إدخال؛
+                التسجيل الفعلي ينتقل لصفحة الإعدادات بعد الحفظ. */}
+            {projectForm.dmp_approval_status === 'APPROVED' && (
+              <p className="text-[11px] font-bold text-[#061B40]/50 bg-[#F4F7FB] border border-dashed border-[#061B40]/15 rounded-lg p-3">
+                سجّل أجهزة الرصد الفعلية بعد إنشاء المشروع، من صفحة الإعدادات
+                ← قسم "أجهزة الرصد الحية". كل جهاز يُنشأ بمفتاح API خاص يُستخدم
+                لإرسال قراءات حية (رياح، PM10، PM2.5) تحل محل بيانات الطقس
+                التقديرية.
               </p>
             )}
 

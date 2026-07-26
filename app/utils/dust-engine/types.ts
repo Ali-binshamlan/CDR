@@ -113,6 +113,18 @@ export interface DustEngineInput {
   onsitePm10?: number | null;
   onsitePm25?: number | null;
 
+  // قراءة حية من جهاز رصد مسجَّل على المشروع (project_devices) — أعلى ثقة
+  // من الإدخال اليدوي onsite_* ومن تقدير الطقس؛ يُملأ فقط عند وجود جهاز
+  // نشط بقراءة حديثة (راجع DEVICE_READING_FRESHNESS_MINUTES في
+  // app/lib/dustEvaluation.ts). null/undefined تعني "لا قراءة جهاز حالياً
+  // متاحة"، فيسقط الحساب تلقائياً لمسار onsite_*/الطقس كما هو دون تغيير.
+  deviceWindSpeedKmh?: number | null;
+  deviceWindGustKmh?: number | null;
+  deviceWindDirectionDeg?: number | null;
+  devicePm10?: number | null;
+  devicePm25?: number | null;
+  deviceVisibilityM?: number | null;
+
   // أيام عمل المشروع (معرّفات sun..sat) — تُقيّد اقتراح أفضل/أسوأ نافذة
   // بديلة بأيام العمل فقط، فلا يُقترح يوم عطلة (مثل الجمعة). اختيارية.
   workDaysList?: string[];

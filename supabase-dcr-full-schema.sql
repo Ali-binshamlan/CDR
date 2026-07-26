@@ -613,7 +613,7 @@ create table if not exists public.alerts (
   activity_source text not null default 'dust' check (activity_source = 'dust'),
   activity_id text not null,           -- نص لا uuid: يُقارَن بـ String(row.id) في الكود
   timing text not null,                -- 'BEFORE' | 'DURING'
-  kind text not null,                  -- BEFORE_2H / BEFORE_1H / BEFORE_START / DUST / SAFETY_BREACH / NO_DECISION_YET
+  kind text not null,                  -- BEFORE_2H / BEFORE_1H / BEFORE_START / DUST / SAFETY_BREACH / COMPLIANCE_VIOLATION / COMPLIANCE_RESTRICTION / NO_DECISION_YET / PM10_APPROACHING_LIMIT
   state text not null default 'NEW',   -- NEW / ... / CLOSED
   message text not null,
   metric_label text,
@@ -729,11 +729,67 @@ alter table public.admin_audit_log enable row level security;
 -- role) فقط يقرأ/يكتب هذا الجدول عبر مسارات API المحمية بـ requireSuperAdmin.
 
 -- =====================================================================
+-- 11) project_devices — أجهزة رصد فعلية مرتبطة بمشروع، ترسل قراءات لحظية
+-- (سرعة/اتجاه الرياح، PM10، PM2.5، الرؤية) عبر مفتاح API خاص بكل جهاز.
+-- القراءة الأخيرة تُخزَّن كأعمدة قابلة للتحديث مباشرة (last_*) — لا جدول
+-- تاريخ منفصل. الأولوية عند التقييم (computeDviResult في
+-- app/utils/dust-engine/engine.ts): جهاز حديث > onsite_* يدوي > Open-Meteo.
+-- التفاصيل الكاملة: supabase-add-project-devices-migration.sql
+-- =====================================================================
+create table if not exists public.project_devices (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+
+  name text not null,
+  lat numeric,
+  lng numeric,
+
+  api_key_hash text not null,
+  api_key_prefix text not null,
+  is_active boolean not null default true,
+
+  last_reading_at timestamptz,
+  last_wind_speed_kmh numeric,
+  last_wind_gust_kmh numeric,
+  last_wind_direction_deg numeric,
+  last_pm10 numeric,
+  last_pm25 numeric,
+  last_visibility_m numeric,
+
+  created_at timestamptz not null default now(),
+  revoked_at timestamptz
+);
+
+create index if not exists idx_project_devices_project_id on public.project_devices (project_id);
+create unique index if not exists idx_project_devices_api_key_hash on public.project_devices (api_key_hash);
+
+alter table public.project_devices enable row level security;
+
+drop policy if exists "project_devices_owner_all" on public.project_devices;
+create policy "project_devices_owner_all"
+  on public.project_devices for all
+  to authenticated
+  using (
+    exists (
+      select 1 from public.projects
+      where projects.id = project_devices.project_id
+        and projects.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.projects
+      where projects.id = project_devices.project_id
+        and projects.user_id = auth.uid()
+    )
+  );
+
+-- =====================================================================
 -- نهاية الملف — تحقق سريع بعد التنفيذ:
 --   select table_name from information_schema.tables
 --   where table_schema = 'public' order by table_name;
 -- يجب أن يُرجع: admin_audit_log, alerts, current_dust_compliance_decisions,
 -- current_dust_decisions, decision_records, dust_compliance_evaluations,
--- dust_evaluations, profiles, project_dust_profiles, project_shifts,
--- projects, sensitive_receptors  (12 جدولاً)
+-- dust_evaluations, profiles, project_devices, project_dust_profiles,
+-- project_shifts, projects, sensitive_receptors  (13 جدولاً)
 -- =====================================================================

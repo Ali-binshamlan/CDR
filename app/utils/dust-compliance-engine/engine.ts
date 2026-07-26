@@ -15,6 +15,8 @@ import {
   enhancedSuppressionRule,
   pm10ThresholdRule,
   REGULATORY_ACTIVITY_LABEL_AR,
+  DECISION_PRIORITY,
+  BATCHING_PM10_FILTER_MIN_PERCENT,
 } from './rulebook';
 import type {
   DustComplianceContext,
@@ -43,8 +45,12 @@ const CAMERA_RETENTION_MIN_DAYS = 90;
 
 function shortReasonFor(
   decision: DustComplianceDecisionCategory,
-  ruleHits: DustRuleHit[]
+  ruleHits: DustRuleHit[],
+  resumeHoldApplied: boolean
 ): string {
+  if (resumeHoldApplied) {
+    return 'الظروف تحسّنت لكن لم يمضِ وقت كافٍ على استقرارها بعد آخر إيقاف — بانتظار استقرار القراءة (10 دقائق) قبل الاستئناف';
+  }
   if (decision === 'ALLOW') return 'لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي';
   const topRule = ruleHits.find((r) => r.severity === decision);
   return topRule?.messageAr ?? DECISION_LABEL_AR[decision];
@@ -217,16 +223,17 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   }
 
   if (ctx.dviMandatoryStop) {
-    // رسالة موجّهة للمستخدم غير التقني — توضح السبب الفيزيائي الفعلي
-    // (رؤية/غبار خطر) بدل ذكر اسم محرك داخلي (DVI) لا يظهر له أي بطاقة
-    // منفصلة في الواجهة الحالية. لا تغيير في منطق القرار نفسه — هذا التوقف
-    // يبقى مورَّثاً فعلياً من نفس تقييم الرؤية والغبار الفيزيائي، فقط
-    // صياغته أوضح.
+    // نستخدم سبب DVI المحدَّد فعلياً (مثال: "PM10 = 1806.8") إن توفّر، بدل
+    // نص عام لا يذكر أي رقم أو سبب ملموس — كان هذا يجعل بانر "القرار الموحد"
+    // يعرض جملة غامضة رغم أن DVI شخّص السبب الدقيق بالفعل. يبقى نص احتياطي
+    // عام فقط لو لم يتوفر dviShortReason (فشل آمن، لا كسر لأي مستهلك حالي).
     ruleHits.push(
       {
         code: 'GATE-DVI-002',
         severity: 'MANDATORY_STOP',
-        messageAr: 'إيقاف إلزامي بسبب خطورة فيزيائية حالية (رؤية منعدمة أو تركيز غبار خطر) لا علاقة له بمخالفة تنظيمية',
+        messageAr:
+          ctx.dviShortReason ||
+          'إيقاف إلزامي بسبب خطورة فيزيائية حالية (رؤية منعدمة أو تركيز غبار خطر) لا علاقة له بمخالفة تنظيمية',
         // الإجراء هنا مختلف جوهرياً عن بقية القواعد: لا يوجد ما "يُصلحه"
         // المقاول في الموقع — الظرف الجوي نفسه هو المانع، فالإجراء انتظار
         // تحسّن الحالة وإخلاء العمالة، لا استكمال ضابط تحكم ناقص.
@@ -248,12 +255,28 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
   // بروتوكول الملحق أ — أعلى من 25 كم/س: تُوقف كل الأنشطة المكشوفة
   // المولّدة للغبار عموماً (وليس فقط الهدم)؛ العمليات المغلقة فقط تستمر.
-  if (windBand === 'ABOVE_25' && ctx.activity.isDustGenerating && !ctx.activity.isEnclosedOperation) {
+  // استثناء إضافي لمحطة الخلط (BATCHING_PLANT) تحديداً: عملية مغلقة وحدها
+  // لا تكفي — يلزم أيضاً كفاءة فلتر PM10 لا تقل عن الحد الأدنى (نفس حد
+  // BATCHING-FILTER-002 في rulebook.ts)، وإلا فالإغلاق الفيزيائي بلا فلترة
+  // كافية لا يمنع تسرب الغبار فعلياً. pm10FilterEfficiencyPercent يبقى null
+  // بالبناء لأي نشاط غير BATCHING_PLANT (لا حقل إدخال له في الواجهة)، لذا
+  // الشرط الأشد يُطبَّق حصراً على BATCHING_PLANT — بقية الأنشطة المغلقة
+  // (هدم مغلق، قطع أحجار مغلق) تستمر بإعفاء isEnclosedOperation وحده كما
+  // كان دائماً، بلا أي تأثر بهذه الإضافة.
+  const isEnclosedExemptFromHighWind =
+    ctx.activity.regulatoryActivity === 'BATCHING_PLANT'
+      ? ctx.activity.isEnclosedOperation &&
+        ctx.activity.controls.pm10FilterEfficiencyPercent !== null &&
+        ctx.activity.controls.pm10FilterEfficiencyPercent !== undefined &&
+        ctx.activity.controls.pm10FilterEfficiencyPercent >= BATCHING_PM10_FILTER_MIN_PERCENT
+      : ctx.activity.isEnclosedOperation;
+
+  if (windBand === 'ABOVE_25' && ctx.activity.isDustGenerating && !isEnclosedExemptFromHighWind) {
     ruleHits.push(
       {
         code: 'GATE-WIND-ABOVE-25-004',
         severity: 'STOP_AFFECTED_ACTIVITY',
-        messageAr: 'إيقاف الأنشطة المكشوفة المولّدة للغبار: سرعة الرياح تتجاوز 25 كم/س (بروتوكول الملحق أ)',
+        messageAr: 'إيقاف الأنشطة المكشوفة المولّدة للغبار: سرعة الرياح تتجاوز 25 كم/س ',
         actionAr: 'أوقف الأنشطة المكشوفة وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون 25 كم/س',
       }
     );
@@ -277,6 +300,30 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   const monitoringApplies = riskClass === 'CATEGORY_II_MEDIUM' || riskClass === 'CATEGORY_III_HIGH';
 
   let decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+
+  // منع الاستئناف التلقائي الفوري بعد إيقاف — قرار كان موقِفاً
+  // (MANDATORY_STOP أو STOP_AFFECTED_ACTIVITY) لا يتحسّن مباشرة بمجرد أن
+  // القراءة الحالية أصبحت جيدة؛ يلزم استقرار حقيقي (10 دقائق منذ آخر تغيّر
+  // قرار مسجَّل) قبل السماح بالتحسّن. previousDecisionUpdatedAt يأتي من
+  // current_dust_compliance_decisions.updated_at (يُحدَّث فقط عند تغيّر
+  // القرار فعلياً، راجع shouldSkipPersist في dustEvaluation.ts) — أقرب
+  // طابع زمني فعلي متاح لقياس "منذ متى استقر القرار" بلا حاجة لعمود جديد.
+  // غياب previousDecisionCategory (أول تقييم لنشاط، أو لم يُمرَّر من
+  // المستدعي) يعني عدم تطبيق أي قيد — سلوك المحرك بلا تغيير.
+  const RESUME_STABILITY_MINUTES = 10;
+  const previousWasStopped =
+    ctx.previousDecisionCategory === 'MANDATORY_STOP' ||
+    ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';
+  let resumeHoldApplied = false;
+  if (previousWasStopped && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
+    const minutesSincePreviousChange = ctx.previousDecisionUpdatedAt
+      ? (Date.now() - new Date(ctx.previousDecisionUpdatedAt).getTime()) / 60000
+      : Infinity; // بلا طابع زمني صالح — فشل آمن نحو عدم المنع
+    if (minutesSincePreviousChange < RESUME_STABILITY_MINUTES) {
+      decisionCategory = 'STOP_AFFECTED_ACTIVITY';
+      resumeHoldApplied = true;
+    }
+  }
 
   const confidenceScore = calculateComplianceConfidence(ctx, missingCriticalInputs);
 
@@ -313,6 +360,9 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     if (ctx.dviMandatoryStop) {
       restartConditions.push('تحسّن حالة الجو: عودة مدى الرؤية وتركيز الغبار إلى الحدود الآمنة');
     }
+    if (resumeHoldApplied) {
+      restartConditions.push('استقرار القراءة الجيدة لمدة 10 دقائق متواصلة منذ آخر تغيّر في القرار قبل الاستئناف التلقائي');
+    }
   }
 
   return {
@@ -333,7 +383,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     decisionLabelAr: DECISION_LABEL_AR[decisionCategory],
     mandatoryStop,
     canOverride,
-    shortReasonAr: shortReasonFor(decisionCategory, ruleHits),
+    shortReasonAr: shortReasonFor(decisionCategory, ruleHits, resumeHoldApplied),
 
     triggeredRules: ruleHits,
     requiredActions,

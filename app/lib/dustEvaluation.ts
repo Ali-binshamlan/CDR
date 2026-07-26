@@ -49,7 +49,18 @@ function buildEngineShifts(project: any): { startTime: string; endTime: string }
   }));
 }
 
-export function buildDustInput(row: any, project: any): DustEngineInput {
+// قراءة جهاز حديثة يجهّزها resolveFreshProjectDevice أدناه — شكل مبسّط
+// (الحقول last_* المهمة فقط) يُمرَّر لـ buildDustInput.
+export interface FreshDeviceReading {
+  last_wind_speed_kmh: number | null;
+  last_wind_gust_kmh: number | null;
+  last_wind_direction_deg: number | null;
+  last_pm10: number | null;
+  last_pm25: number | null;
+  last_visibility_m: number | null;
+}
+
+export function buildDustInput(row: any, project: any, freshDevice?: FreshDeviceReading | null): DustEngineInput {
   return {
     activityType: row.activity_type,
     // موقع النشاط المستقل (محدد يدوياً داخل zone المشروع) له الأولوية على
@@ -80,6 +91,12 @@ export function buildDustInput(row: any, project: any): DustEngineInput {
     onsiteVisibilityM: row.onsite_visibility_m ?? null,
     onsitePm10: row.onsite_pm10 ?? null,
     onsitePm25: row.onsite_pm25 ?? null,
+    deviceWindSpeedKmh: freshDevice?.last_wind_speed_kmh ?? null,
+    deviceWindGustKmh: freshDevice?.last_wind_gust_kmh ?? null,
+    deviceWindDirectionDeg: freshDevice?.last_wind_direction_deg ?? null,
+    devicePm10: freshDevice?.last_pm10 ?? null,
+    devicePm25: freshDevice?.last_pm25 ?? null,
+    deviceVisibilityM: freshDevice?.last_visibility_m ?? null,
     workDaysList: Array.isArray(project.work_days_list) ? project.work_days_list : undefined,
     workHoursStart: project.work_hours_start ?? undefined,
     workHoursEnd: project.work_hours_end ?? undefined,
@@ -101,13 +118,61 @@ function annotateHourWithRegulatoryGate<T extends { effectiveWindKmh: number | n
   };
 }
 
+// أقصى عمر لقراءة جهاز حتى تبقى "حية" وتُستخدم في التقييم — بعدها تُعامَل
+// كأنها غير موجودة ويسقط الحساب تلقائياً لـ onsite_*/الطقس. نفس نمط ثابت
+// "حداثة/تكرار" بسيط أعلى مستوى الملف مثل MIN_MINUTES_BETWEEN_UNCHANGED_EVALUATIONS
+// أدناه — قيمة مبدئية معقولة ضمن نطاق 15-30 دقيقة المقترح، قابلة للتعديل
+// لاحقاً حسب معدل إرسال الأجهزة الفعلي.
+const DEVICE_READING_FRESHNESS_MINUTES = 20;
+
+// يجلب أحدث قراءة جهاز "حية" لمشروع معيّن — إن وُجد أكثر من جهاز نشط، يُختار
+// الأحدث تحديثاً (last_reading_at تنازلياً). لا مطابقة مكانية بين جهاز
+// ونشاط محدد في هذا الإصدار (لم تُطلَب) — أي جهاز حديث للمشروع يُستخدم
+// كقراءة المشروع الموحّدة. يرجع null صراحة عند غياب جهاز نشط أو انتهاء
+// حداثة أحدث قراءة، فيسلك buildDustInput مساره القديم دون أي تغيير سلوكي.
+export async function resolveFreshProjectDevice(
+  supabaseAdmin: any,
+  projectId: string
+): Promise<FreshDeviceReading | null> {
+  const { data } = await supabaseAdmin
+    .from('project_devices')
+    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m')
+    .eq('project_id', projectId)
+    .eq('is_active', true)
+    .not('last_reading_at', 'is', null)
+    .order('last_reading_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!data?.last_reading_at) return null;
+
+  const ageMinutes = (Date.now() - new Date(data.last_reading_at).getTime()) / 60000;
+  if (ageMinutes > DEVICE_READING_FRESHNESS_MINUTES) return null;
+
+  return {
+    last_wind_speed_kmh: data.last_wind_speed_kmh ?? null,
+    last_wind_gust_kmh: data.last_wind_gust_kmh ?? null,
+    last_wind_direction_deg: data.last_wind_direction_deg ?? null,
+    last_pm10: data.last_pm10 ?? null,
+    last_pm25: data.last_pm25 ?? null,
+    last_visibility_m: data.last_visibility_m ?? null,
+  };
+}
+
 // تشغيل محرك الغبار لكل نشاط غبار، مع دمج AEI، وإرجاع شكل يطابق props
 // بطاقة DustWidgetCard (windowEval + aei + معرفات الربط).
-export async function computeDustResults(dustRows: any[], project: any) {
+// supabaseAdmin اختياري: بلا تمريره (استدعاءات قديمة/اختبارات) يتجاهل
+// المسار مسار الجهاز بالكامل ويسلك onsite_*/الطقس كما كان دائماً — إضافة
+// تراكمية بحتة، بلا أي كسر توافقي.
+export async function computeDustResults(dustRows: any[], project: any, supabaseAdmin?: any) {
+  const freshDevice = supabaseAdmin && project?.id
+    ? await resolveFreshProjectDevice(supabaseAdmin, project.id).catch(() => null)
+    : null;
+
   const results = await Promise.all(
     (dustRows || []).map(async (row) => {
       try {
-        const input = buildDustInput(row, project);
+        const input = buildDustInput(row, project, freshDevice);
         const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
         const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
         if (!startIso) return null;
@@ -309,13 +374,44 @@ export function computeUnitReceptors(
 // الخام الممرَّرة أصلاً لـ computeDustResults، تُستخدم هنا فقط لقراءة
 // أعمدة أدلة الامتثال (regulatory_activity, dust_suppression_system_...
 // إلخ) التي لا يحتاجها محرك DVI نفسه.
-export function computeDustComplianceResults(
+//
+// supabaseAdmin اختياري: بلا تمريره (استدعاءات قديمة/اختبارات) يتجاهل
+// المسار جلب "القرار السابق" بالكامل، فيسلك محرك الامتثال مساره القديم
+// بلا قيد استئناف — إضافة تراكمية بحتة، بلا أي كسر توافقي (نفس نمط
+// resolveFreshProjectDevice في computeDustResults).
+export async function computeDustComplianceResults(
   dustRows: any[],
   project: any,
   dustResults: any[],
-  sensitiveReceptors: any[] = []
-): DustComplianceResult[] {
+  sensitiveReceptors: any[] = [],
+  supabaseAdmin?: any
+): Promise<DustComplianceResult[]> {
   const rowsById = new Map<string, any>((dustRows || []).map((row) => [String(row.id), row]));
+
+  // جلب مجمَّع لآخر قرار مسجَّل لكل activity_group_id ذي صلة — نداء واحد
+  // بدل نداء لكل نشاط، بنفس روح تجميع resolveFreshProjectDevice. يُستخدم
+  // فقط لتغذية منع الاستئناف التلقائي الفوري بعد إيقاف في engine.ts —
+  // غيابه (لا supabaseAdmin، أو فشل الاستعلام) يعني ببساطة عدم تطبيق أي
+  // قيد، لا خطأً.
+  let previousDecisionsByGroup = new Map<string, { decision: string; updated_at: string }>();
+  if (supabaseAdmin) {
+    const groupIds = Array.from(
+      new Set((dustResults || []).map((r) => r.activityGroupId).filter(Boolean))
+    );
+    if (groupIds.length > 0) {
+      try {
+        const { data } = await supabaseAdmin
+          .from('current_dust_compliance_decisions')
+          .select('activity_group_id, decision, updated_at')
+          .in('activity_group_id', groupIds);
+        previousDecisionsByGroup = new Map(
+          (data || []).map((row: any) => [row.activity_group_id, { decision: row.decision, updated_at: row.updated_at }])
+        );
+      } catch {
+        // فشل الاستعلام لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
+      }
+    }
+  }
 
   return (dustResults || [])
     .map((r) => {
@@ -324,7 +420,8 @@ export function computeDustComplianceResults(
         const dviResult = r.windowEval?.worst;
         if (!row || !dviResult) return null;
 
-        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors);
+        const previousDecision = previousDecisionsByGroup.get(r.activityGroupId) ?? null;
+        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision);
         const result = evaluateDustCompliance(ctx);
         return {
           activityGroupId: r.activityGroupId,

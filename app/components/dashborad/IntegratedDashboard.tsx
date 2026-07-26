@@ -7,7 +7,7 @@ import dynamic from 'next/dynamic';
 import { apiClient } from '@/app/lib/apiClient';
 import type { ProjectPoint } from './ProjectsMap';
 import { decisionMeta, alertKindToDecision, dviLevelToDecision } from '@/app/lib/decisionMeta';
-import { translateActivityType } from '@/app/lib/activityLabels';
+import { displayActivityLabel } from '@/app/lib/activityLabels';
 import {
   Loader2, Map as MapIcon, FolderKanban, Activity, Bell,
   ArrowLeft, MapPin, Clock,
@@ -169,7 +169,7 @@ export default function IntegratedDashboard() {
                     className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-slate-50 transition-colors"
                   >
                     <div className="min-w-0">
-                      <div className="font-bold text-sm text-[#061B40] truncate">{translateActivityType(a.activity_type)}</div>
+                      <div className="font-bold text-sm text-[#061B40] truncate">{displayActivityLabel(a)}</div>
                       <div className="flex items-center gap-1.5 text-xs text-slate-400 font-semibold mt-0.5">
                         <MapPin className="w-3 h-3 shrink-0" />
                         <span className="truncate">{projectNameById.get(a.project_id) || '—'}</span>

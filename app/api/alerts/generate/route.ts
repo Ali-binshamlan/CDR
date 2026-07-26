@@ -37,6 +37,9 @@ import { createClient } from '@supabase/supabase-js';
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
 import type { DustEngineInput } from '@/app/utils/dust-engine/types';
 import { translateActivityType } from '@/app/lib/activityLabels';
+import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
+import { evaluateDustCompliance, buildComplianceContext, buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
+import { resolveFreshProjectDevice, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
 // (يُستدعى من Cron)، فيحتاج مفتاح الخدمة لتجاوز RLS والقراءة من كل
@@ -48,7 +51,12 @@ const supabaseAdmin = createClient(
 
 // نفس دالة بناء مدخلات محرك الغبار المستخدمة في صفحة تفاصيل المشروع
 // (منسوخة هنا لضمان تطابق الحساب - يفضّل نقلها لملف مشترك لاحقاً).
-function buildDustEngineInputSrv(dbProfile: any, lat: number, lon: number): DustEngineInput {
+function buildDustEngineInputSrv(
+  dbProfile: any,
+  lat: number,
+  lon: number,
+  freshDevice?: FreshDeviceReading | null
+): DustEngineInput {
   return {
     activityType: (dbProfile.activity_type as any) || 'GENERAL_OUTDOOR_WORK',
     latitude: lat,
@@ -76,6 +84,15 @@ function buildDustEngineInputSrv(dbProfile: any, lat: number, lon: number): Dust
     onsiteVisibilityM: dbProfile.onsite_visibility_m ?? null,
     onsitePm10: dbProfile.onsite_pm10 ?? null,
     onsitePm25: dbProfile.onsite_pm25 ?? null,
+    // نفس أولوية جهاز > يدوي > طقس المطبّقة في computeDustResults (صفحة
+    // المشروع) — بدونها كانت تنبيهات Cron (SAFETY_BREACH/DUST) تُقيَّم على
+    // بيانات مختلفة صامتاً عمّا تعرضه صفحة المشروع لنفس النشاط.
+    deviceWindSpeedKmh: freshDevice?.last_wind_speed_kmh ?? null,
+    deviceWindGustKmh: freshDevice?.last_wind_gust_kmh ?? null,
+    deviceWindDirectionDeg: freshDevice?.last_wind_direction_deg ?? null,
+    devicePm10: freshDevice?.last_pm10 ?? null,
+    devicePm25: freshDevice?.last_pm25 ?? null,
+    deviceVisibilityM: freshDevice?.last_visibility_m ?? null,
   };
 }
 
@@ -218,16 +235,34 @@ async function checkNoDecisionAlert(
 }
 
 export async function checkDustActivities(projectIds?: string[]) {
-  let q = supabaseAdmin.from('project_dust_profiles').select('*, projects(latitude, longitude)');
+  let q = supabaseAdmin.from('project_dust_profiles').select('*, projects(*)');
   if (projectIds && projectIds.length > 0) q = q.in('project_id', projectIds);
   const { data: profiles } = await q;
+
+  // مستقبِلات حساسة يدوية — نفس مصدر [projectId]/route.ts، مطلوبة لمحرك
+  // الامتثال (مسافة الكسارة/الأكوام) حتى يطابق تنبيه COMPLIANCE_VIOLATION
+  // هنا بالضبط قرار "القرار الموحد للنشاط" المعروض في صفحة المشروع لنفس
+  // النشاط. استعلام واحد لكل تشغيل cron، لا لكل نشاط.
+  const { data: sensitiveReceptorRows } = await supabaseAdmin
+    .from('sensitive_receptors')
+    .select('id, name, receptor_type, lat, lng');
+  const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
 
   for (const profile of profiles || []) {
     const lat = profile.projects?.latitude ?? 24.7136;
     const lon = profile.projects?.longitude ?? 46.6753;
     const durationMinutes = Number(profile.duration_hours) ? Number(profile.duration_hours) * 60 : (profile.duration_minutes || 60);
     const { startIso, endIso } = computeWindow(profile.planned_date, profile.planned_time, durationMinutes);
-    const label = translateActivityType(profile.activity_type) || 'نشاط غبار';
+    // النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) لا التصنيف الفيزيائي
+    // الداخلي (activity_type) المستخدم فقط لتغذية حساب حساسية محرك DVI —
+    // هذا النص يُخزَّن حرفياً في alerts.message/recommended_action، فيلزم أن
+    // يعرض ما اختاره المستخدم فعلاً من الشاشة.
+    const label =
+      (profile.regulatory_activity && profile.regulatory_activity !== 'OTHER'
+        ? REGULATORY_ACTIVITY_LABEL_AR[profile.regulatory_activity]
+        : null) ??
+      translateActivityType(profile.activity_type) ??
+      'نشاط غبار';
 
     await checkBeforeAlerts(profile.project_id, 'dust', profile.id, label, startIso);
     await checkNoDecisionAlert(profile.project_id, 'dust', profile.id, label, startIso, endIso);
@@ -237,7 +272,8 @@ export async function checkDustActivities(projectIds?: string[]) {
     if (!isDuring) continue;
 
     try {
-      const engineInput = buildDustEngineInputSrv(profile, lat, lon);
+      const freshDevice = await resolveFreshProjectDevice(supabaseAdmin, profile.project_id).catch(() => null);
+      const engineInput = buildDustEngineInputSrv(profile, lat, lon, freshDevice);
       const durationHours = Number(profile.duration_hours) || durationMinutes / 60;
       const windowEval = await evaluateDustVisibilityWindow(engineInput, startIso, durationHours);
       const worst = windowEval.worst;
@@ -283,6 +319,53 @@ export async function checkDustActivities(projectIds?: string[]) {
             message: `تركيز الغبار (PM10) يقترب من الحد التنظيمي أثناء تنفيذ نشاط "${label}" — إجراء وقائي فوري يجنّبك المخالفة.`,
             metricLabel: 'PM10', metricActual: `${pm10Value} ميكروجرام/م³`, metricThreshold: '340 ميكروجرام/م³ (حد المخالفة)',
             recommendedAction: 'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة.',
+          });
+        }
+      }
+
+      // تنبيه امتثال تنظيمي — يشغّل محرك الامتثال الفعلي (evaluateDustCompliance)
+      // بنفس منطق صفحة المشروع تماماً، لا نسخة مختصرة/مكرَّرة من القواعد. أي
+      // قاعدة موجودة في rulebook.ts/engine.ts (مسافة الكسارة، كفاءة فلتر
+      // محطة الخلط، بوابة الرياح >25، DMP، إلخ) تُفعِّل هذا التنبيه تلقائياً
+      // إن أوقفت النشاط — بلا حاجة لتحديث هذا الملف يدوياً عند إضافة قاعدة
+      // جديدة أو نشاط تنظيمي جديد لاحقاً، لأن المصدر واحد.
+      let previousDecision: { decision: string; updated_at: string } | null = null;
+      if (profile.activity_group_id) {
+        const { data: prevRow } = await supabaseAdmin
+          .from('current_dust_compliance_decisions')
+          .select('decision, updated_at')
+          .eq('activity_group_id', profile.activity_group_id)
+          .maybeSingle();
+        previousDecision = prevRow ? { decision: prevRow.decision, updated_at: prevRow.updated_at } : null;
+      }
+      const complianceCtx = buildComplianceContext(profile.projects, profile, worst, sensitiveReceptors, previousDecision);
+      const compliance = evaluateDustCompliance(complianceCtx);
+
+      // يغطي كل قرار امتثال أقل من ALLOW الكامل (وليس فقط الإيقاف الإلزامي/
+      // إيقاف النشاط المتأثر) — أي مخالفة قاعدة فعلية، حتى لو كانت تقييداً
+      // أو تحقّقاً ميدانياً مطلوباً، يجب أن تظهر في غرفة التنبيهات لا فقط
+      // في صفحة المشروع. نوعان منفصلان (لا نوع واحد) حتى تُميَّز شدة
+      // القرار في الواجهة: COMPLIANCE_VIOLATION للإيقاف الفعلي (خطورة
+      // عالية)، COMPLIANCE_RESTRICTION للتقييد/التحقق الميداني (تحذير متوسط).
+      const complianceAlertKind: 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | null =
+        compliance.decisionCategory === 'MANDATORY_STOP' || compliance.decisionCategory === 'STOP_AFFECTED_ACTIVITY'
+          ? 'COMPLIANCE_VIOLATION'
+          : compliance.decisionCategory === 'RESTRICT_ACTIVITY' || compliance.decisionCategory === 'FIELD_VERIFICATION_REQUIRED'
+          ? 'COMPLIANCE_RESTRICTION'
+          : null;
+
+      if (complianceAlertKind) {
+        if (!(await alertExists('dust', profile.id, complianceAlertKind, true))) {
+          // نص القاعدة المخالفة الفعلي مباشرة (shortReasonAr، مثال: "مخالفة
+          // تنظيمية: تركيز PM10 (1665.2 ميكروجرام/م³) تجاوز حد المخالفة
+          // (340 ميكروجرام/م³)") بلا أي جملة عامة تغلّفه — نفس النص المعروض
+          // حرفياً في "القرار الموحد للنشاط" بصفحة المشروع لهذا النشاط.
+          await insertAlert({
+            projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
+            timing: 'DURING', kind: complianceAlertKind,
+            message: compliance.shortReasonAr,
+            metricLabel: 'القرار التنظيمي', metricActual: compliance.decisionLabelAr, metricThreshold: 'مسموح',
+            recommendedAction: compliance.requiredActions.join('، ') || compliance.shortReasonAr,
           });
         }
       }

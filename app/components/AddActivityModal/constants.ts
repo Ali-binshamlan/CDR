@@ -289,11 +289,14 @@ export const REGULATORY_ACTIVITY_OPTIONS: RegulatoryActivityOption[] = [
   { key: 'OTHER', label: 'أخرى / غير محدد', dviCategory: 'GENERAL_OUTDOOR_WORK' },
 ];
 
-// خريطة سريعة من key النشاط التنظيمي إلى تسميته العربية — مشتقة من
-// REGULATORY_ACTIVITY_OPTIONS لتفادي تكرار القائمة في أكثر من ملف.
-export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = Object.fromEntries(
-  REGULATORY_ACTIVITY_OPTIONS.map((o) => [o.key, o.label])
-);
+// خريطة key النشاط التنظيمي إلى تسميته العربية الكاملة — إعادة تصدير من
+// dust-compliance-engine/rulebook.ts (نفس القاموس المستخدم في كل شاشات
+// العرض: التنبيهات، جداول الأدمن، عناوين البطاقات) بدل نسخة محلية مشتقة من
+// REGULATORY_ACTIVITY_OPTIONS.label — كانتا قاموسين منفصلين بصياغة مختلفة
+// قليلاً لنفس المفاتيح (مثال: "كسارة" هنا مقابل "الكسارة" هناك)، فيظهر
+// النشاط بصياغة مختلفة حسب الشاشة. label في REGULATORY_ACTIVITY_OPTIONS
+// يبقى نصاً مختصراً مخصصاً لأزرار شاشة الاختيار فقط.
+export { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 
 export const INDICATOR_LABEL_AR: Record<IndicatorTab, string> = {
   dust: 'تقييم الرؤية والغبار',

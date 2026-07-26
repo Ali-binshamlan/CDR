@@ -29,13 +29,26 @@ const RESIDENTIAL_RECEPTOR_TYPES: SensitiveReceptorType[] = ['RESIDENTIAL', 'SCH
 
 // يُرجع أقرب مسافة (م) لأي مستقبل حساس، وأقرب مسافة لمستقبل
 // سكني/مدرسي/صحي تحديداً (يخضع لحد تنظيمي أشد عند الكسارات).
+//
+// "لا نعرف الموقع" (lat/lng فارغ) تختلف جوهرياً عن "الموقع معروف وجدول
+// المستقبِلات فارغ فعلياً": الأولى تعني "لا يمكن الحساب إطلاقاً" (null —
+// يُبقي المستدعي على القيمة اليدوية القديمة كاحتياط معقول)، لكن الثانية
+// معلومة حقيقية ("لا يوجد أي مستقبِل معروف قريباً") يجب أن تُترجَم لمسافة
+// آمنة عملياً (Infinity) لا null — وإلا فإن رجوع null هنا كان يجعل قاعدة
+// الكسارة تسقط تلقائياً إلى قيمة يدوية قديمة قد لا تعود صحيحة رغم أن
+// الحساب التلقائي (بلا أي مستقبِل في النظام) لا يعطي أي سبب فعلي للإيقاف —
+// يسبب هذا بالضبط تناقضاً بين قاعدة الإيقاف وقائمة "لا توجد مستقبِلات
+// قريبة" المعروضة للمستخدم في نفس الشاشة.
 export function nearestReceptorDistancesM(
   lat: number | null,
   lng: number | null,
   receptors: SensitiveReceptor[]
 ): { nearestAnyM: number | null; nearestResidentialM: number | null } {
-  if (lat === null || lng === null || receptors.length === 0) {
+  if (lat === null || lng === null) {
     return { nearestAnyM: null, nearestResidentialM: null };
+  }
+  if (receptors.length === 0) {
+    return { nearestAnyM: Infinity, nearestResidentialM: Infinity };
   }
 
   let nearestAnyM: number | null = null;

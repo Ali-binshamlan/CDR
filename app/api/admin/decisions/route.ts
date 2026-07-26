@@ -20,22 +20,25 @@ export async function GET(request: NextRequest) {
   const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));
 
   // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي) —
-  // نجلب activity_type لعرضه مترجماً بدل رمز خام، نفس نمط admin/alerts.
+  // نجلب regulatory_activity (النشاط التنظيمي المختار فعلياً) لعرضه بدل
+  // activity_type الفيزيائي الداخلي، نفس نمط admin/alerts.
   const activityIds = [...new Set((decisions || []).map((d: any) => d.activity_id).filter(Boolean))];
   const { data: dustProfiles } = activityIds.length > 0
-    ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type').in('id', activityIds)
+    ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', activityIds)
     : { data: [] as any[] };
-  const activityTypeById = new Map((dustProfiles || []).map((p: any) => [p.id, p.activity_type]));
+  const dustProfileById = new Map((dustProfiles || []).map((p: any) => [p.id, p]));
 
   const data = (decisions || []).map((decision: any) => {
     const owner = profileByUserId.get(decision.projects?.user_id);
+    const dustProfile = dustProfileById.get(decision.activity_id);
     return {
       ...decision,
       projectName: decision.projects?.name || null,
       projectCity: decision.projects?.city || null,
       ownerUsername: owner?.username || null,
       ownerCompany: owner?.company_name || null,
-      activityType: activityTypeById.get(decision.activity_id) || null,
+      activityType: dustProfile?.activity_type || null,
+      regulatoryActivity: dustProfile?.regulatory_activity || null,
     };
   });
 

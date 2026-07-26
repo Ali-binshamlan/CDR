@@ -233,7 +233,13 @@ export function buildComplianceContext(
   project: any,
   activityRow: any,
   dviResult: DviEvaluationResult | DviHourlyEvaluation,
-  sensitiveReceptors: SensitiveReceptor[] = []
+  sensitiveReceptors: SensitiveReceptor[] = [],
+  // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
+  // current_dust_compliance_decisions) — يُستخدم لمنع الاستئناف التلقائي
+  // الفوري بعد إيقاف (راجع RESUME_STABILITY_MINUTES في engine.ts). اختياري
+  // ويبقى undefined في أي مسار لا يجلبه (مثل الشبكة الساعية التوقّعية)،
+  // فلا يُطبَّق أي قيد هناك تلقائياً.
+  previousDecision?: { decision: string; updated_at: string } | null
 ): DustComplianceContext {
   const dataSource: DustComplianceContext['dataSource'] =
     activityRow?.onsite_pm10 !== null && activityRow?.onsite_pm10 !== undefined
@@ -251,6 +257,7 @@ export function buildComplianceContext(
     dviScore: dviResult.score,
     dviDecision: dviResult.decisionCategory,
     dviMandatoryStop: dviResult.mandatoryStop,
+    dviShortReason: dviResult.shortReason ?? null,
     dviConfidenceScore: dviResult.confidenceScore,
     windSpeedKmh: dviResult.effectiveWindKmh,
     windGustKmh: toNullableNumber(rawSample?.windGustKmh),
@@ -261,6 +268,8 @@ export function buildComplianceContext(
     pm25UgM3: toNullableNumber(rawSample?.pm25),
     dataSource,
     sensitiveReceptors,
+    previousDecisionCategory: (previousDecision?.decision as DustComplianceContext['previousDecisionCategory']) ?? null,
+    previousDecisionUpdatedAt: previousDecision?.updated_at ?? null,
   };
 }
 

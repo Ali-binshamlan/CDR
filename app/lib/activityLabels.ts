@@ -11,6 +11,7 @@
 // مفتاحاً في ActivityCategory الحالي (مثال: 'INDOOR_WORK', 'WELDING').
 
 import { ACTIVITY_LABEL_AR } from '@/app/utils/dust-engine/tables';
+import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 
 const LEGACY_ACTIVITY_LABEL_AR: Record<string, string> = {
   GENERAL_OUTDOOR_WORK: 'أعمال خارجية عامة',
@@ -45,4 +46,20 @@ export function translateActivityType(type: string | null | undefined): string {
   if (LEGACY_ACTIVITY_LABEL_AR[normalized]) return LEGACY_ACTIVITY_LABEL_AR[normalized];
 
   return trimmed;
+}
+
+// عنوان النشاط المعروض للمستخدم = النشاط التنظيمي المختار فعلياً (كسارة/
+// هدم/محطة خلط...) لا التصنيف الفيزيائي الداخلي (activity_type، مثل "حركة
+// معدات ثقيلة") المستخدم فقط لتغذية حساب حساسية محرك DVI ولا يظهر كقائمة
+// اختيار في أي شاشة. نقطة الحقيقة الواحدة لهذا القرار — بدل تكرار نفس
+// الـ ternary في كل صفحة/جدول يعرض اسم نشاط غبار.
+export function displayActivityLabel(row: {
+  regulatory_activity?: string | null;
+  activity_type?: string | null;
+} | null | undefined): string {
+  const reg = row?.regulatory_activity;
+  if (reg && reg !== 'OTHER' && REGULATORY_ACTIVITY_LABEL_AR[reg]) {
+    return REGULATORY_ACTIVITY_LABEL_AR[reg];
+  }
+  return translateActivityType(row?.activity_type);
 }

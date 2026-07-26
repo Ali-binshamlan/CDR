@@ -332,14 +332,18 @@ function baseRequiredActions(decision: DviDecisionCategory): string[] {
 // الحساب الأساسي وحل التناقضات اللفظية
 // -------------------------------------------------------------
 export function computeDviResult(input: DustEngineInput, weather: DustWeatherSample): DviEvaluationResult {
-  const visibilityM = input.onsiteVisibilityM ?? weather.visibilityM;
+  // أولوية 3 مستويات: قراءة جهاز حية > إدخال يدوي onsite_* > تقدير الطقس
+  // (Open-Meteo، دون أي تعديل على weather.ts نفسه). الرياح لم تملك من قبل
+  // طبقة onsite وسطى (فقط الرؤية/PM10/PM2.5)، فتصبح device ?? weather
+  // مباشرة — تبسيط طبيعي حيث لا توجد طبقة وسطى ليُتخطّى.
+  const visibilityM = input.deviceVisibilityM ?? input.onsiteVisibilityM ?? weather.visibilityM;
   const visibilityKm = visibilityM !== null ? visibilityM / 1000 : null;
 
-  const pm10 = input.onsitePm10 ?? weather.pm10;
-  const pm25 = input.onsitePm25 ?? weather.pm25;
+  const pm10 = input.devicePm10 ?? input.onsitePm10 ?? weather.pm10;
+  const pm25 = input.devicePm25 ?? input.onsitePm25 ?? weather.pm25;
 
-  const windSpeedKmh = weather.windSpeedKmh;
-  const windGustKmh = weather.windGustKmh ?? windSpeedKmh;
+  const windSpeedKmh = input.deviceWindSpeedKmh ?? weather.windSpeedKmh;
+  const windGustKmh = input.deviceWindGustKmh ?? weather.windGustKmh ?? windSpeedKmh;
   const effectiveWindKmh =
     windSpeedKmh !== null ? Math.max(windSpeedKmh, 0.85 * (windGustKmh ?? windSpeedKmh)) : null;
 

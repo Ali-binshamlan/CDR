@@ -12,26 +12,14 @@ import {
   computeUnitReceptors,
   persistDustComplianceEvaluations,
   applyComplianceGatesToDustAei,
+  computeUnifiedActivityDecision,
   riyadhLocalToUtcIso,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
-import { buildProjectZoneFromRow, distanceToZoneBoundaryM, polygonCentroid } from '@/app/utils/geo/zone';
+import { buildProjectZoneFromRow, distanceToZoneBoundaryM, zoneToBoundaryDistanceM, zoneSearchAnchorPoints } from '@/app/utils/geo/zone';
 import { fetchNearbySensitiveReceptorsFromOsm } from '@/app/utils/geo/overpassReceptors';
-import { translateActivityType } from '@/app/lib/activityLabels';
-import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
-
-// عنوان بطاقة النشاط المعروض = النشاط التنظيمي المختار فعلياً (كسارة/هدم/
-// محطة خلط...) لا التصنيف الفيزيائي العام (حركة معدات ثقيلة). regulatory_activity
-// هو ما اختاره المستخدم في نموذج الإضافة وعليه تُبنى قرارات الإيقاف/التقييد،
-// فهو الأنسب للعرض. نرجع للتصنيف الفيزيائي فقط إن غاب/كان OTHER.
-function activityTitleFromRow(row: any): string {
-  const reg = row?.regulatory_activity;
-  if (reg && reg !== 'OTHER' && REGULATORY_ACTIVITY_LABEL_AR[reg]) {
-    return REGULATORY_ACTIVITY_LABEL_AR[reg];
-  }
-  return translateActivityType(row?.activity_type);
-}
+import { displayActivityLabel as activityTitleFromRow } from '@/app/lib/activityLabels';
 
 // DCR: مؤشر واحد فقط (dust) — لا heat ولا crane.
 const INDICATOR_LABELS: Record<'dust', string> = {
@@ -73,27 +61,17 @@ function riskWeightFromColor(color: string | undefined | null): number {
   return 0; // GREEN أو غير معروف
 }
 
-// compliance (نتيجة محرك الامتثال التنظيمي، إن وُجدت) له الأولوية القصوى
-// على توصية DVI الفيزيائي هنا — نفس مبدأ Dustwidgetcard.tsx (البانر الأزرق
-// الأول الذي يفتح تفاصيل النشاط لا يجوز أن يُظهر "تشغيل عادي" بينما
-// الامتثال التنظيمي يمنع الاعتماد فعلياً؛ كانا يتناقضان لأن هذه الدالة
-// كانت تقرأ DVI فقط دون أي وعي بقرار الامتثال).
+// يفوّض لنفس دالة الدمج المستخدمة في خرائط اللوحة الحية
+// (computeUnifiedActivityDecision في dustEvaluation.ts) بدل تكرار منطق
+// "compliance يطغى على DVI" هنا محلياً — كان هذا التكرار مصدر تناقض فعلي:
+// بانر "القرار الموحد" هنا وبطاقة الخريطة الحية كانا يعتمدان نسختين
+// منفصلتين من نفس القاعدة، فأمكن أن تختلفا لو تغيّرت إحداهما دون الأخرى.
 function summaryFromDust(result: any, compliance: any = null): { decisionLabel: string; riskWeight: number; reasonText?: string } {
-  const complianceBlocks =
-    compliance && (compliance.decisionCategory === 'MANDATORY_STOP' || compliance.decisionCategory === 'STOP_AFFECTED_ACTIVITY');
-
-  if (complianceBlocks) {
-    return {
-      decisionLabel: 'إيقاف إلزامي نظامي',
-      riskWeight: 3,
-      reasonText: compliance.shortReasonAr || undefined,
-    };
-  }
-
+  const unified = computeUnifiedActivityDecision(result, compliance);
   return {
-    decisionLabel: result.mandatoryStop ? 'إيقاف إلزامي نظامي' : result.decisionLabelAr,
-    riskWeight: result.mandatoryStop ? 3 : riskWeightFromColor(result.level),
-    reasonText: result.shortReason || undefined,
+    decisionLabel: unified.decisionLabelAr,
+    riskWeight: unified.mandatoryStop ? 3 : riskWeightFromColor(unified.level),
+    reasonText: unified.shortReason || undefined,
   };
 }
 
@@ -111,9 +89,10 @@ function buildRecentActivities(
   type Acc = {
     activityGroupId: string;
     activityTitle: string;
-    // كل التسميات التنظيمية المميّزة ضمن هذه المجموعة — النشاط الواحد قد يضم
-    // أكثر من نشاط تنظيمي (هدم + كسارة مثلاً)، فنعرضها كلها في العنوان بدل
-    // أول واحد فقط. يحافظ على ترتيب أول ظهور.
+    // كل التسميات التنظيمية المميّزة ضمن هذه المجموعة — النظام يدعم نشاطاً
+    // تنظيمياً واحداً فقط بالجلسة، فهذه المصفوفة تحمل عنصراً واحداً عملياً
+    // (تعدد الصفوف المتبقي مصدره وحدات النشاط نفسه: عدة محطات خلط/كسارات/
+    // أسطح)، لكنها تبقى مصفوفة لعرض عام آمن. يحافظ على ترتيب أول ظهور.
     regulatoryTitles: string[];
     kinds: Array<'dust'>;
     summaries: IndicatorSummaryLike[];
@@ -292,10 +271,12 @@ export async function GET(
       { data: dustProfiles },
       { data: recentDecisions },
       { data: projectShifts },
+      { data: projectDevices },
     ] = await Promise.all([
       supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).order('id', { ascending: false }),
       supabaseAdmin.from('decision_records').select('activity_id, activity_source, status').eq('project_id', projectId).order('created_at', { ascending: false }),
       supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
+      supabaseAdmin.from('project_devices').select('is_active').eq('project_id', projectId),
     ]);
 
     // تُرفَق على نفس صف project حتى تصل تلقائياً لكل مستهلكي project المُمرَّر
@@ -303,6 +284,15 @@ export async function GET(
     // التعديل، وProjectHeader.tsx لتمريرها إلى AddActivityModal) بلا حاجة
     // لتمرير منفصل في كل مكان.
     project.shifts = projectShifts || [];
+
+    // عدد أجهزة الرصد الحية *النشطة* (project_devices) — يحل محل عمود
+    // monitoring_station_count القديم (المشتق من مصفوفة jsonb وصفية بلا أي
+    // التزام حقيقي) بمصدر حقيقي: جهاز مُلغى لا يقدر يرسل قراءات
+    // (requireDeviceApiKey يرفضه)، فلا يُحتسب ضمن الحد التنظيمي. يُبنى هنا
+    // بنفس نمط project.shifts أعلاه، ويصل تلقائياً لكل مستهلكي project —
+    // buildProjectComplianceProfile (adapters.ts) يقرأ نفس الاسم دون أي
+    // تعديل على توقيعه.
+    project.monitoring_station_count = (projectDevices || []).filter((d: any) => d.is_active).length;
 
     // 3. بناء خريطة القرارات
     const latestDecisionsMap = new Map<string, string>();
@@ -318,7 +308,7 @@ export async function GET(
     // بـ activityGroupId حتى تعرضها page.tsx كأبناء داخل بطاقة النشاط
     // الموحّدة، وتُغذّي أيضًا ملخص البانر العلوي بقرار المحرك الحي قبل أي
     // توثيق يدوي.
-    const dustResults = await computeDustResults(dustProfiles || [], project);
+    const dustResults = await computeDustResults(dustProfiles || [], project, supabaseAdmin);
 
     // مستقبِلات حساسة (مدارس/مستشفيات/سكني) — عامة على مستوى النظام، لا
     // تُفلتَر حسب project_id. مصدرها جدول sensitive_receptors المُدار
@@ -338,28 +328,34 @@ export async function GET(
     // وليس إلى مركزها.
     const projectZoneForReceptors = buildProjectZoneFromRow(project);
     const NEARBY_RECEPTOR_RADIUS_M = 1000;
-    const projectCenterForOsm =
-      projectZoneForReceptors.zoneType === 'polygon' && projectZoneForReceptors.polygon
-        ? polygonCentroid(projectZoneForReceptors.polygon)
-        : projectZoneForReceptors.circleCenter;
-    const discoveredReceptors = projectCenterForOsm
-      ? await fetchNearbySensitiveReceptorsFromOsm(
-          projectCenterForOsm.lat,
-          projectCenterForOsm.lng,
-          // هامش بحث أوسع من نصف قطر "القريب" النهائي لأن البحث حول مركز
-          // تمثيلي للمشروع (مركز الدائرة/مركز ثقل المضلع) قد يفوته مستقبِل
-          // قريب فعلياً من الحدود لكن بعيد نسبياً عن ذلك المركز التمثيلي،
-          // خصوصاً لمضلعات ممدودة. التصفية الدقيقة (≤1كم عن الحدود) تحدث
-          // أدناه بعد الجلب.
-          NEARBY_RECEPTOR_RADIUS_M + (projectZoneForReceptors.circleRadiusM ?? 500)
-        )
-      : [];
+    // البحث نفسه ينطلق من عدة نقاط على حدود المشروع الفعلية (رؤوس المضلع،
+    // أو نقاط موزَّعة على محيط الدائرة) بدل استعلام واحد من مركز تمثيلي
+    // بنصف قطر موسَّع — نفس مبدأ حساب موقع الكسارة/الهدم من موقعها الفعلي،
+    // لا من مركز المشروع. مضلع ممدود مثلاً قد تكون إحدى حوافه قريبة جداً من
+    // مستقبِل لا يظهر أبداً في بحث دائري من المركز وحده مهما اتسع نصف القطر.
+    const searchAnchors = zoneSearchAnchorPoints(projectZoneForReceptors);
+    const discoveredReceptorsByAnchor = await Promise.all(
+      searchAnchors.map((anchor) =>
+        fetchNearbySensitiveReceptorsFromOsm(anchor.lat, anchor.lng, NEARBY_RECEPTOR_RADIUS_M)
+      )
+    );
+    const discoveredReceptorsById = new Map<string, (typeof discoveredReceptorsByAnchor)[number][number]>();
+    discoveredReceptorsByAnchor.flat().forEach((r) => discoveredReceptorsById.set(r.id, r));
+    const discoveredReceptors = Array.from(discoveredReceptorsById.values());
     const nearbySensitiveReceptors = discoveredReceptors
       .map((r) => ({
         id: r.id,
         name: r.name,
         receptorType: r.receptorType,
-        distanceM: distanceToZoneBoundaryM({ lat: r.lat, lng: r.lng }, projectZoneForReceptors),
+        // عناصر way الكبيرة (خصوصاً landuse=residential، قد تمتد أحياء
+        // كاملة) تحمل boundary (كل نقاط معالمها من "out geom;") — نستخدم
+        // أقرب مسافة فعلية لأي نقطة منها بدل مسافة مركزها الوحيد، وإلا
+        // ظهرت المسافة أبعد من الواقع لعنصر حافته الفعلية قريبة جداً رغم
+        // بعد مركزه (راجع zoneToBoundaryDistanceM). عناصر node (بلا
+        // boundary) ترجع لمسافة النقطة المفردة كما كانت دائماً.
+        distanceM: r.boundary
+          ? (zoneToBoundaryDistanceM(projectZoneForReceptors, r.boundary) ?? distanceToZoneBoundaryM({ lat: r.lat, lng: r.lng }, projectZoneForReceptors))
+          : distanceToZoneBoundaryM({ lat: r.lat, lng: r.lng }, projectZoneForReceptors),
       }))
       .filter((r): r is { id: string; name: string; receptorType: typeof r.receptorType; distanceM: number } =>
         r.distanceM !== null && r.distanceM <= NEARBY_RECEPTOR_RADIUS_M
@@ -374,7 +370,7 @@ export async function GET(
       // منفصلة تماماً عن dust_evaluations/current_dust_decisions تخزيناً،
       // لكن تُرفَق هنا على نفس عنصر dustResults (حقل compliance) ليصل
       // للواجهة كجزء طبيعي من props البطاقة دون تغيير شكل payload الخارجي.
-      const dustComplianceResults = computeDustComplianceResults(dustProfiles || [], project, dustResults, sensitiveReceptors);
+      const dustComplianceResults = await computeDustComplianceResults(dustProfiles || [], project, dustResults, sensitiveReceptors, supabaseAdmin);
       if (dustComplianceResults.length > 0) {
         await persistDustComplianceEvaluations(supabaseAdmin, projectId, dustComplianceResults, 'user_refresh');
       }
@@ -429,12 +425,12 @@ export async function GET(
     }
 
     // دمج صفوف الغبار المتعددة التي تشترك في activityGroupId إلى بطاقة DVI
-    // واحدة لكل مجموعة — ميزة "إضافة نشاط تنظيمي آخر" في الواجهة تُنشئ عدة
-    // صفوف project_dust_profiles لنفس النشاط الفيزيائي (نفس الوقت/الموقع)،
-    // كل صف يحمل regulatory_activity مختلفاً، فيُعاد حساب DVI/AEI للنافذة
-    // نفسها في كل صف رغم تطابقها. نأخذ نتيجة DVI/AEI من أول صف كممثّل
-    // للمجموعة (متطابقة فعلياً)، ونجمع كل نتائج الامتثال في مصفوفة واحدة
-    // بدل عرض بطاقة DVI مكررة لكل نشاط تنظيمي.
+    // واحدة لكل مجموعة — نظام إضافة نشاط واحد فقط بالجلسة، لكن نشاط واحد قد
+    // يضم عدة وحدات فعلية (عدة محطات خلط/كسارات) تُنشئ عدة صفوف
+    // project_dust_profiles لنفس النشاط الفيزيائي (نفس الوقت/الموقع)، فيُعاد
+    // حساب DVI/AEI للنافذة نفسها في كل صف رغم تطابقها. نأخذ نتيجة DVI/AEI
+    // من أول صف كممثّل للمجموعة (متطابقة فعلياً)، ونجمع كل نتائج الامتثال
+    // في مصفوفة واحدة بدل عرض بطاقة DVI مكررة لكل وحدة.
     const dustResultsGrouped: any[] = (() => {
       const byGroup = new Map<string, any[]>();
       dustResults.forEach((r: any) => {
@@ -448,9 +444,9 @@ export async function GET(
           ...representative,
           complianceList: rows.map((r) => r.compliance).filter(Boolean),
           // وحدات الكسارة/الخلاطة تُجمَّع من كل صفوف المجموعة وليس من الصف
-          // الممثّل وحده: المجموعة الواحدة قد تحوي كسارة وخلاطة في صفين
-          // مختلفين (ميزة "إضافة نشاط تنظيمي آخر")، فأخذها من rows[0] فقط
-          // كان سيُخفي وحدات المستقبِلات الخاصة ببقية الصفوف.
+          // الممثّل وحده: المجموعة الواحدة قد تحوي عدة وحدات (محطتا خلط
+          // مثلاً) في صفين مختلفين لنفس النشاط التنظيمي، فأخذها من rows[0]
+          // فقط كان سيُخفي وحدات المستقبِلات الخاصة ببقية الصفوف.
           unitReceptors: rows.flatMap((r) => r.unitReceptors ?? []),
         };
       });
@@ -548,7 +544,7 @@ export async function PATCH(
 
   // استبدال كامل لصفوف الورديات (حذف ثم إعادة إدراج) — أبسط وأصح من
   // مطابقة/تحديث كل صف على حدة لقائمة صغيرة يعدّلها المستخدم يدوياً بالكامل
-  // في كل مرة (نفس نهج monitoring_station_locations الحالي في هذه الصفحات).
+  // في كل مرة.
   // shifts === null (المفتاح غائب من الطلب) يعني "لم تُرسَل ورديات في هذا
   // التحديث إطلاقاً" فلا نلمس الجدول؛ [] صريحة تعني "احذف كل الورديات".
   if (shifts !== null) {
@@ -611,6 +607,7 @@ export async function DELETE(
     'current_dust_compliance_decisions',
     'project_dust_profiles',
     'project_shifts',
+    'project_devices',
   ];
 
   for (const table of childTables) {

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
-import { translateActivityType } from '@/app/lib/activityLabels';
+import { displayActivityLabel } from '@/app/lib/activityLabels';
 import { CalendarDays, ChevronRight, ChevronLeft, MapPin, Clock, Loader2 } from 'lucide-react';
 
 // أيام الأسبوع بترتيب السعودية (الأحد أولاً) — نفس الترتيب المستخدم فعلياً
@@ -169,7 +169,7 @@ export default function SchedulePage() {
                           href={`/dashboard/Projects/${a.project_id}`}
                           className="block bg-slate-50 hover:bg-blue-50 border border-slate-100 hover:border-blue-200 rounded-xl p-2.5 transition-colors"
                         >
-                          <div className="font-bold text-[12px] text-[#061B40] truncate">{translateActivityType(a.activity_type)}</div>
+                          <div className="font-bold text-[12px] text-[#061B40] truncate">{displayActivityLabel(a)}</div>
                           <div className="flex items-center gap-1 text-[10px] text-slate-400 font-semibold mt-1 truncate">
                             <MapPin className="w-3 h-3 shrink-0" />
                             <span className="truncate">{projectNameById.get(a.project_id) || '—'}</span>

@@ -482,6 +482,145 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     const r = evaluateDustCompliance(context({ activity: activityProfile({ isEnclosedOperation: false }) }));
     expect(r.isEnclosedOperation).toBe(false);
   });
+
+  // ربط استثناء البيتشنج المغلق بكفاءة فلتر PM10 — اعتماد من محرك القواعد
+  // الجديد (marqab-dust-rules-engine): إغلاق العملية وحده لا يكفي لمحطة
+  // الخلط تحديداً، يلزم أيضاً كفاءة فلتر ≥99% (نفس حد BATCHING-FILTER-002).
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% مستثناة من بوابة إيقاف الرياح فوق 25', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: true,
+          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.windBand).toBe('ABOVE_25');
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+  });
+
+  it('محطة خلط مغلقة بكفاءة فلتر أقل من 99% لا تُستثنى من بوابة إيقاف الرياح فوق 25', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: true,
+          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: 95 },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
+  });
+
+  it('محطة خلط مغلقة بلا قيمة كفاءة فلتر مُدخلة (null) لا تُستثنى من بوابة إيقاف الرياح', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: true,
+          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: null },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
+  });
+
+  it('نشاط هدم مغلق يبقى مستثنى من بوابة إيقاف الرياح بلا أي شرط كفاءة فلتر (بلا تأثر بإضافة البيتشنج)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'DEMOLITION',
+          isEnclosedOperation: true,
+          controls: {
+            ...activityProfile().controls,
+            pm10FilterEfficiencyPercent: null,
+            continuousMisting: true,
+            sprayCannonAvailable: true,
+            dustScreensAvailable: true,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+  });
+});
+
+describe('محرك امتثال الغبار — منع الاستئناف التلقائي الفوري بعد إيقاف', () => {
+  it('بلا قرار سابق مسجَّل، لا قيد يُطبَّق (سلوك اليوم بلا تغيير)', () => {
+    const r = evaluateDustCompliance(context({ windSpeedKmh: 10, pm10UgM3: 20 }));
+    expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  it('قرار سابق MANDATORY_STOP منذ أقل من 10 دقائق + قراءة حالية جيدة → يبقى موقِفاً (لا استئناف فوري)', () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60000).toISOString();
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 10,
+        pm10UgM3: 20,
+        previousDecisionCategory: 'MANDATORY_STOP',
+        previousDecisionUpdatedAt: fiveMinutesAgo,
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.canOverride).toBe(false);
+    expect(r.restartConditions.some((c) => c.includes('10 دقائق'))).toBe(true);
+  });
+
+  it('قرار سابق STOP_AFFECTED_ACTIVITY منذ 15 دقيقة (أكثر من 10) + قراءة حالية جيدة → يستأنف طبيعياً', () => {
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 10,
+        pm10UgM3: 20,
+        previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+        previousDecisionUpdatedAt: fifteenMinutesAgo,
+      })
+    );
+    expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  it('قرار سابق موقِف بلا previousDecisionUpdatedAt (طابع زمني مفقود) → فشل آمن، لا يُطبَّق قيد', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 10,
+        pm10UgM3: 20,
+        previousDecisionCategory: 'MANDATORY_STOP',
+        previousDecisionUpdatedAt: null,
+      })
+    );
+    expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  it('قرار سابق ALLOW (لم يكن موقِفاً أصلاً) → لا قيد حتى لو كان حديثاً جداً', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30, // فوق 25 — يجب أن يُوقف أنشطة مكشوفة كالمعتاد
+        previousDecisionCategory: 'ALLOW',
+        previousDecisionUpdatedAt: new Date().toISOString(),
+      })
+    );
+    expect(r.decisionCategory).not.toBe('ALLOW');
+  });
+
+  it('قرار سابق موقِف لكن القرار الجديد المحسوب موقِف أيضاً (لا تحسّن) → لا حاجة لقيد الاستئناف، يمر القرار الجديد كما هو', () => {
+    const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30, // ABOVE_25 مكشوف → STOP_AFFECTED_ACTIVITY فعلي جديد (GATE-WIND-ABOVE-25-004)
+        previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+        previousDecisionUpdatedAt: oneMinuteAgo,
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    // السبب المعروض يجب أن يكون قاعدة الرياح الفعلية، لا رسالة "بانتظار
+    // استقرار" العامة — لأن القيد الجديد لم يُطبَّق هنا أصلاً (لا تحسّن).
+    expect(r.shortReasonAr).not.toContain('بانتظار استقرار');
+  });
 });
 
 // STONECUT-DRY-001 (قطع جاف بلا تبريد مائي/HEPA) حُذف من rulebook.ts —
@@ -561,6 +700,30 @@ describe('محرك امتثال الغبار — الكسارة', () => {
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-200-002B')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-500-002C')).toBe(true);
+  });
+
+  it('موقع الكسارة معروف وجدول المستقبلات فارغ فعلياً (Infinity تلقائية) → لا يسقط لقيمة يدوية قديمة، لا إيقاف', () => {
+    // يحاكي حالة إنتاجية فعلية: نُشئ صف الكسارة بحقل مسافة يدوي (420م) قبل
+    // اعتماد التحديد على الخريطة، ثم حُدِّد الموقع لاحقاً لكن الحقل اليدوي
+    // القديم بقي مخزَّناً. جدول sensitive_receptors فارغ بالكامل في النظام.
+    const r = evaluateDustCompliance(
+      context({
+        project: projectProfile({ hasOnsiteCrusher: true }),
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToReceptorM: 420, // يدوي قديم، يجب ألا يُستخدم إطلاقاً
+            crusherLat: 24.7,
+            crusherLng: 46.7,
+            crusherDistanceToNearestReceptorAutoM: Infinity,
+            crusherDistanceToResidentialReceptorAutoM: Infinity,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-200-002B')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-500-002C')).toBe(false);
   });
 
   it('الكسارة بلا إحداثيات ولا مستقبلات حساسة قريبة (بعيدة يدوياً) → لا إيقاف مسافة', () => {
@@ -770,9 +933,23 @@ describe('محرك امتثال الغبار — حساب مسافة الكسا�
     expect(profile.measurements.crusherDistanceToResidentialReceptorAutoM).not.toBeNull();
   });
 
-  it('buildActivityComplianceProfile بلا مستقبلات حساسة → حقول المسافة التلقائية null', () => {
+  it('buildActivityComplianceProfile بموقع معروف لكن بلا أي مستقبل حساس في النظام → مسافة آمنة (Infinity)، لا null', () => {
+    // موقع الكسارة معروف (لا نقص بيانات) وجدول sensitive_receptors فارغ
+    // فعلياً — هذه معلومة حقيقية ("لا يوجد مستقبِل معروف قريباً")، فيجب أن
+    // تُترجَم لمسافة آمنة عملياً (Infinity) لا null. null هنا كان يجعل قاعدة
+    // الكسارة تسقط خطأً لقيمة يدوية قديمة قد لا تعود صحيحة (راجع geo.ts)،
+    // رغم عدم وجود أي سبب فعلي للإيقاف.
     const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
     const profile = buildActivityComplianceProfile(row, []);
+    expect(profile.measurements.crusherDistanceToNearestReceptorAutoM).toBe(Infinity);
+    expect(profile.measurements.crusherDistanceToResidentialReceptorAutoM).toBe(Infinity);
+  });
+
+  it('buildActivityComplianceProfile بلا موقع كسارة محدَّد (lat/lng فارغ) → مسافة تلقائية null (بيانات ناقصة فعلاً)', () => {
+    const row = { regulatory_activity: 'CRUSHER' };
+    const profile = buildActivityComplianceProfile(row, [
+      { id: 'r1', name: 'سكني', receptorType: 'RESIDENTIAL', lat: 24.7005, lng: 46.7005 },
+    ]);
     expect(profile.measurements.crusherDistanceToNearestReceptorAutoM).toBeNull();
     expect(profile.measurements.crusherDistanceToResidentialReceptorAutoM).toBeNull();
   });
@@ -987,6 +1164,33 @@ describe('محرك امتثال الغبار — عدد محطات الرصد ح
     );
     const obligation = r.monitoringObligations.find((o) => o.key === 'MONITORING_STATION_COUNT');
     expect(obligation?.status).toBe('COMPLIANT');
+  });
+
+  // يوثّق القاعدة الكانونية بعد توحيد "محطات الرصد" مع "أجهزة الرصد
+  // الحية": الفئتان المنخفضتان (CATEGORY_I_LOW/UNCLASSIFIED) لا يُفرض
+  // عليهما أي حد أدنى إطلاقاً — الالتزام يجب أن يكون NOT_APPLICABLE بصرف
+  // النظر عن عدد الأجهزة (حتى صفر)، لا COMPLIANT/NON_COMPLIANT محسوباً على
+  // حد وهمي. يحمي من تكرار الخطأ القديم في نسختي complianceCheck() العميلتين
+  // (create/settings)، اللتين كانتا تكتبان 0 مباشرة بدل الاعتماد على نفس
+  // بوابة monitoringApplies المستخدمة هنا.
+  it('فئة أولى (منخفضة) بلا أجهزة رصد إطلاقاً → NOT_APPLICABLE، لا NON_COMPLIANT', () => {
+    const r = evaluateDustCompliance(
+      context({
+        project: projectProfile({ siteAreaM2: 500, dailyTruckMovements: 5, monitoringStationCount: 0 }),
+      })
+    );
+    const obligation = r.monitoringObligations.find((o) => o.key === 'MONITORING_STATION_COUNT');
+    expect(obligation?.status).toBe('NOT_APPLICABLE');
+  });
+
+  it('مشروع غير مصنَّف (بيانات ناقصة) بلا أجهزة رصد → NOT_APPLICABLE أيضاً', () => {
+    const r = evaluateDustCompliance(
+      context({
+        project: projectProfile({ siteAreaM2: null as any, dailyTruckMovements: null as any, monitoringStationCount: 0 }),
+      })
+    );
+    const obligation = r.monitoringObligations.find((o) => o.key === 'MONITORING_STATION_COUNT');
+    expect(obligation?.status).toBe('NOT_APPLICABLE');
   });
 });
 

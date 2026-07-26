@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { alertKindLabelAr, alertKindToDecision, decisionMeta } from '@/app/lib/decisionMeta';
 import { translateActivityType } from '@/app/lib/activityLabels';
+import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { Loader2, CloudRain } from 'lucide-react';
 
 const STATE_LABEL_AR: Record<string, string> = {
@@ -84,7 +85,11 @@ export default function AllAlertsTable() {
                         </Link>
                       </td>
                       <td className="py-3 px-5 text-slate-600">{a.ownerUsername || a.ownerCompany || '—'}</td>
-                      <td className="py-3 px-5 text-slate-600">{translateActivityType(a.activityType)}</td>
+                      <td className="py-3 px-5 text-slate-600">
+                        {a.regulatoryActivity && a.regulatoryActivity !== 'OTHER'
+                          ? REGULATORY_ACTIVITY_LABEL_AR[a.regulatoryActivity] ?? translateActivityType(a.activityType)
+                          : translateActivityType(a.activityType)}
+                      </td>
                       <td className="py-3 px-5">
                         <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${meta.bg} ${meta.text} border ${meta.border}`}>
                           {alertKindLabelAr[a.kind] || a.kind}

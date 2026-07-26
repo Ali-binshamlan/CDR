@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 
   const { data: activities, error } = await supabaseAdmin
     .from('project_dust_profiles')
-    .select('id, project_id, activity_type, planned_date, planned_time, duration_hours')
+    .select('id, project_id, activity_type, regulatory_activity, planned_date, planned_time, duration_hours')
     .in('project_id', projectIds)
     .gte('planned_date', from)
     .lte('planned_date', to)

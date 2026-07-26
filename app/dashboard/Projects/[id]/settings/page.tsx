@@ -40,7 +40,6 @@ const ZonePicker = dynamic(() => import('@/app/components/dashborad/ZonePicker')
 });
 import type { ZonePickerValue } from '@/app/components/dashborad/ZonePicker';
 import { buildProjectZoneFromRow } from '@/app/utils/geo/zone';
-import { parseKmlPoints, KmlParseError } from '@/app/utils/geo/kml';
 
 interface SettingsPageProps {
   params: Promise<{ id: string }>;
@@ -75,10 +74,126 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     circleRadiusM: null,
   });
 
-  // مواقع محطات رصد الغبار — نفس بنية صفحة تأسيس المشروع (create/page.tsx):
-  // نقطة واحدة لكل محطة، تُدخَل يدوياً أو تُستورد دفعة واحدة من ملف KML.
-  interface MonitoringStation { lat: string; lng: string; label: string }
-  const [monitoringStations, setMonitoringStations] = useState<MonitoringStation[]>([]);
+  // أجهزة الرصد الحية (project_devices) — مورد فرعي مستقل تماماً عن نموذج
+  // المشروع الرئيسي: جلبه وإضافته وإلغاؤه كلها نداءات API فورية خاصة به،
+  // لا تُجمَّع مع زر "حفظ التعديلات" العام. نفس مبدأ صفحات إدارة مفاتيح
+  // GitHub/Stripe — مورد أمني/تشغيلي حي، لا حقل وصفي في نموذج واحد.
+  interface ProjectDevice {
+    id: string;
+    name: string;
+    lat: number | null;
+    lng: number | null;
+    api_key_prefix: string;
+    is_active: boolean;
+    last_reading_at: string | null;
+    last_wind_speed_kmh: number | null;
+    last_pm10: number | null;
+    last_pm25: number | null;
+    last_visibility_m: number | null;
+  }
+  const [devices, setDevices] = useState<ProjectDevice[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(true);
+  const [newDeviceName, setNewDeviceName] = useState('');
+  // إحداثيات موقع الجهاز الفعلي — اختيارية (يمكن تسجيل جهاز بلا موقع محدد
+  // فيُستخدم كقراءة عامة للمشروع)، نص خام (لا رقم) حتى يقبل حقل فارغ أثناء
+  // الكتابة.
+  const [newDeviceLat, setNewDeviceLat] = useState('');
+  const [newDeviceLng, setNewDeviceLng] = useState('');
+  const [addingDevice, setAddingDevice] = useState(false);
+  // المفتاح الخام يُعرض هنا مرة واحدة فقط بعد الإنشاء مباشرة — لا يُخزَّن في
+  // أي مكان آخر ولا يُعاد جلبه لاحقاً من الخادم (غير مسترجَع أصلاً).
+  const [revealedApiKey, setRevealedApiKey] = useState<string | null>(null);
+
+  const fetchDevices = async () => {
+    setDevicesLoading(true);
+    try {
+      const { data } = await apiClient.get(`/projects/${projectId}/devices`);
+      setDevices(data?.devices || []);
+    } catch (error) {
+      console.error('فشل جلب أجهزة الرصد:', error);
+    } finally {
+      setDevicesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDevices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const handleAddDevice = async () => {
+    const name = newDeviceName.trim();
+    if (!name) {
+      toast.error('اسم الجهاز مطلوب');
+      return;
+    }
+    // إحداثيات اختيارية — إن أُدخل أحد الحقلين وجب الآخر (نقطة واحدة كاملة
+    // أو لا شيء)، وإلا يُرسَل null/null فيُستخدم الجهاز كقراءة عامة للمشروع
+    // بلا موقع محدد (بلا فرق في التقييم — الأولوية جهاز>يدوي>طقس لا تعتمد
+    // حالياً على موقع الجهاز مقابل موقع النشاط).
+    const latTrim = newDeviceLat.trim();
+    const lngTrim = newDeviceLng.trim();
+    if ((latTrim && !lngTrim) || (!latTrim && lngTrim)) {
+      toast.error('أدخل خط العرض والطول معاً، أو اتركهما فارغين.');
+      return;
+    }
+    const lat = latTrim ? Number(latTrim) : null;
+    const lng = lngTrim ? Number(lngTrim) : null;
+    if ((lat !== null && !Number.isFinite(lat)) || (lng !== null && !Number.isFinite(lng))) {
+      toast.error('إحداثيات غير صالحة.');
+      return;
+    }
+
+    setAddingDevice(true);
+    try {
+      const { data } = await apiClient.post(`/projects/${projectId}/devices`, { name, lat, lng });
+      setRevealedApiKey(data.apiKey);
+      setNewDeviceName('');
+      setNewDeviceLat('');
+      setNewDeviceLng('');
+      await fetchDevices();
+      toast.success('تم إنشاء الجهاز بنجاح');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'فشل إنشاء الجهاز');
+    } finally {
+      setAddingDevice(false);
+    }
+  };
+
+  const handleToggleDevice = async (device: ProjectDevice) => {
+    try {
+      await apiClient.patch(`/projects/${projectId}/devices/${device.id}`, { is_active: !device.is_active });
+      await fetchDevices();
+      toast.success(device.is_active ? 'تم إلغاء الجهاز' : 'تم إعادة تفعيل الجهاز');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'فشل تحديث حالة الجهاز');
+    }
+  };
+
+  const handleDeleteDevice = async (device: ProjectDevice) => {
+    try {
+      await apiClient.delete(`/projects/${projectId}/devices/${device.id}`);
+      await fetchDevices();
+      toast.success('تم حذف الجهاز');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'فشل حذف الجهاز');
+    }
+  };
+
+  const deviceReadingAgeLabel = (isoTime: string | null): string => {
+    if (!isoTime) return 'لا توجد قراءات بعد';
+    const ageMinutes = Math.round((Date.now() - new Date(isoTime).getTime()) / 60000);
+    if (ageMinutes < 1) return 'الآن';
+    if (ageMinutes < 60) return `منذ ${ageMinutes} د`;
+    const hours = Math.round(ageMinutes / 60);
+    return `منذ ${hours} س`;
+  };
+  // نفس عتبة الحداثة DEVICE_READING_FRESHNESS_MINUTES في app/lib/dustEvaluation.ts —
+  // للعرض التحذيري فقط هنا (القيمة الفعلية المستخدمة في التقييم محسوبة في السيرفر).
+  const isDeviceReadingStale = (isoTime: string | null): boolean => {
+    if (!isoTime) return true;
+    return (Date.now() - new Date(isoTime).getTime()) / 60000 > 20;
+  };
 
   // ورديات عمل حقيقية (اختياري) — نفس بنية create/page.tsx بالضبط، لكن
   // تُملأ من project.shifts المُرجَعة من GET /api/projects/[id] (قادمة من
@@ -151,7 +266,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     // تركها فارغاً يعني "غير معروف" وليس مخالفة، لكنه قد يخفض الثقة تحت 70
     // فيتحول قرار "مسموح" تلقائياً إلى "يتطلب تحقق ميداني".
     baseline_monitoring_days: '' as string | number,
-    monitoring_station_count: '' as string | number,
     monitoring_logging_interval_minutes: '' as string | number,
     anemometer_height_m: '' as string | number,
     entry_exit_cameras_installed: false,
@@ -220,7 +334,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
             dmp_approval_status: projectData.dmp_approval_status || 'UNKNOWN',
 
             baseline_monitoring_days: projectData.baseline_monitoring_days ?? '',
-            monitoring_station_count: projectData.monitoring_station_count ?? '',
             monitoring_logging_interval_minutes: projectData.monitoring_logging_interval_minutes ?? '',
             anemometer_height_m: projectData.anemometer_height_m ?? '',
             entry_exit_cameras_installed: !!projectData.entry_exit_cameras_installed,
@@ -238,16 +351,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
             // يُعرض الرقم المحفوظ كاملاً كما هو بدل فقدانه أو بتره خطأً.
             setContactLocalNumber(
               parsedPhone && parsedPhone.country === 'SA' ? parsedPhone.nationalNumber : projectData.contact_number
-            );
-          }
-
-          if (Array.isArray(projectData.monitoring_station_locations)) {
-            setMonitoringStations(
-              projectData.monitoring_station_locations.map((s: any) => ({
-                lat: s?.lat !== undefined && s?.lat !== null ? String(s.lat) : '',
-                lng: s?.lng !== undefined && s?.lng !== null ? String(s.lng) : '',
-                label: s?.label || '',
-              }))
             );
           }
 
@@ -322,41 +425,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     setProjectForm(prev => ({ ...prev, [name]: value }));
   };
 
-  // عدد محطات الرصد المُدخَل يدوياً يتحكم بعدد صفوف الإحداثيات المعروضة —
-  // نفس منطق create/page.tsx تماماً، يضيف/يحذف صفوفاً فارغة عند تغييره.
-  const handleStationCountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value;
-    setProjectForm((prev) => ({ ...prev, monitoring_station_count: raw }));
-    const count = raw === '' ? 0 : Math.max(0, Math.min(20, parseInt(raw, 10) || 0));
-    setMonitoringStations((prev) => {
-      if (count === prev.length) return prev;
-      if (count < prev.length) return prev.slice(0, count);
-      return [...prev, ...Array.from({ length: count - prev.length }, () => ({ lat: '', lng: '', label: '' }))];
-    });
-  };
-
-  const updateMonitoringStation = (index: number, field: keyof MonitoringStation, value: string) => {
-    setMonitoringStations((prev) => prev.map((s, i) => (i === index ? { ...s, [field]: value } : s)));
-  };
-
-  const handleMonitoringKmlUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const points = parseKmlPoints(text);
-      const stations = points.map((p) => ({ lat: String(p.lat), lng: String(p.lng), label: p.label || '' }));
-      setMonitoringStations(stations);
-      setProjectForm((prev) => ({ ...prev, monitoring_station_count: stations.length }));
-      toast.success(`تم استيراد ${stations.length} محطة رصد من ملف KML.`);
-    } catch (error) {
-      const message = error instanceof KmlParseError ? error.message : 'تعذّر قراءة ملف KML لمحطات الرصد.';
-      console.error('🚨 فشل استيراد KML لمحطات الرصد:', error);
-      toast.error(message);
-    }
-  };
-
   const toggleWorkDay = (dayId: string) => {
     setProjectForm((prev) => {
       const list = prev.work_days_list.includes(dayId)
@@ -368,14 +436,18 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     });
   };
 
-  // فحص امتثال الغبار التنظيمي المرجعي — نفس منطق تصنيف الفئة والتزامات
-  // الرصد في dust-compliance-engine (classifyProject)، معاد استخدامه هنا
-  // توعوياً فقط (بعكس create/page.tsx حيث يمنع الحفظ فعلياً)، لأن مشروعاً
-  // قائماً فعلاً لا يجوز إيقاف تعديل إعداداته بسبب نقص بيانات لاحق.
+  // فحص امتثال الغبار التنظيمي المرجعي — نفس منطق تصنيف الفئة في
+  // dust-compliance-engine (classifyProject). بخلاف create/page.tsx (توعوي
+  // فقط هناك لأن الأجهزة لا يمكن أن توجد قبل حفظ المشروع)، هذا هو المكان
+  // الوحيد الذي توجد فيه أجهزة رصد حقيقية (project_devices) للتحقق منها،
+  // فالفحص هنا إلزامي فعلاً لحالة "جاري" (راجع validateBasicFields أدناه).
+  // stationCount = عدد الأجهزة *النشطة* فقط (devices.filter(is_active)) —
+  // جهاز مُلغى لا يقدر يرسل قراءات (requireDeviceApiKey يرفضه)، فعدّه ضمن
+  // الحد الأدنى يعطي إشارة امتثال زائفة.
   const complianceCheck = () => {
     const areaM2 = projectForm.site_area_m2 === '' ? null : Number(projectForm.site_area_m2);
     const truckMovements = projectForm.daily_truck_movements === '' ? null : Number(projectForm.daily_truck_movements);
-    const stationCount = projectForm.monitoring_station_count === '' ? null : Number(projectForm.monitoring_station_count);
+    const stationCount = devices.filter((d) => d.is_active).length;
 
     let riskClass: 'CATEGORY_I_LOW' | 'CATEGORY_II_MEDIUM' | 'CATEGORY_III_HIGH' | 'UNCLASSIFIED';
     if (areaM2 !== null && areaM2 > 5000) riskClass = 'CATEGORY_III_HIGH';
@@ -386,8 +458,10 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     else if (areaM2 >= 2000) riskClass = 'CATEGORY_II_MEDIUM';
     else riskClass = 'CATEGORY_I_LOW';
 
-    const minStations =
-      riskClass === 'CATEGORY_III_HIGH' ? 2 : riskClass === 'CATEGORY_II_MEDIUM' ? 1 : 0;
+    // نفس صيغة buildMonitoringObligations (dust-compliance-engine/engine.ts)
+    // حرفياً — بوابة monitoringApplies أولاً، ثم الرقم الفعلي.
+    const monitoringApplies = riskClass === 'CATEGORY_II_MEDIUM' || riskClass === 'CATEGORY_III_HIGH';
+    const minStations = monitoringApplies ? (riskClass === 'CATEGORY_III_HIGH' ? 2 : 1) : 0;
 
     const warnings: string[] = [];
 
@@ -399,17 +473,17 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     if (truckMovements === null) {
       warnings.push('حركة الشاحنات اليومية غير مُدخلة — مطلوبة لتصنيف فئة مخاطر الغبار للمشروع.');
     }
-    if (minStations > 0 && (stationCount === null || stationCount < minStations)) {
-      warnings.push(`الحد الأدنى التنظيمي لعدد محطات رصد الغبار لهذه الفئة هو ${minStations} — ${stationCount === null ? 'لم يُدخَل عدد بعد' : `لديك حالياً ${stationCount}`}.`);
+    if (minStations > 0 && stationCount < minStations) {
+      warnings.push(`الحد الأدنى التنظيمي لعدد أجهزة الرصد لهذه الفئة هو ${minStations} — لديك حالياً ${stationCount} جهاز نشط.`);
     }
     if (truckMovements !== null && truckMovements > 50) {
-      warnings.push(`حركة الشاحنات اليومية (${truckMovements} رحلة) تتجاوز 50 رحلة — يتطلب محطتي رصد على الأقل.`);
+      warnings.push(`حركة الشاحنات اليومية (${truckMovements} رحلة) تتجاوز 50 رحلة — يتطلب جهازي رصد على الأقل.`);
     }
     if (projectForm.has_onsite_crusher) {
-      warnings.push('وجود كسارة داخل الموقع — يتطلب محطتي رصد على الأقل.');
+      warnings.push('وجود كسارة داخل الموقع — يتطلب جهازي رصد على الأقل.');
     }
     if (projectForm.has_onsite_batching_plant) {
-      warnings.push('وجود محطة خلط خرساني (خلاطة) داخل الموقع — يتطلب محطتي رصد على الأقل.');
+      warnings.push('وجود محطة خلط خرساني (خلاطة) داخل الموقع — يتطلب جهازي رصد على الأقل.');
     }
     const dmpMissing = projectForm.dmp_approval_status !== 'APPROVED' && projectForm.dmp_approval_status !== 'NOT_REQUIRED';
     if (dmpMissing) {
@@ -459,8 +533,8 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       if (dmpMissing) {
         errors.push('لا يمكن حفظ مشروع بحالة "جاري" بلا خطة معتمدة لإدارة الغبار (DMP) — حدّث حالة اعتماد DMP أو اختر حالة "لم يبدأ".');
       }
-      if (minStations > 0 && (stationCount === null || stationCount < minStations)) {
-        errors.push(`لا يمكن حفظ مشروع بحالة "جاري" بعدد محطات رصد أقل من الحد التنظيمي (${minStations} لهذه الفئة) — أضف بيانات المحطات أو اختر حالة "لم يبدأ".`);
+      if (minStations > 0 && stationCount < minStations) {
+        errors.push(`لا يمكن حفظ مشروع بحالة "جاري" بعدد أجهزة رصد نشطة أقل من الحد التنظيمي (${minStations} لهذه الفئة، لديك ${stationCount}) — أضف أجهزة من قسم "أجهزة الرصد الحية" أدناه، أو اختر حالة "لم يبدأ".`);
       }
     }
 
@@ -487,13 +561,11 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
         site_area_m2: projectForm.site_area_m2 === '' ? null : Number(projectForm.site_area_m2),
         daily_truck_movements: projectForm.daily_truck_movements === '' ? null : Number(projectForm.daily_truck_movements),
         baseline_monitoring_days: projectForm.baseline_monitoring_days === '' ? null : Number(projectForm.baseline_monitoring_days),
-        monitoring_station_count: projectForm.monitoring_station_count === '' ? null : Number(projectForm.monitoring_station_count),
         monitoring_logging_interval_minutes: projectForm.monitoring_logging_interval_minutes === '' ? null : Number(projectForm.monitoring_logging_interval_minutes),
         anemometer_height_m: projectForm.anemometer_height_m === '' ? null : Number(projectForm.anemometer_height_m),
         camera_retention_days: projectForm.camera_retention_days === '' ? null : Number(projectForm.camera_retention_days),
-        monitoring_station_locations: monitoringStations
-          .filter((s) => s.lat !== '' && s.lng !== '' && Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)))
-          .map((s) => ({ lat: Number(s.lat), lng: Number(s.lng), label: s.label || null })),
+        // أجهزة الرصد (project_devices) لم تعد جزءاً من هذا الـ payload —
+        // تُدار بنداءات API فورية مستقلة من قسم "أجهزة الرصد الحية" أدناه.
         // ورديات العمل — مصفوفة صريحة (حتى لو فارغة []) تعني "استبدل كل
         // ورديات المشروع بهذه القائمة" في PATCH /api/projects/[id] (راجع
         // معالجة shifts هناك: تمييز [] الصريحة عن غياب المفتاح تماماً).
@@ -769,10 +841,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                   </div>
                 </div>
                 <div>
-                  <label className={labelClass}>عدد محطات رصد PM10</label>
-                  <input type="number" min={0} max={20} name="monitoring_station_count" placeholder="مثال: 2" value={projectForm.monitoring_station_count} onChange={handleStationCountChange} className={inputClass} />
-                </div>
-                <div>
                   <label className={labelClass}>فترة تسجيل بيانات الرصد</label>
                   <div className="relative">
                     <input type="number" name="monitoring_logging_interval_minutes" placeholder="مثال: 1" value={projectForm.monitoring_logging_interval_minutes} onChange={handleComplianceFieldChange} className={`${inputClass} pl-14`} />
@@ -805,30 +873,9 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                 </div>
               </div>
 
-              {/* مواقع محطات رصد الغبار — نفس منطق create/page.tsx: صفوف
-                  إحداثيات يدوية بعدد "عدد محطات رصد PM10" أعلاه، أو استيراد
-                  دفعة واحدة من ملف KML. */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-start">
-                <div className="md:col-span-4 flex items-end gap-3">
-                  <label className="flex-1 flex items-center justify-center gap-2 bg-[#F4F7FB] hover:bg-[#e8eef7] text-[#061B40] text-xs font-bold px-3 py-2.5 rounded-lg border border-dashed border-[#061B40]/20 cursor-pointer transition-colors">
-                    <span className="text-[#3995FF]">📁</span>
-                    استيراد مواقع المحطات من ملف KML
-                    <input type="file" accept=".kml" onChange={handleMonitoringKmlUpload} className="hidden" />
-                  </label>
-                </div>
-              </div>
-
-              {monitoringStations.length > 0 && (
-                <div className="space-y-2">
-                  {monitoringStations.map((station, idx) => (
-                    <div key={idx} className="grid grid-cols-3 gap-2 bg-[#F4F7FB] p-2 rounded-lg border border-[#061B40]/10">
-                      <input type="text" placeholder={`اسم/رقم المحطة ${idx + 1}`} value={station.label} onChange={(e) => updateMonitoringStation(idx, 'label', e.target.value)} className={inputClass} />
-                      <input type="number" step="0.000001" placeholder="خط العرض" value={station.lat} onChange={(e) => updateMonitoringStation(idx, 'lat', e.target.value)} className={inputClass} />
-                      <input type="number" step="0.000001" placeholder="خط الطول" value={station.lng} onChange={(e) => updateMonitoringStation(idx, 'lng', e.target.value)} className={inputClass} />
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* أجهزة الرصد الفعلية (project_devices) لم تعد تُدار من هذا
+                  القسم — راجع قسم "أجهزة الرصد الحية" أدناه، وهو المصدر
+                  الوحيد الآن لعدد وموقع أجهزة الرصد. */}
             </div>
 
             {/* القسم 2: الجدولة وإدارة المشروع */}
@@ -1002,6 +1049,178 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               {loading && submitStage ? submitStage : 'حفظ التعديلات'}
             </button>
           </form>
+
+          {/* أجهزة الرصد الحية — مورد فرعي مستقل عن نموذج المشروع (نداءات
+              API فورية خاصة به، لا تُجمَّع مع "حفظ التعديلات" أعلاه). كل
+              جهاز يرسل قراءات لحظية عبر POST /api/devices/ingest بمفتاحه
+              الخاص، وتُستخدم هذه القراءات في محرك DVI بأولوية أعلى من
+              القيم اليدوية وتقدير الطقس (راجع computeDviResult). */}
+          <div className="mt-8 pt-6 border-t border-[#061B40]/10">
+            <h2 className={sectionTitleClass}>
+              <span className="flex items-center gap-2"><Radar className="w-4 h-4 text-[#3995FF]" /> أجهزة الرصد الحية</span>
+            </h2>
+            <p className="text-[11px] font-bold text-[#061B40]/50 mb-3">
+              كل جهاز يحصل على مفتاح خاص لإرسال قراءات لحظية (سرعة/اتجاه الرياح، PM10، PM2.5، الرؤية) عبر
+              <code dir="ltr" className="mx-1 px-1.5 py-0.5 bg-[#F4F7FB] rounded text-[10px]">POST /api/devices/ingest</code>
+              — تحل هذه القراءات محل بيانات الطقس التقديرية طالما كانت حديثة (خلال آخر 20 دقيقة).
+              {' '}
+              <Link href="/api-docs/devices" target="_blank" className="text-[#3995FF] hover:underline font-black">
+                توثيق ربط الأجهزة (لمورّد المحطة) ←
+              </Link>
+            </p>
+
+            {/* تحذير حي بعدد الأجهزة النشطة مقابل الحد التنظيمي — يتحدّث
+                فوراً مع كل إضافة/إلغاء جهاز، بلا انتظار محاولة حفظ الفورم
+                الكبير. نفس complianceCheck() المستخدمة في التحقق الإلزامي
+                أدناه، فلا يمكن أن يختلف العرضان أبداً. */}
+            {(() => {
+              const { minStations, stationCount } = complianceCheck();
+              if (minStations === 0 || stationCount >= minStations) return null;
+              return (
+                <div className="mb-4 rounded-lg p-3 border bg-amber-50 border-amber-200">
+                  <p className="text-[11px] font-bold text-amber-700 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    {stationCount} من {minStations} جهاز رصد نشط مطلوب لفئة هذا المشروع — لن يمكن حفظ حالة "جاري" حتى يكتمل العدد.
+                  </p>
+                </div>
+              );
+            })()}
+
+            {revealedApiKey && (
+              <div className="mb-4 bg-amber-50 border-2 border-amber-300 rounded-xl p-4 space-y-2">
+                <p className="text-[12px] font-bold text-amber-800">
+                  ⚠ احفظ هذا المفتاح الآن — لن يُعرض مرة أخرى بعد إغلاق هذه الرسالة.
+                </p>
+                <div className="flex items-center gap-2">
+                  <code dir="ltr" className="flex-1 bg-white border border-amber-200 rounded-lg px-3 py-2 text-[12px] font-mono text-[#061B40] overflow-x-auto">
+                    {revealedApiKey}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(revealedApiKey);
+                      toast.success('تم نسخ المفتاح');
+                    }}
+                    className="shrink-0 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition-all"
+                  >
+                    نسخ
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRevealedApiKey(null)}
+                  className="text-[11px] font-bold text-amber-700 hover:underline"
+                >
+                  حفظتُ المفتاح، إغلاق
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto] gap-2 items-end mb-1">
+              <div>
+                <label className={labelClass}>اسم الجهاز الجديد</label>
+                <input
+                  type="text"
+                  placeholder="مثال: محطة الرصد الشمالية"
+                  value={newDeviceName}
+                  onChange={(e) => setNewDeviceName(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>خط العرض (اختياري)</label>
+                <input
+                  type="number"
+                  step="0.000001"
+                  placeholder="24.7136"
+                  value={newDeviceLat}
+                  onChange={(e) => setNewDeviceLat(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>خط الطول (اختياري)</label>
+                <input
+                  type="number"
+                  step="0.000001"
+                  placeholder="46.6753"
+                  value={newDeviceLng}
+                  onChange={(e) => setNewDeviceLng(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleAddDevice}
+                disabled={addingDevice}
+                className="shrink-0 bg-[#3995FF] hover:bg-[#3995FF]/90 disabled:bg-gray-300 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-all"
+              >
+                {addingDevice ? 'جارٍ الإنشاء...' : '+ إضافة جهاز'}
+              </button>
+            </div>
+            <p className="text-[10px] font-bold text-[#061B40]/40 mb-4">
+              حدّد موقع الجهاز الفعلي إن عرفته (نفس إحداثيات موقع المشروع تقريباً)، أو اتركهما فارغين لتسجيل جهاز عام للمشروع بلا موقع محدد.
+            </p>
+
+            {devicesLoading ? (
+              <p className="text-[12px] font-bold text-[#061B40]/40">جاري تحميل الأجهزة...</p>
+            ) : devices.length === 0 ? (
+              <p className="text-[11px] font-bold text-[#061B40]/40 bg-[#F4F7FB] border border-dashed border-[#061B40]/15 rounded-lg p-3">
+                لا توجد أجهزة رصد مسجَّلة لهذا المشروع بعد.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {devices.map((device) => {
+                  const stale = isDeviceReadingStale(device.last_reading_at);
+                  return (
+                    <div
+                      key={device.id}
+                      className={`grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-2 items-center p-3 rounded-lg border ${
+                        !device.is_active ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-[#F4F7FB] border-[#061B40]/10'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-sm font-bold text-[#061B40]">{device.name}</div>
+                        <div className="text-[10px] font-mono text-[#061B40]/40" dir="ltr">{device.api_key_prefix}…</div>
+                        {device.lat != null && device.lng != null ? (
+                          <div className="text-[10px] font-bold text-[#061B40]/40" dir="ltr">{device.lat.toFixed(5)}, {device.lng.toFixed(5)}</div>
+                        ) : (
+                          <div className="text-[10px] font-bold text-[#061B40]/30">بلا موقع محدد</div>
+                        )}
+                      </div>
+                      <div className="text-[11px] font-bold">
+                        <span className={stale ? 'text-amber-600' : 'text-emerald-600'}>
+                          {stale ? '⚠ ' : '● '}{deviceReadingAgeLabel(device.last_reading_at)}
+                        </span>
+                        {!device.is_active && <span className="block text-red-500">مُلغى</span>}
+                      </div>
+                      <div className="text-[10px] font-bold text-[#061B40]/60 leading-relaxed">
+                        {device.last_wind_speed_kmh != null && <div>رياح: {device.last_wind_speed_kmh} كم/س</div>}
+                        {device.last_pm10 != null && <div>PM10: {device.last_pm10}</div>}
+                        {device.last_pm25 != null && <div>PM2.5: {device.last_pm25}</div>}
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleDevice(device)}
+                          className="text-[11px] font-bold text-[#3995FF] hover:underline px-2 py-1"
+                        >
+                          {device.is_active ? 'إلغاء' : 'تفعيل'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDevice(device)}
+                          className="text-[11px] font-bold text-red-500 hover:underline px-2 py-1"
+                        >
+                          حذف
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* منطقة الخطر - الحذف */}
           <div className="mt-8 pt-6 border-t border-red-100">

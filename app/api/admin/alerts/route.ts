@@ -26,22 +26,25 @@ export async function GET(request: NextRequest) {
 
   // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي، نفس
   // الاتفاقية المستخدمة في app/api/alerts/generate/route.ts) — نجلب
-  // activity_type لكل نشاط مرتبط لعرضه مترجماً بدل رمز خام (HEAVY_EQUIPMENT_MOVEMENT).
+  // regulatory_activity (النشاط التنظيمي المختار فعلياً: كسارة/هدم/...)
+  // لعرضه بدل activity_type الفيزيائي الداخلي (HEAVY_EQUIPMENT_MOVEMENT).
   const activityIds = [...new Set((alerts || []).map((a: any) => a.activity_id).filter(Boolean))];
   const { data: dustProfiles } = activityIds.length > 0
-    ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type').in('id', activityIds)
+    ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', activityIds)
     : { data: [] as any[] };
-  const activityTypeById = new Map((dustProfiles || []).map((p: any) => [p.id, p.activity_type]));
+  const dustProfileById = new Map((dustProfiles || []).map((p: any) => [p.id, p]));
 
   const data = (alerts || []).map((alert: any) => {
     const owner = profileByUserId.get(alert.projects?.user_id);
+    const dustProfile = dustProfileById.get(alert.activity_id);
     return {
       ...alert,
       projectName: alert.projects?.name || null,
       projectCity: alert.projects?.city || null,
       ownerUsername: owner?.username || null,
       ownerCompany: owner?.company_name || null,
-      activityType: activityTypeById.get(alert.activity_id) || null,
+      activityType: dustProfile?.activity_type || null,
+      regulatoryActivity: dustProfile?.regulatory_activity || null,
     };
   });
 

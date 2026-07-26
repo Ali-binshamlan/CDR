@@ -15,8 +15,18 @@ export interface DiscoveredReceptor {
   id: string;
   name: string;
   receptorType: SensitiveReceptorType;
+  // مركز العنصر (centroid عند way/relation، أو النقطة نفسها عند node) —
+  // يبقى موجوداً دائماً كقيمة احتياطية، لكن لا يجوز استخدامه وحده لحساب
+  // "أقرب مسافة" لعناصر landuse=residential الكبيرة (أحياء كاملة قد تمتد
+  // كيلومترات) — راجع boundary أدناه.
   lat: number;
   lng: number;
+  // معالم الحدود الفعلية لعنصر way (كل عقد المضلع/الخط، من "out geom;") —
+  // متوفرة فقط لعناصر way/relation، غير موجودة لعناصر node (مبنى مفرد/
+  // نقطة). عند توفرها، أقرب مسافة فعلية للعنصر يجب أن تُحسب كأقرب مسافة
+  // لأي نقطة على boundary، لا للمركز فقط — وإلا فمركز حي سكني كبير قد يبدو
+  // بعيداً رغم أن حافته الفعلية قريبة جداً من الموقع المقيَّم.
+  boundary?: { lat: number; lng: number }[];
 }
 
 const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
@@ -61,12 +71,16 @@ function buildOverpassQuery(centerLat: number, centerLng: number, radiusM: numbe
     `;
   }).join('\n');
 
+  // "out geom;" (بدل "out center tags;" السابقة) يُرجع كامل معالم كل way
+  // (geometry: [{lat, lon}, ...]) بجانب مركزه — ضروري لحساب أقرب مسافة
+  // فعلية لعناصر كبيرة مثل landuse=residential، لا مسافة المركز فقط
+  // (راجع تعليق DiscoveredReceptor.boundary).
   return `
     [out:json][timeout:15];
     (
       ${clauses}
     );
-    out center tags;
+    out geom;
   `;
 }
 
@@ -139,12 +153,24 @@ export async function fetchNearbySensitiveReceptorsFromOsm(
       const receptorType = classifyOsmTags(el.tags);
       if (!receptorType) continue;
 
-      // node: lat/lon مباشرة. way/relation: center.lat/center.lon (بفضل "out center")
-      const lat = typeof el.lat === 'number' ? el.lat : el.center?.lat;
-      const lng = typeof el.lon === 'number' ? el.lon : el.center?.lon;
+      // node: lat/lon مباشرة. way/relation مع "out geom;": لا يوجد حقل
+      // center جاهز (ذاك خاص بـ"out center;" فقط) — نحسب centroid تقريبياً
+      // من متوسط نقاط geometry كقيمة احتياطية للعرض فقط؛ الحساب الدقيق
+      // لأقرب مسافة يعتمد على boundary الكاملة أدناه، لا هذا المتوسط.
+      const geometryPoints: { lat: number; lon: number }[] = Array.isArray(el.geometry) ? el.geometry : [];
+      let lat: number | undefined = typeof el.lat === 'number' ? el.lat : undefined;
+      let lng: number | undefined = typeof el.lon === 'number' ? el.lon : undefined;
+      if ((lat === undefined || lng === undefined) && geometryPoints.length > 0) {
+        const sum = geometryPoints.reduce((acc, p) => ({ lat: acc.lat + p.lat, lng: acc.lng + p.lon }), { lat: 0, lng: 0 });
+        lat = sum.lat / geometryPoints.length;
+        lng = sum.lng / geometryPoints.length;
+      }
       if (typeof lat !== 'number' || typeof lng !== 'number') continue;
 
       const name = el.tags?.['name:ar'] || el.tags?.name || FALLBACK_NAME_AR[receptorType];
+      const boundary = geometryPoints.length > 0
+        ? geometryPoints.map((p) => ({ lat: p.lat, lng: p.lon }))
+        : undefined;
 
       results.push({
         id: `osm-${el.type}-${el.id}`,
@@ -152,6 +178,7 @@ export async function fetchNearbySensitiveReceptorsFromOsm(
         receptorType,
         lat,
         lng,
+        boundary,
       });
     }
     cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, data: results });

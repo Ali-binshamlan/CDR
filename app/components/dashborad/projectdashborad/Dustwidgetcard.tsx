@@ -32,17 +32,19 @@ interface DustWidgetCardProps {
   hideSchedule?: boolean;
   /** نتائج محرك الامتثال التنظيمي (Riyadh Dust Compliance) — مستقلة تماماً
    * عن قرار DVI أعلاه، تُعرض كأقسام إضافية منفصلة ولا تستبدل أي جزء من DVI.
-   * عنصر واحد لكل نشاط تنظيمي (regulatory_activity) أُضيف لهذا النشاط
-   * الفيزيائي — نشاط واحد قد يحمل عدة أنشطة تنظيمية (هدم + كسارة مثلاً)
-   * عبر ميزة "إضافة نشاط تنظيمي آخر"، فكل واحد له قرار امتثال مستقل. */
+   * عنصر واحد لكل صف امتثال — قد يتعدد عند تعدد وحدات النشاط الفعلية (عدة
+   * محطات خلط/كسارات ضمن نفس النشاط التنظيمي)، فكل واحد له قرار امتثال
+   * مستقل. */
   complianceList?: DustComplianceResult[] | null;
 }
 
 const COMPLIANCE_RULES_TRANSLATIONS: Record<string, string> = {
   'GATE-DMP-001': 'نشاط غبار نشط/مخطط بلا موافقة معتمدة على خطة إدارة الغبار (DMP)',
-  'GATE-DVI-002': 'إيقاف إلزامي بسبب خطورة فيزيائية حالية (رؤية منعدمة أو تركيز غبار خطر) لا علاقة له بمخالفة تنظيمية',
+  // GATE-DVI-002 مستثناة عمداً من هذا القاموس: رسالتها الآن ديناميكية
+  // (سبب DVI الفعلي المحدَّد، مثال "PM10 = 1806.8")، فالسقوط الافتراضي إلى
+  // rule.messageAr أدناه هو المطلوب — أي نص ثابت هنا كان سيطغى عليها دائماً.
   'GATE-SUPPRESSION-003': 'نظام تثبيط الغبار غير عامل على نشاط مولّد للغبار',
-  'GATE-WIND-ABOVE-25-004': 'إيقاف الأنشطة المكشوفة المولّدة للغبار بسبب رياح تتجاوز 25 كم/س (بروتوكول الملحق أ)',
+  'GATE-WIND-ABOVE-25-004': 'إيقاف الأنشطة المكشوفة المولّدة للغبار بسبب رياح تتجاوز 25 كم/س',
   'DEMO-WIND-STOP-001': 'أعمال هدم مكشوفة أثناء رياح تتجاوز 15 كم/س',
   'DEMO-AREA-002': 'مساحة الهدم النشطة تتجاوز 100 م² في المرة الواحدة',
   'DEMO-MISTING-003': 'لا يوجد رش رذاذ مستمر أو مدفع رذاذ لأعمال الهدم',
@@ -254,10 +256,10 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
   const style = getDecisionStyle(result.decisionCategory, result.mandatoryStop);
   const aeiStyle = getAeiStyle(aei.color);
 
-  // قد يحمل النشاط الواحد أكثر من نشاط تنظيمي (هدم + كسارة مثلاً) عبر ميزة
-  // "إضافة نشاط تنظيمي آخر" — كل عنصر في complianceList له قرار امتثال
-  // مستقل تماماً عن DVI أعلاه. اعتماد التنفيذ يُمنع إن أوقف أي واحد منها
-  // النشاط (إيقاف إلزامي أو إيقاف النشاط المتأثر)، بصرف النظر عن البقية.
+  // قد يحمل النشاط الواحد أكثر من صف امتثال عند تعدد وحداته الفعلية (عدة
+  // محطات خلط/كسارات ضمن نفس النشاط) — كل عنصر في complianceList له قرار
+  // امتثال مستقل تماماً عن DVI أعلاه. اعتماد التنفيذ يُمنع إن أوقف أي واحد
+  // منها النشاط (إيقاف إلزامي أو إيقاف النشاط المتأثر)، بصرف النظر عن البقية.
   const complianceEntries = (complianceList ?? []).filter(Boolean);
   const complianceBlocksApproval = complianceEntries.some(
     (c) => c.decisionCategory === 'MANDATORY_STOP' || c.decisionCategory === 'STOP_AFFECTED_ACTIVITY'
@@ -329,7 +331,17 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
     'HEAVY_EQUIPMENT_MOVEMENT': 'حركة معدات ثقيلة', 'MEP_EXTERNAL_WORK': 'أعمال ميكانيكية/كهربائية'
   };
 
-  const activityLabel = (ACTIVITY_LABEL_AR as Record<string, string>)[activityType] ?? EXTENDED_ACTIVITY_LABEL[activityType] ?? activityType;
+  // العنوان الفرعي = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...)، لا
+  // التصنيف الفيزيائي العام (حركة معدات ثقيلة) — نفس منطق Compliancewidgetcard.
+  const physicalActivityLabel = (ACTIVITY_LABEL_AR as Record<string, string>)[activityType] ?? EXTENDED_ACTIVITY_LABEL[activityType] ?? activityType;
+  const regulatoryLabels = Array.from(
+    new Set(
+      complianceEntries
+        .map((c) => c.regulatoryActivityLabelAr)
+        .filter((l): l is string => !!l && l !== 'نشاط غبار عام')
+    )
+  );
+  const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
 
   useEffect(() => {
     async function fetchInitialData() {
@@ -726,7 +738,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                     <div className="bg-white/70 rounded-lg p-2">
                       <div className="text-xs text-[#061B40]/60">النشاط</div>
-                      <div className="font-bold text-[#061B40] truncate" title={aei.activityLabelAr}>{aei.activityLabelAr}</div>
+                      <div className="font-bold text-[#061B40] truncate" title={activityLabel}>{activityLabel}</div>
                     </div>
                     <div className="bg-white/70 rounded-lg p-2">
                       <div className="text-xs text-[#061B40]/60">درجة السلامة</div>

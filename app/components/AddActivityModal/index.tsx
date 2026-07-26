@@ -746,7 +746,7 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
           throw new Error('مشكلة أثناء الحفظ.');
         }
       }
-      toast.success(`تم التقييم والحفظ بنجاح (${regulatoryActivities.length} نشاط تنظيمي).`, { id: 'dvi-calc' });
+      toast.success('تم التقييم والحفظ بنجاح.', { id: 'dvi-calc' });
       finishIndicator('dust');
     } catch (error: any) { toast.error(error?.message || 'حدث خطأ', { id: 'dvi-calc' }); } finally { setDustLoading(false); }
   };

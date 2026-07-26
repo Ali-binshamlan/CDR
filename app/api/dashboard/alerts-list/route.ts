@@ -35,8 +35,8 @@ export async function GET(request: NextRequest) {
   const activityLabels: Record<string, any> = {};
 
   if (dustIds.length > 0) {
-    const { data } = await supabaseAdmin.from('project_dust_profiles').select('id, activity_type').in('id', dustIds);
-    (data || []).forEach((d: any) => { activityLabels[`dust:${d.id}`] = { activity_type: d.activity_type }; });
+    const { data } = await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', dustIds);
+    (data || []).forEach((d: any) => { activityLabels[`dust:${d.id}`] = { activity_type: d.activity_type, regulatory_activity: d.regulatory_activity }; });
   }
 
   return NextResponse.json({ projects: dbProjects || [], alerts: dbAlerts || [], activityLabels });

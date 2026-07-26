@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { supabaseAdmin } from './supabaseAdmin';
 
 // كل API route جديد يستبدل استدعاءات supabase.from(...) المباشرة من
@@ -103,4 +104,37 @@ export async function requireViewer(
   }
 
   return { userId: auth.userId };
+}
+
+// تحقق هوية جهاز رصد (لا مستخدم بشري — لا جلسة Supabase). ثالث نمط
+// Authorization: Bearer في هذا التطبيق بعد جلسة المستخدم (requireUserId)
+// وسر الـ Cron الموحّد (alerts/generate/route.ts) — لكن هذا مفتاح لكل جهاز
+// على حدة، مخزَّن كهاش SHA-256 في project_devices.api_key_hash، لا مقارَن
+// كنص صريح أبداً ولا مطابَق بسر عام واحد. الهوية (deviceId/projectId) تُشتق
+// من المفتاح نفسه فقط — بنفس مبدأ requireUserId الذي يشتق userId من
+// التوكن لا من حقل يرسله العميل، حتى لا يقدر جهاز أن "يدّعي" هوية جهاز آخر
+// بتمرير معرّف مختلف في الجسم/الرابط.
+export async function requireDeviceApiKey(
+  request: Request
+): Promise<{ deviceId: string; projectId: string } | { error: NextResponse }> {
+  const authHeader = request.headers.get('authorization') || '';
+  const rawKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!rawKey) {
+    return { error: NextResponse.json({ error: 'مفتاح الجهاز مطلوب' }, { status: 401 }) };
+  }
+
+  const keyHash = createHash('sha256').update(rawKey).digest('hex');
+
+  const { data: device } = await supabaseAdmin
+    .from('project_devices')
+    .select('id, project_id, is_active')
+    .eq('api_key_hash', keyHash)
+    .maybeSingle();
+
+  if (!device || !device.is_active) {
+    return { error: NextResponse.json({ error: 'مفتاح جهاز غير صالح أو مُلغى' }, { status: 401 }) };
+  }
+
+  return { deviceId: device.id, projectId: device.project_id };
 }
