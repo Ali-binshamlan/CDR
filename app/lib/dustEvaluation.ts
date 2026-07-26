@@ -589,6 +589,22 @@ export function computeUnifiedActivityDecision(
     };
   }
 
+  // قرار امتثال أقل من إيقاف لكنه ليس ALLOW نظيفاً (مثال: PM10-EARLY-
+  // WARNING-007 عند اقتراب 300 من حد المخالفة 340) هو نتيجة قاعدة تنظيمية
+  // محدَّدة فعلياً — لا يجوز أن يختفي خلف رسالة DVI العامة ("تقييد العمل:
+  // وجود فجوة في إجراءات التحكم الميدانية") لمجرد أن مستوى DVI صادف نفس
+  // درجة "تقييد" تقريباً. كان هذا يُخفي فعلياً كل قواعد الامتثال الأخف من
+  // MANDATORY_STOP/STOP_AFFECTED_ACTIVITY (RESTRICT_ACTIVITY،
+  // FIELD_VERIFICATION_REQUIRED، ALLOW_WITH_CONTROLS) خلف نص DVI دائماً.
+  if (compliance && compliance.decisionCategory !== 'ALLOW') {
+    return {
+      decisionLabelAr: dviWorst.mandatoryStop ? 'إيقاف إلزامي نظامي' : compliance.decisionLabelAr,
+      shortReason: compliance.shortReasonAr || dviWorst.shortReason || '',
+      level: dviWorst.mandatoryStop ? 'BLACK' : dviWorst.level,
+      mandatoryStop: dviWorst.mandatoryStop,
+    };
+  }
+
   return {
     decisionLabelAr: dviWorst.mandatoryStop ? 'إيقاف إلزامي نظامي' : dviWorst.decisionLabelAr,
     shortReason: dviWorst.shortReason || '',

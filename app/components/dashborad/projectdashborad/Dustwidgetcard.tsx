@@ -253,8 +253,6 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
   const [confirmedDecision, setConfirmedDecision] = useState<{status: string, time: string} | null>(null);
 
   const result = windowEval.worst;
-  const style = getDecisionStyle(result.decisionCategory, result.mandatoryStop);
-  const aeiStyle = getAeiStyle(aei.color);
 
   // قد يحمل النشاط الواحد أكثر من صف امتثال عند تعدد وحداته الفعلية (عدة
   // محطات خلط/كسارات ضمن نفس النشاط) — كل عنصر في complianceList له قرار
@@ -264,6 +262,17 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
   const complianceBlocksApproval = complianceEntries.some(
     (c) => c.decisionCategory === 'MANDATORY_STOP' || c.decisionCategory === 'STOP_AFFECTED_ACTIVITY'
   );
+
+  // لون/حالة البطاقة يجب أن يعكسا الإيقاف الأشد بين المحركين معاً، لا DVI
+  // وحده — وإلا يمكن أن تظهر هذه البطاقة "مسموح" (أخضر) بينما الامتثال
+  // التنظيمي يوقف النشاط فعلياً (مثال: كسارة قريبة من سكني، لا علاقة له
+  // بحالة الجو). effectiveMandatoryStop/effectiveDecisionLabelAr يُستخدمان
+  // في كل مكان بالبطاقة بدل result.mandatoryStop/result.decisionLabelAr
+  // الخام مباشرة، بنفس مبدأ AEI في ComplianceWidgetCard (compliance يطغى).
+  const effectiveMandatoryStop = result.mandatoryStop || complianceBlocksApproval;
+  const effectiveDecisionLabelAr = complianceBlocksApproval ? 'إيقاف إلزامي نظامي' : result.decisionLabelAr;
+  const style = getDecisionStyle(result.decisionCategory, effectiveMandatoryStop);
+  const aeiStyle = getAeiStyle(aei.color);
   
   const isFutureActivity = new Date(windowEval.windowStartIso).getTime() > Date.now();
 
@@ -498,7 +507,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
 
         <div className="p-5 flex-1 flex flex-col">
           <div className="flex items-start justify-between mb-5 gap-3">
-            <RiskScoreGauge score={result.score} decisionLabelAr={result.decisionLabelAr} mandatoryStop={result.mandatoryStop} />
+            <RiskScoreGauge score={result.score} decisionLabelAr={effectiveDecisionLabelAr} mandatoryStop={effectiveMandatoryStop} />
             {aei && (
               <div className={`border rounded-xl px-3 py-2 text-center shrink-0 ${aeiStyle.bg} ${aeiStyle.border}`}>
                 <div className="text-[9px] font-bold text-slate-400 mb-0.5">مؤشر AEI المدمج</div>
@@ -674,7 +683,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                   <h3 className={`text-sm font-black mb-4 flex items-center gap-2 ${style.text}`}>
                     <ShieldCheck className="w-4 h-4" /> توصية مرقاب
                   </h3>
-                  <RiskScoreGauge score={result.score} decisionLabelAr={result.decisionLabelAr} mandatoryStop={result.mandatoryStop} />
+                  <RiskScoreGauge score={result.score} decisionLabelAr={effectiveDecisionLabelAr} mandatoryStop={effectiveMandatoryStop} />
                   {(result as any).overridable === false && (
                     <div className="bg-white/60 border border-current/20 p-2 rounded-lg text-[11px] font-bold mt-4 text-center flex items-center justify-center gap-1">
                       <ShieldAlert className="w-3.5 h-3.5" /> توصية إلزاميّة — يرجى الالتزام
