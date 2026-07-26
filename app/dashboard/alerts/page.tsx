@@ -442,10 +442,18 @@ export default function AlertsPage() {
                           <div className="space-y-4">
                             <div>
                               <h4 className="text-xs font-black text-slate-500 mb-2 flex items-center gap-1.5">
-                                <Activity className="w-4 h-4 text-blue-500" /> تفاصيل القراءة الميدانية
+                                <Activity className="w-4 h-4 text-blue-500" /> ما الذي حدث بالضبط
                               </h4>
-                              {alert.metrics ? (
-                                <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm flex flex-col gap-2">
+                              {/* النص الصريح للمخالفة/الحالة (مثال: "مخالفة تنظيمية: تركيز
+                                  PM10 (1665.2 ميكروجرام/م³) تجاوز حد المخالفة (340
+                                  ميكروجرام/م³)") — يُعرض دائماً بصرف النظر عن توفر metrics،
+                                  فلا يجوز أن تحجبه بطاقة مقياس عامة (كانت المشكلة سابقاً:
+                                  alert.message لا يظهر إطلاقاً متى وُجد alert.metrics). */}
+                              <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm text-sm font-bold text-[#061B40] leading-relaxed">
+                                {alert.message}
+                              </div>
+                              {alert.metrics && (
+                                <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm flex flex-col gap-2 mt-2">
                                   <div className="flex justify-between items-center text-sm">
                                     <span className="text-slate-500 font-bold">{alert.metrics.label}:</span>
                                     <span className="font-black text-[#061B40] bg-slate-100 px-2 py-0.5 rounded">{alert.metrics.actual}</span>
@@ -455,10 +463,6 @@ export default function AlertsPage() {
                                     <span>الحد المسموح للنشاط:</span>
                                     <span className="font-bold">{alert.metrics.threshold}</span>
                                   </div>
-                                </div>
-                              ) : (
-                                <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm text-sm font-medium text-slate-700">
-                                  {alert.message}
                                 </div>
                               )}
                             </div>

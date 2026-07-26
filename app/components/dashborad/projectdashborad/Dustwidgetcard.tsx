@@ -828,17 +828,6 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                       <div className="text-sm text-[#061B40]">{compliance.shortReasonAr}</div>
                     </div>
 
-                    {/* توضيح اللبس: نطاق رياح فوق 25 كم/س لكن النشاط مسموح
-                        لأنه عملية مغلقة/محكمة الإغلاق مستثناة من بوابة إيقاف
-                        الرياح (الإغلاق يمنع تطاير الغبار). بدون هذا التوضيح
-                        يبدو "أعلى من 25 كم/س" متناقضاً مع قرار "مسموح". */}
-                    {compliance.windBand === 'ABOVE_25' && compliance.isEnclosedOperation && (
-                      <div className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-2 flex items-start gap-1.5">
-                        <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                        <span>رغم أن سرعة الرياح تتجاوز 25 كم/س، فإن هذا النشاط عملية مغلقة (محكمة الإغلاق) ومستثناة تنظيمياً من إيقاف الرياح لأن الإغلاق يمنع تطاير الغبار.</span>
-                      </div>
-                    )}
-
                     {compliance.triggeredRules.length > 0 && (
                       <div>
                         <div className="text-xs font-bold text-[#061B40]/60 mb-1">القواعد المفعّلة</div>

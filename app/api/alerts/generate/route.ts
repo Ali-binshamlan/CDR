@@ -360,11 +360,14 @@ export async function checkDustActivities(projectIds?: string[]) {
           // تنظيمية: تركيز PM10 (1665.2 ميكروجرام/م³) تجاوز حد المخالفة
           // (340 ميكروجرام/م³)") بلا أي جملة عامة تغلّفه — نفس النص المعروض
           // حرفياً في "القرار الموحد للنشاط" بصفحة المشروع لهذا النشاط.
+          // بلا metrics هنا عمداً: shortReasonAr نفسه يحمل الرقم/العتبة داخل
+          // نص القاعدة (لا حقل رقمي منفصل موحّد عبر كل القواعد الـ44)،
+          // فبطاقة "ما الذي حدث بالضبط" في alerts/page.tsx (تعرض alert.message
+          // دائماً) تكفي وحدها بلا تكرار بطاقة مقياس فارغة/مضلِّلة بجانبها.
           await insertAlert({
             projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
             timing: 'DURING', kind: complianceAlertKind,
             message: compliance.shortReasonAr,
-            metricLabel: 'القرار التنظيمي', metricActual: compliance.decisionLabelAr, metricThreshold: 'مسموح',
             recommendedAction: compliance.requiredActions.join('، ') || compliance.shortReasonAr,
           });
         }
