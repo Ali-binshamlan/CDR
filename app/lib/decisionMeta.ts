@@ -39,6 +39,10 @@ export const ALERT_KIND_WEIGHT: Record<string, number> = {
   // قاعدة فعلية لكن دون إيقاف كامل، فتُصنَّف تحذيراً متوسطاً لا حرجاً.
   COMPLIANCE_RESTRICTION: 2,
   NO_DECISION_YET: 2,
+  // تنبيه استباقي من محرك الامتثال (ALLOW_WITH_CONTROLS، مثال PM10-EARLY-
+  // WARNING-007 عند 300-339 قبل حد المخالفة 340) — بطلب صريح: تنبيه قبل
+  // وقوع المخالفة الفعلية، لا بعدها فقط. نفس درجة PM10_APPROACHING_LIMIT.
+  COMPLIANCE_ADVISORY: 2,
   BEFORE_START: 1,
   BEFORE_1H: 0,
   BEFORE_2H: 0,
@@ -50,6 +54,7 @@ export function alertKindToDecision(kind: string): Decision {
     case 'COMPLIANCE_VIOLATION': return 'stopped';
     case 'DUST': return 'postpone';
     case 'COMPLIANCE_RESTRICTION': return 'restricted';
+    case 'COMPLIANCE_ADVISORY': return 'caution';
     case 'PM10_APPROACHING_LIMIT': return 'caution';
     case 'NO_DECISION_YET': return 'caution';
     case 'BEFORE_START': return 'caution';
@@ -73,6 +78,7 @@ export const alertKindLabelAr: Record<string, string> = {
   SAFETY_BREACH: 'تجاوز حدود السلامة',
   COMPLIANCE_VIOLATION: 'مخالفة تنظيمية (امتثال الغبار)',
   COMPLIANCE_RESTRICTION: 'تقييد تنظيمي (امتثال الغبار)',
+  COMPLIANCE_ADVISORY: 'تنبيه استباقي (امتثال الغبار)',
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
 };

@@ -613,7 +613,7 @@ create table if not exists public.alerts (
   activity_source text not null default 'dust' check (activity_source = 'dust'),
   activity_id text not null,           -- نص لا uuid: يُقارَن بـ String(row.id) في الكود
   timing text not null,                -- 'BEFORE' | 'DURING'
-  kind text not null,                  -- BEFORE_2H / BEFORE_1H / BEFORE_START / DUST / SAFETY_BREACH / COMPLIANCE_VIOLATION / COMPLIANCE_RESTRICTION / NO_DECISION_YET / PM10_APPROACHING_LIMIT
+  kind text not null,                  -- BEFORE_2H / BEFORE_1H / BEFORE_START / DUST / SAFETY_BREACH / COMPLIANCE_VIOLATION / COMPLIANCE_RESTRICTION / COMPLIANCE_ADVISORY / NO_DECISION_YET / PM10_APPROACHING_LIMIT
   state text not null default 'NEW',   -- NEW / ... / CLOSED
   message text not null,
   metric_label text,

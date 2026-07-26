@@ -343,15 +343,20 @@ export async function checkDustActivities(projectIds?: string[]) {
 
       // يغطي كل قرار امتثال أقل من ALLOW الكامل (وليس فقط الإيقاف الإلزامي/
       // إيقاف النشاط المتأثر) — أي مخالفة قاعدة فعلية، حتى لو كانت تقييداً
-      // أو تحقّقاً ميدانياً مطلوباً، يجب أن تظهر في غرفة التنبيهات لا فقط
-      // في صفحة المشروع. نوعان منفصلان (لا نوع واحد) حتى تُميَّز شدة
+      // أو تحقّقاً ميدانياً أو مجرد تنبيه استباقي، يجب أن تظهر في غرفة
+      // التنبيهات لا فقط في صفحة المشروع. ثلاث درجات منفصلة حتى تُميَّز شدة
       // القرار في الواجهة: COMPLIANCE_VIOLATION للإيقاف الفعلي (خطورة
-      // عالية)، COMPLIANCE_RESTRICTION للتقييد/التحقق الميداني (تحذير متوسط).
-      const complianceAlertKind: 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | null =
+      // عالية)، COMPLIANCE_RESTRICTION للتقييد/التحقق الميداني (تحذير
+      // متوسط)، COMPLIANCE_ADVISORY للتنبيه الاستباقي (مثال: PM10-EARLY-
+      // WARNING-007 عند الاقتراب من حد المخالفة قبل الوصول له فعلياً) —
+      // بطلب صريح: تنبيه قبل حدوث المخالفة، لا بعدها فقط.
+      const complianceAlertKind: 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'COMPLIANCE_ADVISORY' | null =
         compliance.decisionCategory === 'MANDATORY_STOP' || compliance.decisionCategory === 'STOP_AFFECTED_ACTIVITY'
           ? 'COMPLIANCE_VIOLATION'
           : compliance.decisionCategory === 'RESTRICT_ACTIVITY' || compliance.decisionCategory === 'FIELD_VERIFICATION_REQUIRED'
           ? 'COMPLIANCE_RESTRICTION'
+          : compliance.decisionCategory === 'ALLOW_WITH_CONTROLS'
+          ? 'COMPLIANCE_ADVISORY'
           : null;
 
       if (complianceAlertKind) {

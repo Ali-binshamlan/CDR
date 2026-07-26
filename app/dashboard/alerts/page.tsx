@@ -40,7 +40,7 @@ type AlertKind =
   | 'BEFORE_2H' | 'BEFORE_1H' | 'BEFORE_START'
   | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH'
   | 'NO_DECISION_YET' | 'PM10_APPROACHING_LIMIT'
-  | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION';
+  | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'COMPLIANCE_ADVISORY';
 type Severity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 const timingLabel: Record<AlertTiming, string> = { BEFORE: 'قبل التنفيذ', DURING: 'أثناء التنفيذ' };
@@ -73,6 +73,7 @@ const alertKindIcon: Record<AlertKind, React.ElementType> = {
   SAFETY_BREACH: ShieldAlert,
   COMPLIANCE_VIOLATION: Scale,
   COMPLIANCE_RESTRICTION: ShieldQuestion,
+  COMPLIANCE_ADVISORY: AlertTriangle,
   NO_DECISION_YET: AlertOctagon,
   PM10_APPROACHING_LIMIT: AlertTriangle,
 };
@@ -86,6 +87,7 @@ const alertKindLabel: Record<AlertKind, string> = {
   SAFETY_BREACH: 'تجاوز حدود السلامة',
   COMPLIANCE_VIOLATION: 'مخالفة تنظيمية (امتثال الغبار)',
   COMPLIANCE_RESTRICTION: 'تقييد تنظيمي (امتثال الغبار)',
+  COMPLIANCE_ADVISORY: 'تنبيه استباقي (امتثال الغبار)',
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
 };
@@ -112,7 +114,7 @@ interface AlertItem {
 // ============================================================
 function getSeverity(kind: AlertKind): Severity {
   if (['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(kind)) return 'CRITICAL';
-  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'COMPLIANCE_RESTRICTION'].includes(kind)) return 'WARNING';
+  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'COMPLIANCE_RESTRICTION', 'COMPLIANCE_ADVISORY'].includes(kind)) return 'WARNING';
   return 'INFO';
 }
 
@@ -127,6 +129,8 @@ function getFallbackRecommendedAction(kind: AlertKind): string {
       return 'راجع قسم "الامتثال التنظيمي" في تفاصيل النشاط لمعرفة القاعدة المخالفة وشروط الاستئناف.';
     case 'COMPLIANCE_RESTRICTION':
       return 'راجع قسم "الامتثال التنظيمي" في تفاصيل النشاط — النشاط مقيَّد أو يتطلب تحقق ميداني حتى تُستوفى شروط القاعدة.';
+    case 'COMPLIANCE_ADVISORY':
+      return 'تنبيه استباقي قبل وقوع مخالفة فعلية — بادر بإجراء تصحيحي الآن (رش/تغطية/تخفيف) لتفادي الوصول لحد المخالفة.';
     case 'NO_DECISION_YET':
       return 'النشاط قيد التنفيذ ولم يُسجَّل له أي قرار بعد — راجعه في لوحة التحكم واتّخذ القرار المناسب (اعتماد/تقييد/تأجيل).';
     case 'PM10_APPROACHING_LIMIT':
