@@ -21,8 +21,14 @@ function baseDviWorst(overrides: Partial<{ decisionLabelAr: string; shortReason:
   };
 }
 
-function complianceWith(decisionCategory: DustComplianceResult['decisionCategory'], decisionLabelAr: string, shortReasonAr: string): DustComplianceResult {
-  return { decisionCategory, decisionLabelAr, shortReasonAr } as DustComplianceResult;
+function complianceWith(
+  decisionCategory: DustComplianceResult['decisionCategory'],
+  decisionLabelAr: string,
+  shortReasonAr: string,
+  pendingConfirmation = false,
+  isEnclosedOperation = false
+): DustComplianceResult {
+  return { decisionCategory, decisionLabelAr, shortReasonAr, pendingConfirmation, isEnclosedOperation } as DustComplianceResult;
 }
 
 describe('computeUnifiedActivityDecision — قرار امتثال غير إيقاف يجب ألا يختفي خلف نص DVI', () => {
@@ -77,6 +83,121 @@ describe('computeUnifiedActivityDecision — قرار امتثال غير إيق
     const r = computeUnifiedActivityDecision(baseDviWorst(), compliance);
     expect(r.decisionLabelAr).toBe('إيقاف إلزامي نظامي');
     expect(r.shortReason).toBe('مسافة الكسارة عن سكني أقل من الحد الأدنى (500 م)');
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.level).toBe('BLACK');
+    expect(r.pendingConfirmation).toBe(false);
+  });
+
+  it('امتثال يحجب لكنه معلَّق فقط (pendingConfirmation=true، مثال MRQ-PM10-BLACK-PENDING-104) → لا يظهر "إيقاف إلزامي نظامي" القطعية', () => {
+    const compliance = complianceWith(
+      'STOP_AFFECTED_ACTIVITY',
+      'إيقاف النشاط المتأثر',
+      'تعليق مؤقت (معلَّق): تركيز PM10 (345 ميكروجرام/م³) تجاوز حد المخالفة (340 ميكروجرام/م³) — بانتظار استمرار القراءة أكثر من دقيقتين لتصنيفها مخالفة تنظيمية مؤكدة',
+      true
+    );
+    const r = computeUnifiedActivityDecision(baseDviWorst(), compliance);
+    expect(r.decisionLabelAr).not.toBe('إيقاف إلزامي نظامي');
+    expect(r.pendingConfirmation).toBe(true);
+    expect(r.mandatoryStop).toBe(false);
+    // level='RED' تحديداً (لا BLACK) — هذا هو العقد الدقيق الذي تعتمد عليه
+    // riskWeightFromColor/overallBannerStyle (route.ts، MultiIndicatorActivityBox)
+    // للتفريق بين "معلَّق مؤقت" (أحمر، وزن 3) و"إيقاف مؤكَّد" (أسود، وزن 4)
+    // — كان كلاهما يتساوى بوزن 3 قبل الإصلاح، فيظهران بنفس اللون في البانر.
+    expect(r.level).toBe('RED');
+    expect(r.shortReason).toContain('معلَّق');
+  });
+
+  // سيناريو حقيقي رصده المستخدم بالصورة: DVI أخضر فيزيائياً (لا خطر مباشر)
+  // بينما الامتثال ALLOW_WITH_CONTROLS (تحذير PM10 تجاوز 250) — البانر
+  // العلوي كان يظهر أخضر بالكامل "مسموح مع ضوابط تحكم إضافية" بينما بطاقة
+  // AEI بجانبه مباشرة (مقصوصة عبر applyComplianceGateToAei) تظهر حمراء
+  // "تقييد تشغيلي" لنفس القرار — تناقض لوني صريح لنفس السبب المعروض.
+  it('DVI أخضر + امتثال ALLOW_WITH_CONTROLS → level لا يبقى أخضر (يطابق حد AEI الأحمر)', () => {
+    const compliance = complianceWith(
+      'ALLOW_WITH_CONTROLS',
+      'مسموح مع ضوابط تحكم إضافية',
+      'تحذير: تركيز PM10 (260 ميكروجرام/م³) تجاوز حد التحذير (250 ميكروجرام/م³)'
+    );
+    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'GREEN', mandatoryStop: false }), compliance);
+    expect(r.level).not.toBe('GREEN');
+    expect(r.level).toBe('RED');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  // PRECAUTION (نطاق PM10 150-250، طلب صريح من المستخدم) أخف من ALLOW_WITH_
+  // CONTROLS — يجب أن يظهر أصفر (لا أخضر يخفي النص، ولا أحمر أشد من اللازم).
+  it('DVI أخضر + امتثال PRECAUTION → level يصبح أصفر (لا أخضر متناقض مع نص الاحتراز، ولا أحمر مبالغ فيه)', () => {
+    const compliance = complianceWith('PRECAUTION', 'احتراز — زيادة المراقبة', 'حالة احتراز: تركيز PM10 (200 ميكروجرام/م³) ضمن نطاق الإنذار المبكر (150–250 ميكروجرام/م³)');
+    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'GREEN', mandatoryStop: false }), compliance);
+    expect(r.level).toBe('YELLOW');
+    expect(r.decisionLabelAr).toBe('احتراز — زيادة المراقبة');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('DVI أشد من الامتثال (مثال DVI=BLACK) → لا يُخفَّض level رغم أن الامتثال ALLOW_WITH_CONTROLS فقط', () => {
+    const compliance = complianceWith('ALLOW_WITH_CONTROLS', 'مسموح مع ضوابط تحكم إضافية', 'تحذير بسيط');
+    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'BLACK', mandatoryStop: true }), compliance);
+    expect(r.level).toBe('BLACK');
+  });
+
+  // سيناريو حقيقي رصده المستخدم: نشاط "قطع الأحجار" مغلق (isEnclosedOperation)
+  // بـPM10=100 (امتثال ALLOW نظيف تماماً)، لكن DVI الفيزيائي أظهر "تشغيل مع
+  // المراقبة" (YELLOW) بسبب رياح 31.2 كم/س فقط — DVI لا يعرف مفهوم "مغلق"
+  // إطلاقاً (لا حقل isEnclosedOperation في مدخلاته)، فيحسب خطر الرياح على
+  // النشاط سواء كان مغلقاً أو مكشوفاً. النشاط المغلق فعلياً لا يمكن أن يتطاير
+  // منه غبار بفعل الرياح، فلا معنى لتنبيه "مراقبة" مصدره الرياح وحدها هنا.
+  it('نشاط مغلق + امتثال ALLOW نظيف + DVI أصفر بسبب الرياح فقط → البانر يعرض أخضر (الامتثال هو المرجع لنشاط مغلق)', () => {
+    const compliance = complianceWith('ALLOW', 'مسموح — تشغيل اعتيادي', 'لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي', false, true);
+    const r = computeUnifiedActivityDecision(
+      baseDviWorst({ level: 'YELLOW', decisionLabelAr: 'تشغيل مع المراقبة والمتابعة', mandatoryStop: false }),
+      compliance
+    );
+    expect(r.level).toBe('GREEN');
+    expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('نشاط مكشوف (غير مغلق) + امتثال ALLOW نظيف + DVI أصفر بسبب الرياح → يبقى أصفر كما هو (لا استثناء لنشاط مكشوف)', () => {
+    const compliance = complianceWith('ALLOW', 'مسموح — تشغيل اعتيادي', 'لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي', false, false);
+    const r = computeUnifiedActivityDecision(
+      baseDviWorst({ level: 'YELLOW', decisionLabelAr: 'تشغيل مع المراقبة والمتابعة', mandatoryStop: false }),
+      compliance
+    );
+    expect(r.level).toBe('YELLOW');
+    expect(r.decisionLabelAr).toBe('تشغيل مع المراقبة والمتابعة');
+  });
+
+  it('نشاط مغلق + امتثال ALLOW نظيف + DVI mandatoryStop حقيقي (رؤية حرجة) → لا يُستثنى، الإيقاف يبقى قائماً', () => {
+    const compliance = complianceWith('ALLOW', 'مسموح — تشغيل اعتيادي', 'لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي', false, true);
+    const r = computeUnifiedActivityDecision(
+      baseDviWorst({ level: 'BLACK', mandatoryStop: true }),
+      compliance
+    );
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.decisionLabelAr).toBe('إيقاف إلزامي نظامي');
+    expect(r.level).toBe('BLACK');
+  });
+
+  it('نشاط مغلق لكن الامتثال غير نظيف (PRECAUTION) → لا يُستثنى تنبيه DVI، الامتثال نفسه يحمل تنبيهاً بالفعل', () => {
+    const compliance = complianceWith('PRECAUTION', 'احتراز — زيادة المراقبة', 'حالة احتراز: تركيز PM10 ضمن نطاق الإنذار المبكر', false, true);
+    const r = computeUnifiedActivityDecision(
+      baseDviWorst({ level: 'YELLOW', decisionLabelAr: 'تشغيل مع المراقبة والمتابعة', mandatoryStop: false }),
+      compliance
+    );
+    expect(r.decisionLabelAr).toBe('احتراز — زيادة المراقبة');
+    expect(r.level).toBe('YELLOW');
+  });
+
+  it('امتثال STOP_AFFECTED_ACTIVITY مؤكَّد (غير معلَّق) لا يزال يظهر "إيقاف إلزامي نظامي" كسابقاً', () => {
+    const compliance = complianceWith(
+      'STOP_AFFECTED_ACTIVITY',
+      'إيقاف النشاط المتأثر',
+      'مسافة الكسارة عن سكني/مدارس/مستشفيات (420 م) أقل من الحد الأدنى (500 م)',
+      false
+    );
+    const r = computeUnifiedActivityDecision(baseDviWorst(), compliance);
+    expect(r.decisionLabelAr).toBe('إيقاف إلزامي نظامي');
+    expect(r.pendingConfirmation).toBe(false);
     expect(r.mandatoryStop).toBe(true);
     expect(r.level).toBe('BLACK');
   });

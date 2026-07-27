@@ -30,8 +30,15 @@ export interface UnifiedDecisionTarget {
 type DecisionStatus = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
 
 // 1. إصلاح مشكلة اللون الأخضر عند وجود إيقاف إلزامي
+//
+// أربع درجات متمايزة بصرياً (لا ثلاث) — إيقاف إلزامي مؤكَّد (mandatoryStop
+// الحقيقي، weight=4، أسود) يجب أن يظهر بلون مختلف تماماً عن حالة معلَّقة/
+// موقوفة مؤقتاً بانتظار تأكيد (weight=3، أحمر) رغم أن كليهما "إيقاف" —
+// الأول قرار نهائي غير قابل للتجاوز، والثاني مؤقت قد يتحول تلقائياً خلال
+// دقائق. كانا يتساويان سابقاً (كلاهما أحمر) لأن weight توقّف عند 3 فقط.
 function overallBannerStyle(weight: number, mandatoryStop: boolean) {
-  if (mandatoryStop || weight >= 3) return { bg: 'bg-red-50', text: 'text-red-800', border: 'border-red-200', soft: 'border-red-200/60', dot: 'bg-red-600' };
+  if (mandatoryStop || weight >= 4) return { bg: 'bg-slate-900/5', text: 'text-slate-800', border: 'border-slate-700', soft: 'border-slate-700/40', dot: 'bg-slate-800' };
+  if (weight >= 3) return { bg: 'bg-red-50', text: 'text-red-800', border: 'border-red-200', soft: 'border-red-200/60', dot: 'bg-red-600' };
   if (weight >= 2) return { bg: 'bg-orange-50', text: 'text-orange-800', border: 'border-orange-200', soft: 'border-orange-200/60', dot: 'bg-orange-500' };
   if (weight >= 1) return { bg: 'bg-amber-50', text: 'text-amber-800', border: 'border-amber-200', soft: 'border-amber-200/60', dot: 'bg-amber-500' };
   return { bg: 'bg-emerald-50', text: 'text-emerald-800', border: 'border-emerald-200', soft: 'border-emerald-200/60', dot: 'bg-emerald-500' };

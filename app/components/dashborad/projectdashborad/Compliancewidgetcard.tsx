@@ -6,6 +6,7 @@ import {
   X, ArrowUpRight, Gauge,
   Clock, AlertTriangle, Printer, CheckCircle2,
   CheckCircle, ShieldAlert, Scale, Wind, Compass, CircleGauge, MapPin,
+  Thermometer, Droplets,
 } from 'lucide-react';
 import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
@@ -112,6 +113,7 @@ const COMPLIANCE_RULES_TRANSLATIONS: Record<string, string> = {
 
 const COMPLIANCE_DECISION_STYLE: Record<DustComplianceDecisionCategory, { bg: string; border: string; text: string; dot: string }> = {
   ALLOW: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  PRECAUTION: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', dot: 'bg-yellow-500' },
   ALLOW_WITH_CONTROLS: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', dot: 'bg-amber-500' },
   FIELD_VERIFICATION_REQUIRED: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', dot: 'bg-blue-500' },
   RESTRICT_ACTIVITY: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', dot: 'bg-orange-500' },
@@ -123,6 +125,7 @@ const COMPLIANCE_DECISION_STYLE: Record<DustComplianceDecisionCategory, { bg: st
 // عندما يحمل النشاط الفيزيائي أكثر من نشاط تنظيمي واحد.
 const DECISION_SEVERITY_ORDER: DustComplianceDecisionCategory[] = [
   'ALLOW',
+  'PRECAUTION',
   'ALLOW_WITH_CONTROLS',
   'FIELD_VERIFICATION_REQUIRED',
   'RESTRICT_ACTIVITY',
@@ -196,6 +199,11 @@ const getAeiStyle = (color: AeiColor) => {
     case 'GREEN': return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', dot: 'bg-emerald-500' };
     case 'YELLOW': return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', dot: 'bg-amber-500' };
     case 'ORANGE': return { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', dot: 'bg-orange-500' };
+    // كانت RED غائبة من هذا التبديل رغم وجودها فعلياً في AeiColor
+    // ومُنتَجة من AEI_COLOR_FROM_STATUS (RESTRICT → RED) — فكانت تسقط
+    // لـ default الرمادي المحايد بدل الأحمر الفعلي، فيظهر تقييد/تعليق
+    // شديد بلون باهت لا يعكس خطورته الحقيقية.
+    case 'RED': return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', dot: 'bg-red-600' };
     case 'BLACK': return { bg: 'bg-slate-900/5', border: 'border-slate-700', text: 'text-slate-800', dot: 'bg-slate-800' };
     default: return { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-700', dot: 'bg-slate-400' };
   }
@@ -401,7 +409,7 @@ export default function ComplianceWidgetCard({
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-2 mb-4">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-4">
             <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
               <Wind className="w-4 h-4 text-rose-500 mb-1.5" />
               <span className="text-xs font-black text-slate-800" dir="ltr">
@@ -430,7 +438,35 @@ export default function ComplianceWidgetCard({
               </span>
               <span className="text-[8px] font-bold text-slate-400">PM2.5</span>
             </div>
+            <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
+              <Droplets className="w-4 h-4 text-cyan-500 mb-1.5" />
+              <span className="text-xs font-black text-slate-800" dir="ltr">
+                {fmt2(worst.evidence.relativeHumidityPercent)}%
+              </span>
+              <span className="text-[8px] font-bold text-slate-400">الرطوبة</span>
+            </div>
+            <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
+              <Thermometer className="w-4 h-4 text-orange-500 mb-1.5" />
+              <span className="text-xs font-black text-slate-800" dir="ltr">
+                {fmt2(worst.evidence.temperatureC)}°م
+              </span>
+              <span className="text-[8px] font-bold text-slate-400">الحرارة</span>
+            </div>
           </div>
+
+          {worst.caveatsAr && worst.caveatsAr.length > 0 && (
+            <div className="space-y-1.5 mb-4">
+              {worst.caveatsAr.map((c, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold text-amber-700 leading-relaxed"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{c}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="flex items-center gap-2 mt-auto flex-wrap">
             <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-500">
@@ -513,7 +549,28 @@ export default function ComplianceWidgetCard({
                     <div className="text-xs text-slate-400">PM10 / PM2.5</div>
                     <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(worst.evidence.pm10UgM3)} / {fmt2(worst.evidence.pm25UgM3)}</div>
                   </div>
+                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
+                    <div className="text-xs text-slate-400">الرطوبة النسبية</div>
+                    <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(worst.evidence.relativeHumidityPercent)}%</div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
+                    <div className="text-xs text-slate-400">درجة الحرارة</div>
+                    <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(worst.evidence.temperatureC)}°م</div>
+                  </div>
                 </div>
+                {worst.caveatsAr && worst.caveatsAr.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {worst.caveatsAr.map((c, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-700"
+                      >
+                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span>{c}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* المستقبِلات حول وحدة الكسارة/الخلاطة تحديداً — تُعرض قبل
@@ -656,7 +713,11 @@ export default function ComplianceWidgetCard({
                             )}
                           </h4>
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-[#061B40]/70">
-                            {compliance.decisionLabelAr}
+                            {/* pendingConfirmation (مثال: MRQ-PM10-BLACK-PENDING-104) يعني
+                                القرار موقوف مؤقتاً بانتظار تأكيد، لا "إيقاف النشاط المتأثر"
+                                الثابتة — يجب أن يطابق نص هذه الشارة نص بطاقة AEI أعلاه
+                                (نفس التوصية بلغة واحدة موحَّدة، لا نسختين مختلفتين). */}
+                            {compliance.pendingConfirmation ? 'معلَّق مؤقتاً — بانتظار تأكيد' : compliance.decisionLabelAr}
                           </span>
                         </div>
 

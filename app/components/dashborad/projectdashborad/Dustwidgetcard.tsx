@@ -78,6 +78,7 @@ const COMPLIANCE_RULES_TRANSLATIONS: Record<string, string> = {
 
 const COMPLIANCE_DECISION_STYLE: Record<DustComplianceDecisionCategory, { bg: string; border: string; text: string; dot: string }> = {
   ALLOW: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  PRECAUTION: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', dot: 'bg-yellow-500' },
   ALLOW_WITH_CONTROLS: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', dot: 'bg-amber-500' },
   FIELD_VERIFICATION_REQUIRED: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', dot: 'bg-blue-500' },
   RESTRICT_ACTIVITY: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', dot: 'bg-orange-500' },
@@ -159,6 +160,11 @@ const getAeiStyle = (color: AeiColor) => {
     case 'GREEN': return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' };
     case 'YELLOW': return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' };
     case 'ORANGE': return { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700' };
+    // كانت RED غائبة من هذا التبديل رغم وجودها فعلياً في AeiColor
+    // ومُنتَجة من AEI_COLOR_FROM_STATUS (RESTRICT → RED) — فكانت تسقط
+    // لـ default الرمادي المحايد بدل الأحمر الفعلي، فيظهر تقييد/تعليق
+    // شديد بلون باهت لا يعكس خطورته الحقيقية.
+    case 'RED': return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' };
     case 'BLACK': return { bg: 'bg-slate-900/5', border: 'border-slate-700', text: 'text-slate-800' };
     default: return { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-700' };
   }
@@ -788,7 +794,15 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
               )}
 
               {complianceEntries.map((compliance, entryIdx) => {
-                const complianceStyle = COMPLIANCE_DECISION_STYLE[compliance.decisionCategory];
+                // pendingConfirmation (مثال: MRQ-PM10-BLACK-PENDING-104) قرار
+                // موقوف مؤقتاً بانتظار تأكيد، لا مخالفة مؤكَّدة — لا يجوز أن
+                // يظهر بنفس لون/نص STOP_AFFECTED_ACTIVITY المؤكَّد
+                // (COMPLIANCE_DECISION_STYLE أحمر لكليهما بلا تمييز). أسلوب
+                // مستقل هنا (أحمر أفتح + نص مختلف) يطابق نفس المعاملة
+                // المطبَّقة في AEI (applyComplianceGateToAei) وComplianceWidgetCard.
+                const complianceStyle = compliance.pendingConfirmation
+                  ? { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', dot: 'bg-red-600' }
+                  : COMPLIANCE_DECISION_STYLE[compliance.decisionCategory];
                 const entryBlocks =
                   compliance.decisionCategory === 'MANDATORY_STOP' || compliance.decisionCategory === 'STOP_AFFECTED_ACTIVITY';
                 return (
@@ -803,7 +817,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                         )}
                       </h3>
                       <span className="text-xs font-bold px-3 py-1 rounded-full bg-white/70 text-[#061B40]">
-                        {compliance.decisionLabelAr}
+                        {compliance.pendingConfirmation ? 'معلَّق مؤقتاً — بانتظار تأكيد' : compliance.decisionLabelAr}
                       </span>
                     </div>
 

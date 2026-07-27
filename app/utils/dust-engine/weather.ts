@@ -23,7 +23,7 @@ function mapWeatherCodeToSymbol(code: number | null): DustWeatherSample['weather
 export async function fetchDustWeather(latitude: number, longitude: number): Promise<DustWeatherSample> {
   const forecastUrl =
     `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-    `&current=visibility,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,relative_humidity_2m,precipitation` +
+    `&current=visibility,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,relative_humidity_2m,temperature_2m,precipitation` +
     `&daily=precipitation_sum&forecast_days=1&wind_speed_unit=kmh&timezone=auto`;
 
   const airQualityUrl =
@@ -48,6 +48,7 @@ export async function fetchDustWeather(latitude: number, longitude: number): Pro
         windGustKmh: null,
         windDirectionDeg: null,
         relativeHumidityPercent: null,
+        temperatureC: null,
         rainfallLast24hMm: null,
         pm10: null,
         pm25: null,
@@ -76,6 +77,7 @@ export async function fetchDustWeather(latitude: number, longitude: number): Pro
       windGustKmh: forecastData?.current?.wind_gusts_10m ?? null,
       windDirectionDeg: forecastData?.current?.wind_direction_10m ?? null,
       relativeHumidityPercent: forecastData?.current?.relative_humidity_2m ?? null,
+      temperatureC: forecastData?.current?.temperature_2m ?? null,
       rainfallLast24hMm: forecastData?.daily?.precipitation_sum?.[0] ?? null,
       pm10: airData?.current?.pm10 ?? null,
       pm25: airData?.current?.pm2_5 ?? null,
@@ -92,6 +94,7 @@ export async function fetchDustWeather(latitude: number, longitude: number): Pro
       windGustKmh: null,
       windDirectionDeg: null,
       relativeHumidityPercent: null,
+      temperatureC: null,
       rainfallLast24hMm: null,
       pm10: null,
       pm25: null,
@@ -130,7 +133,7 @@ export async function fetchDustWeatherHourly(
   // يأتي دائمًا UTC مطلقًا عبر riyadhLocalToUtcIso.
   const forecastUrl =
     `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-    `&hourly=visibility,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,relative_humidity_2m,precipitation` +
+    `&hourly=visibility,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,relative_humidity_2m,temperature_2m,precipitation` +
     `&daily=precipitation_sum&start_date=${startDateStr}&end_date=${endDateStr}&wind_speed_unit=kmh&timezone=UTC`;
 
   const airQualityUrl =
@@ -189,6 +192,7 @@ export async function fetchDustWeatherHourly(
         windGustKmh: forecastData.hourly.wind_gusts_10m?.[i] ?? null,
         windDirectionDeg: forecastData.hourly.wind_direction_10m?.[i] ?? null,
         relativeHumidityPercent: forecastData.hourly.relative_humidity_2m?.[i] ?? null,
+        temperatureC: forecastData.hourly.temperature_2m?.[i] ?? null,
         rainfallLast24hMm: rainfallToday,
         pm10: airData?.hourly?.pm10?.[i] ?? null,
         pm25: airData?.hourly?.pm2_5?.[i] ?? null,

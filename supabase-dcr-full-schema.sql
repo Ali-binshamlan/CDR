@@ -568,7 +568,12 @@ create table if not exists public.current_dust_compliance_decisions (
   decision text not null,
   triggered_rules jsonb not null default '[]'::jsonb,
   short_reason text,
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- منذ متى بدأ آخر إيقاف مستمر (MANDATORY_STOP/STOP_AFFECTED_ACTIVITY) —
+  -- بعكس updated_at، لا يتغيّر عند إعادة كتابة نفس القرار الموقِف؛ null إن
+  -- كان القرار الحالي غير موقِف. راجع
+  -- supabase-add-compliance-stopped-since-migration.sql للسبب الكامل.
+  stopped_since timestamptz
 );
 create index if not exists idx_current_dust_compliance_decisions_project_id on public.current_dust_compliance_decisions (project_id);
 

@@ -17,6 +17,7 @@ export type DustWindBand = 'BELOW_15' | 'FROM_15_TO_25' | 'ABOVE_25' | 'UNKNOWN'
 
 export type DustComplianceDecisionCategory =
   | 'ALLOW'
+  | 'PRECAUTION'
   | 'ALLOW_WITH_CONTROLS'
   | 'FIELD_VERIFICATION_REQUIRED'
   | 'RESTRICT_ACTIVITY'
@@ -66,6 +67,13 @@ export interface DustProjectComplianceProfile {
   entryExitCamerasInstalled: boolean | null;
   cameraRetentionDays: number | null;
   sensitivityMapPrepared: boolean | null;
+
+  // MRQ-DATA-TRUE-NORTH-111: هل محطة الرصد معايَرة فعلياً على الشمال
+  // الحقيقي (لا مغناطيسي/تقريبي)؟ null تعني "غير موثّق" — يُعامَل معاملة
+  // "غير صالح" (نفس false)، لأن غياب التوثيق لا يعني الصلاحية ضمناً. شرط
+  // مسبق لاستخدام windDirectionDeg في أي قاعدة اتجاه رياح (راجع
+  // MRQ-RECEPTOR-DOWNWIND-120 في rulebook.ts).
+  trueNorthAlignmentDocumented: boolean | null;
 }
 
 // أدلة ضوابط التحكم الفعلية المتوفرة فعلياً على النشاط (وليس المطلوبة نظرياً).
@@ -224,6 +232,12 @@ export interface DustActivityMeasurements {
   // adapters.ts وليست حقل إدخال مستخدم.
   crusherDistanceToNearestReceptorAutoM: number | null;
   crusherDistanceToResidentialReceptorAutoM: number | null;
+  // MRQ-RECEPTOR-DOWNWIND-120: أقرب مسافة لمستقبِل سكني/مدرسي/صحي يقع
+  // فعلياً باتجاه هبوب الرياح الحالي من موقع الكسارة — null إن كان اتجاه
+  // الرياح غير صالح (محاذاة الشمال الحقيقي غير موثّقة، راجع
+  // MRQ-DATA-TRUE-NORTH-111) أو الموقع غير معروف؛ Infinity إن لم يوجد أي
+  // مستقبِل باتجاه الريح حالياً.
+  crusherDistanceToDownwindReceptorAutoM: number | null;
 
   // A3 — الدخول والخروج
   entryPointLat: number | null;
@@ -278,6 +292,7 @@ export interface SensitiveReceptor {
 }
 
 export type DustRuleSeverity =
+  | 'PRECAUTION'
   | 'ALLOW_WITH_CONTROLS'
   | 'FIELD_VERIFICATION_REQUIRED'
   | 'RESTRICT_ACTIVITY'
@@ -328,6 +343,15 @@ export interface DustComplianceResult {
   canOverride: boolean;
   shortReasonAr: string;
 
+  // القرار STOP_AFFECTED_ACTIVITY هنا "معلَّق" فقط بانتظار تأكيد استمرار
+  // (مثال: MRQ-PM10-BLACK-PENDING-104 — قراءة ≥340 لم تستمر بعد دقيقتين)،
+  // وليس مخالفة تنظيمية مؤكَّدة. false دائماً لو decisionCategory من
+  // MANDATORY_STOP فعلياً، أو من قاعدة إيقاف مؤكَّدة أخرى. تُستخدم في
+  // computeUnifiedActivityDecision/AEI لتفادي عرض "إيقاف إلزامي نظامي"
+  // (لغة قطعية دائمة) على حالة مؤقتة قد تتحول تلقائياً لـALLOW أو
+  // MANDATORY_STOP بمجرد التقييم التالي.
+  pendingConfirmation: boolean;
+
   triggeredRules: DustRuleHit[];
   requiredActions: string[];
   restartConditions: string[];
@@ -347,7 +371,23 @@ export interface DustComplianceResult {
     windDirectionDeg: number | null;
     pm10UgM3: number | null;
     pm25UgM3: number | null;
+    relativeHumidityPercent: number | null;
+    temperatureC: number | null;
   };
+
+  // ملاحظات تحذيرية لصحة القراءة (من DVI، راجع DviEvaluationResult.caveatsAr)
+  // — لا تُغيّر decisionCategory/shortReasonAr إطلاقاً، طلب صريح من المستخدم.
+  caveatsAr: string[];
+
+  // true فقط عندما يكون القرار الخام (لو تُرك بلا قيد استئناف) أفضل من
+  // STOP_AFFECTED_ACTIVITY، لكن تم تثبيته عندها احترازياً بسبب عدم مرور
+  // RESUME_STABILITY_MINUTES بعد. يُستخدم في dustEvaluation.ts لتتبّع "منذ
+  // متى أصبحت القراءة جيدة فعلياً" (pendingResumeSince) منفصلاً تماماً عن
+  // stopped_since ("منذ متى بدأ الإيقاف") — الخلط بينهما كان يجعل عداد
+  // الاستئناف يبدأ من بداية الإيقاف نفسه بدل بداية التحسّن، فيسمح باستئناف
+  // فوري إن كانت مدة الإيقاف الكلية (بقراءات سيئة متفرقة) تجاوزت 10 دقائق
+  // ولو لم تتراكم دقيقة واحدة فعلية من القراءة الجيدة بعد.
+  resumeHoldApplied: boolean;
 }
 
 // السياق الكامل الذي يُمرَّر لدالة evaluateDustCompliance — يجمع كل ما تحتاجه
@@ -369,13 +409,40 @@ export interface DustComplianceContext {
   windDirectionDeg: number | null;
   pm10UgM3: number | null;
   pm25UgM3: number | null;
+  // للعرض فقط في "الطقس المرجعي للقرار" — لا تدخل في أي حساب/عتبة ضمن محرك
+  // الامتثال نفسه.
+  relativeHumidityPercent: number | null;
+  temperatureC: number | null;
+  // ملاحظات DVI التحذيرية (راجع DviEvaluationResult.caveatsAr) تُمرَّر هنا
+  // كما هي لتظهر في نتيجة الامتثال أيضاً — لا تُغيّر أي قرار.
+  dviCaveatsAr?: string[];
   dataSource: 'open-meteo' | 'onsite' | 'project-station' | 'none';
   sensitiveReceptors: SensitiveReceptor[];
 
   // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
-  // current_dust_compliance_decisions) — يُستخدم لمنع الاستئناف التلقائي
-  // الفوري بعد إيقاف (راجع RESUME_STABILITY_MINUTES في engine.ts). null/
-  // undefined تعني "لا قرار سابق"، فلا قيد يُطبَّق (سلوك المحرك بلا تغيير).
+  // current_dust_compliance_decisions) — يُستخدم لتحديد إن كان النشاط
+  // موقِفاً سابقاً (لتفعيل قيد الاستئناف أصلاً). null/undefined تعني "لا
+  // قرار سابق"، فلا قيد يُطبَّق (سلوك المحرك بلا تغيير).
   previousDecisionCategory?: DustComplianceDecisionCategory | null;
+  // لا تُستخدم لحساب مدة الاستقرار — أُبقيت فقط لتوافق الاستدعاءات القديمة.
+  // راجع previousPendingResumeSince أدناه للحقل الصحيح المستخدم فعلياً.
   previousDecisionUpdatedAt?: string | null;
+  // منذ متى أصبح القرار الخام (لو تُرك بلا قيد استئناف) جيداً بشكل مستمر،
+  // بينما القرار المخزَّن لا يزال موقِفاً — منفصل تماماً عن "منذ متى بدأ
+  // الإيقاف" (previousDecisionUpdatedAt/stopped_since). الخلط بين الاثنين
+  // كان يجعل عداد الاستئناف يبدأ من بداية الإيقاف نفسه، فيسمح باستئناف فوري
+  // إن تجاوزت مدة الإيقاف الكلية 10 دقائق ولو لم تتراكم دقيقة واحدة فعلية
+  // من القراءة الجيدة بعد (راجع pendingResumeSince في dustEvaluation.ts).
+  // null/undefined = لا يوجد استقرار مسجَّل بعد (فشل آمن: لا استئناف فوري).
+  previousPendingResumeSince?: string | null;
+
+  // استمرار PM10 عبر الزمن (من pm10_readings_history، راجع
+  // fetchPm10SustainedStatus في dustEvaluation.ts) — يُستخدم لتمييز
+  // RCRC-PM10-340-VIOLATION-011 (مخالفة مؤكدة بعد أكثر من دقيقتين) عن
+  // MRQ-PM10-BLACK-PENDING-104 (معلَّق، أقل من دقيقتين)، وRCRC-PM10-30M-
+  // SUSPENSION-012 (تعليق بعد 30 دقيقة عند ≥250). 0/undefined يعني "لا
+  // بيانات استمرار متاحة" — فشل آمن نحو معاملة القراءة كأنها لحظية فقط
+  // (السلوك القديم قبل هذه الإضافة، بلا كسر توافقي).
+  pm10SustainedMinutesAbove340?: number;
+  pm10SustainedMinutesAbove250?: number;
 }

@@ -16,6 +16,7 @@ function weather(overrides: Partial<DustWeatherSample> = {}): DustWeatherSample 
     windGustKmh: 15,
     windDirectionDeg: 0,
     relativeHumidityPercent: 40,
+    temperatureC: 30,
     rainfallLast24hMm: 0,
     pm10: 20,
     pm25: 10,
@@ -101,10 +102,25 @@ describe('DVI تكامل — بوابات الغبار والجسيمات', () =
     expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
   });
 
-  it('PM10 ≥ 250 → تقييد على الأقل (لا يبقى مسموحاً بلا مراقبة)', () => {
+  // طلب صريح من المستخدم: نص RESTRICT العام ("تقييد العمل: وجود فجوة في
+  // إجراءات التحكم الميدانية") لا يجوز أن يظهر كقرار "تقييد" فعلي — DVI-PM10-
+  // ACTION-003 لم يعد يصعّد لـRESTRICT، يبقى عند ALLOW_WITH_MONITORING
+  // (تنبيه/مراقبة فقط). القرار التنظيمي الفعلي مصدره محرك الامتثال المستقل
+  // (PM10-WARNING-008/PRECAUTION-009)، لا DVI الفيزيائي.
+  it('PM10 ≥ 250 → على الأقل مراقبة (ALLOW_WITH_MONITORING)، لا يبقى ALLOW نظيفاً، ولا يصل RESTRICT بعد الآن', () => {
     const r = computeDviResult(input(), weather({ pm10: 300 }));
     expect(r.triggeredRules).toContain('DVI-PM10-ACTION-003');
-    expect(['RESTRICT', 'RESTRICT_SEVERE', 'STOP_DUST_GENERATING_ACTIVITIES', 'MANDATORY_STOP']).toContain(r.decisionCategory);
+    expect(['ALLOW_WITH_MONITORING', 'RESTRICT_SEVERE', 'STOP_DUST_GENERATING_ACTIVITIES', 'MANDATORY_STOP']).toContain(r.decisionCategory);
+    expect(r.decisionCategory).not.toBe('ALLOW');
+  });
+
+  it('مستوى DVI البرتقالي (ORANGE) وحده بلا قواعد أخرى → ALLOW_WITH_MONITORING، ليس RESTRICT', () => {
+    // درجة تقع ضمن نطاق ORANGE (45-65) عبر رياح متوسطة بلا أي بوابة إلزامية
+    const r = computeDviResult(input(), weather({ windSpeedKmh: 22, pm10: 100 }));
+    if (r.level === 'ORANGE') {
+      expect(r.decisionCategory).toBe('ALLOW_WITH_MONITORING');
+      expect(r.shortReason).not.toContain('تقييد العمل');
+    }
   });
 
   it('رياح فعالة عالية جداً (≥55) مع مواد سائبة ونشاط نقل مواد → إيقاف', () => {
@@ -135,6 +151,108 @@ describe('DVI تكامل — الحالة الآمنة والقرار الأخض
 
     const safeResult = computeDviResult(input(), weather());
     expect(safeResult.shortReason).toContain('آمنة');
+  });
+});
+
+// caveatsAr: ملاحظات تحذيرية لصحة القراءة نفسها (طلب صريح من المستخدم
+// بالنص الحرفي) — لا تُغيّر level/decisionCategory/shortReason إطلاقاً.
+describe('DVI تكامل — caveatsAr (ملاحظات تحذيرية لا تُغيّر القرار)', () => {
+  it('رطوبة نسبية ≥80% → نص التحذير يُضاف لـcaveatsAr، بلا أي تأثير على القرار', () => {
+    const r = computeDviResult(input(), weather({ relativeHumidityPercent: 85 }));
+    expect(r.caveatsAr).toContain(
+      'الرطوبة مرتفعة وقد تؤثر في بعض حساسات الجسيمات البصرية؛ لا تُلغى القراءة أو التجاوز، ويلزم التحقق وفق إجراءات الجودة.'
+    );
+    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.level).toBe('GREEN');
+  });
+
+  it('رطوبة نسبية 79% (دون الحد) → لا يُضاف تحذير الرطوبة', () => {
+    const r = computeDviResult(input(), weather({ relativeHumidityPercent: 79 }));
+    expect(r.caveatsAr.some((c) => c.includes('الرطوبة'))).toBe(false);
+  });
+
+  it('درجة حرارة ≥50°م → نص التحذير يُضاف لـcaveatsAr، بلا أي تأثير على القرار', () => {
+    const r = computeDviResult(input(), weather({ temperatureC: 52 }));
+    expect(r.caveatsAr).toContain(
+      'درجة الحرارة عند أو فوق 50°م؛ تحقّق من أن جهاز PM10 مصنف للعمل في هذه الدرجة. لا يُلغى التجاوز تلقائياً.'
+    );
+    expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  it('درجة حرارة 49°م (دون الحد) → لا يُضاف تحذير الحرارة', () => {
+    const r = computeDviResult(input(), weather({ temperatureC: 49 }));
+    expect(r.caveatsAr.some((c) => c.includes('الحرارة'))).toBe(false);
+  });
+
+  it('رطوبة وحرارة مرتفعتان معاً → كلا التحذيرين يظهران معاً', () => {
+    const r = computeDviResult(input(), weather({ relativeHumidityPercent: 90, temperatureC: 55 }));
+    expect(r.caveatsAr).toHaveLength(2);
+  });
+
+  it('ظروف طبيعية (رطوبة/حرارة معتدلتان) → caveatsAr فارغة', () => {
+    const r = computeDviResult(input(), weather({ relativeHumidityPercent: 40, temperatureC: 30 }));
+    expect(r.caveatsAr).toHaveLength(0);
+  });
+
+  // محاكاة خطوة بخطوة بطلب صريح من المستخدم: "ارفع الحرارة ثم ارفع الرطوبة
+  // وشوف" — نفس قراءة PM10 (280، ضمن نطاق التحذير 250-339) طوال السيناريو،
+  // للتأكد أن قراءة PM10/القرار الناتج عنها لا يتحركان أبداً بتغيّر الحرارة/
+  // الرطوبة، وأن caveatsAr هي المكان الوحيد المتأثر — بالضبط الضمانة التي
+  // طلبها المستخدم صراحة ("لا تُلغى القراءة أو التجاوز").
+  describe('محاكاة: رفع الحرارة ثم رفع الرطوبة تدريجياً مع تثبيت PM10', () => {
+    const FIXED_PM10 = 280; // ضمن نطاق التحذير (250-339)، يُنتج ALLOW_WITH_CONTROLS دائماً
+
+    it('الخطوة 1 — حرارة عادية (30°م) ورطوبة عادية (40%) → لا تحذيرات، والقرار من PM10 وحده', () => {
+      const r = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 30, relativeHumidityPercent: 40 }));
+      expect(r.caveatsAr).toHaveLength(0);
+      expect(r.decisionCategory).not.toBe('ALLOW'); // PM10=280 لا يبقى ALLOW نظيفاً
+    });
+
+    it('الخطوة 2 — رفع الحرارة إلى 45°م (دون 50) → لا تحذير حرارة بعد، القرار والقراءة كما هما', () => {
+      const before = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 30, relativeHumidityPercent: 40 }));
+      const after = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 45, relativeHumidityPercent: 40 }));
+      expect(after.caveatsAr).toHaveLength(0);
+      expect(after.decisionCategory).toBe(before.decisionCategory);
+      expect(after.score).toBe(before.score);
+    });
+
+    it('الخطوة 3 — رفع الحرارة إلى 55°م (تجاوزت 50) → يظهر تحذير الحرارة فقط، والقرار/الدرجة لم يتغيّرا عن الحالة الأصلية', () => {
+      const baseline = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 30, relativeHumidityPercent: 40 }));
+      const r = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 55, relativeHumidityPercent: 40 }));
+      expect(r.caveatsAr).toHaveLength(1);
+      expect(r.caveatsAr[0]).toContain('درجة الحرارة');
+      expect(r.decisionCategory).toBe(baseline.decisionCategory);
+      expect(r.score).toBe(baseline.score);
+      expect(r.level).toBe(baseline.level);
+    });
+
+    it('الخطوة 4 — مع بقاء الحرارة مرتفعة (55°م)، رفع الرطوبة أيضاً إلى 90% → يظهر التحذيران معاً، والقرار/الدرجة لا يزالان كما في الأصل', () => {
+      const baseline = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 30, relativeHumidityPercent: 40 }));
+      const r = computeDviResult(input(), weather({ pm10: FIXED_PM10, temperatureC: 55, relativeHumidityPercent: 90 }));
+      expect(r.caveatsAr).toHaveLength(2);
+      expect(r.caveatsAr.some((c) => c.includes('الحرارة'))).toBe(true);
+      expect(r.caveatsAr.some((c) => c.includes('الرطوبة'))).toBe(true);
+      expect(r.decisionCategory).toBe(baseline.decisionCategory);
+      expect(r.score).toBe(baseline.score);
+      // القراءة الخام نفسها (لا رمز مُلخَّص) يجب أن تبقى محفوظة كما أُدخلت
+      expect(r.channels.particulateRisk).toBe(baseline.channels.particulateRisk);
+    });
+
+    it('نفس السيناريو عند PM10 يتجاوز 340 (إيقاف إلزامي) → الحرارة/الرطوبة المرتفعتان لا تُلغيان ولا تخفّفان الإيقاف', () => {
+      const highPm10 = 1500;
+      const baseline = computeDviResult(
+        input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+        weather({ pm10: highPm10, temperatureC: 30, relativeHumidityPercent: 40 })
+      );
+      const r = computeDviResult(
+        input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+        weather({ pm10: highPm10, temperatureC: 55, relativeHumidityPercent: 90 })
+      );
+      expect(r.caveatsAr).toHaveLength(2);
+      expect(r.decisionCategory).toBe(baseline.decisionCategory);
+      expect(r.mandatoryStop).toBe(baseline.mandatoryStop);
+      expect(r.mandatoryStop).toBe(true);
+    });
   });
 });
 

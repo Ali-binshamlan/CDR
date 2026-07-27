@@ -33,6 +33,7 @@ function projectProfile(overrides: Partial<DustProjectComplianceProfile> = {}): 
     entryExitCamerasInstalled: true,
     cameraRetentionDays: 90,
     sensitivityMapPrepared: true,
+    trueNorthAlignmentDocumented: null,
     ...overrides,
   };
 }
@@ -183,6 +184,7 @@ function activityProfile(overrides: Partial<DustActivityComplianceProfile> = {})
       crusherLng: null,
       crusherDistanceToNearestReceptorAutoM: null,
       crusherDistanceToResidentialReceptorAutoM: null,
+      crusherDistanceToDownwindReceptorAutoM: null,
 
       entryPointLat: 24.7,
       entryPointLng: 46.7,
@@ -211,6 +213,8 @@ function context(overrides: Partial<DustComplianceContext> = {}): DustCompliance
     windDirectionDeg: 270,
     pm10UgM3: 20,
     pm25UgM3: 12,
+    relativeHumidityPercent: 40,
+    temperatureC: 30,
     dataSource: 'onsite',
     sensitiveReceptors: [],
     ...overrides,
@@ -428,15 +432,97 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  it('PM10=345 (≥340) → STOP_AFFECTED_ACTIVITY (بدل السماح حتى 500 سابقاً)', () => {
+  it('PM10=345 (≥340) بلا بيانات استمرار (undefined) → معلَّق فقط (MRQ-PM10-BLACK-PENDING-104)، لا مخالفة مؤكدة', () => {
+    // RCRC-PM10-340-VIOLATION-011 يتطلب استمراراً فعلياً لأكثر من دقيقتين —
+    // قراءة واحدة بلا أي دليل استمرار (sustainedMinutesAbove340 غائب) لا
+    // يجوز أن تصبح إيقافاً إلزامياً غير قابل للتجاوز مباشرة (فشل آمن).
     const r = evaluateDustCompliance(context({ pm10UgM3: 345 }));
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
+    // الحالة المعلَّقة يجب أن تُعلَّم صراحة حتى لا تظهر الواجهة "إيقاف
+    // إلزامي نظامي" القطعية على قرار مؤقت قابل للتحول تلقائياً.
+    expect(r.pendingConfirmation).toBe(true);
   });
 
-  it('PM10=200 (دون 250) → لا قاعدة PM10 تنظيمية مفعّلة', () => {
+  it('PM10=345 (≥340) استمر لأكثر من دقيقتين → مخالفة تنظيمية مؤكدة (MANDATORY_STOP، غير قابل للتجاوز)، ليست معلَّقة', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10SustainedMinutesAbove340: 3 }));
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.canOverride).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
+    expect(r.pendingConfirmation).toBe(false);
+  });
+
+  it('PM10=345 استمر لدقيقة واحدة فقط (أقل من دقيقتين) → يبقى معلَّقاً، لا مخالفة مؤكدة بعد', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10SustainedMinutesAbove340: 1 }));
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
+    expect(r.pendingConfirmation).toBe(true);
+  });
+
+  // سيناريو حقيقي رصده المستخدم بالصورة: PM10=1687.6 غير مؤكَّد بعد (أقل من
+  // دقيقتين استمرار)، لكن هدم مكشوف + رياح 15-25 كم/س (DEMO-WIND-STOP-001)
+  // يوقف النشاط إلزامياً بشكل مستقل تماماً وفوري. القرار النهائي MANDATORY_
+  // STOP قطعي (pendingConfirmation=false)، فلا يجوز أن تظهر رسالة "معلَّق...
+  // بانتظار استمرار القراءة" الخاصة بـMRQ-PM10-BLACK-PENDING-104 ضمن القواعد
+  // المعروضة رغم أنها فعلياً "triggered" داخلياً — تناقض مباشر بين عنوان
+  // البطاقة القطعي ونص إحدى القواعد المعروضة تحته.
+  it('إيقاف مؤكَّد من قاعدة أخرى (هدم+رياح) مع PM10 معلَّق بالتوازي → قاعدة PM10 المعلَّقة تُستبعد من triggeredRules/requiredActions المعروضة', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 1687.6,
+        windSpeedKmh: 18,
+        activity: activityProfile({ regulatoryActivity: 'DEMOLITION', isEnclosedOperation: false }),
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.pendingConfirmation).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'DEMO-WIND-STOP-001')).toBe(true);
+    // القاعدة المعلَّقة لا تظهر في القوائم المعروضة رغم أنها فعّالة داخلياً
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
+    expect(r.requiredActions.some((a) => a.includes('احترازياً'))).toBe(false);
+  });
+
+  it('PM10=260 (≥250) استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012)، ليس معلَّقاً (تعليق مؤكَّد لا احترازي)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 260, pm10SustainedMinutesAbove250: 30 }));
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(true);
+    expect(r.pendingConfirmation).toBe(false);
+  });
+
+  it('PM10=260 (≥250) استمر 20 دقيقة فقط (أقل من 30) → لا تعليق، تحذير عادي فقط', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 260, pm10SustainedMinutesAbove250: 20 }));
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+  });
+
+  // نطاق 150-250 (احتراز): طلب صريح من المستخدم — "القراءة من 150 إلى 250
+  // (إنذار مبكر) تُفعل حالة الاحتراز لزيادة المراقبة"، أخف من تحذير 250+
+  // (ALLOW_WITH_CONTROLS) ولا يُقيّد AEI إطلاقاً (راجع applyComplianceGateToAei).
+  it('PM10=200 (بين 150 و250) → حالة احتراز (PRECAUTION) فقط، ليست تحذيراً', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 200 }));
+    expect(r.decisionCategory).toBe('PRECAUTION');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
+    expect(r.canOverride).toBe(true);
+  });
+
+  it('PM10=149 (دون 150) → لا قاعدة PM10 تنظيمية مفعّلة إطلاقاً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 149 }));
     expect(r.triggeredRules.some((h) => h.code.startsWith('PM10-'))).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  it('PM10=150 (الحد الأدنى للاحتراز بالضبط) → يُفعَّل الاحتراز', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 150 }));
+    expect(r.decisionCategory).toBe('PRECAUTION');
+  });
+
+  it('PM10=249 (أقصى نطاق الاحتراز قبل التحذير) → لا يزال احترازاً، ليس تحذيراً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 249 }));
+    expect(r.decisionCategory).toBe('PRECAUTION');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
   });
 });
 
@@ -556,22 +642,28 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
     expect(r.decisionCategory).toBe('ALLOW');
   });
 
-  it('قرار سابق MANDATORY_STOP منذ أقل من 10 دقائق + قراءة حالية جيدة → يبقى موقِفاً (لا استئناف فوري)', () => {
+  it('قرار سابق MANDATORY_STOP + القراءة تحسّنت لكن الاستقرار بدأ منذ أقل من 10 دقائق → يبقى موقِفاً (لا استئناف فوري)', () => {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60000).toISOString();
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 10,
         pm10UgM3: 20,
         previousDecisionCategory: 'MANDATORY_STOP',
-        previousDecisionUpdatedAt: fiveMinutesAgo,
+        previousPendingResumeSince: fiveMinutesAgo,
       })
     );
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
     expect(r.canOverride).toBe(false);
+    expect(r.resumeHoldApplied).toBe(true);
     expect(r.restartConditions.some((c) => c.includes('10 دقائق'))).toBe(true);
   });
 
-  it('قرار سابق STOP_AFFECTED_ACTIVITY منذ 15 دقيقة (أكثر من 10) + قراءة حالية جيدة → يستأنف طبيعياً', () => {
+  // الحالة التي كانت مكسورة فعلياً قبل الإصلاح: previousDecisionUpdatedAt
+  // (بداية الإيقاف نفسه) لم يعد يُستخدم لحساب الاستقرار إطلاقاً — لو تُرك
+  // كإشارة وحيدة (بلا previousPendingResumeSince) يجب ألا يُستأنف فوراً حتى
+  // لو مضى على بداية الإيقاف أكثر من 10 دقائق، لأن هذا لا يعني تراكم أي
+  // دقيقة فعلية من القراءة الجيدة بعد.
+  it('previousDecisionUpdatedAt قديم (15 دقيقة) لكن previousPendingResumeSince غائب → لا يُستأنف فوراً (لم يبدأ الاستقرار فعلياً بعد)', () => {
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
     const r = evaluateDustCompliance(
       context({
@@ -579,21 +671,55 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
         pm10UgM3: 20,
         previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
         previousDecisionUpdatedAt: fifteenMinutesAgo,
+        previousPendingResumeSince: null,
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.resumeHoldApplied).toBe(true);
+  });
+
+  it('previousPendingResumeSince منذ 15 دقيقة (أكثر من 10) + قراءة حالية جيدة → يستأنف طبيعياً', () => {
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 10,
+        pm10UgM3: 20,
+        previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+        previousPendingResumeSince: fifteenMinutesAgo,
+      })
+    );
+    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.resumeHoldApplied).toBe(false);
+  });
+
+  it('قرار سابق موقِف بلا previousDecisionCategory إطلاقاً → فشل آمن، لا يُطبَّق قيد', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 10,
+        pm10UgM3: 20,
+        previousDecisionCategory: null,
       })
     );
     expect(r.decisionCategory).toBe('ALLOW');
   });
 
-  it('قرار سابق موقِف بلا previousDecisionUpdatedAt (طابع زمني مفقود) → فشل آمن، لا يُطبَّق قيد', () => {
+  // سيناريو حقيقي رصده المستخدم: إيقاف استمر 16 دقيقة بقراءات سيئة متفرقة
+  // (previousDecisionUpdatedAt قديم جداً)، ثم تحسّنت القراءة الآن أخيراً —
+  // previousPendingResumeSince غائب (هذه أول لحظة تحسّن) → يجب أن يُطبَّق
+  // القيد لدقائق العشر القادمة، لا استئناف فوري رغم قِدَم previousDecisionUpdatedAt.
+  it('إيقاف استمر طويلاً (previousDecisionUpdatedAt قديم جداً) لكن القراءة تحسّنت الآن للتو → يُطبَّق القيد من الصفر، لا استئناف فوري', () => {
+    const sixteenMinutesAgo = new Date(Date.now() - 16 * 60000).toISOString();
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 10,
         pm10UgM3: 20,
         previousDecisionCategory: 'MANDATORY_STOP',
-        previousDecisionUpdatedAt: null,
+        previousDecisionUpdatedAt: sixteenMinutesAgo,
+        previousPendingResumeSince: null,
       })
     );
-    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.resumeHoldApplied).toBe(true);
   });
 
   it('قرار سابق ALLOW (لم يكن موقِفاً أصلاً) → لا قيد حتى لو كان حديثاً جداً', () => {
@@ -862,6 +988,45 @@ describe('محرك امتثال الغبار — نقل مخلفات الهدم 
   });
 });
 
+describe('محرك امتثال الغبار — حركة الشاحنات (تغطية الحمولة إلزامية)', () => {
+  it('حمولة غير مغطاة (loadCovered=false) → إيقاف النشاط المتأثر فوراً', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'SITE_TRAFFIC',
+          controls: { ...activityProfile().controls, loadCovered: false },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'TRAFFIC-LOAD-004')).toBe(true);
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+  });
+
+  it('حمولة مغطاة (loadCovered=true) → لا قاعدة تغطية مفعّلة', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'SITE_TRAFFIC',
+          controls: { ...activityProfile().controls, loadCovered: true },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'TRAFFIC-LOAD-004')).toBe(false);
+  });
+
+  it('حالة تغطية الحمولة غير معروفة (null) → لا تُعامَل كمخالفة مؤكدة (فشل آمن نحو عدم الافتراض)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'SITE_TRAFFIC',
+          controls: { ...activityProfile().controls, loadCovered: null },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'TRAFFIC-LOAD-004')).toBe(false);
+  });
+});
+
 describe('محرك امتثال الغبار — قطع الأحجار (إيقاف تلقائي من الرياح)', () => {
   it('قطع مكشوف أثناء رياح 15-25 كم/س → إيقاف إلزامي تلقائي', () => {
     const r = evaluateDustCompliance(
@@ -952,6 +1117,77 @@ describe('محرك امتثال الغبار — حساب مسافة الكسا�
     ]);
     expect(profile.measurements.crusherDistanceToNearestReceptorAutoM).toBeNull();
     expect(profile.measurements.crusherDistanceToResidentialReceptorAutoM).toBeNull();
+  });
+});
+
+describe('محرك امتثال الغبار — MRQ-DATA-TRUE-NORTH-111 (صلاحية اتجاه الرياح)', () => {
+  const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+  const northReceptor: SensitiveReceptor[] = [
+    { id: 'r1', name: 'سكني شمالي قريب', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
+  ];
+
+  it('محاذاة الشمال الحقيقي غير موثّقة (null) → crusherDistanceToDownwindReceptorAutoM يبقى null بصرف النظر عن اتجاه الرياح', () => {
+    const profile = buildActivityComplianceProfile(row, northReceptor, 180, null);
+    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
+  });
+
+  it('محاذاة الشمال الحقيقي موثّقة صراحة كـ false (غير معايَرة) → يبقى null أيضاً', () => {
+    const profile = buildActivityComplianceProfile(row, northReceptor, 180, false);
+    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
+  });
+
+  it('محاذاة الشمال الحقيقي موثّقة (true) → يُحسب اتجاه الريح فعلياً ويجد المستقبِل باتجاه الريح', () => {
+    const profile = buildActivityComplianceProfile(row, northReceptor, 180, true);
+    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
+    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeLessThan(1000);
+  });
+});
+
+describe('محرك امتثال الغبار — MRQ-RECEPTOR-DOWNWIND-120 (تصعيد الاستجابة عبر evaluateDustCompliance)', () => {
+  it('مستقبِل سكني باتجاه الريح فعلياً (محاذاة موثّقة) وضمن 500م → RESTRICT_ACTIVITY', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToDownwindReceptorAutoM: 300,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(true);
+    expect(r.decisionCategory).not.toBe('ALLOW');
+  });
+
+  it('لا مستقبِل باتجاه الريح (Infinity) → القاعدة لا تُفعَّل', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToDownwindReceptorAutoM: Infinity,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(false);
+  });
+
+  it('اتجاه الرياح غير صالح (null، محاذاة غير موثّقة) → القاعدة لا تُفعَّل إطلاقاً', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToDownwindReceptorAutoM: null,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(false);
   });
 });
 
@@ -1324,6 +1560,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     shortReason: '',
     topRiskDrivers: [],
     riskReducers: [],
+    caveatsAr: [],
     confidenceScore: 90,
     confidenceLabel: 'High',
     validUntil: new Date().toISOString(),
@@ -1341,6 +1578,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
         windGustKmh: 39.78,
         windDirectionDeg: 315,
         relativeHumidityPercent: 20,
+        temperatureC: 30,
         rainfallLast24hMm: 0,
         pm10: 45,
         pm25: 18,
@@ -1362,7 +1600,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       rawWeatherSample: {
         visibilityM: 10000, weatherCode: 0, weatherSymbol: 'CLEAR' as const,
         windSpeedKmh: 25, windGustKmh: 30, windDirectionDeg: 90,
-        relativeHumidityPercent: 20, rainfallLast24hMm: 0,
+        relativeHumidityPercent: 20, temperatureC: 30, rainfallLast24hMm: 0,
         pm10: 45, pm25: 18, dustConcentration: 100,
         dataSource: 'open-meteo' as const, isForecastStale: false,
       },

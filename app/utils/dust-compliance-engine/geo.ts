@@ -25,6 +25,50 @@ export function haversineDistanceM(
   return EARTH_RADIUS_M * c;
 }
 
+// اتجاه (bearing) نقطة الوصول من نقطة الأصل، بالدرجات (0-360، 0=شمال حقيقي،
+// 90=شرق...) — يلزم لتحديد هل مستقبِل حساس "باتجاه الريح" فعلياً (راجع
+// MRQ-RECEPTOR-DOWNWIND-120)، لا مجرد قريب بالمسافة المستقيمة بصرف النظر
+// عن الاتجاه.
+export function bearingDegrees(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const toDeg = (rad: number) => (rad * 180) / Math.PI;
+  const dLng = toRad(lng2 - lng1);
+  const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+  const bearing = toDeg(Math.atan2(y, x));
+  return (bearing + 360) % 360;
+}
+
+// أصغر فرق زاوية بين اتجاهين (0-180) — يتعامل بشكل صحيح مع دوران360/0
+// (مثال: الفرق بين 350 و10 هو 20، لا 340).
+export function angularDifferenceDegrees(a: number, b: number): number {
+  const diff = Math.abs(a - b) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+// هامش التسامح الزاوي لاعتبار مستقبِل "باتجاه الريح" (downwind) — قطاع
+// ±45° حول اتجاه هبوب الرياح الفعلي (لا اتجاه مصدرها)، يغطي ربع الدائرة
+// تقريباً في اتجاه الريح، وهو نطاق معقول عملياً لا يتطلب محاذاة دقيقة تماماً.
+export const DOWNWIND_TOLERANCE_DEGREES = 45;
+
+// هل نقطة الوصول تقع "باتجاه الريح" (downwind) من نقطة الأصل؟
+// windDirectionDeg يُقاس تقليدياً كـ"الاتجاه القادمة منه الريح" (meteorological
+// convention)، فاتجاه الهبوب الفعلي (نحو أين تذهب) هو windDirectionDeg+180.
+export function isDownwind(
+  originLat: number,
+  originLng: number,
+  targetLat: number,
+  targetLng: number,
+  windDirectionFromDeg: number,
+  toleranceDeg: number = DOWNWIND_TOLERANCE_DEGREES
+): boolean {
+  const targetBearing = bearingDegrees(originLat, originLng, targetLat, targetLng);
+  const windBlowingTowardDeg = (windDirectionFromDeg + 180) % 360;
+  return angularDifferenceDegrees(targetBearing, windBlowingTowardDeg) <= toleranceDeg;
+}
+
 const RESIDENTIAL_RECEPTOR_TYPES: SensitiveReceptorType[] = ['RESIDENTIAL', 'SCHOOL', 'HOSPITAL'];
 
 // يُرجع أقرب مسافة (م) لأي مستقبل حساس، وأقرب مسافة لمستقبل
@@ -63,6 +107,30 @@ export function nearestReceptorDistancesM(
   }
 
   return { nearestAnyM, nearestResidentialM };
+}
+
+// أقرب مسافة (م) لمستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً "باتجاه الريح"
+// من نقطة الأصل — MRQ-RECEPTOR-DOWNWIND-120. يُرجع null إن كان اتجاه
+// الرياح غير صالح (windDirectionFromDeg=null، مثال: محاذاة الشمال الحقيقي
+// غير موثّقة — راجع MRQ-DATA-TRUE-NORTH-111) أو الموقع غير معروف، أو
+// Infinity إن لم يوجد أي مستقبِل ضمن قطاع اتجاه الريح (لا خطر اتجاهي
+// حالياً، بصرف النظر عن وجود مستقبِلات في اتجاهات أخرى).
+export function nearestDownwindReceptorDistanceM(
+  lat: number | null,
+  lng: number | null,
+  windDirectionFromDeg: number | null,
+  receptors: SensitiveReceptor[]
+): number | null {
+  if (lat === null || lng === null || windDirectionFromDeg === null) return null;
+
+  const downwindResidential = receptors.filter(
+    (r) =>
+      RESIDENTIAL_RECEPTOR_TYPES.includes(r.receptorType) &&
+      isDownwind(lat, lng, r.lat, r.lng, windDirectionFromDeg)
+  );
+  if (downwindResidential.length === 0) return Infinity;
+
+  return Math.min(...downwindResidential.map((r) => haversineDistanceM(lat, lng, r.lat, r.lng)));
 }
 
 // نصف قطر عرض المستقبِلات حول وحدة الكسارة/الخلاطة — 500م هو نفس الحد

@@ -76,5 +76,20 @@ export async function POST(request: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
+  // تسجيل PM10 في السجل التاريخي المنفصل (pm10_readings_history) — يُستخدم
+  // لاحقاً لحساب استمرار القراءة عبر الزمن (RCRC-PM10-340-VIOLATION-011:
+  // أكثر من دقيقتين، RCRC-PM10-30M-SUSPENSION-012: 30 دقيقة)، بمعزل عن
+  // توقيت تقييمات dust_compliance_evaluations المتقطّع. project_id فقط
+  // (لا activity_group_id) لأن الجهاز مرتبط بالمشروع ككل، لا نشاط محدد —
+  // راجع computeSustainedPm10 في app/lib/dustEvaluation.ts.
+  if (typeof updates.last_pm10 === 'number') {
+    await supabaseAdmin.from('pm10_readings_history').insert({
+      project_id: auth.projectId,
+      pm10_ug_m3: updates.last_pm10,
+      source: 'device',
+      recorded_at: updates.last_reading_at,
+    });
+  }
+
   return NextResponse.json({ success: true, receivedAt: updates.last_reading_at });
 }

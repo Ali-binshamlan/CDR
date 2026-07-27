@@ -52,10 +52,15 @@ function getRiskWeight(value: string | undefined | null): number {
 // ----------------------------------------------------------------------
 
 // وزن الخطر من لون العرض الحي للمحرك (displayColor / DviLevel) — يُستخدم
-// لترتيب المؤشرات واختيار لون البانر الموحّد في MultiIndicatorActivityBox
+// لترتيب المؤشرات واختيار لون البانر الموحّد في MultiIndicatorActivityBox.
+// BLACK (إيقاف إلزامي مؤكَّد، غير قابل للتجاوز) يأخذ وزناً أعلى من RED
+// (معلَّق/موقوف مؤقتاً بانتظار تأكيد، مثال MRQ-PM10-BLACK-PENDING-104) —
+// كانا يتساويان سابقاً (كلاهما 3)، فيظهر القرار المؤكَّد بنفس لون القرار
+// المؤقت المعلَّق في البانر الموحّد، رغم اختلاف شدتهما الفعلية جوهرياً.
 function riskWeightFromColor(color: string | undefined | null): number {
   const c = String(color || '').toUpperCase();
-  if (['BLACK', 'DARK_RED', 'RED'].includes(c)) return 3;
+  if (c === 'BLACK') return 4;
+  if (['DARK_RED', 'RED'].includes(c)) return 3;
   if (c === 'ORANGE') return 2;
   if (c === 'YELLOW') return 1;
   return 0; // GREEN أو غير معروف
@@ -66,11 +71,15 @@ function riskWeightFromColor(color: string | undefined | null): number {
 // "compliance يطغى على DVI" هنا محلياً — كان هذا التكرار مصدر تناقض فعلي:
 // بانر "القرار الموحد" هنا وبطاقة الخريطة الحية كانا يعتمدان نسختين
 // منفصلتين من نفس القاعدة، فأمكن أن تختلفا لو تغيّرت إحداهما دون الأخرى.
+//
+// riskWeight يُبنى الآن من unified.level حصرياً (لا mandatoryStop منفصل)،
+// لأن unified.level يميّز فعلياً بين BLACK (إيقاف مؤكَّد) وRED (معلَّق) —
+// unified.mandatoryStop وحده كان يساوي بينهما (كلاهما true بغياب تمييز).
 function summaryFromDust(result: any, compliance: any = null): { decisionLabel: string; riskWeight: number; reasonText?: string } {
   const unified = computeUnifiedActivityDecision(result, compliance);
   return {
     decisionLabel: unified.decisionLabelAr,
-    riskWeight: unified.mandatoryStop ? 3 : riskWeightFromColor(unified.level),
+    riskWeight: riskWeightFromColor(unified.level),
     reasonText: unified.shortReason || undefined,
   };
 }
@@ -215,10 +224,15 @@ function buildRecentActivities(
     .sort((a, b) => (a.latestCreatedAt < b.latestCreatedAt ? 1 : -1))
     .slice(0, 6) // أحدث 6 مجموعات نشاط (لا 6 صفوف) — يحافظ على نية limit السابقة
     .map((acc) => {
-      // إيقاف إلزامي إن قال أي مؤشر (حي أو موثّق) بذلك — وزن 3 يشمل الأحمر/الأسود
+      // إيقاف إلزامي مؤكَّد إن قال أي مؤشر بذلك — riskWeight=4 (الأسود) حصراً،
+      // لا 3 (الأحمر، يشمل حالات معلَّقة/مؤقتة مثل MRQ-PM10-BLACK-PENDING-104
+      // لا يجوز معاملتها كإيقاف إلزامي نهائي). موثوق أكثر من مطابقة نص
+      // "موقوف إلزامياً"/"إيقاف إلزامي نظامي" حرفياً (decisionStatusLabel
+      // القديم لا يزال يستخدم "موقوف إلزامياً" لمسار decision_records
+      // الموثّق بلا محرك حي — يبقى مطابقاً هنا لتغطية ذلك المسار أيضاً).
       const mandatoryStop =
-        acc.summaries.some((s) => s.decisionLabel === 'موقوف إلزامياً') ||
-        acc.summaries.some((s) => s.decisionLabel === 'إيقاف إلزامي نظامي');
+        acc.summaries.some((s) => s.riskWeight === 4) ||
+        acc.summaries.some((s) => s.decisionLabel === 'موقوف إلزامياً');
       const isFutureActivity = acc.windowStartIso ? new Date(acc.windowStartIso).getTime() > nowMs : false;
 
       // العنوان النهائي = كل الأنشطة التنظيمية المميّزة مدموجة (مثال:

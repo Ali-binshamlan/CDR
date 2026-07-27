@@ -66,6 +66,7 @@ export interface DustWeatherSample {
   windGustKmh: number | null;
   windDirectionDeg: number | null;
   relativeHumidityPercent: number | null;
+  temperatureC: number | null;
   rainfallLast24hMm: number | null;
   pm10: number | null;
   pm25: number | null;
@@ -228,6 +229,12 @@ export interface DviEvaluationResult {
   shortReason: string;
   topRiskDrivers: string[];
   riskReducers: string[];
+
+  // ملاحظات تحذيرية لا تُغيّر القرار/الدرجة إطلاقاً — فقط تنبيه لصحة القراءة
+  // نفسها (مثال: رطوبة نسبية مرتفعة قد تؤثر على حساسات الجسيمات البصرية،
+  // أو حرارة قد تتجاوز التصنيف التشغيلي لجهاز PM10). طلب صريح من المستخدم:
+  // "لا تُلغى القراءة أو التجاوز" — تبقى منفصلة تماماً عن decisionCategory.
+  caveatsAr: string[];
 
   confidenceScore: number;
   confidenceLabel: string;

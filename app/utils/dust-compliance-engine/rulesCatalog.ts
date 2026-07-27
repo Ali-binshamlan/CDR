@@ -411,6 +411,7 @@ export const DUST_RULES_CATALOG: RuleCatalogSection[] = [
 
 export const SEVERITY_LABEL_AR: Record<DustComplianceDecisionCategory, string> = {
   ALLOW: 'مسموح',
+  PRECAUTION: 'احتراز — زيادة المراقبة',
   ALLOW_WITH_CONTROLS: 'مسموح مع ضوابط',
   FIELD_VERIFICATION_REQUIRED: 'يتطلب تحقق ميداني',
   RESTRICT_ACTIVITY: 'تقييد النشاط',

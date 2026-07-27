@@ -12,6 +12,7 @@ function sample(overrides: Partial<DustWeatherSample> = {}): DustWeatherSample {
     windGustKmh: 15,
     windDirectionDeg: 0,
     relativeHumidityPercent: 40,
+    temperatureC: 30,
     rainfallLast24hMm: 0,
     pm10: 20,
     pm25: 10,

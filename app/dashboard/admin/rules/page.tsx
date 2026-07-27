@@ -9,6 +9,7 @@ import { Loader2, ShieldAlert, Scale, Search } from 'lucide-react';
 
 const SEVERITY_STYLE: Record<DustComplianceDecisionCategory, { bg: string; border: string; text: string; dot: string }> = {
   ALLOW: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  PRECAUTION: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', dot: 'bg-yellow-500' },
   ALLOW_WITH_CONTROLS: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', dot: 'bg-amber-500' },
   FIELD_VERIFICATION_REQUIRED: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', dot: 'bg-blue-500' },
   RESTRICT_ACTIVITY: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', dot: 'bg-orange-500' },
@@ -22,6 +23,7 @@ const SEVERITY_ORDER: DustComplianceDecisionCategory[] = [
   'RESTRICT_ACTIVITY',
   'FIELD_VERIFICATION_REQUIRED',
   'ALLOW_WITH_CONTROLS',
+  'PRECAUTION',
   'ALLOW',
 ];
 

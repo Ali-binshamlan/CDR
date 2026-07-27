@@ -134,8 +134,12 @@ function calculateMultipliers(activityType: ActivityCategory, site: DustSiteInpu
 // -------------------------------------------------------------
 function baseDecisionFromLevel(level: DviLevel, activityType: ActivityCategory): DviDecisionCategory {
   if (level === 'GREEN') return 'ALLOW';
-  if (level === 'YELLOW') return 'ALLOW_WITH_MONITORING';
-  if (level === 'ORANGE') return 'RESTRICT';
+  // ORANGE لم يعد يُنتج RESTRICT — طلب صريح من المستخدم: رسالة "تقييد
+  // العمل: وجود فجوة في إجراءات التحكم الميدانية" لا يجوز أن تظهر كقرار
+  // "تقييد" في القرارات النهائية. يبقى النطاق البرتقالي ضمن ALLOW_WITH_
+  // MONITORING فقط (تنبيه/مراقبة، بلا لغة تقييد فعلي). لا تأثير على
+  // RESTRICT_SEVERE أو أي إيقاف إلزامي — تلك تبقى كما هي تماماً.
+  if (level === 'YELLOW' || level === 'ORANGE') return 'ALLOW_WITH_MONITORING';
 
   if (VISIBILITY_DEPENDENT_ACTIVITIES.includes(activityType)) return 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES';
   if (DUST_GENERATING_ACTIVITIES.includes(activityType)) return 'STOP_DUST_GENERATING_ACTIVITIES';
@@ -197,7 +201,11 @@ function applyMandatoryGates(
     rules.push('DVI-PM10-ACTION-003');
     actions.push('رش الطرق الداخلية وتغطية المواد السائبة وتقليل حركة الشاحنات');
     actions.push('فحص مصدر ارتفاع الغبار ومراقبة حدود الموقع');
-    if (decision === 'ALLOW' || decision === 'ALLOW_WITH_MONITORING') decision = 'RESTRICT';
+    // لم تعد تصعّد إلى RESTRICT (راجع baseDecisionFromLevel) — تبقى عند
+    // ALLOW_WITH_MONITORING (تنبيه/مراقبة فقط). قرار الامتثال التنظيمي
+    // المستقل (PM10-WARNING-008/PRECAUTION-009 في dust-compliance-engine)
+    // هو من يتولى فعلياً أي إجراء تنظيمي فعلي عند هذه القراءات، لا DVI.
+    if (decision === 'ALLOW') decision = 'ALLOW_WITH_MONITORING';
   }
 
   // حد الإيقاف 340 (بدل 500 سابقاً) ليطابق حد المخالفة التنظيمي في
@@ -416,6 +424,21 @@ export function computeDviResult(input: DustEngineInput, weather: DustWeatherSam
       ? 'تشغيل مع المراقبة: رصد ارتفاع طفيف في الجسيمات العالقة أو اقتراب هبات الرياح من حافة التقييد.'
       : 'بيئة تشغيلية آمنة: الرؤية الأفقية ممتازة ومؤشرات الغبار تقع بالكامل ضمن النطاق المسموح للنشاط.';
 
+  // ملاحظات تحذيرية لصحة القراءة نفسها — طلب صريح من المستخدم بالنص الحرفي.
+  // لا تُغيّر level/decisionCategory/shortReason إطلاقاً ("لا تُلغى القراءة
+  // أو التجاوز")، فقط تُضاف كتنبيهات منفصلة.
+  const caveatsAr: string[] = [];
+  if (weather.relativeHumidityPercent !== null && weather.relativeHumidityPercent >= 80) {
+    caveatsAr.push(
+      'الرطوبة مرتفعة وقد تؤثر في بعض حساسات الجسيمات البصرية؛ لا تُلغى القراءة أو التجاوز، ويلزم التحقق وفق إجراءات الجودة.'
+    );
+  }
+  if (weather.temperatureC !== null && weather.temperatureC >= 50) {
+    caveatsAr.push(
+      'درجة الحرارة عند أو فوق 50°م؛ تحقّق من أن جهاز PM10 مصنف للعمل في هذه الدرجة. لا يُلغى التجاوز تلقائياً.'
+    );
+  }
+
   return {
     indicatorType: 'DVI',
     dviBase: Math.round(dviBase * 10) / 10,
@@ -454,6 +477,7 @@ export function computeDviResult(input: DustEngineInput, weather: DustWeatherSam
     shortReason,
     topRiskDrivers: drivers,
     riskReducers: reducers,
+    caveatsAr,
 
     confidenceScore,
     confidenceLabel: toConfidenceLabel(confidenceScore),
@@ -572,6 +596,7 @@ function aggregateWorstCaseSample(samples: DustWeatherSample[]): DustWeatherSamp
     windGustKmh: worstOf(samples.map((s) => s.windGustKmh), (v) => Math.max(...v)),
     windDirectionDeg: first.windDirectionDeg,
     relativeHumidityPercent: worstOf(samples.map((s) => s.relativeHumidityPercent), (v) => Math.max(...v)),
+    temperatureC: worstOf(samples.map((s) => s.temperatureC), (v) => Math.max(...v)),
     rainfallLast24hMm: worstOf(samples.map((s) => s.rainfallLast24hMm), (v) => Math.min(...v)),
     pm10: worstOf(samples.map((s) => s.pm10), (v) => Math.max(...v)),
     pm25: worstOf(samples.map((s) => s.pm25), (v) => Math.max(...v)),

@@ -31,6 +31,7 @@ const ENGINE_VERSION = '1.0.0';
 
 const DECISION_LABEL_AR: Record<DustComplianceDecisionCategory, string> = {
   ALLOW: 'مسموح — تشغيل اعتيادي',
+  PRECAUTION: 'احتراز — زيادة المراقبة',
   ALLOW_WITH_CONTROLS: 'مسموح مع ضوابط تحكم إضافية',
   FIELD_VERIFICATION_REQUIRED: 'يتطلب تحقق ميداني قبل الاستمرار',
   RESTRICT_ACTIVITY: 'تقييد النشاط',
@@ -285,7 +286,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   // 15-25 كم/س — تثبيط معزز عام (دون إيقاف)، و حدود PM10 التنظيمية —
   // "الاستخراج التنظيمي من المرفق" القسم 5-6. راجع rulebook.ts للتفاصيل.
   ruleHits.push(...enhancedSuppressionRule(ctx.activity.isDustGenerating, ctx.activity.isEnclosedOperation, windBand));
-  ruleHits.push(...pm10ThresholdRule(ctx.pm10UgM3));
+  ruleHits.push(...pm10ThresholdRule(ctx.pm10UgM3, ctx.pm10SustainedMinutesAbove340, ctx.pm10SustainedMinutesAbove250));
 
   // --- قواعد النشاط التنظيمي المحدد (القسم 9.4-9.10) ---
   ruleHits.push(...applyActivityRules(ctx.project, riskClass, windBand, ctx.activity, ctx.windSpeedKmh));
@@ -303,11 +304,16 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
   // منع الاستئناف التلقائي الفوري بعد إيقاف — قرار كان موقِفاً
   // (MANDATORY_STOP أو STOP_AFFECTED_ACTIVITY) لا يتحسّن مباشرة بمجرد أن
-  // القراءة الحالية أصبحت جيدة؛ يلزم استقرار حقيقي (10 دقائق منذ آخر تغيّر
-  // قرار مسجَّل) قبل السماح بالتحسّن. previousDecisionUpdatedAt يأتي من
-  // current_dust_compliance_decisions.updated_at (يُحدَّث فقط عند تغيّر
-  // القرار فعلياً، راجع shouldSkipPersist في dustEvaluation.ts) — أقرب
-  // طابع زمني فعلي متاح لقياس "منذ متى استقر القرار" بلا حاجة لعمود جديد.
+  // القراءة الحالية أصبحت جيدة؛ يلزم استقرار حقيقي (10 دقائق متواصلة من
+  // القراءة الجيدة) قبل السماح بالتحسّن.
+  //
+  // previousPendingResumeSince (لا previousDecisionUpdatedAt/stopped_since)
+  // هو المصدر الصحيح هنا — يقيس "منذ متى أصبحت القراءة جيدة"، لا "منذ متى
+  // بدأ الإيقاف". استخدام stopped_since هنا كان خللاً مكتشَفاً: لو استمر
+  // الإيقاف 16 دقيقة قبل أن تتحسّن القراءة أخيراً، كان النظام يعتبر عداد
+  // الـ10 دقائق منقضياً بالفعل منذ بداية الإيقاف نفسه، فيسمح باستئناف فوري
+  // رغم عدم تراكم أي دقيقة فعلية من القراءة الجيدة بعد.
+  //
   // غياب previousDecisionCategory (أول تقييم لنشاط، أو لم يُمرَّر من
   // المستدعي) يعني عدم تطبيق أي قيد — سلوك المحرك بلا تغيير.
   const RESUME_STABILITY_MINUTES = 10;
@@ -316,10 +322,10 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';
   let resumeHoldApplied = false;
   if (previousWasStopped && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
-    const minutesSincePreviousChange = ctx.previousDecisionUpdatedAt
-      ? (Date.now() - new Date(ctx.previousDecisionUpdatedAt).getTime()) / 60000
-      : Infinity; // بلا طابع زمني صالح — فشل آمن نحو عدم المنع
-    if (minutesSincePreviousChange < RESUME_STABILITY_MINUTES) {
+    const minutesSinceGoodReadingBegan = ctx.previousPendingResumeSince
+      ? (Date.now() - new Date(ctx.previousPendingResumeSince).getTime()) / 60000
+      : 0; // لا استقرار مسجَّل بعد = بداية الاستقرار الآن (فشل آمن نحو المنع)
+    if (minutesSinceGoodReadingBegan < RESUME_STABILITY_MINUTES) {
       decisionCategory = 'STOP_AFFECTED_ACTIVITY';
       resumeHoldApplied = true;
     }
@@ -335,12 +341,31 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   const mandatoryStop = decisionCategory === 'MANDATORY_STOP';
   const canOverride = !mandatoryStop && decisionCategory !== 'STOP_AFFECTED_ACTIVITY';
 
+  // القاعدة التي حدَّدت هذا القرار فعلياً — نفس منطق shortReasonFor أدناه.
+  // إن كانت MRQ-PM10-BLACK-PENDING-104 تحديداً، فالقرار "معلَّق" بانتظار
+  // تأكيد استمرار القراءة، لا مخالفة مؤكَّدة — يجب ألا يظهر بنفس لغة
+  // MANDATORY_STOP القطعية في الواجهة (راجع تعليق pendingConfirmation في
+  // types.ts للسبب الكامل).
+  const decidingRule = ruleHits.find((r) => r.severity === decisionCategory);
+  const pendingConfirmation = decidingRule?.code === 'MRQ-PM10-BLACK-PENDING-104';
+
+  // إن كان القرار النهائي إيقافاً مؤكَّداً فعلياً (MANDATORY_STOP أو
+  // STOP_AFFECTED_ACTIVITY) من قاعدة أخرى غير MRQ-PM10-BLACK-PENDING-104
+  // (مثال: بوابة رياح/هدم مكشوف)، فإن نص "معلَّق... بانتظار استمرار القراءة"
+  // الخاص بتلك القاعدة يصبح متناقضاً ومضلِّلاً — النشاط موقوف فعلياً الآن،
+  // لا "بانتظار" شيء. نستبعدها من القوائم المعروضة (لا من ruleHits الداخلية
+  // نفسها، فقط من triggeredRules/requiredActions المعروضتين للمستخدم) حتى
+  // لا تظهر رسالة تصف حالة مؤقتة بجانب قرار قطعي بالفعل.
+  const displayedRuleHits = pendingConfirmation
+    ? ruleHits
+    : ruleHits.filter((r) => r.code !== 'MRQ-PM10-BLACK-PENDING-104');
+
   // الإجراءات المطلوبة تُبنى من actionAr (نص الإجراء التصحيحي) وليس من
   // messageAr (وصف المخالفة) — وإلا ظهرت نفس الجملة حرفياً مرتين في البطاقة:
   // مرة تحت "القواعد المفعّلة" ومرة تحت "الإجراءات المطلوبة"، فيظن المستخدم
   // أن النظام يكرر كلامه بلا فائدة.
   const requiredActions = Array.from(
-    new Set(ruleHits.filter((r) => r.severity !== 'ALLOW_WITH_CONTROLS').map((r) => r.actionAr))
+    new Set(displayedRuleHits.filter((r) => r.severity !== 'ALLOW_WITH_CONTROLS').map((r) => r.actionAr))
   );
 
   const restartConditions: string[] = [];
@@ -383,9 +408,11 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     decisionLabelAr: DECISION_LABEL_AR[decisionCategory],
     mandatoryStop,
     canOverride,
+    pendingConfirmation,
+    resumeHoldApplied,
     shortReasonAr: shortReasonFor(decisionCategory, ruleHits, resumeHoldApplied),
 
-    triggeredRules: ruleHits,
+    triggeredRules: displayedRuleHits,
     requiredActions,
     restartConditions,
     missingCriticalInputs,
@@ -406,6 +433,9 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
       windDirectionDeg: ctx.windDirectionDeg,
       pm10UgM3: ctx.pm10UgM3,
       pm25UgM3: ctx.pm25UgM3,
+      relativeHumidityPercent: ctx.relativeHumidityPercent,
+      temperatureC: ctx.temperatureC,
     },
+    caveatsAr: ctx.dviCaveatsAr ?? [],
   };
 }

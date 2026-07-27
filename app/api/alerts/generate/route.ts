@@ -39,7 +39,7 @@ import type { DustEngineInput } from '@/app/utils/dust-engine/types';
 import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { evaluateDustCompliance, buildComplianceContext, buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
-import { resolveFreshProjectDevice, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
+import { resolveFreshProjectDevice, fetchPm10SustainedStatus, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
 // (يُستدعى من Cron)، فيحتاج مفتاح الخدمة لتجاوز RLS والقراءة من كل
@@ -126,6 +126,38 @@ async function alertExists(activitySource: string, activityId: string, kind: str
   if (!data || data.length === 0) return false;
   if (!onlyOpen) return true;
   return data.some((a: any) => a.state !== 'CLOSED');
+}
+
+// يُغلق تلقائياً أي تنبيه مفتوح من "أنواع القراءة الحية" (SAFETY_BREACH،
+// DUST، PM10_APPROACHING_LIMIT، COMPLIANCE_VIOLATION/RESTRICTION/ADVISORY)
+// إن لم يعد الشرط المسبب له قائماً في التقييم الحالي — طلب صريح من
+// المستخدم: بطاقة الامتثال كانت تعرض بانراً أحمر "تنبيه أمني نشط" رغم أن
+// القراءة الحية عادت آمنة (احتراز فقط)، لأن هذه الأنواع لم تكن تُغلق إلا
+// يدوياً من صفحة التنبيهات. لا يشمل BEFORE_*/NO_DECISION_YET عمداً — تلك
+// تذكيرات لمرة واحدة بطبيعتها، لا حالة "تحسّنت" لها.
+const LIVE_CONDITION_ALERT_KINDS = [
+  'SAFETY_BREACH',
+  'DUST',
+  'PM10_APPROACHING_LIMIT',
+  'COMPLIANCE_VIOLATION',
+  'COMPLIANCE_RESTRICTION',
+  'COMPLIANCE_ADVISORY',
+] as const;
+
+async function autoCloseResolvedAlerts(
+  activitySource: 'dust',
+  activityId: string,
+  stillActiveKinds: Set<string>
+) {
+  const kindsToClose = LIVE_CONDITION_ALERT_KINDS.filter((k) => !stillActiveKinds.has(k));
+  if (kindsToClose.length === 0) return;
+  await supabaseAdmin
+    .from('alerts')
+    .update({ state: 'CLOSED' })
+    .eq('activity_source', activitySource)
+    .eq('activity_id', activityId)
+    .in('kind', kindsToClose)
+    .neq('state', 'CLOSED');
 }
 
 async function insertAlert(params: {
@@ -268,8 +300,27 @@ export async function checkDustActivities(projectIds?: string[]) {
     await checkNoDecisionAlert(profile.project_id, 'dust', profile.id, label, startIso, endIso);
 
     const now = Date.now();
-    const isDuring = now >= new Date(startIso).getTime() && now <= new Date(endIso).getTime();
-    if (!isDuring) continue;
+    const startMs = new Date(startIso).getTime();
+    const endMs = new Date(endIso).getTime();
+    // طلب صريح من المستخدم: القراءة الحية الخطيرة (مثال PM10 يقترب من 300)
+    // يجب أن تُنبِّه حتى قبل بدء النافذة المجدولة فعلياً — لا فائدة من
+    // انتظار وقت البدء الرسمي بينما القراءة الحالية خطيرة الآن. نطاق ما قبل
+    // البدء هنا (PRE_START_LIVE_CHECK_HOURS) مطابق تماماً لأقرب تذكير BEFORE
+    // موجود أصلاً (BEFORE_2H) حتى لا يظهر تنبيه حيّ بلا أي تذكير "قبل
+    // التنفيذ" مرتبط به على نفس الشاشة.
+    const PRE_START_LIVE_CHECK_HOURS = 2;
+    const isWithinLiveCheckWindow =
+      now >= startMs - PRE_START_LIVE_CHECK_HOURS * 3600000 && now <= endMs;
+    if (!isWithinLiveCheckWindow) {
+      // النافذة الزمنية للنشاط انتهت فعلاً، أو لم يتبقَّ على بدئها المجدول
+      // ساعتان بعد — لا "حالة حيّة" ذات صلة لمقارنتها الآن، فلا تُقيَّم شروط
+      // التنبيهات إطلاقاً هنا (راجع تعليق autoCloseResolvedAlerts أعلاه).
+      // بدون هذا كان أي تنبيه من الأنواع الحيّة يبقى مفتوحاً إلى الأبد
+      // بمجرد انتهاء نافذة النشاط، لأن حلقة التقييم كانت تتخطى النشاط
+      // بالكامل (continue) قبل الوصول لمنطق الإغلاق التلقائي.
+      await autoCloseResolvedAlerts('dust', profile.id, new Set());
+      continue;
+    }
 
     try {
       const freshDevice = await resolveFreshProjectDevice(supabaseAdmin, profile.project_id).catch(() => null);
@@ -329,16 +380,45 @@ export async function checkDustActivities(projectIds?: string[]) {
       // محطة الخلط، بوابة الرياح >25، DMP، إلخ) تُفعِّل هذا التنبيه تلقائياً
       // إن أوقفت النشاط — بلا حاجة لتحديث هذا الملف يدوياً عند إضافة قاعدة
       // جديدة أو نشاط تنظيمي جديد لاحقاً، لأن المصدر واحد.
+      // stopped_since (لا updated_at) هنا أيضاً — نفس سبب computeDustComplianceResults
+      // في dustEvaluation.ts: updated_at يتحدّث حتى عند إعادة كتابة نفس
+      // القرار الموقِف، فيمدّد عداد الـ10 دقائق بلا قصد كل مرة يعمل فيها
+      // هذا المولّد على نفس النشاط.
       let previousDecision: { decision: string; updated_at: string } | null = null;
       if (profile.activity_group_id) {
         const { data: prevRow } = await supabaseAdmin
           .from('current_dust_compliance_decisions')
-          .select('decision, updated_at')
+          .select('decision, updated_at, stopped_since')
           .eq('activity_group_id', profile.activity_group_id)
           .maybeSingle();
-        previousDecision = prevRow ? { decision: prevRow.decision, updated_at: prevRow.updated_at } : null;
+        previousDecision = prevRow
+          ? { decision: prevRow.decision, updated_at: prevRow.stopped_since ?? prevRow.updated_at }
+          : null;
       }
-      const complianceCtx = buildComplianceContext(profile.projects, profile, worst, sensitiveReceptors, previousDecision);
+
+      // استمرار PM10 الزمني (RCRC-PM10-340-VIOLATION-011/RCRC-PM10-30M-
+      // SUSPENSION-012) — نفس منطق computeDustComplianceResults في
+      // dustEvaluation.ts: نسجّل القراءة اليدوية (onsite_pm10) إن وُجدت،
+      // ثم نجلب حالة الاستمرار قبل بناء السياق النهائي.
+      let pm10Sustained: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null = null;
+      if (profile.activity_group_id && profile.project_id) {
+        const onsitePm10 = profile.onsite_pm10;
+        if (typeof onsitePm10 === 'number') {
+          try {
+            await supabaseAdmin.from('pm10_readings_history').insert({
+              activity_group_id: profile.activity_group_id,
+              project_id: profile.project_id,
+              pm10_ug_m3: onsitePm10,
+              source: 'manual',
+            });
+          } catch {
+            // فشل التسجيل لا يُسقط التقييم.
+          }
+        }
+        pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, profile.project_id, profile.activity_group_id);
+      }
+
+      const complianceCtx = buildComplianceContext(profile.projects, profile, worst, sensitiveReceptors, previousDecision, pm10Sustained);
       const compliance = evaluateDustCompliance(complianceCtx);
 
       // يغطي كل قرار امتثال أقل من ALLOW الكامل (وليس فقط الإيقاف الإلزامي/
@@ -358,6 +438,19 @@ export async function checkDustActivities(projectIds?: string[]) {
           : compliance.decisionCategory === 'ALLOW_WITH_CONTROLS'
           ? 'COMPLIANCE_ADVISORY'
           : null;
+
+      // يُغلق تلقائياً أي تنبيه من الأنواع الحيّة أعلاه لم يعد شرطه قائماً في
+      // هذا التقييم (راجع تعليق autoCloseResolvedAlerts) — يمنع بقاء بانر
+      // "تنبيه أمني نشط" أحمر معروضاً في بطاقة الامتثال بعد أن تعود القراءة
+      // الحية لحالة آمنة/احتراز فقط.
+      const stillActiveKinds = new Set<string>();
+      if (worst.mandatoryStop) stillActiveKinds.add('SAFETY_BREACH');
+      if (worst.score >= 65) stillActiveKinds.add('DUST');
+      if (pm10Value !== null && pm10Value !== undefined && pm10Value >= 300 && pm10Value < 340) {
+        stillActiveKinds.add('PM10_APPROACHING_LIMIT');
+      }
+      if (complianceAlertKind) stillActiveKinds.add(complianceAlertKind);
+      await autoCloseResolvedAlerts('dust', profile.id, stillActiveKinds);
 
       if (complianceAlertKind) {
         if (!(await alertExists('dust', profile.id, complianceAlertKind, true))) {

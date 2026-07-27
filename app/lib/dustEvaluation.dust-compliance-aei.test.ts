@@ -117,6 +117,74 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
     expect(dustResults[0].aei.score).toBe(40);
   });
 
+  // pendingConfirmation (مثال: MRQ-PM10-BLACK-PENDING-104، قراءة PM10≥340
+  // لم تستمر بعد دقيقتين) هو STOP_AFFECTED_ACTIVITY مؤقت بانتظار تأكيد، لا
+  // مخالفة مؤكَّدة — يجب ألا يُقص AEI إلى CLOSED (اللغة القطعية) بنفس طريقة
+  // إيقاف مؤكَّد، بل RESTRICT (أحمر) بنص مختلف يوضّح الطابع المؤقت.
+  it('pendingConfirmation=true (STOP_AFFECTED_ACTIVITY معلَّق) → RESTRICT أحمر، لا CLOSED أسود', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          pendingConfirmation: true,
+          shortReasonAr: 'تعليق مؤقت (معلَّق): تركيز PM10 (345) تجاوز حد المخالفة (340) — بانتظار استمرار القراءة أكثر من دقيقتين',
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('RESTRICT');
+    expect(dustResults[0].aei.color).toBe('RED');
+    expect(dustResults[0].aei.closedByGate).toBeFalsy();
+    expect(dustResults[0].aei.statusLabelAr).not.toContain('مغلق');
+    expect(dustResults[0].aei.shortReasonAr).toContain('معلَّق');
+  });
+
+  it('pendingConfirmation=true مع MANDATORY_STOP → لا يزال يُعامَل كمعلَّق (الحقل هو الحاسم، لا الفئة)', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'MANDATORY_STOP',
+          pendingConfirmation: true,
+          shortReasonAr: 'حالة معلَّقة افتراضية للاختبار',
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('RESTRICT');
+    expect(dustResults[0].aei.closedByGate).toBeFalsy();
+  });
+
+  it('pendingConfirmation=false (أو غائب) مع STOP_AFFECTED_ACTIVITY → يبقى CLOSED كالسابق تماماً', () => {
+    const dustResults = [
+      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'STOP_AFFECTED_ACTIVITY', shortReasonAr: 'مسافة الكسارة غير كافية' } },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('CLOSED');
+    expect(dustResults[0].aei.color).toBe('BLACK');
+    expect(dustResults[0].aei.closedByGate).toBe(true);
+  });
+
+  // PRECAUTION (نطاق PM10 150-250) — طلب صريح من المستخدم: احتراز خفيف لا
+  // يُقيّد درجة/حالة AEI إطلاقاً (بخلاف ALLOW_WITH_CONTROLS/RESTRICT_ACTIVITY
+  // وغيرها)، لكن النص المعروض يجب أن يعكس الاحتراز — بدون هذا كانت البطاقة
+  // تُظهر "الأجواء ممتازة والظروف آمنة" الأخضر المطمئن تحت بانر موحّد أصفر
+  // "احتراز — زيادة المراقبة" لنفس اللحظة، تناقض ظاهري رصده المستخدم مباشرة.
+  it('PRECAUTION لا يقيّد درجة/حالة AEI، لكن يستبدل النص بنص الاحتراز', () => {
+    const dustResults = [
+      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'PRECAUTION', shortReasonAr: 'حالة احتراز: تركيز PM10 (200 ميكروجرام/م³) ضمن نطاق الإنذار المبكر (150–250 ميكروجرام/م³)' } },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('ALLOW');
+    expect(dustResults[0].aei.score).toBe(94.6);
+    expect(dustResults[0].aei.cappedByGate).toBeFalsy();
+    expect(dustResults[0].aei.shortReasonAr).toContain('احتراز');
+    expect(dustResults[0].aei.shortReasonAr).not.toContain('الظروف آمنة');
+  });
+
   it('يقص AEI أيضاً عند FIELD_VERIFICATION_REQUIRED (بيانات ناقصة تمنع قراراً حاسماً)', () => {
     const dustResults = [
       {

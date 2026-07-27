@@ -78,6 +78,12 @@ const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = 20;
 const PM10_EARLY_WARNING_UG_M3 = 300;
 const PM10_WARNING_UG_M3 = 250;
 const PM10_VIOLATION_STOP_UG_M3 = 340;
+// PM10_PRECAUTION_UG_M3: طلب صريح من المستخدم — قراءة بين 150 و250 تُفعِّل
+// "حالة احتراز" لزيادة المراقبة، أخف من تحذير 250 (ALLOW_WITH_CONTROLS)
+// وأشد من ALLOW النظيف. لا تُقيّد AEI (راجع applyComplianceGateToAei في
+// dustEvaluation.ts — PRECAUTION غير مُدرجة في AEI_COMPLIANCE_RESTRICTED_
+// DECISIONS عمداً)، فقط تنبيه مرئي أصفر في بطاقة الامتثال والبانر الموحّد.
+const PM10_PRECAUTION_UG_M3 = 150;
 
 // -----------------------------------------------------------------------
 // تصنيف فئة مخاطر المشروع (القسم 6 من "مرقاب"، جدول 1 من الدليل التنظيمي)
@@ -149,11 +155,12 @@ export function isRegulatoryWindGateActive(
 // -----------------------------------------------------------------------
 export const DECISION_PRIORITY: Record<DustComplianceDecisionCategory, number> = {
   ALLOW: 0,
-  ALLOW_WITH_CONTROLS: 1,
-  FIELD_VERIFICATION_REQUIRED: 2,
-  RESTRICT_ACTIVITY: 3,
-  STOP_AFFECTED_ACTIVITY: 4,
-  MANDATORY_STOP: 5,
+  PRECAUTION: 1,
+  ALLOW_WITH_CONTROLS: 2,
+  FIELD_VERIFICATION_REQUIRED: 3,
+  RESTRICT_ACTIVITY: 4,
+  STOP_AFFECTED_ACTIVITY: 5,
+  MANDATORY_STOP: 6,
 };
 
 function severityToDecision(severity: DustRuleHit['severity']): DustComplianceDecisionCategory {
@@ -223,44 +230,103 @@ export function enhancedSuppressionRule(
   ];
 }
 
+// مدة الاستمرار الدنيا (بالدقائق) قبل تصنيف قراءة ≥340 "مخالفة تنظيمية
+// مؤكدة" (RCRC-PM10-340-VIOLATION-011) بدل "معلَّقة" فقط (MRQ-PM10-BLACK-
+// PENDING-104) — النص التنظيمي: "لأكثر من دقيقتين". للاختبار اليدوي السريع،
+// عطّل السطر الأول وفعّل الثاني، ثم أعده كما هو قبل أي استخدام حقيقي.
+const PM10_VIOLATION_CONFIRM_MINUTES = 2;
+// const PM10_VIOLATION_CONFIRM_MINUTES = 0.5; // ← اختبار سريع فقط
+
+// مدة الاستمرار الدنيا لتفعيل تعليق النشاط الكامل عند ≥250 (RCRC-PM10-30M-
+// SUSPENSION-012) — أشد من مجرد تحذير/تنبيه استباقي عاديين لنفس المدى.
+// نفس ملاحظة الاختبار السريع أعلاه.
+const PM10_SUSPENSION_MINUTES = 30;
+// const PM10_SUSPENSION_MINUTES = 3; // ← اختبار سريع فقط
+
 // حدود PM10 التنظيمية العامة — "الاستخراج التنظيمي من المرفق" القسم 6.
 // منفصلة تماماً عن بوابات DVI الفيزيائية (DVI-PM10-ACTION-003 وDVI-DUST-
 // ACTIVITY-STOP-004 في dust-engine/engine.ts) — هذه عتبات تنظيمية رسمية
 // من الوثيقة مباشرة، لا تقديرات فيزيائية.
-export function pm10ThresholdRule(pm10UgM3: number | null): DustRuleHit[] {
+//
+// sustainedMinutesAbove340/250 اختياريان (undefined = لا بيانات استمرار،
+// راجع fetchPm10SustainedStatus في dustEvaluation.ts) — بغيابهما، القراءة
+// ≥340 تُعامَل معاملة "معلَّقة" فقط (STOP_AFFECTED_ACTIVITY، لا MANDATORY_
+// STOP) حتى يثبت الاستمرار فعلياً؛ فشل آمن يمنع إيقافاً إلزامياً غير قابل
+// للتجاوز بناءً على قراءة لحظية واحدة بلا دليل استمرار.
+export function pm10ThresholdRule(
+  pm10UgM3: number | null,
+  sustainedMinutesAbove340?: number,
+  sustainedMinutesAbove250?: number
+): DustRuleHit[] {
   if (pm10UgM3 === null || pm10UgM3 === undefined) return [];
 
+  const hits: DustRuleHit[] = [];
+
   if (pm10UgM3 >= PM10_VIOLATION_STOP_UG_M3) {
-    return [
-      ruleHit(
-        'PM10-VIOLATION-STOP-006',
-        'STOP_AFFECTED_ACTIVITY',
-        `مخالفة تنظيمية: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
-        'أوقف النشاط المسبب للغبار فوراً وفعّل إجراءات التصحيح (تقليل واجهات العمل، خفض ارتفاع التفريغ، تقييد حركة الشاحنات، زيادة الرش) حتى يزول التجاوز'
-      ),
-    ];
-  }
-  if (pm10UgM3 >= PM10_EARLY_WARNING_UG_M3) {
-    return [
+    const isConfirmed = (sustainedMinutesAbove340 ?? 0) >= PM10_VIOLATION_CONFIRM_MINUTES;
+    if (isConfirmed) {
+      hits.push(
+        ruleHit(
+          'PM10-VIOLATION-STOP-006',
+          'MANDATORY_STOP',
+          `مخالفة تنظيمية مؤكدة: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) لأكثر من دقيقتين متتاليتين`,
+          'أوقف النشاط المسبب للغبار فوراً وفعّل إجراءات التصحيح (تقليل واجهات العمل، خفض ارتفاع التفريغ، تقييد حركة الشاحنات، زيادة الرش) حتى يزول التجاوز — إيقاف إلزامي غير قابل للتجاوز'
+        )
+      );
+    } else {
+      hits.push(
+        ruleHit(
+          'MRQ-PM10-BLACK-PENDING-104',
+          'STOP_AFFECTED_ACTIVITY',
+          `تعليق مؤقت (معلَّق): تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) — بانتظار استمرار القراءة أكثر من دقيقتين لتصنيفها مخالفة تنظيمية مؤكدة`,
+          'أوقف النشاط فوراً احترازياً وراقب استمرار القراءة — سيُصبح إيقافاً إلزامياً غير قابل للتجاوز إن استمر التجاوز أكثر من دقيقتين'
+        )
+      );
+    }
+  } else if (pm10UgM3 >= PM10_EARLY_WARNING_UG_M3) {
+    hits.push(
       ruleHit(
         'PM10-EARLY-WARNING-007',
         'ALLOW_WITH_CONTROLS',
         `تنبيه استباقي: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) يقترب من حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
         'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة'
-      ),
-    ];
-  }
-  if (pm10UgM3 >= PM10_WARNING_UG_M3) {
-    return [
+      )
+    );
+  } else if (pm10UgM3 >= PM10_WARNING_UG_M3) {
+    hits.push(
       ruleHit(
         'PM10-WARNING-008',
         'ALLOW_WITH_CONTROLS',
         `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
         'فعّل التثبيط المعزز (رش ساعي، تغطية الأكوام) وراقب التركيز عن كثب'
-      ),
-    ];
+      )
+    );
+  } else if (pm10UgM3 >= PM10_PRECAUTION_UG_M3) {
+    hits.push(
+      ruleHit(
+        'PM10-PRECAUTION-009',
+        'PRECAUTION',
+        `حالة احتراز: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) ضمن نطاق الإنذار المبكر (${PM10_PRECAUTION_UG_M3}–${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
+        'زِد وتيرة المراقبة ومتابعة القراءة — لا يتطلب إجراءً تصحيحياً فورياً ما لم يستمر الارتفاع'
+      )
+    );
   }
-  return [];
+
+  // RCRC-PM10-30M-SUSPENSION-012: استمرار ≥250 لمدة 30 دقيقة متواصلة يُفعِّل
+  // تعليق النشاط — منفصلة عن الشرط أعلاه (قد يتحقق الاثنان معاً لو القراءة
+  // ≥340 ومستمرة لأكثر من 30 دقيقة أيضاً؛ decisionFromRules يختار الأشد).
+  if (pm10UgM3 >= PM10_WARNING_UG_M3 && (sustainedMinutesAbove250 ?? 0) >= PM10_SUSPENSION_MINUTES) {
+    hits.push(
+      ruleHit(
+        'RCRC-PM10-30M-SUSPENSION-012',
+        'STOP_AFFECTED_ACTIVITY',
+        `تعليق النشاط: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) استمر عند ${PM10_WARNING_UG_M3} ميكروجرام/م³ أو أكثر لمدة ${PM10_SUSPENSION_MINUTES} دقيقة متواصلة`,
+        'علّق النشاط المسبب للغبار حتى ينخفض التركيز ويستقر دون الحد لفترة كافية، وفعّل التثبيط المعزز فوراً'
+      )
+    );
+  }
+
+  return hits;
 }
 
 // A1 — تجهيز الموقع وأعمال الحفر والأعمال الترابية (الحفر، التسوية، الردم،
@@ -391,6 +457,30 @@ function crusherRules(
         'MANDATORY_STOP',
         `مسافة الكسارة عن سكني/مدارس/مستشفيات (${autoResidential !== null && autoResidential !== undefined ? 'محسوبة تلقائياً: ' : ''}${residentialDistance} م) أقل من الحد الأدنى (${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م)`,
         `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م عن أقرب منطقة سكنية/مدرسة/مستشفى`
+      )
+    );
+  }
+
+  // MRQ-RECEPTOR-DOWNWIND-120: تصعيد الاستجابة عند وجود مستقبِل حساس فعلياً
+  // باتجاه هبوب الرياح (لا مجرد قريب بالمسافة المستقيمة) — يُطبَّق فقط لو
+  // كان اتجاه الرياح صالحاً وموثّقاً (crusherDistanceToDownwindReceptorAutoM
+  // يبقى null تلقائياً لو trueNorthAlignmentDocumented ليست true، راجع
+  // adapters.ts). لا يتكرر مع CRUSHER-DISTANCE-500-002C أعلاه: تلك تفحص
+  // أقرب مستقبِل بصرف النظر عن الاتجاه (وتوقف إلزامياً)، وهذه تفحص الاتجاه
+  // تحديداً (تقييد لا إيقاف كامل — الاتجاه عامل تصعيد إضافي، لا مخالفة
+  // مسافة مستقلة).
+  const downwindDistance = activity.measurements.crusherDistanceToDownwindReceptorAutoM;
+  if (
+    downwindDistance !== null &&
+    downwindDistance !== undefined &&
+    downwindDistance < CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M
+  ) {
+    hits.push(
+      ruleHit(
+        'MRQ-RECEPTOR-DOWNWIND-120',
+        'RESTRICT_ACTIVITY',
+        `تصعيد الاستجابة: مستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً باتجاه هبوب الرياح الحالي من الكسارة (على بُعد ${downwindDistance === Infinity ? '—' : downwindDistance + ' م'})`,
+        'قيّد تشغيل الكسارة وزد إجراءات التثبيط فوراً طالما استمر اتجاه الرياح نحو المستقبِل الحساس، حتى يتغيّر الاتجاه أو تنخفض شدة النشاط'
       )
     );
   }
@@ -554,14 +644,28 @@ function entryExitRules(
 }
 
 // 9.8 الطرق والنقل (A2 — النقل داخل الموقع والطرق الخدمية) — ضوابط الرش/
-// اللافتات/الكنس/غسيل الإطارات/التغطية تحوّلت إلى تنبيهات نصية عامة — حُذف
-// تأثيرها من القرار. الحقول الرقمية العتبية الثلاثة (سرعة الطرق، زمن تنظيف
-// الانسكاب) تبقى قواعد فعلية لأنها قياسات، لا تصريحات.
+// اللافتات/الكنس/غسيل الإطارات تحوّلت إلى تنبيهات نصية عامة — حُذف تأثيرها
+// من القرار. الحقول الرقمية العتبية الثلاثة (سرعة الطرق، زمن تنظيف
+// الانسكاب) تبقى قواعد فعلية لأنها قياسات، لا تصريحات. تغطية الحمولة
+// (loadCovered) استثناء متعمَّد من "التحوّل لتنبيه نصي": منع خروج شاحنة
+// غير مغطاة الحمولة قاعدة إلزامية صريحة في الدليل التنظيمي (لا مجرد إجراء
+// موصى به)، فتبقى قاعدة فعلية تؤثر على القرار.
 function siteTrafficRules(
   activity: DustActivityComplianceProfile,
   riskClass: DustRiskClass
 ): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
+
+  if (activity.controls.loadCovered === false) {
+    hits.push(
+      ruleHit(
+        'TRAFFIC-LOAD-004',
+        'STOP_AFFECTED_ACTIVITY',
+        'حمولة نقل التربة/المواد غير مغطاة — يُمنع خروج أي شاحنة بحمولة مكشوفة من الموقع',
+        'أوقف خروج الشاحنات حتى يتم تغطية الحمولة بالكامل، والتزم بتغطية كل حمولة لاحقة قبل الخروج'
+      )
+    );
+  }
 
   const unpaved = activity.measurements.unpavedSpeedKmh;
   if (unpaved !== null && unpaved !== undefined && unpaved > UNPAVED_SPEED_LIMIT_KMH) {

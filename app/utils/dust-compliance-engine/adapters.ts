@@ -15,7 +15,7 @@ import type {
   SensitiveReceptor,
   SensitiveReceptorType,
 } from './types';
-import { nearestReceptorDistancesM } from './geo';
+import { nearestReceptorDistancesM, nearestDownwindReceptorDistanceM } from './geo';
 
 function toNullableNumber(value: unknown): number | null {
   return typeof value === 'number' && !Number.isNaN(value) ? value : null;
@@ -43,18 +43,29 @@ export function buildProjectComplianceProfile(project: any): DustProjectComplian
     entryExitCamerasInstalled: toNullableBoolean(project?.entry_exit_cameras_installed),
     cameraRetentionDays: toNullableNumber(project?.camera_retention_days),
     sensitivityMapPrepared: toNullableBoolean(project?.sensitivity_map_prepared),
+
+    trueNorthAlignmentDocumented: toNullableBoolean(project?.true_north_alignment_documented),
   };
 }
 
 export function buildActivityComplianceProfile(
   row: any,
-  sensitiveReceptors: SensitiveReceptor[] = []
+  sensitiveReceptors: SensitiveReceptor[] = [],
+  // اتجاه الرياح الفعلي (خام) وحالة توثيق محاذاة الشمال الحقيقي — تُستخدمان
+  // فقط لحساب crusherDistanceToDownwindReceptorAutoM (MRQ-RECEPTOR-DOWNWIND-
+  // 120). windDirectionDeg يُتجاهَل كلياً إن لم تُوثَّق المحاذاة (فشل آمن نحو
+  // "غير صالح"، راجع MRQ-DATA-TRUE-NORTH-111) — بلا ذلك يُبنى قرار تنظيمي
+  // على اتجاه رياح قد يكون غير معايَر أصلاً (شمال مغناطيسي/تقريبي).
+  windDirectionDeg: number | null = null,
+  trueNorthAlignmentDocumented: boolean | null = null
 ): DustActivityComplianceProfile {
   const regulatoryActivity: RegulatoryDustActivity = row?.regulatory_activity ?? 'OTHER';
 
   const crusherLat = toNullableNumber(row?.crusher_lat);
   const crusherLng = toNullableNumber(row?.crusher_lng);
   const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(crusherLat, crusherLng, sensitiveReceptors);
+  const validWindDirectionDeg = trueNorthAlignmentDocumented === true ? windDirectionDeg : null;
+  const crusherDownwindM = nearestDownwindReceptorDistanceM(crusherLat, crusherLng, validWindDirectionDeg, sensitiveReceptors);
 
   const stockpileLat = toNullableNumber(row?.stockpile_lat);
   const stockpileLng = toNullableNumber(row?.stockpile_lng);
@@ -201,6 +212,7 @@ export function buildActivityComplianceProfile(
       crusherLng,
       crusherDistanceToNearestReceptorAutoM: nearestAnyM,
       crusherDistanceToResidentialReceptorAutoM: nearestResidentialM,
+      crusherDistanceToDownwindReceptorAutoM: crusherDownwindM,
 
       entryPointLat: toNullableNumber(row?.entry_point_lat),
       entryPointLng: toNullableNumber(row?.entry_point_lng),
@@ -238,8 +250,13 @@ export function buildComplianceContext(
   // current_dust_compliance_decisions) — يُستخدم لمنع الاستئناف التلقائي
   // الفوري بعد إيقاف (راجع RESUME_STABILITY_MINUTES في engine.ts). اختياري
   // ويبقى undefined في أي مسار لا يجلبه (مثل الشبكة الساعية التوقّعية)،
-  // فلا يُطبَّق أي قيد هناك تلقائياً.
-  previousDecision?: { decision: string; updated_at: string } | null
+  // فلا يُطبَّق أي قيد هناك تلقائياً. pending_resume_since منفصل تماماً عن
+  // updated_at — راجع previousPendingResumeSince في types.ts للسبب الكامل.
+  previousDecision?: { decision: string; updated_at: string; pending_resume_since?: string | null } | null,
+  // استمرار PM10 عبر الزمن (من fetchPm10SustainedStatus في
+  // dustEvaluation.ts) — اختياري، undefined يعني "لا بيانات استمرار"
+  // فيسلك المحرك مساره الاحتياطي الآمن (معاملة القراءة كأنها لحظية فقط).
+  pm10Sustained?: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null
 ): DustComplianceContext {
   const dataSource: DustComplianceContext['dataSource'] =
     activityRow?.onsite_pm10 !== null && activityRow?.onsite_pm10 !== undefined
@@ -250,10 +267,17 @@ export function buildComplianceContext(
   // DviHourlyEvaluation (الحالة الحقيقية دائماً في مسار التشغيل الفعلي عبر
   // windowEval.worst) — راجع rawWeatherSample في dust-engine/types.ts.
   const rawSample = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample;
+  const rawWindDirectionDeg = toNullableNumber(rawSample?.windDirectionDeg);
+  const trueNorthAlignmentDocumented = toNullableBoolean(project?.true_north_alignment_documented);
 
   return {
     project: buildProjectComplianceProfile(project),
-    activity: buildActivityComplianceProfile(activityRow, sensitiveReceptors),
+    activity: buildActivityComplianceProfile(
+      activityRow,
+      sensitiveReceptors,
+      rawWindDirectionDeg,
+      trueNorthAlignmentDocumented
+    ),
     dviScore: dviResult.score,
     dviDecision: dviResult.decisionCategory,
     dviMandatoryStop: dviResult.mandatoryStop,
@@ -261,15 +285,21 @@ export function buildComplianceContext(
     dviConfidenceScore: dviResult.confidenceScore,
     windSpeedKmh: dviResult.effectiveWindKmh,
     windGustKmh: toNullableNumber(rawSample?.windGustKmh),
-    windDirectionDeg: toNullableNumber(rawSample?.windDirectionDeg),
+    windDirectionDeg: rawWindDirectionDeg,
     pm10UgM3: activityRow?.onsite_pm10 !== null && activityRow?.onsite_pm10 !== undefined
       ? toNullableNumber(activityRow?.onsite_pm10)
       : toNullableNumber(rawSample?.pm10),
     pm25UgM3: toNullableNumber(rawSample?.pm25),
+    relativeHumidityPercent: toNullableNumber(rawSample?.relativeHumidityPercent),
+    temperatureC: toNullableNumber(rawSample?.temperatureC),
+    dviCaveatsAr: dviResult.caveatsAr ?? [],
     dataSource,
     sensitiveReceptors,
     previousDecisionCategory: (previousDecision?.decision as DustComplianceContext['previousDecisionCategory']) ?? null,
     previousDecisionUpdatedAt: previousDecision?.updated_at ?? null,
+    previousPendingResumeSince: previousDecision?.pending_resume_since ?? null,
+    pm10SustainedMinutesAbove340: pm10Sustained?.sustainedMinutesAbove340,
+    pm10SustainedMinutesAbove250: pm10Sustained?.sustainedMinutesAbove250,
   };
 }
 
