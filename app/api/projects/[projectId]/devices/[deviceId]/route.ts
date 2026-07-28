@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 const DEVICE_SAFE_COLUMNS =
   'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at';
@@ -56,7 +57,7 @@ export async function PATCH(
     .select(DEVICE_SAFE_COLUMNS)
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device update failed') }, { status: 500 });
   return NextResponse.json({ device: data });
 }
 
@@ -75,7 +76,7 @@ export async function DELETE(
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
   const { error } = await supabaseAdmin.from('project_devices').delete().eq('id', deviceId);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device delete failed') }, { status: 500 });
 
   return NextResponse.json({ success: true });
 }

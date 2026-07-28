@@ -62,10 +62,14 @@ export async function verifyProjectOwnership(
 
 // تحقق صلاحية "سوبر أدمن" — عمود is_super_admin في profiles، يُمنح يدوياً
 // فقط عبر SQL Editor مباشرة (لا مسار في الواجهة/الـ API لتفعيله ذاتياً).
-// غير مُستخدم في DCR الأولي (لا صفحات سوبر أدمن)، يُبقى للتوافق المستقبلي.
+// role: 'admin' حقل تمييز صريح — بدونه، هذا الشكل يطابق requireViewer
+// حرفياً ({userId} | {error})، ما اضطر admin/alerts/route.ts سابقاً لاستنتاج
+// "أي فرع نجح فعلياً" من ترتيب استدعاء الدالتين بدل قراءة الهوية مباشرة —
+// هش لأي إعادة ترتيب مستقبلية. الحقل الجديد إضافة تراكمية بحتة (لا يكسر
+// أي استدعاء حالي يتحقق فقط من 'error' in result).
 export async function requireSuperAdmin(
   request: Request
-): Promise<{ userId: string } | { error: NextResponse }> {
+): Promise<{ userId: string; role: 'admin' } | { error: NextResponse }> {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth;
 
@@ -79,7 +83,7 @@ export async function requireSuperAdmin(
     return { error: NextResponse.json({ error: 'هذه الصفحة مخصصة للسوبر أدمن فقط' }, { status: 403 }) };
   }
 
-  return { userId: auth.userId };
+  return { userId: auth.userId, role: 'admin' };
 }
 
 // تحقق صلاحية "جهة مراقبة" — عمود account_role='viewer' في profiles، حساب
@@ -89,7 +93,7 @@ export async function requireSuperAdmin(
 // يُعامَل تلقائياً كمراقب هنا (عنده أصلاً وصول أوسع عبر /api/admin/**).
 export async function requireViewer(
   request: Request
-): Promise<{ userId: string } | { error: NextResponse }> {
+): Promise<{ userId: string; role: 'viewer' } | { error: NextResponse }> {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth;
 
@@ -103,7 +107,7 @@ export async function requireViewer(
     return { error: NextResponse.json({ error: 'هذه الصفحة مخصصة لجهة المراقبة فقط' }, { status: 403 }) };
   }
 
-  return { userId: auth.userId };
+  return { userId: auth.userId, role: 'viewer' };
 }
 
 // تحقق هوية جهاز رصد (لا مستخدم بشري — لا جلسة Supabase). ثالث نمط

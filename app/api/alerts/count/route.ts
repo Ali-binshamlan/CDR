@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // يستبدل supabase.from('alerts').select(count) المباشر من Sidebar.tsx —
 // يعدّ فقط تنبيهات مشاريع المستخدم الحالي غير المغلقة (state != CLOSED)،
@@ -35,6 +36,6 @@ export async function GET(request: NextRequest) {
   }
   const { count, error } = await query;
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'alerts/count failed') }, { status: 500 });
   return NextResponse.json({ count: count ?? 0 });
 }

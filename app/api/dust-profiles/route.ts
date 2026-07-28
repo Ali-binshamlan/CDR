@@ -1,6 +1,15 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
+
+// حقول حساسة لا يجوز أن يتحكم بها العميل مطلقاً — id لمنع انتحال/تصادم
+// صف موجود، created_at لمنع تزوير توقيت السجل. project_id يبقى مسموحاً
+// (مطلوب فعلياً ويُتحقَّق من ملكيته أدناه)؛ بقية الحقول (نحو 50 حقلاً في
+// AddActivityModal/constants.ts، تتوسع مع كل ميزة جديدة) تبقى بلا allowlist
+// صريحة عمداً — القائمة تتغير مع كل تعديل على نموذج النشاط، وallowlist
+// جامدة هنا كانت ستكسر صمتاً أي حقل جديد يُضاف للنموذج دون تحديث هذا الملف.
+const FORBIDDEN_DUST_PROFILE_FIELDS = ['id', 'created_at'];
 
 // حفظ تقييم غبار/رؤية نشاط جديد — يستبدل استدعاء
 // supabase.from('project_dust_profiles').insert(...) المباشر من
@@ -14,6 +23,7 @@ export async function POST(request: NextRequest) {
   if (!insert || typeof insert !== 'object' || !insert.project_id) {
     return NextResponse.json({ error: 'insert مطلوب ويجب أن يحتوي project_id' }, { status: 400 });
   }
+  for (const field of FORBIDDEN_DUST_PROFILE_FIELDS) delete insert[field];
 
   const owns = await verifyProjectOwnership(insert.project_id, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
@@ -30,6 +40,6 @@ export async function POST(request: NextRequest) {
   }
 
   const { error } = await supabaseAdmin.from('project_dust_profiles').insert(insert);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'dust-profiles insert failed') }, { status: 500 });
   return NextResponse.json({ success: true });
 }

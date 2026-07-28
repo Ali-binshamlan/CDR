@@ -273,16 +273,23 @@ function hasMeaningfulSiteData(site: DustSiteInputs): boolean {
   );
 }
 
+// خطأ مكتشَف: كانت هذي الدالة تفحص sample (عينة الطقس الخام قبل الدمج) بدل
+// merged (القراءة الفعلية المستخدَمة في كل الحساب بعدها — أولوية device>
+// weather>onsite، راجع mergeDustReading أعلاه) — فحين يوفّر الجهاز كل
+// القياسات وتغيب بيانات الطقس، كانت الدالة ترى sample.pm10/visibilityM/
+// windSpeedKmh فارغة (رغم توفرها فعلياً من الجهاز في merged) وتخصم حتى 70
+// نقطة ثقة زوراً، فتظهر ثقة ~20/100 لتقييم مبني فعلياً على بيانات جهاز
+// كاملة وموثوقة. isForecastStale يبقى من sample حصراً (خاصية طقس بحتة —
+// لا معنى له لقراءة جهاز حية).
 function calculateConfidence(
+  merged: DviMergedReading,
   sample: DustWeatherSample,
-  hasOnsiteVisibility: boolean,
-  hasOnsitePm: boolean,
   siteDataProvided: boolean
 ): number {
   let confidence = 100;
-  if (!hasOnsiteVisibility && sample.visibilityM === null) confidence -= 30;
-  if (!hasOnsitePm && sample.pm10 === null && sample.pm25 === null) confidence -= 25;
-  if (sample.windSpeedKmh === null) confidence -= 15;
+  if (merged.visibilityM === null) confidence -= 30;
+  if (merged.pm10 === null && merged.pm25 === null) confidence -= 25;
+  if (merged.windSpeedKmh === null) confidence -= 15;
   if (sample.isForecastStale) confidence -= 10;
   if (!siteDataProvided) confidence -= 20;
   return Math.max(0, Math.min(100, confidence));
@@ -337,6 +344,12 @@ function baseRequiredActions(decision: DviDecisionCategory): string[] {
   }
 }
 
+// أقصى فارق زمني بين "الآن" ووقت العينة (sampleTimeIso) حتى تُعتبر العينة
+// "الحاضر" ويُسمح لقراءة الجهاز الثابتة بتمثيلها — هامش بسيط (لا صفر) يمتص
+// فروق توقيت الجلب/التقريب الساعي الطبيعية، بلا السماح لقراءة الآن أن
+// "تتنبأ" بساعات مستقبلية بعيدة.
+const DEVICE_READING_PRESENT_TOLERANCE_MINUTES = 30;
+
 // -------------------------------------------------------------
 // دمج مصدر القراءة — عزل تام بطلب صريح من المستخدم: "حسب ما يختار
 // المستخدم تظهر البيانات، لا شيء يعوّض الآخر". input.hasDeviceLink
@@ -352,8 +365,28 @@ function baseRequiredActions(decision: DviDecisionCategory): string[] {
 // لا تُسقَط هنا — تُعرَض كما هي مع تحذير قِدم في الواجهة (راجع
 // buildStalenessAdvisory في Compliancewidgetcard.tsx)، فمسؤولية هذه
 // الدالة الوحيدة هي اختيار المصدر الصحيح، لا فلترة حداثته.
-export function mergeDustReading(input: DustEngineInput, weather: DustWeatherSample): DviMergedReading {
-  if (input.hasDeviceLink) {
+//
+// خطأ مكتشَف ومُصلَح: كان الفرع device= يُستخدَم دائماً بصرف النظر عن وقت
+// العينة (weather) الممرَّرة — فعند بناء شبكة توقعات الساعات القادمة
+// (evaluateDustVisibilityHourly/WorkDayHourly/Window)، كل ساعة مستقبلية
+// (حتى بعد 12+ ساعة) كانت تُعاد فيها قراءة الجهاز الحالية حرفياً، وكأن
+// الرياح/PM10/الرؤية الآن ستبقى ثابتة طوال اليوم — توقعات بلا أي قيمة فعلية
+// لأي نشاط مرتبط بجهاز. الإصلاح: sampleTimeIso (اختياري) يحدد وقت العينة
+// الفعلي؛ لو تجاوز الفارق عن "الآن" DEVICE_READING_PRESENT_TOLERANCE_MINUTES،
+// تُستخدَم عينة الطقس (توقّع حقيقي لتلك الساعة) بدل قراءة الجهاز الثابتة،
+// حتى لنشاط مرتبط بجهاز — لأن الجهاز لا يملك بيانات عن المستقبل أصلاً.
+// sampleTimeIso غائب (استدعاء evaluateDustVisibility للحظة الآن فقط، بلا
+// وقت عينة مستقل) يعني "هذي عينة الآن"، فيُطبَّق فرع الجهاز كالمعتاد.
+export function mergeDustReading(
+  input: DustEngineInput,
+  weather: DustWeatherSample,
+  sampleTimeIso?: string
+): DviMergedReading {
+  const sampleAgeFromNowMinutes =
+    sampleTimeIso !== undefined ? Math.abs(Date.now() - new Date(sampleTimeIso).getTime()) / 60000 : 0;
+  const isDeviceApplicableToSample = sampleAgeFromNowMinutes <= DEVICE_READING_PRESENT_TOLERANCE_MINUTES;
+
+  if (input.hasDeviceLink && isDeviceApplicableToSample) {
     const sourceOfDevice = <T,>(device: T | null | undefined): 'device' | 'none' =>
       device !== null && device !== undefined ? 'device' : 'none';
 
@@ -367,6 +400,7 @@ export function mergeDustReading(input: DustEngineInput, weather: DustWeatherSam
       relativeHumidityPercent: input.deviceRelativeHumidityPercent ?? null,
       temperatureC: input.deviceTemperatureC ?? null,
       deviceLastReadingAt: input.deviceLastReadingAt ?? null,
+      devicePm10LastReadingAt: input.devicePm10LastReadingAt ?? null,
       sources: {
         windSpeedKmh: sourceOfDevice(input.deviceWindSpeedKmh),
         windGustKmh: sourceOfDevice(input.deviceWindGustKmh),
@@ -393,6 +427,7 @@ export function mergeDustReading(input: DustEngineInput, weather: DustWeatherSam
     relativeHumidityPercent: weather.relativeHumidityPercent ?? null,
     temperatureC: weather.temperatureC ?? null,
     deviceLastReadingAt: null,
+    devicePm10LastReadingAt: null,
     sources: {
       windSpeedKmh: sourceOfWeather(weather.windSpeedKmh),
       windGustKmh: sourceOfWeather(weather.windGustKmh),
@@ -409,8 +444,12 @@ export function mergeDustReading(input: DustEngineInput, weather: DustWeatherSam
 // -------------------------------------------------------------
 // الحساب الأساسي وحل التناقضات اللفظية
 // -------------------------------------------------------------
-export function computeDviResult(input: DustEngineInput, weather: DustWeatherSample): DviEvaluationResult {
-  const merged = mergeDustReading(input, weather);
+export function computeDviResult(
+  input: DustEngineInput,
+  weather: DustWeatherSample,
+  sampleTimeIso?: string
+): DviEvaluationResult {
+  const merged = mergeDustReading(input, weather, sampleTimeIso);
   const visibilityM = merged.visibilityM;
   const visibilityKm = visibilityM !== null ? visibilityM / 1000 : null;
 
@@ -468,7 +507,7 @@ export function computeDviResult(input: DustEngineInput, weather: DustWeatherSam
   const cause = classifyCause(weather, pm10);
   const { drivers, reducers } = buildRiskDriversAndReducers(input, visibilityKm, pm10, effectiveWindKmh, cause, siteDataProvided);
   const requiredActions = Array.from(new Set([...baseRequiredActions(gates.decision), ...gates.extraActions]));
-  const confidenceScore = calculateConfidence(weather, input.onsiteVisibilityM != null, input.onsitePm10 != null || input.onsitePm25 != null, siteDataProvided);
+  const confidenceScore = calculateConfidence(merged, weather, siteDataProvided);
 
   const dustExposureHigh = cause === 'DUST' && score >= 45;
   const outdoorWorkRestriction =
@@ -568,10 +607,10 @@ export async function evaluateDustVisibilityHourly(
 ): Promise<DviHourlyEvaluation[]> {
   const samples = await fetchDustWeatherHourly(input.latitude, input.longitude, hoursAhead);
   return samples.map((sample) => ({
-    ...computeDviResult(input, sample),
+    ...computeDviResult(input, sample, sample.time),
     time: sample.time,
     rawWeatherSample: sample,
-    mergedReading: mergeDustReading(input, sample),
+    mergedReading: mergeDustReading(input, sample, sample.time),
   }));
 }
 
@@ -638,10 +677,10 @@ export async function evaluateDustVisibilityWorkDayHourly(
   if (workDaySamples.length === 0) return [];
 
   return workDaySamples.map((sample) => ({
-    ...computeDviResult(input, sample),
+    ...computeDviResult(input, sample, sample.time),
     time: sample.time,
     rawWeatherSample: sample,
-    mergedReading: mergeDustReading(input, sample),
+    mergedReading: mergeDustReading(input, sample, sample.time),
   }));
 }
 
@@ -711,10 +750,10 @@ export async function evaluateDustVisibilityWindow(
   }
 
   const allHourlyEvaluations: DviHourlyEvaluation[] = allSamples.map((sample) => ({
-    ...computeDviResult(input, sample),
+    ...computeDviResult(input, sample, sample.time),
     time: sample.time,
     rawWeatherSample: sample,
-    mergedReading: mergeDustReading(input, sample),
+    mergedReading: mergeDustReading(input, sample, sample.time),
   }));
 
   let windowSamples = allSamples.filter((s) => {
@@ -732,11 +771,12 @@ export async function evaluateDustVisibilityWindow(
   }
 
   const aggregatedSample = aggregateWorstCaseSample(windowSamples);
+  const worstTimeIso = windowSamples[0]?.time ?? new Date(startMs).toISOString();
   const worst: DviHourlyEvaluation = {
-    ...computeDviResult(input, aggregatedSample),
-    time: windowSamples[0]?.time ?? new Date(startMs).toISOString(),
+    ...computeDviResult(input, aggregatedSample, worstTimeIso),
+    time: worstTimeIso,
     rawWeatherSample: aggregatedSample,
-    mergedReading: mergeDustReading(input, aggregatedSample),
+    mergedReading: mergeDustReading(input, aggregatedSample, worstTimeIso),
   };
 
   let bestWindowStartIso: string | null = null;
@@ -762,10 +802,10 @@ export async function evaluateDustVisibilityWindow(
     const blockSamples = allSamples.slice(i, i + safeDuration);
     const blockAggregatedSample = aggregateWorstCaseSample(blockSamples);
     const blockWorst: DviHourlyEvaluation = {
-      ...computeDviResult(input, blockAggregatedSample),
+      ...computeDviResult(input, blockAggregatedSample, blockSamples[0].time),
       time: blockSamples[0].time,
       rawWeatherSample: blockAggregatedSample,
-      mergedReading: mergeDustReading(input, blockAggregatedSample),
+      mergedReading: mergeDustReading(input, blockAggregatedSample, blockSamples[0].time),
     };
     if (isWorkDay(blockSamples[0].time) && (!bestWindowWorst || severityRank(blockWorst) < severityRank(bestWindowWorst))) {
       bestWindowWorst = blockWorst;

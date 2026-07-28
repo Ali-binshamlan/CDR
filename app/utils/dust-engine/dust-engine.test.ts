@@ -201,6 +201,97 @@ describe('computeDviResult — عزل تام: جهاز فقط أو طقس فقط
   });
 });
 
+// خطأ مكتشَف ومُصلَح: كان حساب الثقة (calculateConfidence) يفحص sample
+// (عينة الطقس الخام) بدل merged (القراءة الفعلية بعد أولوية device>weather>
+// onsite). فحين يوفّر الجهاز كل القياسات وتغيب بيانات الطقس تماماً، كانت
+// الثقة تُخصَم زوراً حتى لو التقييم مبني فعلياً على بيانات جهاز كاملة.
+describe('computeDviResult — confidenceScore يعتمد على القراءة المدموجة (merged) لا عينة الطقس الخام', () => {
+  it('hasDeviceLink=true وكل قياسات الجهاز متوفرة، وعينة الطقس فارغة تماماً → ثقة كاملة (100)، لا خصم', () => {
+    const input = baseInput({
+      hasDeviceLink: true,
+      deviceVisibilityM: 8000,
+      deviceWindSpeedKmh: 15,
+      deviceWindGustKmh: 20,
+      devicePm10: 40,
+      devicePm25: 15,
+    });
+    // عينة طقس فارغة تماماً (كأن API الطقس فشل أو لا يوجد اتصال) — لا يجوز
+    // أن تؤثر على الثقة إطلاقاً ما دام الجهاز غطّى كل الحقول المطلوبة.
+    const emptyWeather = sample({ visibilityM: null, windSpeedKmh: null, pm10: null, pm25: null, isForecastStale: false });
+    const r = computeDviResult(input, emptyWeather);
+    expect(r.confidenceScore).toBe(100);
+  });
+
+  it('hasDeviceLink=true لكن الجهاز نفسه ينقصه PM10/PM2.5 → خصم فعلي (25) رغم توفر طقس كامل (غير مُستهلَك)', () => {
+    const input = baseInput({
+      hasDeviceLink: true,
+      deviceVisibilityM: 8000,
+      deviceWindSpeedKmh: 15,
+      devicePm10: null,
+      devicePm25: null,
+    });
+    const fullWeather = sample({ pm10: 999, pm25: 999 }); // طقس كامل لكن غير مُستهلَك (عزل تام)
+    const r = computeDviResult(input, fullWeather);
+    expect(r.confidenceScore).toBe(75); // 100 - 25 (لا PM10/PM2.5 فعلياً من الجهاز)
+  });
+
+  it('hasDeviceLink=false مع طقس فارغ تماماً → خصم فعلي (نفس السلوك القديم بلا تغيير)', () => {
+    const input = baseInput({ hasDeviceLink: false });
+    const emptyWeather = sample({ visibilityM: null, windSpeedKmh: null, pm10: null, pm25: null });
+    const r = computeDviResult(input, emptyWeather);
+    expect(r.confidenceScore).toBeLessThan(100);
+  });
+});
+
+// خطأ مكتشَف ومُصلَح: كان mergeDustReading يستخدم قراءة الجهاز الثابتة
+// (input.device*) لأي عينة، بصرف النظر عن وقتها الفعلي — فكل ساعة توقّع
+// مستقبلية (evaluateDustVisibilityHourly/WorkDayHourly) لنشاط مرتبط بجهاز
+// كانت تُعيد قراءة "الآن" حرفياً، وكأن الجهاز يتنبأ بالمستقبل. sampleTimeIso
+// (المعامل الثالث) يفصل عينة "الآن" (ضمن هامش تحمّل) عن عينة مستقبلية
+// بعيدة — الأخيرة يجب أن تسقط لعينة الطقس (توقّع حقيقي)، لا الجهاز.
+describe('mergeDustReading/computeDviResult — لا يُعاد استخدام قراءة الجهاز الثابتة لساعات مستقبلية بعيدة', () => {
+  it('sampleTimeIso قريب من الآن (ضمن 30 دقيقة) → يُستخدَم الجهاز كالمعتاد', () => {
+    const input = baseInput({ hasDeviceLink: true, devicePm10: 300, deviceWindSpeedKmh: 15 });
+    const nearNowIso = new Date(Date.now() + 5 * 60000).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20, windSpeedKmh: 5 }), nearNowIso);
+    expect(merged.pm10).toBe(300);
+    expect(merged.sources.pm10).toBe('device');
+  });
+
+  it('sampleTimeIso بعيد في المستقبل (بعد 12 ساعة) → يسقط لعينة الطقس رغم hasDeviceLink=true', () => {
+    const input = baseInput({ hasDeviceLink: true, devicePm10: 300, deviceWindSpeedKmh: 15 });
+    const futureIso = new Date(Date.now() + 12 * 3600000).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20, windSpeedKmh: 5 }), futureIso);
+    expect(merged.pm10).toBe(20);
+    expect(merged.sources.pm10).toBe('weather');
+    expect(merged.windSpeedKmh).toBe(5);
+    expect(merged.sources.windSpeedKmh).toBe('weather');
+  });
+
+  it('sampleTimeIso بعيد في الماضي (قبل 12 ساعة) → يسقط لعينة الطقس أيضاً (ليس المستقبل فقط)', () => {
+    const input = baseInput({ hasDeviceLink: true, devicePm10: 300 });
+    const pastIso = new Date(Date.now() - 12 * 3600000).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20 }), pastIso);
+    expect(merged.pm10).toBe(20);
+    expect(merged.sources.pm10).toBe('weather');
+  });
+
+  it('sampleTimeIso غائب تماماً (استدعاء evaluateDustVisibility للحظة الآن) → يُستخدَم الجهاز كالمعتاد (سلوك قديم بلا تغيير)', () => {
+    const input = baseInput({ hasDeviceLink: true, devicePm10: 300 });
+    const merged = mergeDustReading(input, sample({ pm10: 20 }));
+    expect(merged.pm10).toBe(300);
+    expect(merged.sources.pm10).toBe('device');
+  });
+
+  it('hasDeviceLink=false: sampleTimeIso مستقبلي لا يغيّر شيئاً (الطقس مصدر أصلاً)', () => {
+    const input = baseInput({ hasDeviceLink: false });
+    const futureIso = new Date(Date.now() + 12 * 3600000).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20 }), futureIso);
+    expect(merged.pm10).toBe(20);
+    expect(merged.sources.pm10).toBe('weather');
+  });
+});
+
 // caveatsAr يجب أن يعكس القيمة المدموجة فعلياً حسب الوضع الفعال (جهاز أو
 // طقس)، لا مزيجاً بينهما.
 describe('computeDviResult — caveatsAr يتفاعل مع القراءة المدموجة حسب الوضع الفعال', () => {

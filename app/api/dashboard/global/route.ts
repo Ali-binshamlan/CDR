@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 import { computeDustResults, computeDustComplianceResults, computeUnifiedActivityDecision, riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 
@@ -17,7 +18,7 @@ export async function GET(request: NextRequest) {
     .from('projects')
     .select('*')
     .eq('user_id', userId);
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/global projects fetch failed') }, { status: 500 });
 
   const projectIds = (projectsData || []).map((p: any) => p.id);
 
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest) {
     .neq('state', 'CLOSED')
     .eq('projects.user_id', userId)
     .order('created_at', { ascending: false });
-  if (alertsError) return NextResponse.json({ error: alertsError.message }, { status: 500 });
+  if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/global alerts fetch failed') }, { status: 500 });
 
   let dustData: any[] = [];
   let decisionsData: any[] = [];

@@ -34,12 +34,24 @@
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { timingSafeEqual } from 'crypto';
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
 import type { DustEngineInput } from '@/app/utils/dust-engine/types';
 import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { evaluateDustCompliance, buildComplianceContext, buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 import { resolveFreshProjectDevice, fetchPm10SustainedStatus, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
+import { safeErrorResponse } from '@/app/lib/apiError';
+
+// مقارنة آمنة زمنياً لسر الـCron — timingSafeEqual يتطلب طولاً متطابقاً
+// للمخزنين، فنقارن الطول أولاً (تسريب طفيف لطول السر، غير حسّاس عملياً
+// مقارنة بتسريب محتواه عبر توقيت المقارنة العادية !==).
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
 // (يُستدعى من Cron)، فيحتاج مفتاح الخدمة لتجاوز RLS والقراءة من كل
@@ -500,8 +512,18 @@ export async function GET(request: Request) {
   // حماية بسيطة: نتحقق من رأس Authorization مقارنةً بسر مخزّن ببيئة
   // الخادم (CRON_SECRET). بدون هذا التحقق، أي زائر يقدر يشغّل هذا
   // المسار يدوياً بدون قيود.
-  const authHeader = request.headers.get('authorization');
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  //
+  // خطأ مكتشَف ومُصلَح: كان الشرط `process.env.CRON_SECRET && ...` — لو
+  // المتغير غير معرَّف أصلاً بالبيئة (خطأ إعداد نشر، لا حالة متعمَّدة)،
+  // الشرط بأكمله false فيتخطى التحقق بالكامل (fail-open)، فيصبح المسار
+  // مفتوحاً بلا أي حماية لأي زائر. الإصلاح: رفض الطلب صراحة إن كان المتغير
+  // غير معرَّف (fail-closed) — يلزم ضبطه بالبيئة قبل أن يعمل هذا المسار
+  // إطلاقاً، بدل السماح الصامت بغيابه.
+  if (!process.env.CRON_SECRET) {
+    return NextResponse.json({ ok: false, error: 'CRON_SECRET غير مُعرَّف بالخادم' }, { status: 503 });
+  }
+  const authHeader = request.headers.get('authorization') || '';
+  if (!timingSafeStringEqual(authHeader, `Bearer ${process.env.CRON_SECRET}`)) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
@@ -509,8 +531,7 @@ export async function GET(request: Request) {
     await checkDustActivities();
     return NextResponse.json({ ok: true, checkedAt: new Date().toISOString() });
   } catch (error: any) {
-    console.error('alert generation failed:', error?.message || error);
-    return NextResponse.json({ ok: false, error: error?.message || 'unknown error' }, { status: 500 });
+    return NextResponse.json({ ok: false, error: safeErrorResponse(error, 'alert generation failed') }, { status: 500 });
   }
 }
 

@@ -1,9 +1,10 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useRef, useState } from 'react';
 import { notFound } from 'next/navigation';
 import { useSearchParams } from 'next/navigation';
 import { Inbox } from 'lucide-react';
+import { apiClient } from '@/app/lib/apiClient';
 
 import ProjectHeader from '@/app/components/dashborad/Projects/[id]/components/ProjectHeader';
 import DashboardFilters from '@/app/components/dashborad/Projects/[id]/components/DashboardFilters';
@@ -33,6 +34,11 @@ interface RecentActivityItem {
   durationMinutes?: number;
 }
 
+// كل كم دقيقة تتحدّث بيانات الصفحة تلقائياً بلا حاجة لريفريش يدوي — تطابق
+// دورة إرسال الجهاز (دقيقتان) حتى تنعكس حالة استمرار PM10 (مؤكدة/معلَّقة/
+// معلَّقة 30 دقيقة) على الواجهة بأقرب وقت ممكن لحدوثها الفعلي في القاعدة.
+const DASHBOARD_POLL_INTERVAL_MS = 2 * 60 * 1000;
+
 export default function ProjectDetailsPage({
   params,
 }: {
@@ -56,32 +62,93 @@ export default function ProjectDetailsPage({
   // التفاصيل الدقيقة داخل كل نشاط موحّد
   const [dustResults, setDustResults] = useState<any[]>([]);
 
-  const fetchDashboardData = async () => {
+  // silent=true للتحديث الدوري التلقائي: لا نُظهر شاشة تحميل كاملة أو نمسح
+  // البيانات المعروضة حالياً أثناء إعادة الجلب الخلفية — فقط الجلب الأول
+  // عند فتح الصفحة يُظهر شاشة "جاري التحميل".
+  //
+  // waitForEvaluate=true: يجعل POST /evaluate يُنتظَر (await) قبل GET، بدل
+  // fire-and-forget بالتوازي معه. مطلوب تحديداً عند استدعاء عدّاد PM10 عند
+  // انتهاء مهلته (onCountdownElapsed) — لو نفّذنا GET فوراً بالتوازي مع
+  // POST، قد يصل GET ويقرأ القرار القديم من القاعدة قبل أن يُنهي POST إعادة
+  // الحساب/الكتابة فعلياً (لا ترتيب مضمون بين طلبين متوازيين)، فتظهر
+  // الواجهة "لم تتحدث" رغم انتهاء الوقت فعلاً، وتنتظر لحد دورة polling
+  // التالية (قد تصل دقيقتين) حتى تلتقط القرار الجديد بالصدفة. انتظار POST
+  // أولاً هنا يضمن أن GET التالي يقرأ القرار المُعاد حسابه فعلياً، لا نسخة
+  // سابقة له.
+  const fetchDashboardData = async (silent = false, waitForEvaluate = false) => {
     try {
-      setLoading(true);
-      const response = await fetch(`/api/projects/${id}`);
+      if (!silent) setLoading(true);
 
-      if (!response.ok) {
-        if (response.status === 404) notFound();
-        throw new Error('حدث خطأ أثناء جلب بيانات المشروع');
-      }
+      // يكتب التقييمات الجديدة لقاعدة البيانات (dust_evaluations/
+      // current_dust_compliance_decisions إلخ) — GET نفسه أصبح قراءة بحتة
+      // بلا أثر جانبي (راجع app/api/projects/[projectId]/evaluate/route.ts).
+      // هذا الاستدعاء أيضاً من يُسجّل قراءة PM10 جديدة في
+      // pm10_readings_history (قراءات onsite/open-meteo) — تكراره هو ما
+      // يُحدّث "استمرار" القراءة تلقائياً بلا أي إعادة ضبط للمؤقتات (سجل
+      // إضافة فقط، لا حذف/تعديل، فكل استدعاء يُمدّد السلسلة الحالية بدل
+      // تصفيرها).
+      const evaluatePromise = apiClient.post(`/projects/${id}/evaluate`).catch(() => {});
+      if (waitForEvaluate) await evaluatePromise;
 
-      const result = await response.json();
+      // apiClient (axios) يرفق تلقائياً Authorization: Bearer <session token>
+      // — المسار أصبح يتطلب مصادقة وتحقق ملكية فعلياً (راجع GET في
+      // app/api/projects/[projectId]/route.ts)، بعكس fetch() الخام السابق.
+      const { data: result } = await apiClient.get(`/projects/${id}`);
       setData(result);
       setRecentActivities(result.recentActivities || []);
       setDustResults(result.dustResults || []);
+
+      // غير waitForEvaluate: fire-and-forget عمداً كما كان — فشل الكتابة لا
+      // يجوز أن يمنع عرض البيانات المقروءة أصلاً بنجاح.
+      if (!waitForEvaluate) evaluatePromise.catch(() => {});
     } catch (err: any) {
-      setError(err.message);
+      if (silent) return; // فشل التحديث الخلفي الصامت لا يُظهر شاشة خطأ فوق بيانات معروضة بنجاح
+      if (err?.response?.status === 404) { notFound(); return; }
+      setError(err?.response?.data?.error || 'حدث خطأ أثناء جلب بيانات المشروع');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (id) {
-      fetchDashboardData();
-    }
+    if (!id) return;
+
+    let cancelled = false;
+    fetchDashboardData();
+
+    const intervalId = window.setInterval(() => {
+      if (!cancelled) fetchDashboardData(true);
+    }, DASHBOARD_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, [id]);
+
+  // يُستدعى من ComplianceWidgetCard بالضبط في لحظة انتهاء عدّاد PM10 (تأكيد
+  // مخالفة أو تعليق 30 دقيقة) لأي نشاط ظاهر — يطلب إعادة تقييم فورية بدل
+  // انتظار دورة polling الدورية التالية (قد تصل دقيقتين كاملتين تأخير لو
+  // صادف انتهاء العدّاد مباشرة بعد آخر تحديث). قد تنتهي عدة عدّادات في نفس
+  // اللحظة تقريباً (عدة أنشطة/بطاقات) — debounce بسيط (500ms عبر useRef، لا
+  // إعادة render) يدمجها في طلب واحد بدل عدة طلبات متزامنة لنفس البيانات.
+  const debounceTimeoutRef = useRef<number | null>(null);
+  const handleCountdownElapsed = () => {
+    if (debounceTimeoutRef.current !== null) window.clearTimeout(debounceTimeoutRef.current);
+    debounceTimeoutRef.current = window.setTimeout(() => {
+      debounceTimeoutRef.current = null;
+      // waitForEvaluate=true: ينتظر إعادة الحساب/الكتابة في الخادم قبل
+      // القراءة، حتى يعكس القرار الجديد فوراً بدل قراءة القرار القديم
+      // بالصدفة والانتظار لدورة polling التالية. راجع تعليق fetchDashboardData.
+      fetchDashboardData(true, true);
+    }, 500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimeoutRef.current !== null) window.clearTimeout(debounceTimeoutRef.current);
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -136,7 +203,7 @@ export default function ProjectDetailsPage({
   return (
     <div className="min-h-screen bg-[#F4F7FB] p-6 lg:p-8 font-sans" dir="rtl">
       <div className="max-w-[1440px] mx-auto space-y-8">
-        <ProjectHeader project={project} />
+        <ProjectHeader project={project} onActivityCreated={handleEdited} />
 
         <DashboardFilters activeStatus={activeStatus} />
 
@@ -224,6 +291,7 @@ export default function ProjectDetailsPage({
                               activityId={r.activityId}
                               projectName={project.name}
                               hideSchedule
+                              onCountdownElapsed={handleCountdownElapsed}
                             />
                           ))}
                       </div>

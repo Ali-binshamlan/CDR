@@ -85,7 +85,7 @@ create policy "profiles_owner_all"
 --   • site_area_m2 .. sensitivity_map_prepared (كتلة امتثال الغبار
 --     التنظيمي): supabase-dust-compliance-migration.sql (القسم 1)
 -- لا يوجد أي عمود crane_*/heat_* هنا (مستبعدة عمداً من نطاق DCR).
-create table if not exists public.projecats (
+create table if not exists public.projects (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
 

@@ -1,6 +1,15 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireDeviceApiKey } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
+import { checkRateLimit } from '@/app/lib/rateLimit';
+
+// حد معدّل الإرسال لكل جهاز — دورة الإرسال التصميمية دقيقتان، فـ30 طلباً
+// في الدقيقة هامش واسع جداً (يستوعب إعادة المحاولة والاختبار اليدوي عبر
+// Postman) بينما يوقف الإغراق من مفتاح مسرَّب فوراً. راجع app/lib/rateLimit.ts
+// لحدود هذا الأسلوب على بيئة serverless.
+const INGEST_MAX_REQUESTS_PER_WINDOW = 30;
+const INGEST_WINDOW_MS = 60_000;
 
 // نقطة استقبال قراءة لحظية واحدة من جهاز رصد فعلي. المصادقة عبر مفتاح
 // الجهاز فقط (Authorization: Bearer <raw key>) — لا deviceId في الرابط ولا
@@ -60,6 +69,15 @@ export async function POST(request: NextRequest) {
   const auth = await requireDeviceApiKey(request);
   if ('error' in auth) return auth.error;
 
+  // الحد يُطبَّق بعد التحقق من الهوية (على deviceId لا على IP): الأجهزة في
+  // موقع واحد قد تتشارك مخرج شبكة واحداً، والهوية الفعلية هي المفتاح نفسه.
+  if (!checkRateLimit(auth.deviceId, INGEST_MAX_REQUESTS_PER_WINDOW, INGEST_WINDOW_MS)) {
+    return NextResponse.json(
+      { error: 'تجاوزت الحد المسموح من الطلبات — حاول بعد قليل' },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(INGEST_WINDOW_MS / 1000)) } }
+    );
+  }
+
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'جسم الطلب يجب أن يكون JSON صالحاً' }, { status: 400 });
@@ -84,14 +102,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  updates.last_reading_at = new Date().toISOString();
+  const receivedAt = new Date().toISOString();
+  updates.last_reading_at = receivedAt;
+  // خطأ مكتشَف ومُصلَح: last_reading_at وحده لا يكفي لمعرفة "متى آخر قراءة
+  // PM10 فعلية" — عمود مشترك لكل الحقول، فتحديث جزئي (حرارة فقط مثلاً) كان
+  // يجعل last_reading_at "حديثاً" رغم أن last_pm10 لم يتغيّر منذ زمن طويل،
+  // فيختفي تحذير قِدم PM10 زوراً. last_pm10_at يُحدَّث فقط عند وجود pm10
+  // فعلياً في هذه الحمولة تحديداً.
+  if (typeof updates.last_pm10 === 'number') {
+    updates.last_pm10_at = receivedAt;
+  }
 
   const { error } = await supabaseAdmin
     .from('project_devices')
     .update(updates)
     .eq('id', auth.deviceId);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'devices/ingest update failed') }, { status: 500 });
 
   // تسجيل PM10 في السجل التاريخي المنفصل (pm10_readings_history) — يُستخدم
   // لاحقاً لحساب استمرار القراءة عبر الزمن (RCRC-PM10-340-VIOLATION-011:
@@ -99,13 +126,25 @@ export async function POST(request: NextRequest) {
   // توقيت تقييمات dust_compliance_evaluations المتقطّع. project_id فقط
   // (لا activity_group_id) لأن الجهاز مرتبط بالمشروع ككل، لا نشاط محدد —
   // راجع computeSustainedPm10 في app/lib/dustEvaluation.ts.
+  //
+  // خطأ مكتشَف ومُصلَح: كان عمود activity_group_id لا يزال not null بقاعدة
+  // البيانات (راجع supabase-fix-pm10-history-nullable-activity-group-
+  // migration.sql) رغم أن هذا الإدراج يمرّره null دائماً عمداً — فكان كل
+  // إدراج قراءة جهاز يفشل بصمت منذ البداية (بلا فحص error هنا)، فلا تصل
+  // أي قراءة جهاز لهذا الجدول إطلاقاً مهما استمر التجاوز، ولا يمكن لأي
+  // قراءة جهاز الوصول لحالة "مخالفة مؤكدة" أبداً. الآن نسجّل الخطأ (لو
+  // تكرر بسبب مشكلة أخرى مستقبلاً) بدل ابتلاعه صامتاً — لا نُسقِط الاستجابة
+  // الناجحة بسببه (تحديث project_devices نجح فعلاً، وهو الأهم للمستخدم).
   if (typeof updates.last_pm10 === 'number') {
-    await supabaseAdmin.from('pm10_readings_history').insert({
+    const { error: historyError } = await supabaseAdmin.from('pm10_readings_history').insert({
       project_id: auth.projectId,
       pm10_ug_m3: updates.last_pm10,
       source: 'device',
       recorded_at: updates.last_reading_at,
     });
+    if (historyError) {
+      console.error('pm10_readings_history insert failed:', historyError.message);
+    }
   }
 
   return NextResponse.json({ success: true, receivedAt: updates.last_reading_at });

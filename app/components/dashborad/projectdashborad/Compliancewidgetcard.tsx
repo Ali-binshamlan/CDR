@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { apiClient } from '@/app/lib/apiClient';
 import {
   X, ArrowUpRight, Gauge,
   Clock, AlertTriangle, Printer,
   ShieldAlert, Scale, Wind, Compass, CircleGauge, MapPin,
-  Thermometer, Droplets, Eye,
+  Thermometer, Droplets, Eye, Timer,
 } from 'lucide-react';
 import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
@@ -72,11 +72,24 @@ interface ComplianceWidgetCardProps {
   windowStartIso?: string;
   windowEndIso?: string;
   durationHours?: number;
+  /** يُستدعى بالضبط في لحظة وصول أي عدّاد PM10 (تأكيد المخالفة أو تعليق
+   * الـ30 دقيقة) إلى الصفر — يتيح للأب (صفحة تفاصيل المشروع) طلب إعادة
+   * تقييم فورية من الخادم بدل انتظار دورة polling التالية (قد تصل دقيقتين
+   * كاملتين)، فيظهر القرار الفعلي الجديد في أقرب وقت ممكن بعد انقضاء المهلة
+   * فعلياً، لا بعد دورة زمنية ثابتة غير مرتبطة بلحظة الانقضاء الحقيقية. */
+  onCountdownElapsed?: () => void;
 }
 
 const COMPLIANCE_RULES_TRANSLATIONS: Record<string, string> = {
   'GATE-DMP-001': 'نشاط غبار نشط/مخطط بلا موافقة معتمدة على خطة إدارة الغبار (DMP)',
-  'GATE-DVI-002': 'إيقاف إلزامي بسبب خطورة فيزيائية حالية (رؤية منعدمة أو تركيز غبار خطر) لا علاقة له بمخالفة تنظيمية',
+  // النص السابق كان يصف هذي القاعدة بـ"لا علاقة له بمخالفة تنظيمية" —
+  // تناقض مباشر مع سياق عرضها فعلياً (داخل "أساس القرار — الامتثال
+  // التنظيمي"، بقرار MANDATORY_STOP ملزم ودرجة ثقة امتثال). الأصل التقني
+  // صحيح (القاعدة موروثة من قياس DVI الفيزيائي المباشر، لا من مخالفة ضابط
+  // تحكم كالفلاتر/الصوامع)، لكن الصياغة يجب أن تبقى بلغة امتثال تنظيمي
+  // موحّدة دائماً — لا عرض قرارين متنافسين (فيزيائي مقابل تنظيمي) لنفس
+  // النشاط الواحد.
+  'GATE-DVI-002': 'إيقاف إلزامي تنظيمي: تجاوز خطر فوري في تركيز الغبار أو انعدام الرؤية بموقع النشاط',
   'GATE-SUPPRESSION-003': 'نظام تثبيط الغبار غير عامل على نشاط مولّد للغبار',
   'GATE-WIND-ABOVE-25-004': 'إيقاف الأنشطة المكشوفة المولّدة للغبار بسبب رياح تتجاوز 25 كم/س',
   'DEMO-WIND-STOP-001': 'أعمال هدم مكشوفة أثناء رياح تتجاوز 15 كم/س',
@@ -216,6 +229,67 @@ function buildAdvisoryTips(visibilityM: number | null, temperatureC: number | nu
 // خادمية، القيمة مكرَّرة عمداً بنفس القيمة الثابتة).
 const DEVICE_READING_STALENESS_MINUTES = 20;
 
+// نفس عتبات المدة في app/utils/dust-compliance-engine/rulebook.ts
+// (PM10_VIOLATION_CONFIRM_MINUTES / PM10_SUSPENSION_MINUTES) — مكرَّرة عمداً
+// هنا فقط لبناء نص العدّاد التنازلي، بلا أي تأثير على القرار نفسه (القرار
+// الفعلي محسوب مسبقاً في الخادم عبر pendingConfirmation/decisionCategory).
+const PM10_VIOLATION_CONFIRM_MINUTES = 2;
+const PM10_SUSPENSION_MINUTES = 30;
+
+// عدّاد تنازلي حي لمصداقية القرار — يوضّح للمستخدم "متبقٍ كذا" بدل انتظار
+// التقييم التالي بصمت ليعرف النتيجة. sustainedMinutes هو لقطة (snapshot) من
+// آخر تقييم خادمي (كل دقيقتين، راجع DASHBOARD_POLL_INTERVAL_MS في صفحة
+// تفاصيل المشروع)؛ نُضيف لها محلياً الزمن المنقضي فعلياً منذ لحظة تلك
+// اللقطة (asOfMs) حتى يبقى العدّاد دقيقاً بين تحديثين، لا يقفز أو يتجمّد.
+//
+// onElapsed (اختياري): يُستدعى مرة واحدة بالضبط في لحظة وصول العدّاد للصفر
+// فعلياً — عبر setTimeout مجدوَل بدقة على المدة المتبقية الحقيقية، لا عبر
+// انتظار دورة polling التالية. هذا هو ما يجعل تحديث القرار "فور انتهاء
+// الوقت" بدل تأخير عشوائي قد يصل دقيقتين كاملتين لو صادف انتهاء العدّاد
+// مباشرة بعد آخر دورة تحديث.
+function useCountdownRemainingSeconds(
+  sustainedMinutes: number | undefined,
+  targetMinutes: number,
+  asOfMs: number,
+  onElapsed?: () => void
+): number | null {
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    if (sustainedMinutes === undefined) return;
+    const id = window.setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [sustainedMinutes]);
+
+  // جدولة استدعاء دقيق للحظة الصفر — منفصل عن مؤقّت الثانية أعلاه (ذاك فقط
+  // لإعادة رسم النص المعروض). يُعاد الجدولة كلما تغيّرت لقطة البيانات
+  // (sustainedMinutes/asOfMs جديدين بعد كل تحديث من الخادم)، وتُلغى المهلة
+  // القديمة تلقائياً عبر cleanup — فلا تراكم لعدة مؤقّتات لنفس النشاط.
+  useEffect(() => {
+    if (sustainedMinutes === undefined || !onElapsed) return;
+    const elapsedSinceSnapshotSec = Math.max(0, (Date.now() - asOfMs) / 1000);
+    const sustainedSecondsNow = sustainedMinutes * 60 + elapsedSinceSnapshotSec;
+    const remainingMs = (targetMinutes * 60 - sustainedSecondsNow) * 1000;
+    if (remainingMs <= 0) return; // انتهت المهلة أصلاً قبل وصول هذه اللقطة — لا داعي لجدولة ماضٍ
+    const timeoutId = window.setTimeout(onElapsed, remainingMs);
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sustainedMinutes, targetMinutes, asOfMs]);
+
+  if (sustainedMinutes === undefined) return null;
+  const elapsedSinceSnapshotSec = Math.max(0, (Date.now() - asOfMs) / 1000);
+  const sustainedSecondsNow = sustainedMinutes * 60 + elapsedSinceSnapshotSec;
+  const remainingSec = targetMinutes * 60 - sustainedSecondsNow;
+  return Math.max(0, Math.round(remainingSec));
+}
+
+function formatCountdownAr(totalSeconds: number): string {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  if (mins === 0) return `${secs} ثانية`;
+  return `${mins}:${String(secs).padStart(2, '0')} دقيقة`;
+}
+
 // نفس منطق formatRelativeAr المستخدم في MultiIndicatorActivityBox.tsx —
 // معرَّف محلياً هنا بنفس اتفاقية الملف (كل الدوال المساعدة محلية).
 function formatAgeAr(diffMs: number): string {
@@ -233,7 +307,18 @@ function formatAgeAr(diffMs: number): string {
 // قراءة معروفة منها غائبة تماماً أو أقدم من عتبة الحداثة. بطلب صريح من
 // المستخدم: "تظهر آخر قراءة معروفة حتى لو قديمة، مع تنبيه قدمها" — لا
 // إخفاء صامت للبيانات، ولا رجوع لـAPI الطقس كبديل.
-function buildStalenessAdvisory(deviceLastReadingAt: string | null | undefined): AdvisoryTip | null {
+// خطأ مكتشَف ومُصلَح: كان التحذير يعتمد فقط على deviceLastReadingAt (آخر
+// اتصال من المحطة على الإطلاق، لأي حقل). لأن هذا العمود يتحدّث على أي push
+// جزئي من الجهاز (حتى لو حرارة فقط بلا PM10)، كان بإمكان قراءة PM10 قديمة
+// فعلياً أن تظهر "حديثة" زوراً لمجرد أن الجهاز أرسل حقلاً آخر مؤخراً.
+// devicePm10LastReadingAt (اختياري، undefined = بيانات قديمة قبل هذا
+// الإصلاح أو استدعاء لا يمرّره) يُستخدَم كمرجع الحداثة الفعلي لتحذير PM10
+// تحديداً عند توفره؛ deviceLastReadingAt يبقى المرجع لتحذير "لا اتصال
+// إطلاقاً" (محطة لم ترسل أي شيء قط).
+function buildStalenessAdvisory(
+  deviceLastReadingAt: string | null | undefined,
+  devicePm10LastReadingAt?: string | null
+): AdvisoryTip | null {
   if (deviceLastReadingAt === undefined) return null; // لا ربط جهاز أصلاً لهذا النشاط
 
   if (deviceLastReadingAt === null) {
@@ -243,7 +328,17 @@ function buildStalenessAdvisory(deviceLastReadingAt: string | null | undefined):
     };
   }
 
-  const ageMs = Date.now() - new Date(deviceLastReadingAt).getTime();
+  // مرجع الحداثة الفعلي: قراءة PM10 تحديداً إن توفّر تاريخها (devicePm10LastReadingAt
+  // !== undefined)، وإلا نرجع لـdeviceLastReadingAt العام (سلوك قديم/توافقي).
+  const referenceReadingAt = devicePm10LastReadingAt !== undefined ? devicePm10LastReadingAt : deviceLastReadingAt;
+  if (referenceReadingAt === null) {
+    return {
+      titleAr: 'تنبيه إعلامي: لم تُرسِل محطة الرصد قراءة PM10 بعد',
+      tipsAr: ['المحطة متصلة لكن لم تصل منها قراءة PM10 حتى الآن — تحقّق من مستشعر PM10 بالجهاز.'],
+    };
+  }
+
+  const ageMs = Date.now() - new Date(referenceReadingAt).getTime();
   const ageMinutes = ageMs / 60000;
   if (ageMinutes <= DEVICE_READING_STALENESS_MINUTES) return null;
 
@@ -316,6 +411,7 @@ export default function ComplianceWidgetCard({
   windowStartIso,
   windowEndIso,
   durationHours,
+  onCountdownElapsed,
 }: ComplianceWidgetCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeAlert, setActiveAlert] = useState<any>(null);
@@ -345,6 +441,53 @@ export default function ComplianceWidgetCard({
   );
   const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
 
+  // لحظة استلام لقطة sustainedMinutes الحالية — يجب أن تتحدّث مع كل تحديث
+  // فعلي للبيانات من الأب (كل دقيقتين عبر polling)، لا أن تبقى ثابتة من أول
+  // عرض للمكوّن، وإلا يُحسب "الزمن المنقضي منذ اللقطة" بمرجع قديم خاطئ بعد
+  // أول تحديث. نستخدم useMemo مربوطاً بقيمتَي sustainedMinutes أنفسهما
+  // (لا مصفوفة تبعيات فارغة) حتى يُعاد ضبط المرجع بالضبط عند وصول لقطة جديدة.
+  const sustained340 = worst?.pm10SustainedMinutesAbove340;
+  const sustained250 = worst?.pm10SustainedMinutesAbove250;
+  const snapshotAtMs = useMemo(() => Date.now(), [sustained340, sustained250]);
+
+  // خطأ مكتشَف ومُصلَح: محطة خلط مستثناة بالكامل من قواعد PM10 (صوامع مغلقة
+  // + فلتر ≥99%، راجع worst.pm10RulesExempt المحسوب في engine.ts) كانت لا
+  // تزال تُظهر عدّادات "متبقٍ حتى..." رغم أن الخادم لن يعلّقها/يوقفها بسبب
+  // PM10 أبداً — تحذير مضلِّل لحالة لن تتحقق فعلياً لأن القاعدة نفسها معفاة
+  // من جذورها لهذا النشاط. كلا العدّادين يُخفيان تماماً عند الإعفاء.
+  const pm10RulesExempt = worst?.pm10RulesExempt === true;
+
+  // عدّاد "متبقٍ حتى تتأكد المخالفة" — يظهر فقط أثناء pendingConfirmation
+  // (القراءة ≥340 لكن لم تستمر بعد دقيقتين). onElapsed يطلب إعادة تقييم
+  // فورية من الخادم بالضبط عند انتهاء المهلة (لا انتظار دورة polling
+  // التالية)، فينعكس القرار الفعلي (مؤكَّد أو ALLOW) في أقرب وقت ممكن.
+  const confirmRemainingSec = useCountdownRemainingSeconds(
+    worst?.pendingConfirmation && !pm10RulesExempt ? sustained340 : undefined,
+    PM10_VIOLATION_CONFIRM_MINUTES,
+    snapshotAtMs,
+    onCountdownElapsed
+  );
+
+  // عدّاد "متبقٍ حتى تعليق النشاط" — يظهر عندما تكون القراءة ≥250 مستمرة
+  // (استمرار فعلي مسجَّل) لكن لم تصل بعد 30 دقيقة، والقرار الحالي ليس
+  // إيقافاً/تعليقاً مؤكَّداً أصلاً (لا فائدة من عدّاد لحالة موقوفة بالفعل).
+  const alreadyStopped =
+    worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
+  const showSuspensionCountdown =
+    !!worst &&
+    !pm10RulesExempt &&
+    !alreadyStopped &&
+    worst.evidence.pm10UgM3 !== null &&
+    worst.evidence.pm10UgM3 >= 250 &&
+    sustained250 !== undefined &&
+    sustained250 < PM10_SUSPENSION_MINUTES;
+  const suspensionRemainingSec = useCountdownRemainingSeconds(
+    showSuspensionCountdown ? sustained250 : undefined,
+    PM10_SUSPENSION_MINUTES,
+    snapshotAtMs,
+    onCountdownElapsed
+  );
+
   // تنبيهات إعلامية (رؤية ضعيفة/حرارة مرتفعة) — إعلامية بحتة، لا تؤثر في
   // worst.decisionCategory أو aei إطلاقاً. راجع buildAdvisoryTips أعلاه.
   const advisoryTips = worst
@@ -352,7 +495,9 @@ export default function ComplianceWidgetCard({
     : [];
   // تنبيه قِدم قراءة محطة الرصد (راجع buildStalenessAdvisory أعلاه) —
   // إعلامي بحت أيضاً، يُدمَج مع advisoryTips لعرضه بنفس النمط والمكان.
-  const stalenessAdvisory = worst ? buildStalenessAdvisory(worst.evidence.deviceLastReadingAt) : null;
+  const stalenessAdvisory = worst
+    ? buildStalenessAdvisory(worst.evidence.deviceLastReadingAt, worst.evidence.devicePm10LastReadingAt)
+    : null;
   const allAdvisoryTips = stalenessAdvisory ? [stalenessAdvisory, ...advisoryTips] : advisoryTips;
 
   useEffect(() => {
@@ -431,6 +576,31 @@ export default function ComplianceWidgetCard({
               )}
             </div>
           </div>
+
+          {/* عدّاد "متبقٍ حتى..." — لمصداقية القرار: يوضّح للمستخدم أن الحالة
+              مؤقتة وستتحدّث تلقائياً عند انقضاء الزمن، بدل قرار يبدو ثابتاً
+              بلا تفسير لتوقيته. لا يظهر إلا عند وجود بيانات استمرار فعلية
+              (worst.pm10SustainedMinutesAbove340/250 !== undefined). */}
+          {confirmRemainingSec !== null && (
+            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-red-600 shrink-0" />
+              <span className="text-[11px] font-bold text-red-700">
+                {confirmRemainingSec > 0
+                  ? <>متبقٍ <span dir="ltr">{formatCountdownAr(confirmRemainingSec)}</span> حتى تتأكد المخالفة (إن استمر التجاوز)</>
+                  : 'انتهت مهلة التأكيد — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+              </span>
+            </div>
+          )}
+          {confirmRemainingSec === null && suspensionRemainingSec !== null && (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="text-[11px] font-bold text-amber-700">
+                {suspensionRemainingSec > 0
+                  ? <>متبقٍ <span dir="ltr">{formatCountdownAr(suspensionRemainingSec)}</span> حتى تعليق النشاط (إن استمرت القراءة ≥250)</>
+                  : 'انتهت مهلة الـ30 دقيقة — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 mb-4">
             <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
@@ -624,6 +794,30 @@ export default function ComplianceWidgetCard({
                   </div>
                 )}
               </div>
+
+              {/* نفس عدّاد "متبقٍ حتى..." المعروض في البطاقة المطوية، مكرَّر
+                  هنا لأن المستخدم قد يفتح التفاصيل الكاملة مباشرة بلا مرور
+                  بالبطاقة المصغّرة. */}
+              {confirmRemainingSec !== null && (
+                <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                  <Timer className="w-5 h-5 text-red-600 shrink-0" />
+                  <span className="text-[13px] font-bold text-red-700">
+                    {confirmRemainingSec > 0
+                      ? <>متبقٍ <span dir="ltr">{formatCountdownAr(confirmRemainingSec)}</span> حتى تتأكد المخالفة (إن استمر التجاوز)</>
+                      : 'انتهت مهلة التأكيد — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+                  </span>
+                </div>
+              )}
+              {confirmRemainingSec === null && suspensionRemainingSec !== null && (
+                <div className="flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <Timer className="w-5 h-5 text-amber-600 shrink-0" />
+                  <span className="text-[13px] font-bold text-amber-700">
+                    {suspensionRemainingSec > 0
+                      ? <>متبقٍ <span dir="ltr">{formatCountdownAr(suspensionRemainingSec)}</span> حتى تعليق النشاط (إن استمرت القراءة ≥250)</>
+                      : 'انتهت مهلة الـ30 دقيقة — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+                  </span>
+                </div>
+              )}
 
               {/* تنبيهات إعلامية (رؤية ضعيفة/حرارة مرتفعة) + نصائح ميدانية
                   عملية — إعلامية بحتة، لا تمثّل قراراً/إيقافاً ولا تدخل ضمن

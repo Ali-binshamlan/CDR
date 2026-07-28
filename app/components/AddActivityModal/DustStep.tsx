@@ -55,12 +55,20 @@ const COMPLIANCE_RELEVANT_CONTROL_KEYS = new Set<keyof DustForm>(['dustScreensAv
 // في dust-engine/engine.ts)، ولا علاقة لها بمحرك الامتثال التنظيمي إطلاقاً.
 const SHOW_CONTROL_MEASURES_SECTION = false;
 
-// BATCHING_PLANT عمداً غير مدرجة هنا: إعفاء بوابة الرياح لمحطة الخلط لا
-// يعتمد على isEnclosedOperation إطلاقاً (راجع isEnclosedExemptFromHighWind
-// في dust-compliance-engine/engine.ts) — يكفي إحكام إغلاق الصوامع
-// (silosSealed، مدخل موجود أصلاً لكل وحدة خلط) + فلتر PM10 ≥99%، طلب صريح
-// من المستخدم بعدم اشتراط إغلاق المحطة فيزيائياً.
-const SENSITIVE_REGULATORY_ACTIVITIES = new Set(['DEMOLITION', 'CRUSHER', 'STONE_CUTTING']);
+// خطأ مكتشَف: كانت هذي القائمة تقصر خيار "عملية مغلقة" على 3 أنشطة فقط
+// (DEMOLITION/CRUSHER/STONE_CUTTING)، فيختفي الخيار عن كل نشاط آخر رغم أن
+// isEnclosedExemptFromHighWind في dust-compliance-engine/engine.ts (سطر
+// ~270-278) يستخدم isEnclosedOperation كإعفاء من بوابة إيقاف الرياح >25
+// كم/س لكل الأنشطة المولّدة للغبار بلا استثناء (EARTHWORKS/SITE_TRAFFIC/
+// MATERIAL_HANDLING_STOCKPILE/CD_WASTE_TRANSPORT/IDLE_SURFACE/OTHER أيضاً،
+// لا الثلاثة فقط) — فكان أي نشاط مغلق فعلياً خارج هذي الثلاثة يُعامَل معاملة
+// "مكشوف" قسراً بلا أي وسيلة لتصحيح ذلك من الواجهة.
+//
+// BATCHING_PLANT وحدها مستثناة عمداً: إعفاء بوابة الرياح لمحطة الخلط لا
+// يعتمد على isEnclosedOperation إطلاقاً (راجع isEnclosedExemptFromHighWind)
+// — يكفي إحكام إغلاق الصوامع (silosSealed، مدخل موجود أصلاً لكل وحدة خلط) +
+// فلتر PM10 ≥99%، طلب صريح من المستخدم بعدم اشتراط إغلاق المحطة فيزيائياً.
+const ENCLOSED_OPTION_EXCLUDED_ACTIVITIES = new Set(['BATCHING_PLANT']);
 
 // -----------------------------------------------------------------------
 // تنبيهات عامة (نصية فقط، لا إدخال) لكل نشاط تنظيمي — بديل حقول الضوابط
@@ -201,7 +209,7 @@ export function DustStep({
           <div className="space-y-2">
             {regulatoryActivities.map((item, index) => {
               const isExpanded = expandedActivityIds.has(item.id);
-              const isSensitive = SENSITIVE_REGULATORY_ACTIVITIES.has(item.fields.regulatoryActivity as string);
+              const showEnclosedOption = !ENCLOSED_OPTION_EXCLUDED_ACTIVITIES.has(item.fields.regulatoryActivity as string);
               const alerts = GENERAL_ALERTS_AR[item.fields.regulatoryActivity as string] ?? [];
               const hasLocation = typeof item.lat === 'number' && typeof item.lng === 'number';
 
@@ -723,7 +731,7 @@ export function DustStep({
                           DEMO-WIND-STOP-001، وقواعد الكسارة/قطع الأحجار) — هذا
                           سؤال بنيوي عن طبيعة العملية نفسها، وليس تفصيل ضبط
                           يمكن تعميمه كتنبيه عام. */}
-                      {isSensitive && (
+                      {showEnclosedOption && (
                         <div className="flex items-center gap-2">
                           <input
                             id={`enclosed-${item.id}`}
@@ -738,7 +746,7 @@ export function DustStep({
                         </div>
                       )}
 
-                      {isSensitive && item.fields.regulatoryActivity === 'DEMOLITION' && (
+                      {item.fields.regulatoryActivity === 'DEMOLITION' && (
                         <div>
                           <label className={labelClass}>مساحة الهدم النشطة (م²)</label>
                           <input type="number" placeholder="اتركه فارغًا" value={item.fields.demolitionActiveAreaM2} onChange={(e) => updateRegulatoryActivityField(item.id, 'demolitionActiveAreaM2', e.target.value)} className={getInputClass(false)} />

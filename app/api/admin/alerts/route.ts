@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin, requireViewer } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // كل تنبيهات كل المشاريع — bلا فلترة project_id. alerts.project_id له FK
 // حقيقي لـ projects.id فـ embed !inner صالح هنا (على عكس admin/projects
@@ -11,13 +12,12 @@ import { requireSuperAdmin, requireViewer } from '@/app/lib/apiAuth';
 // admin/alerts/page.tsx وapp/dashboard/viewer/alerts/page.tsx معاً.
 export async function GET(request: NextRequest) {
   const adminAuth = await requireSuperAdmin(request);
-  // requireSuperAdmin/requireViewer يُرجعان نفس الشكل {userId} بلا أي حقل
-  // يميّز أيهما نجح فعلياً — فشل الأدمن هنا يعني أن الفرع الثاني (viewer)
-  // هو من سيُقرَّر لاحقاً، فنستخدم هذا الفرع الشرطي نفسه لمعرفة هوية
-  // الطالب الفعلية، بلا أي تعديل على apiAuth.ts.
-  const isViewerCaller = 'error' in adminAuth;
-  const auth = isViewerCaller ? await requireViewer(request) : adminAuth;
+  // requireSuperAdmin/requireViewer يُرجعان الآن حقل role صريحاً ('admin'
+  // | 'viewer') عند النجاح — نعتمد عليه مباشرة لمعرفة هوية الطالب الفعلية
+  // بدل استنتاجها من ترتيب فشل/نجاح الاستدعاءين (كان هشاً لأي إعادة ترتيب).
+  const auth = 'error' in adminAuth ? await requireViewer(request) : adminAuth;
   if ('error' in auth) return auth.error;
+  const isViewerCaller = auth.role === 'viewer';
 
   // جهة الرصد تحديداً تُقصَر على المخالفات التنظيمية الفعلية فقط
   // (COMPLIANCE_VIOLATION) — طلب صريح من المستخدم: لا تريد كل أنواع
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     alertsQuery = alertsQuery.eq('kind', 'COMPLIANCE_VIOLATION');
   }
   const { data: alerts, error: alertsError } = await alertsQuery;
-  if (alertsError) return NextResponse.json({ error: alertsError.message }, { status: 500 });
+  if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'admin/alerts fetch failed') }, { status: 500 });
 
   const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name, phone_number');
   const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));

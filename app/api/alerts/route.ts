@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // يجلب التنبيه النشط (غير CLOSED) لنشاط محدد — يُستخدم من Dustwidgetcard.tsx.
 export async function GET(request: NextRequest) {
@@ -26,6 +27,6 @@ export async function GET(request: NextRequest) {
     .neq('state', 'CLOSED')
     .limit(1);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'alerts fetch failed') }, { status: 500 });
   return NextResponse.json({ data });
 }

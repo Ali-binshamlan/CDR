@@ -6,17 +6,16 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 // الغبار فقط. لا رافعات ولا حرارة في DCR إطلاقاً.
 import {
   computeDustResults,
-  persistDustEvaluations,
   computeDustComplianceResults,
   computeDustComplianceHourly,
   computeUnitReceptors,
-  persistDustComplianceEvaluations,
   applyComplianceGatesToDustAei,
   computeUnifiedActivityDecision,
   riyadhLocalToUtcIso,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 import { buildProjectZoneFromRow, distanceToZoneBoundaryM, zoneToBoundaryDistanceM, zoneSearchAnchorPoints } from '@/app/utils/geo/zone';
 import { fetchNearbySensitiveReceptorsFromOsm } from '@/app/utils/geo/overpassReceptors';
 import { displayActivityLabel as activityTitleFromRow } from '@/app/lib/activityLabels';
@@ -265,9 +264,21 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> } // يطابق اسم المجلد الفعلي [projectId]
 ) {
   try {
+    // تحقق الهوية والملكية — كان هذا المسار يقرأ (ويكتب تقييمات جديدة
+    // كأثر جانبي) بيانات أي مشروع بلا أي تحقق إطلاقاً، رغم أن PATCH/DELETE
+    // في نفس الملف يطبّقانه بشكل صحيح — ثغرة IDOR غير مصادَق عليها فعلياً
+    // (كلا استدعائي الواجهة الأمامية لهذا المسار يستخدمان fetch() خام بلا
+    // ترويسة Authorization، مؤكَّد عبر مراجعة أمنية). نفس نمط PATCH/DELETE
+    // بالضبط، بما فيه قبول السوبر أدمن (verifyProjectOwnership).
+    const auth = await requireUserId(request);
+    if ('error' in auth) return auth.error;
+
     // فك التغليف عن طريق await (مطلوب في Next.js 15)
     const resolvedParams = await params;
     const projectId = resolvedParams.projectId.trim();
+
+    const owns = await verifyProjectOwnership(projectId, auth.userId);
+    if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
     // 1. جلب المشروع الأساسي
     const { data: project } = await supabaseAdmin
@@ -377,17 +388,21 @@ export async function GET(
       .sort((a, b) => a.distanceM - b.distanceM);
 
     if (dustResults.length > 0) {
-      await persistDustEvaluations(supabaseAdmin, projectId, dustResults, 'user_refresh');
-
       // طبقة الامتثال التنظيمي (Riyadh Dust Compliance) — تستهلك نتيجة DVI
       // الجاهزة أعلاه (windowEval.worst) كمُدخل قراءة فقط، ولا تعيد حسابها.
       // منفصلة تماماً عن dust_evaluations/current_dust_decisions تخزيناً،
       // لكن تُرفَق هنا على نفس عنصر dustResults (حقل compliance) ليصل
       // للواجهة كجزء طبيعي من props البطاقة دون تغيير شكل payload الخارجي.
+      //
+      // ملاحظة أمنية: GET لا يكتب لقاعدة البيانات إطلاقاً (كان يستدعي
+      // persistDustEvaluations/persistDustComplianceEvaluations هنا سابقاً
+      // كأثر جانبي على كل تحميل صفحة — مخالف لدلالة HTTP GET idempotent).
+      // الكتابة الفعلية انتقلت لمسار POST /api/projects/[projectId]/evaluate
+      // الذي تستدعيه الواجهة صراحة بعد نجاح هذا الـGET (راجع fetchDashboardData
+      // في app/dashboard/Projects/[id]/page.tsx). الحساب هنا يبقى كما هو
+      // تماماً — الواجهة تحتاج compliance/unitReceptors/complianceHourly
+      // فوراً ضمن نفس استجابة GET، فقط الكتابة انتقلت.
       const dustComplianceResults = await computeDustComplianceResults(dustProfiles || [], project, dustResults, sensitiveReceptors, supabaseAdmin);
-      if (dustComplianceResults.length > 0) {
-        await persistDustComplianceEvaluations(supabaseAdmin, projectId, dustComplianceResults, 'user_refresh');
-      }
       const complianceByActivityId = new Map<string, any>(
         dustComplianceResults.map((r: any) => [r.activityId, r.result])
       );
@@ -541,7 +556,7 @@ export async function PATCH(
   delete updates.shifts;
 
   const { error } = await supabaseAdmin.from('projects').update(updates).eq('id', projectId);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, `project update failed (${projectId})`) }, { status: 500 });
 
   // تسجيل تدقيق: فقط عندما أدمن يعدّل مشروعاً لا يملكه — عمليات المالك
   // المباشر على مشاريعه الخاصة لا تُسجَّل هنا (موجودة وموثوقة أصلاً)
@@ -564,8 +579,7 @@ export async function PATCH(
   if (shifts !== null) {
     const { error: deleteError } = await supabaseAdmin.from('project_shifts').delete().eq('project_id', projectId);
     if (deleteError) {
-      console.error('🚨 فشل حذف ورديات العمل القديمة:', deleteError);
-      return NextResponse.json({ error: `فشل تحديث ورديات العمل: ${deleteError.message}` }, { status: 500 });
+      return NextResponse.json({ error: safeErrorResponse(deleteError, 'project shifts delete failed') }, { status: 500 });
     }
     if (shifts.length > 0) {
       const shiftRows = shifts.map((s: any, i: number) => ({
@@ -577,8 +591,7 @@ export async function PATCH(
       }));
       const { error: insertError } = await supabaseAdmin.from('project_shifts').insert(shiftRows);
       if (insertError) {
-        console.error('🚨 فشل حفظ ورديات العمل الجديدة:', insertError);
-        return NextResponse.json({ error: `فشل حفظ ورديات العمل: ${insertError.message}` }, { status: 500 });
+        return NextResponse.json({ error: safeErrorResponse(insertError, 'project shifts insert failed') }, { status: 500 });
       }
     }
   }
@@ -630,15 +643,13 @@ export async function DELETE(
     // خطأ آخر (قيد صلاحيات، إلخ) يُوقف العملية ويُعاد للمستخدم كما هو.
     const { error: childError } = await supabaseAdmin.from(table).delete().eq('project_id', projectId);
     if (childError && childError.code !== '42703' && childError.code !== '42P01') {
-      console.error(`فشل حذف صفوف ${table} للمشروع ${projectId}:`, childError.code, childError.message);
-      return NextResponse.json({ error: `فشل حذف بيانات مرتبطة (${table}): ${childError.message}` }, { status: 500 });
+      return NextResponse.json({ error: safeErrorResponse(childError, `فشل حذف صفوف ${table} للمشروع ${projectId} (${childError.code})`) }, { status: 500 });
     }
   }
 
   const { error: projectError } = await supabaseAdmin.from('projects').delete().eq('id', projectId);
   if (projectError) {
-    console.error(`فشل حذف صف المشروع ${projectId}:`, projectError.code, projectError.message);
-    return NextResponse.json({ error: projectError.message }, { status: 500 });
+    return NextResponse.json({ error: safeErrorResponse(projectError, `فشل حذف صف المشروع ${projectId} (${projectError.code})`) }, { status: 500 });
   }
 
   // تسجيل تدقيق: فقط عندما أدمن يحذف مشروعاً لا يملكه (راجع نفس المنطق في PATCH أعلاه)

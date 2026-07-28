@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireViewer } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 import { computeDustResults, computeDustComplianceResults, computeUnifiedActivityDecision, riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
   const { data: projectsData, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('*');
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'viewer/dashboard projects fetch failed') }, { status: 500 });
 
   const projectIds = (projectsData || []).map((p: any) => p.id);
 
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
     .select('*, projects!inner(name, city, user_id)')
     .neq('state', 'CLOSED')
     .order('created_at', { ascending: false });
-  if (alertsError) return NextResponse.json({ error: alertsError.message }, { status: 500 });
+  if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'viewer/dashboard alerts fetch failed') }, { status: 500 });
 
   let dustData: any[] = [];
   let decisionsData: any[] = [];

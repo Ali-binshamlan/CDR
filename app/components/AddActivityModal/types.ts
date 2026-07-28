@@ -55,4 +55,10 @@ export interface ProjectLite {
 
 export interface AddActivityModalProps {
   project: ProjectLite;
+  // يُستدعى بعد إغلاق المودال إثر حفظ ناجح (كل المؤشرات مكتملة) — الصفحة
+  // الأم (Projects/[id]/page.tsx) تجلب بيانات لوحتها بـuseState/useEffect
+  // محلي، لا Server Component، فـrouter.refresh() وحده لا يُحدّث ما يُعرض
+  // فعلياً؛ هذا الاستدعاء يتيح للأب إعادة الجلب فوراً بدل انتظار ريفريش
+  // يدوي للصفحة.
+  onActivityCreated?: () => void;
 }

@@ -228,13 +228,20 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     // نص عام لا يذكر أي رقم أو سبب ملموس — كان هذا يجعل بانر "القرار الموحد"
     // يعرض جملة غامضة رغم أن DVI شخّص السبب الدقيق بالفعل. يبقى نص احتياطي
     // عام فقط لو لم يتوفر dviShortReason (فشل آمن، لا كسر لأي مستهلك حالي).
+    //
+    // خطأ مكتشَف ومُصلَح: كان النص الاحتياطي يصف القاعدة بـ"لا علاقة له
+    // بمخالفة تنظيمية" — تناقض مباشر مع سياق عرضها الفعلي (بقرار MANDATORY_
+    // STOP ملزم ضمن "أساس القرار — الامتثال التنظيمي" بالواجهة). الأصل
+    // التقني صحيح (القاعدة موروثة من قياس DVI الفيزيائي المباشر لا من
+    // مخالفة ضابط تحكم)، لكن الصياغة يجب أن تبقى دائماً بلغة امتثال تنظيمي
+    // موحّدة — لا عرض قرارين متنافسين لنفس النشاط.
     ruleHits.push(
       {
         code: 'GATE-DVI-002',
         severity: 'MANDATORY_STOP',
         messageAr:
           ctx.dviShortReason ||
-          'إيقاف إلزامي بسبب خطورة فيزيائية حالية (رؤية منعدمة أو تركيز غبار خطر) لا علاقة له بمخالفة تنظيمية',
+          'إيقاف إلزامي تنظيمي: تجاوز خطر فوري في تركيز الغبار أو انعدام الرؤية بموقع النشاط',
         // الإجراء هنا مختلف جوهرياً عن بقية القواعد: لا يوجد ما "يُصلحه"
         // المقاول في الموقع — الظرف الجوي نفسه هو المانع، فالإجراء انتظار
         // تحسّن الحالة وإخلاء العمالة، لا استكمال ضابط تحكم ناقص.
@@ -296,7 +303,18 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
   // 15-25 كم/س — تثبيط معزز عام (دون إيقاف)، و حدود PM10 التنظيمية —
   // "الاستخراج التنظيمي من المرفق" القسم 5-6. راجع rulebook.ts للتفاصيل.
-  ruleHits.push(...enhancedSuppressionRule(ctx.activity.isDustGenerating, ctx.activity.isEnclosedOperation, windBand));
+  //
+  // خطأ مكتشَف ومُصلَح: كان يُمرَّر ctx.activity.isEnclosedOperation الخام
+  // (سؤال بنيوي: هل المحطة مغلقة فيزيائياً؟) بدل isEnclosedExemptFromHighWind
+  // (الإعفاء الفعلي المطبَّق أعلاه لبوابة الرياح >25 وPM10 معاً). محطة الخلط
+  // مستثناة عمداً من اشتراط isEnclosedOperation إطلاقاً (طلب صريح من
+  // المستخدم: "حتى لو كان مكشوف بس الفلاتر 99 والصوامع مغلق أبغاه يكون
+  // مسموح") — فمحطة خلط مكشوفة فيزيائياً لكن بصوامع مغلقة وفلتر ≥99% كانت
+  // لا تزال تُفعِّل GATE-WIND-15-25-ENHANCED-005 (تثبيط معزز إضافي) عند رياح
+  // 15-25 كم/س، رغم استثنائها الكامل من البوابة الأشد (>25) والقواعد
+  // الأخرى. استخدام isEnclosedExemptFromHighWind هنا يوحّد شرط الإعفاء لكل
+  // بوابات الرياح معاً — الاستثناء إما كامل أو لا يطبَّق إطلاقاً.
+  ruleHits.push(...enhancedSuppressionRule(ctx.activity.isDustGenerating, isEnclosedExemptFromHighWind, windBand));
   ruleHits.push(
     ...pm10ThresholdRule(
       ctx.pm10UgM3,
@@ -450,6 +468,10 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     resumeHoldApplied,
     shortReasonAr: shortReasonFor(decisionCategory, ruleHits, resumeHoldApplied),
 
+    pm10SustainedMinutesAbove340: ctx.pm10SustainedMinutesAbove340,
+    pm10SustainedMinutesAbove250: ctx.pm10SustainedMinutesAbove250,
+    pm10RulesExempt: isPm10ExemptEnclosedBatching,
+
     triggeredRules: displayedRuleHits,
     requiredActions,
     restartConditions,
@@ -475,6 +497,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
       temperatureC: ctx.temperatureC,
       visibilityM: ctx.visibilityM,
       deviceLastReadingAt: ctx.deviceLastReadingAt,
+      devicePm10LastReadingAt: ctx.devicePm10LastReadingAt,
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
   };

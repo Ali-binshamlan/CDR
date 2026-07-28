@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // يستبدل fetchProjectsData المباشر في dashboard/Projects/page.tsx.
 // نسخة DCR: غبار فقط، بلا رافعات/حرارة. state != 'CLOSED' يطابق تعريف
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest) {
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: false });
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/projects-list projects fetch failed') }, { status: 500 });
 
   const { data: alerts, error: alertsError } = await supabaseAdmin
     .from('alerts')
@@ -23,13 +24,13 @@ export async function GET(request: NextRequest) {
     .neq('state', 'CLOSED')
     .eq('projects.user_id', userId)
     .order('created_at', { ascending: false });
-  if (alertsError) return NextResponse.json({ error: alertsError.message }, { status: 500 });
+  if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/projects-list alerts fetch failed') }, { status: 500 });
 
   const { data: dustActivities, error: dustError } = await supabaseAdmin
     .from('project_dust_profiles')
     .select('id, project_id, projects!inner(user_id)')
     .eq('projects.user_id', userId);
-  if (dustError) return NextResponse.json({ error: dustError.message }, { status: 500 });
+  if (dustError) return NextResponse.json({ error: safeErrorResponse(dustError, 'dashboard/projects-list dust fetch failed') }, { status: 500 });
 
   return NextResponse.json({
     projects: dbProjects || [],

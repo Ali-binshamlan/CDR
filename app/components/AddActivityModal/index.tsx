@@ -19,7 +19,7 @@ import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFiel
 import type { ActivityStep, AddActivityModalProps, IndicatorTab, ProjectDeviceLite } from './types';
 import { haversineDistanceM } from '@/app/utils/geo/zone';
 
-export default function AddActivityModal({ project }: AddActivityModalProps) {
+export default function AddActivityModal({ project, onActivityCreated }: AddActivityModalProps) {
   const router = useRouter();
 
   const [isMounted, setIsMounted] = useState(false);
@@ -377,6 +377,10 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
   const closeAndRefresh = () => {
     resetAndClose();
     router.refresh();
+    // الصفحة الأم عميل بالكامل (useState/useEffect محلي) — router.refresh()
+    // وحده لا يُحدّث بياناتها المعروضة، فيبقى النشاط الجديد غائباً حتى
+    // ريفريش يدوي للصفحة. هذا الاستدعاء يطلب من الأب إعادة الجلب فوراً.
+    onActivityCreated?.();
   };
 
   // شاشة اختيار النشاط أصبحت قائمة أنشطة امتثال تنظيمي (Riyadh Dust

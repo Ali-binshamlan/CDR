@@ -45,6 +45,7 @@ function freshDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceRe
     last_relative_humidity_percent: 45,
     last_temperature_c: 38,
     last_reading_at: new Date().toISOString(),
+    last_pm10_at: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -91,6 +92,31 @@ describe('buildDustInput — توصيل قراءة الجهاز وhasDeviceLink 
     const input = buildDustInput(row, baseProject, freshDevice({ last_pm10: 260, last_visibility_m: 1200 }));
     expect(input.onsitePm10).toBe(900);
     expect(input.devicePm10).toBe(260);
+  });
+
+  // خطأ مكتشَف ومُصلَح: last_reading_at عمود مشترك يتحدّث على أي push جزئي
+  // من الجهاز (حتى بلا PM10) — last_pm10_at عمود منفصل يعكس حداثة PM10
+  // تحديداً. يجب أن ينقلهما buildDustInput لحقلين منفصلين تماماً في
+  // DustEngineInput، لا حقل واحد مشترك.
+  it('devicePm10LastReadingAt ينقل last_pm10_at بمعزل تام عن deviceLastReadingAt (last_reading_at)', () => {
+    const row = { ...baseRow, device_id: 'device-1' };
+    const generalReadingAt = '2026-07-28T10:00:00.000Z'; // آخر اتصال عام (حرارة فقط مثلاً)
+    const pm10ReadingAt = '2026-07-28T09:30:00.000Z'; // آخر PM10 فعلي، أقدم
+    const input = buildDustInput(
+      row,
+      baseProject,
+      freshDevice({ last_reading_at: generalReadingAt, last_pm10_at: pm10ReadingAt })
+    );
+    expect(input.deviceLastReadingAt).toBe(generalReadingAt);
+    expect(input.devicePm10LastReadingAt).toBe(pm10ReadingAt);
+    expect(input.devicePm10LastReadingAt).not.toBe(input.deviceLastReadingAt);
+  });
+
+  it('last_pm10_at=null (جهاز لم يرسل PM10 قط) → devicePm10LastReadingAt يبقى null رغم last_reading_at حديث', () => {
+    const row = { ...baseRow, device_id: 'device-1' };
+    const input = buildDustInput(row, baseProject, freshDevice({ last_pm10_at: null }));
+    expect(input.deviceLastReadingAt).not.toBeNull();
+    expect(input.devicePm10LastReadingAt).toBeNull();
   });
 });
 
@@ -160,6 +186,7 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
       last_relative_humidity_percent: 55,
       last_temperature_c: 41,
       last_reading_at: freshTime,
+      last_pm10_at: null,
     });
   });
 

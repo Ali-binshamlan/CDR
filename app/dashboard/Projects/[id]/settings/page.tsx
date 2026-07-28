@@ -282,14 +282,11 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     // 1. جلب بيانات المشروع عبر الـ API
     const fetchProjectData = async () => {
       try {
-        // تأكد من وضع مسار الـ API الصحيح هنا
-        const response = await fetch(`/api/projects/${projectId}`);
-        
-        if (!response.ok) {
-          throw new Error('فشل جلب بيانات المشروع من الخادم');
-        }
-
-        const data = await response.json();
+        // apiClient (axios) يرفق تلقائياً Authorization: Bearer <session
+        // token> — المسار يتطلب مصادقة وتحقق ملكية فعلياً (راجع GET في
+        // app/api/projects/[projectId]/route.ts)، بعكس fetch() الخام السابق
+        // الذي كان يعمل بلا أي هوية إطلاقاً.
+        const { data } = await apiClient.get(`/projects/${projectId}`);
         const projectData = data.project; // استخراج كائن المشروع من الاستجابة
 
         if (projectData) {

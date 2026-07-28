@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // يستبدل fetchAlertsData المباشر في dashboard/alerts/page.tsx — يجمع
 // المشاريع + التنبيهات + تسميات أنشطة الغبار المرتبطة في نداء خادم واحد.
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
     .from('projects')
     .select('id, name')
     .eq('user_id', userId);
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/alerts-list projects fetch failed') }, { status: 500 });
 
   const projectIds = (dbProjects || []).map((p: any) => p.id);
   if (projectIds.length === 0) {
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest) {
     .select('*')
     .in('project_id', projectIds)
     .order('created_at', { ascending: false });
-  if (alertsError) return NextResponse.json({ error: alertsError.message }, { status: 500 });
+  if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/alerts-list alerts fetch failed') }, { status: 500 });
 
   const dustIds = [...new Set((dbAlerts || []).filter((a: any) => a.activity_source === 'dust').map((a: any) => a.activity_id))];
 

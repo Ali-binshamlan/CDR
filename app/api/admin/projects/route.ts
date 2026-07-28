@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // كل مشاريع كل المستخدمين — بلا أي فلترة user_id، على عكس
 // /api/dashboard/projects-list (التي تعرض مشاريع المستخدم الحالي فقط).
@@ -21,7 +22,7 @@ export async function GET(request: NextRequest) {
     supabaseAdmin.from('alerts').select('project_id').neq('state', 'CLOSED'),
     supabaseAdmin.from('decision_records').select('project_id'),
   ]);
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'admin/projects fetch failed') }, { status: 500 });
 
   const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));
 

@@ -711,6 +711,87 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
   });
 
+  // خطأ مكتشَف ومُصلَح: كان enhancedSuppressionRule (GATE-WIND-15-25-ENHANCED-005)
+  // يستقبل ctx.activity.isEnclosedOperation الخام بدل isEnclosedExemptFromHighWind
+  // — فمحطة خلط مكشوفة فيزيائياً لكن مستثناة فعلياً (صوامع مغلقة + فلتر
+  // ≥99%) كانت لا تزال تُفعِّل هذي القاعدة عند رياح 15-25 كم/س، رغم استثنائها
+  // الكامل من بوابة الرياح الأشد (>25) وقواعد PM10 معاً — تناقض: "مستثناة
+  // من كل شيء" إلا هذي القاعدة تحديداً بلا سبب. طلب المستخدم الصريح: توفر
+  // الشرطين (فلتر ≥99% وصوامع مغلقة) يخلي التشغيل طبيعياً دام لا إيقاف ولا
+  // تثبيط إضافي مفروض بسبب الرياح وحدها.
+  it('محطة خلط مكشوفة بصوامع مغلقة + فلتر ≥99% عند رياح 15-25 كم/س → لا GATE-WIND-15-25-ENHANCED-005 (استثناء كامل، لا تثبيط إضافي)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 18,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(false);
+  });
+
+  it('محطة خلط مكشوفة بصوامع غير مغلقة عند رياح 15-25 كم/س → GATE-WIND-15-25-ENHANCED-005 يُفعَّل (الاستثناء غير مكتمل)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 18,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, silosSealed: false, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
+  });
+
+  // خطأ مكتشَف ومُصلَح: عدّاد "متبقٍ حتى تعليق النشاط" في الواجهة
+  // (Compliancewidgetcard.tsx) كان يظهر لمحطة خلط معفاة بالكامل من قواعد
+  // PM10، رغم أن الخادم لن يعلّقها بسبب PM10 أبداً — pm10RulesExempt هو
+  // الحقل الذي أضيف تحديداً ليمنع هذا التناقض.
+  it('pm10RulesExempt=true لمحطة خلط مستوفية الشرطين معاً (صوامع مغلقة + فلتر ≥99%)، بصرف النظر عن قراءة PM10', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 500,
+        pm10SustainedMinutesAbove250: 35,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.pm10RulesExempt).toBe(true);
+  });
+
+  it('pm10RulesExempt=false لمحطة خلط ناقصة أحد الشرطين', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 95 },
+        }),
+      })
+    );
+    expect(r.pm10RulesExempt).toBe(false);
+  });
+
+  it('pm10RulesExempt=false لنشاط غير BATCHING_PLANT حتى لو مغلقاً بكفاءة فلتر عالية', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          isEnclosedOperation: true,
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.pm10RulesExempt).toBe(false);
+  });
+
   it('محطة خلط بصوامع غير مغلقة (silosSealed=false) بكفاءة فلتر ≥99% + PM10=1500 → لا تُستثنى (الصوامع شرط لازم)', () => {
     const r = evaluateDustCompliance(
       context({
@@ -1896,6 +1977,96 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     const r = evaluateDustCompliance(context({ windDirectionDeg: 180, pm25UgM3: 22 }));
     expect(r.evidence.windDirectionDeg).toBe(180);
     expect(r.evidence.pm25UgM3).toBe(22);
+  });
+
+  // خطأ مكتشَف ومُصلَح: كان اتجاه الرياح المستخدَم لحساب المستقبِل باتجاه
+  // الريح (crusherDistanceToDownwindReceptorAutoM، عبر buildActivityComplianceProfile)
+  // يُقرأ من rawWeatherSample (عينة الطقس الخام قبل الدمج)، بينما الدليل
+  // المعروض فعلياً للمستخدم (evidence.windDirectionDeg) هو merged.windDirectionDeg
+  // (بعد أولوية جهاز > طقس). حين تتعارض قراءة الجهاز والطقس باتجاه الرياح،
+  // كان الحساب يستخدم اتجاهاً غير المعروض على الشاشة — قد يُرجع Infinity
+  // (لا مستقبِل باتجاه الريح الخاطئ) رغم مستقبِل حقيقي باتجاه الريح الصحيح
+  // المعروض، فتضيع قاعدة MRQ-RECEPTOR-DOWNWIND-120 بصمت.
+  it('اتجاه الرياح المستخدَم لحساب المستقبِل باتجاه الريح يطابق اتجاه الجهاز المعروض (merged)، لا اتجاه الطقس الخام المتعارض', () => {
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      // شمال الكسارة تماماً — "باتجاه الريح" فقط لو الريح قادمة من الجنوب
+      // (windDirectionDeg=180 بمعيار "من أين تهب")، لا من الشمال (0°).
+      { id: 'r1', name: 'سكني شمالي', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
+    ];
+    const dviHourly = {
+      ...baseDviHourly,
+      rawWeatherSample: {
+        visibilityM: 10000, weatherCode: 0, weatherSymbol: 'CLEAR' as const,
+        windSpeedKmh: 10, windGustKmh: 15,
+        // اتجاه الطقس الخام = 0 (جنوبي) — لا يضع المستقبِل الشمالي باتجاه الريح.
+        windDirectionDeg: 0,
+        relativeHumidityPercent: 20, temperatureC: 30, rainfallLast24hMm: 0,
+        pm10: 45, pm25: 18, dustConcentration: 100,
+        dataSource: 'open-meteo' as const, isForecastStale: false,
+      },
+      // اتجاه الجهاز المدموج = 180 (شمالي) — يضع المستقبِل الشمالي باتجاه
+      // الريح فعلياً. هذا هو الاتجاه المعروض فعلياً في evidence.windDirectionDeg.
+      mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
+    };
+    const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+    const project = { true_north_alignment_documented: true };
+    const ctx = buildComplianceContext(project, row, dviHourly, receptorNorthOfCrusher);
+    // الدليل المعروض يعكس اتجاه الجهاز (180)، ونفس الاتجاه هو ما استُخدم
+    // فعلياً لحساب المستقبِل باتجاه الريح — فيجده (ليس Infinity).
+    expect(ctx.windDirectionDeg).toBe(180);
+    expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBe(Infinity);
+    expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
+  });
+
+  // خطأ مكتشَف ومُصلَح: كان تسجيل pm10_readings_history (في dustEvaluation.ts)
+  // يعتمد على preliminaryCtx.dataSource (تلخيص عام لأعلى مصدر فاز بأي حقل،
+  // device يفوز أولاً) بدل preliminaryCtx.pm10Source (مصدر PM10 تحديداً). في
+  // حالة رياح من الجهاز وPM10 من الطقس معاً، dataSource يصبح 'device' فيُظن
+  // خطأً أن PM10 "من الجهاز" (لا يُسجَّل هنا لأنه يُسجَّل عند الاستقبال) بينما
+  // فعلياً جاء من الطقس ولم يُسجَّل في أي مكان. pm10Source (من merged.sources.pm10
+  // مباشرة) هو الحقل الصحيح لاتخاذ هذا القرار.
+  it('pm10Source يعكس مصدر PM10 تحديداً بمعزل عن dataSource العام — رياح من الجهاز وPM10 من الطقس معاً', () => {
+    const dviHourly = {
+      ...baseDviHourly,
+      rawWeatherSample: {
+        visibilityM: 10000, weatherCode: 0, weatherSymbol: 'CLEAR' as const,
+        windSpeedKmh: 10, windGustKmh: 15, windDirectionDeg: 90,
+        relativeHumidityPercent: 20, temperatureC: 30, rainfallLast24hMm: 0,
+        pm10: 45, pm25: 18, dustConcentration: 100,
+        dataSource: 'open-meteo' as const, isForecastStale: false,
+      },
+      mergedReading: mergedReadingFixture({
+        windSpeedKmh: 25, // من الجهاز
+        pm10: 45, // من الطقس
+        sources: {
+          ...mergedReadingFixture().sources,
+          windSpeedKmh: 'device',
+          pm10: 'weather',
+        },
+      }),
+    };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    // dataSource العام يفوز بـ'device' (ظهر بحقل windSpeedKmh)...
+    expect(ctx.dataSource).toBe('device');
+    // ...لكن pm10Source يبقى 'weather' فعلياً، بمعزل تام عن dataSource العام.
+    expect(ctx.pm10Source).toBe('weather');
+  });
+
+  it('pm10Source=device حين يفوز الجهاز بحقل PM10 تحديداً', () => {
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({
+        pm10: 260,
+        sources: { ...mergedReadingFixture().sources, pm10: 'device' },
+      }),
+    };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    expect(ctx.pm10Source).toBe('device');
+  });
+
+  it('pm10Source=undefined بلا mergedReading (نتيجة DVI مبنية مباشرة بلا دمج)', () => {
+    const ctx = buildComplianceContext({}, {}, baseDviHourly as any, []);
+    expect(ctx.pm10Source).toBeUndefined();
   });
 });
 

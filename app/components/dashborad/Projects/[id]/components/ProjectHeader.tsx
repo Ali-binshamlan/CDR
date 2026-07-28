@@ -5,9 +5,10 @@ import AddActivityModal from '@/app/components/AddActivityModal';
 
 interface ProjectHeaderProps {
   project: any;
+  onActivityCreated?: () => void;
 }
 
-export default function ProjectHeader({ project }: ProjectHeaderProps) {
+export default function ProjectHeader({ project, onActivityCreated }: ProjectHeaderProps) {
   // إعداد الإحداثيات الافتراضية في حال لم تكن متوفرة
   const lat = typeof project.latitude === 'number' ? project.latitude : 24.7136;
   const lon = typeof project.longitude === 'number' ? project.longitude : 46.6753;
@@ -56,6 +57,7 @@ export default function ProjectHeader({ project }: ProjectHeaderProps) {
             zone_polygon: project.zone_polygon,
             zone_radius_m: project.zone_radius_m,
           }}
+          onActivityCreated={onActivityCreated}
         />
         
         {/* زر العودة للمشاريع */}

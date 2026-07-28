@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireViewer } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // نسخة غير مقيّدة من app/api/dashboard/reports/route.ts — نفس الشكل تماماً
 // ({projects, decisions, alerts}, نفس fromDate/toDate)، لكن بلا فلترة
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
   const { data: dbProjects, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('id, name');
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'viewer/reports projects fetch failed') }, { status: 500 });
 
   const projectIds = (dbProjects || []).map((p: any) => p.id);
   if (projectIds.length === 0) {
@@ -43,8 +44,8 @@ export async function GET(request: NextRequest) {
       .gte('created_at', new Date(fromDate).toISOString())
       .lte('created_at', endOfDay.toISOString()),
   ]);
-  if (decisionsRes.error) return NextResponse.json({ error: decisionsRes.error.message }, { status: 500 });
-  if (alertsRes.error) return NextResponse.json({ error: alertsRes.error.message }, { status: 500 });
+  if (decisionsRes.error) return NextResponse.json({ error: safeErrorResponse(decisionsRes.error, 'viewer/reports decisions fetch failed') }, { status: 500 });
+  if (alertsRes.error) return NextResponse.json({ error: safeErrorResponse(alertsRes.error, 'viewer/reports alerts fetch failed') }, { status: 500 });
 
   return NextResponse.json({
     projects: dbProjects || [],

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // يستبدل fetchReportData المباشر في dashboard/reports/page.tsx
 export async function GET(request: NextRequest) {
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
     .from('projects')
     .select('id, name')
     .eq('user_id', userId);
-  if (projectsError) return NextResponse.json({ error: projectsError.message }, { status: 500 });
+  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/reports projects fetch failed') }, { status: 500 });
 
   const projectIds = (dbProjects || []).map((p: any) => p.id);
   if (projectIds.length === 0) {
@@ -42,8 +43,8 @@ export async function GET(request: NextRequest) {
       .gte('created_at', new Date(fromDate).toISOString())
       .lte('created_at', endOfDay.toISOString()),
   ]);
-  if (decisionsRes.error) return NextResponse.json({ error: decisionsRes.error.message }, { status: 500 });
-  if (alertsRes.error) return NextResponse.json({ error: alertsRes.error.message }, { status: 500 });
+  if (decisionsRes.error) return NextResponse.json({ error: safeErrorResponse(decisionsRes.error, 'dashboard/reports decisions fetch failed') }, { status: 500 });
+  if (alertsRes.error) return NextResponse.json({ error: safeErrorResponse(alertsRes.error, 'dashboard/reports alerts fetch failed') }, { status: 500 });
 
   return NextResponse.json({
     projects: dbProjects || [],

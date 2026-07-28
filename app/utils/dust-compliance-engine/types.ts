@@ -352,6 +352,23 @@ export interface DustComplianceResult {
   // MANDATORY_STOP بمجرد التقييم التالي.
   pendingConfirmation: boolean;
 
+  // استمرار PM10 الفعلي حتى لحظة هذا التقييم (من pm10SustainedMinutesAbove340/
+  // 250 في DustComplianceContext، راجع computeSustainedPm10Status في
+  // dustEvaluation.ts) — يُمرَّر هنا للعرض فقط، حتى تقدر الواجهة تبني عدّاد
+  // تنازلي حي "متبقٍ كذا حتى تتأكد المخالفة/يُفعَّل التعليق" بدل انتظار
+  // التقييم التالي لمعرفة النتيجة. undefined = لا بيانات استمرار متاحة (لا
+  // جهاز/قراءة مرتبطة، أو فشل الاستعلام) — الواجهة تُخفي العدّاد حينها.
+  pm10SustainedMinutesAbove340?: number;
+  pm10SustainedMinutesAbove250?: number;
+  // true فقط لمحطة خلط (BATCHING_PLANT) مستثناة بالكامل من كل قواعد PM10
+  // (احتراز/تحذير/تنبيه استباقي/تعليق 30 دقيقة/مخالفة مؤكدة معاً — راجع
+  // isPm10ExemptEnclosedBatching في engine.ts): صوامع مغلقة + فلتر PM10
+  // ≥99% معاً. خطأ مكتشَف ومُصلَح: عدّاد "متبقٍ حتى تعليق النشاط" في
+  // Compliancewidgetcard.tsx كان يظهر بصرف النظر عن هذا الاستثناء — يعرض
+  // تحذيراً بتعليق قادم لنشاط لن يُعلَّق أبداً فعلياً لأنه معفى من القاعدة
+  // نفسها من جذورها. الواجهة يجب أن تُخفي عدّادات PM10 كلها إن كان هذا true.
+  pm10RulesExempt: boolean;
+
   triggeredRules: DustRuleHit[];
   requiredActions: string[];
   restartConditions: string[];
@@ -381,6 +398,12 @@ export interface DustComplianceResult {
     // (بصرف النظر عن قيمته null/string) كإشارة "هذا النشاط مرتبط بجهاز"
     // في buildStalenessAdvisory (Compliancewidgetcard.tsx). للعرض فقط.
     deviceLastReadingAt?: string | null;
+    // آخر وقت وصول PM10 تحديداً من نفس المحطة (ISO) — منفصل عن
+    // deviceLastReadingAt لأن الأخير يتحدّث عند أي push جزئي حتى بلا PM10
+    // (راجع last_pm10_at في project_devices، وتعليق devicePm10LastReadingAt
+    // في DustEngineInput للسبب الكامل). نفس دلالة undefined/null أعلاه.
+    // للعرض فقط.
+    devicePm10LastReadingAt?: string | null;
   };
 
   // ملاحظات تحذيرية لصحة القراءة (من DVI، راجع DviEvaluationResult.caveatsAr)
@@ -428,10 +451,27 @@ export interface DustComplianceContext {
   // كان النشاط مرتبطاً بمحطة لم ترسل أي قراءة إطلاقاً بعد، undefined إن
   // لم يكن مرتبطاً بمحطة أصلاً (وضع API). للعرض فقط (تحذير قِدم القراءة).
   deviceLastReadingAt?: string | null;
+  // آخر وقت وصول PM10 تحديداً من نفس المحطة (ISO) — راجع تعليق
+  // devicePm10LastReadingAt المقابل في evidence أعلى الملف للسبب الكامل.
+  // نفس دلالة undefined/null. للعرض فقط.
+  devicePm10LastReadingAt?: string | null;
   // ملاحظات DVI التحذيرية (راجع DviEvaluationResult.caveatsAr) تُمرَّر هنا
   // كما هي لتظهر في نتيجة الامتثال أيضاً — لا تُغيّر أي قرار.
   dviCaveatsAr?: string[];
+  // مصدر أعلى أولوية فاز فعلياً عبر أي حقل من حقول القراءة (device إن ظهر
+  // بأي حقل، وإلا open-meteo، وإلا onsite) — للعرض العام فقط (مثال: أيقونة
+  // "بيانات من جهاز" في الواجهة). لا يعني أن كل حقل جاء من هذا المصدر
+  // بالضرورة — راجع pm10Source أدناه للمصدر الدقيق لـPM10 تحديداً، وهو ما
+  // يجب استخدامه لأي قرار/تسجيل يعتمد على "هل هذي القراءة من الجهاز".
   dataSource: 'device' | 'open-meteo' | 'onsite' | 'project-station' | 'none';
+  // مصدر قراءة PM10 تحديداً (لا التلخيص العام أعلاه) — خطأ مكتشَف ومُصلَح:
+  // كان تسجيل pm10_readings_history يعتمد على dataSource العام، فحين تأتي
+  // الرياح من الجهاز وPM10 من الطقس معاً، dataSource يتحول لـ'device' (يفوز
+  // بأي حقل) فيظن الكود أن PM10 "من الجهاز" (لا يُعاد تسجيله، لأن قراءات
+  // الجهاز تُسجَّل مرة عند الاستقبال لا هنا) بينما فعلياً جاء من الطقس ولم
+  // يُسجَّل في أي مكان — فتنقطع سلسلة إثبات استمرار التجاوز لتلك القراءة
+  // كلياً. undefined = لا معلومة مصدر متاحة (اختبارات/استدعاءات قديمة).
+  pm10Source?: 'device' | 'weather' | 'onsite' | 'none';
   sensitiveReceptors: SensitiveReceptor[];
 
   // آخر قرار امتثال مسجَّل لنفس activity_group_id (من

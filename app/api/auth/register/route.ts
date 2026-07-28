@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // عميل service_role مخصص لعمليات التسجيل — لا يعتمد على عميل anon
 // (app/lib/supabase) الذي يخضع لـ RLS ولجلسة المستخدم. بدونه: (1) إدراج
@@ -77,7 +78,7 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'اسم المستخدم مسجل مسبقاً، يرجى اختيار اسم آخر.' }, { status: 400 });
         }
 
-        return NextResponse.json({ error: `فشل حفظ ملف المستخدم: ${profileError.message}` }, { status: 400 });
+        return NextResponse.json({ error: safeErrorResponse(profileError, 'register profile insert failed') }, { status: 400 });
       }
     }
 

@@ -1,6 +1,35 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
+
+// قائمة سماح صريحة للحقول القابلة للإدراج عند إنشاء مشروع — يستبدل نشر
+// body.project الخام مباشرة في insert() (mass-assignment)، الذي كان يسمح
+// لأي حقل إضافي يرسله العميل (بما فيه أعمدة داخلية/حساسة قد تُضاف لاحقاً
+// لجدول projects) بالوصول لقاعدة البيانات بلا أي قيد. نفس مبدأ استثناء
+// id/user_id/created_at المطبَّق فعلياً في PATCH (نفس مجموعة الملفات) —
+// هنا allowlist كاملة بدل denylist جزئية، لأن POST يبني صفاً من الصفر.
+const ALLOWED_PROJECT_FIELDS = [
+  'name', 'client_name', 'city', 'neighborhood', 'project_status', 'soil_type',
+  'project_type', 'latitude', 'longitude', 'coordinates',
+  'zone_type', 'zone_polygon', 'zone_radius_m',
+  'site_location_nature', 'wind_exposure',
+  'start_date', 'end_date', 'work_days', 'work_days_list',
+  'work_hours_start', 'work_hours_end', 'project_manager', 'contact_number',
+  'site_area_m2', 'daily_truck_movements', 'has_onsite_crusher', 'has_onsite_batching_plant',
+  'dmp_approval_status',
+  'baseline_monitoring_days', 'monitoring_logging_interval_minutes', 'anemometer_height_m',
+  'entry_exit_cameras_installed', 'camera_retention_days', 'sensitivity_map_prepared',
+  'data_accuracy_confirmed', 'data_accuracy_confirmed_at',
+] as const;
+
+function pickAllowedProjectFields(project: Record<string, any>): Record<string, any> {
+  const picked: Record<string, any> = {};
+  for (const key of ALLOWED_PROJECT_FIELDS) {
+    if (key in project) picked[key] = project[key];
+  }
+  return picked;
+}
 
 // يستبدل supabase.from('projects').insert(...) المباشر من
 // Projects/create/page.tsx — user_id يُشتق من التوكن (auth.userId) وليس
@@ -15,11 +44,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'project مطلوب' }, { status: 400 });
   }
 
+  // إحداثيات صالحة فعلياً قبل الإدراج — نفس فحص Number.isFinite المطبَّق
+  // في GET /api/weather، بالإضافة لنطاق جغرافي واقعي، حتى لا تُسمَّم نداءات
+  // الطقس/Overpass لاحقة بإحداثيات كـ 99999 لا تُطابق أي مكان فعلي.
+  const { latitude, longitude } = project;
+  if (latitude !== undefined && latitude !== null) {
+    if (typeof latitude !== 'number' || !Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+      return NextResponse.json({ error: 'latitude غير صالح — يجب أن يكون رقماً بين -90 و90' }, { status: 400 });
+    }
+  }
+  if (longitude !== undefined && longitude !== null) {
+    if (typeof longitude !== 'number' || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      return NextResponse.json({ error: 'longitude غير صالح — يجب أن يكون رقماً بين -180 و180' }, { status: 400 });
+    }
+  }
+
   // ورديات العمل (project_shifts) جدول منفصل — لا يجوز تمريرها كعمود ضمن
   // insert على جدول projects نفسه (راجع supabase-project-shifts-migration.sql).
   const shifts = Array.isArray(project.shifts) ? project.shifts : [];
-  const projectInsert = { ...project };
-  delete projectInsert.shifts;
+  const projectInsert = pickAllowedProjectFields(project);
 
   const { data: insertedProject, error: projectError } = await supabaseAdmin
     .from('projects')
@@ -28,12 +71,13 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (projectError) {
-    console.error('🚨 خطأ Supabase عند إدراج المشروع:', projectError);
-    let message = `فشل حفظ المشروع: ${projectError.message}`;
+    let message = safeErrorResponse(projectError, 'project insert failed');
+    // فئات خطأ معروفة تبقى برسالة مصنَّفة مفيدة للمستخدم (لا تكشف أسماء
+    // أعمدة/قيود فعلية) — غير ذلك يسقط للرسالة العامة أعلاه.
     if (projectError.code === '42501' || /row-level security/i.test(projectError.message)) {
       message = 'تم رفض الحفظ بواسطة سياسات الأمان (RLS) على جدول المشاريع. تأكد من صلاحيات المستخدم.';
     } else if (projectError.code === '23502') {
-      message = `حقل إلزامي مفقود في جدول المشاريع: ${projectError.message}`;
+      message = 'حقل إلزامي مفقود — تحقق من تعبئة كل الحقول المطلوبة.';
     } else if (projectError.code === '23505') {
       message = 'يوجد مشروع آخر بنفس البيانات الفريدة (تكرار).';
     }
@@ -59,10 +103,10 @@ export async function POST(request: NextRequest) {
     }));
     const { error: shiftsError } = await supabaseAdmin.from('project_shifts').insert(shiftRows);
     if (shiftsError) {
-      console.error('🚨 فشل حفظ ورديات العمل:', shiftsError);
+      safeErrorResponse(shiftsError, 'project shifts insert failed (project already created)');
       return NextResponse.json({
         data: insertedProject,
-        warning: `تم إنشاء المشروع لكن فشل حفظ ورديات العمل: ${shiftsError.message}`,
+        warning: 'تم إنشاء المشروع لكن فشل حفظ ورديات العمل. يمكنك إضافتها لاحقاً من صفحة الإعدادات.',
       });
     }
   }

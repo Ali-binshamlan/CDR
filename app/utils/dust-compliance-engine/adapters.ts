@@ -51,7 +51,9 @@ export function buildProjectComplianceProfile(project: any): DustProjectComplian
 export function buildActivityComplianceProfile(
   row: any,
   sensitiveReceptors: SensitiveReceptor[] = [],
-  // اتجاه الرياح الفعلي (خام) وحالة توثيق محاذاة الشمال الحقيقي — تُستخدمان
+  // اتجاه الرياح الفعلي المُدمَج (بعد أولوية جهاز > طقس > onsite — نفس
+  // الاتجاه المعروض فعلياً للمستخدم في evidence.windDirectionDeg، لا عينة
+  // الطقس الخام قبل الدمج) وحالة توثيق محاذاة الشمال الحقيقي — تُستخدمان
   // فقط لحساب crusherDistanceToDownwindReceptorAutoM (MRQ-RECEPTOR-DOWNWIND-
   // 120). windDirectionDeg يُتجاهَل كلياً إن لم تُوثَّق المحاذاة (فشل آمن نحو
   // "غير صالح"، راجع MRQ-DATA-TRUE-NORTH-111) — بلا ذلك يُبنى قرار تنظيمي
@@ -258,21 +260,29 @@ export function buildComplianceContext(
   // فيسلك المحرك مساره الاحتياطي الآمن (معاملة القراءة كأنها لحظية فقط).
   pm10Sustained?: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null
 ): DustComplianceContext {
-  // العينة الخام (لا تزال تُستخدم لاتجاه الرياح ضمن buildActivityComplianceProfile
-  // أدناه فقط) والقراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite —
-  // راجع mergeDustReading في dust-engine/engine.ts) متوفرتان فقط إن كان
-  // dviResult فعلياً DviHourlyEvaluation (الحالة الحقيقية دائماً في مسار
-  // التشغيل الفعلي عبر windowEval.worst).
+  // القراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite — راجع
+  // mergeDustReading في dust-engine/engine.ts) متوفرة فقط إن كان dviResult
+  // فعلياً DviHourlyEvaluation (الحالة الحقيقية دائماً في مسار التشغيل
+  // الفعلي عبر windowEval.worst).
   //
-  // كل حقول القراءة هنا (عدا windSpeedKmh، انظر الملاحظة أدناه) تُقرأ الآن
-  // من mergedReading نفسه الذي حسبه DVI فعلاً — بدل اشتقاق سلسلة أولوية
-  // منفصلة هنا كانت متضاربة معه (بعض الحقول قديماً كانت تتجاهل الجهاز
-  // كلياً، وPM10 كان يُفضِّل onsite على كل شيء آخر). هذا هو سبب تناقضات
-  // "بانر أخضر مقابل بطاقة حمراء" التي أُصلحت سابقاً — قراءة واحدة موحَّدة
-  // بدل مصدرين قد يختلفان.
-  const rawSample = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample;
+  // كل حقول القراءة هنا تُقرأ الآن من mergedReading نفسه الذي حسبه DVI
+  // فعلاً — بدل اشتقاق سلسلة أولوية منفصلة هنا كانت متضاربة معه (بعض
+  // الحقول قديماً كانت تتجاهل الجهاز كلياً، وPM10 كان يُفضِّل onsite على كل
+  // شيء آخر). هذا هو سبب تناقضات "بانر أخضر مقابل بطاقة حمراء" التي أُصلحت
+  // سابقاً — قراءة واحدة موحَّدة بدل مصدرين قد يختلفان.
+  //
+  // خطأ مكتشَف ومُصلَح: كان اتجاه الرياح المستخدَم لحساب المستقبِل باتجاه
+  // الريح (crusherDistanceToDownwindReceptorAutoM أدناه) يُقرأ من rawSample
+  // (عينة الطقس الخام قبل الدمج)، بينما الدليل المعروض فعلياً للمستخدم
+  // (evidence.windDirectionDeg في engine.ts) هو merged.windDirectionDeg —
+  // فحين تكون قراءة الجهاز والطقس متعارضتين باتجاه الرياح (مثال: جهاز=0°،
+  // طقس=180°)، كان الحساب يستخدم اتجاهاً غير الاتجاه المعروض فعلياً على
+  // الشاشة، فقد يُرجع Infinity (لا مستقبِل باتجاه الريح الخاطئ) رغم وجود
+  // مستقبِل حقيقي باتجاه الريح الصحيح المعروض، فتضيع قاعدة
+  // MRQ-RECEPTOR-DOWNWIND-120 بصمت. استخدام merged?.windDirectionDeg هنا
+  // يضمن اتساق الاتجاه المستخدَم في الحساب مع الاتجاه المعروض للمستخدم دائماً.
   const merged = (dviResult as Partial<DviHourlyEvaluation>).mergedReading;
-  const rawWindDirectionDeg = toNullableNumber(rawSample?.windDirectionDeg);
+  const mergedWindDirectionDeg = toNullableNumber(merged?.windDirectionDeg);
   const trueNorthAlignmentDocumented = toNullableBoolean(project?.true_north_alignment_documented);
 
   // dataSource للعرض فقط: أعلى مصدر فاز فعلياً عبر أي حقل من حقول
@@ -293,7 +303,7 @@ export function buildComplianceContext(
     activity: buildActivityComplianceProfile(
       activityRow,
       sensitiveReceptors,
-      rawWindDirectionDeg,
+      mergedWindDirectionDeg,
       trueNorthAlignmentDocumented
     ),
     dviScore: dviResult.score,
@@ -317,8 +327,10 @@ export function buildComplianceContext(
     // ليس 'device') — يميّز "لا محطة مرتبطة" عن "محطة مرتبطة بلا قراءة
     // بعد" (null فعلياً)، حتى تعرف الواجهة متى تفعّل تحذير القِدم أصلاً.
     deviceLastReadingAt: dataSource === 'device' ? merged?.deviceLastReadingAt ?? null : undefined,
+    devicePm10LastReadingAt: dataSource === 'device' ? merged?.devicePm10LastReadingAt ?? null : undefined,
     dviCaveatsAr: dviResult.caveatsAr ?? [],
     dataSource,
+    pm10Source: merged?.sources.pm10,
     sensitiveReceptors,
     previousDecisionCategory: (previousDecision?.decision as DustComplianceContext['previousDecisionCategory']) ?? null,
     previousDecisionUpdatedAt: previousDecision?.updated_at ?? null,

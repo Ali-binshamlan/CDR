@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 import { checkDustActivities } from '../generate/route';
 
 // توليد التنبيهات فور تسجيل الدخول — يفحص أنشطة مشاريع المستخدم الحالي
@@ -24,7 +25,6 @@ export async function POST(request: NextRequest) {
     await checkDustActivities(projectIds);
     return NextResponse.json({ ok: true, generated: true, checkedAt: new Date().toISOString() });
   } catch (error: any) {
-    console.error('generate-mine failed:', error?.message || error);
-    return NextResponse.json({ ok: false, error: error?.message || 'unknown error' }, { status: 500 });
+    return NextResponse.json({ ok: false, error: safeErrorResponse(error, 'generate-mine failed') }, { status: 500 });
   }
 }

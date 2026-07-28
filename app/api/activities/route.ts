@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // تعديل زمن نشاط غبار (تاريخ/وقت البداية اليومي/المدة) — يُستدعى من
 // MultiIndicatorActivityBox.tsx (handleSaveEdit). جسم الطلب:
@@ -49,8 +50,7 @@ export async function PATCH(request: NextRequest) {
       .eq('id', String(t.activityId))
       .eq('project_id', String(t.projectId));
     if (error) {
-      console.error(`فشل تعديل زمن النشاط ${t.activityId}:`, error.message);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: safeErrorResponse(error, `فشل تعديل زمن النشاط ${t.activityId}`) }, { status: 500 });
     }
   }
 
@@ -108,8 +108,7 @@ export async function DELETE(request: NextRequest) {
       .delete()
       .eq('activity_group_id', groupId);
     if (currentDecisionsError) {
-      console.error(`فشل حذف current_dust_decisions للنشاط ${activityId}:`, currentDecisionsError.message);
-      return NextResponse.json({ error: `فشل حذف بيانات مرتبطة (current_dust_decisions): ${currentDecisionsError.message}` }, { status: 500 });
+      return NextResponse.json({ error: safeErrorResponse(currentDecisionsError, `فشل حذف current_dust_decisions للنشاط ${activityId}`) }, { status: 500 });
     }
 
     const { error: currentComplianceError } = await supabaseAdmin
@@ -117,8 +116,7 @@ export async function DELETE(request: NextRequest) {
       .delete()
       .eq('activity_group_id', groupId);
     if (currentComplianceError) {
-      console.error(`فشل حذف current_dust_compliance_decisions للنشاط ${activityId}:`, currentComplianceError.message);
-      return NextResponse.json({ error: `فشل حذف بيانات مرتبطة (current_dust_compliance_decisions): ${currentComplianceError.message}` }, { status: 500 });
+      return NextResponse.json({ error: safeErrorResponse(currentComplianceError, `فشل حذف current_dust_compliance_decisions للنشاط ${activityId}`) }, { status: 500 });
     }
 
     // dust_evaluations وdust_compliance_evaluations لهما on delete cascade
@@ -129,8 +127,7 @@ export async function DELETE(request: NextRequest) {
       const column = table === 'dust_evaluations' || table === 'dust_compliance_evaluations' ? 'dust_profile_id' : 'activity_id';
       const { error: childError } = await supabaseAdmin.from(table).delete().eq(column, activityId);
       if (childError && childError.code !== '42703' && childError.code !== '42P01') {
-        console.error(`فشل حذف صفوف ${table} للنشاط ${activityId}:`, childError.code, childError.message);
-        return NextResponse.json({ error: `فشل حذف بيانات مرتبطة (${table}): ${childError.message}` }, { status: 500 });
+        return NextResponse.json({ error: safeErrorResponse(childError, `فشل حذف صفوف ${table} للنشاط ${activityId} (${childError.code})`) }, { status: 500 });
       }
     }
 
@@ -139,8 +136,7 @@ export async function DELETE(request: NextRequest) {
       .delete()
       .eq('id', activityId);
     if (profileError) {
-      console.error(`فشل حذف صف project_dust_profiles ${activityId}:`, profileError.message);
-      return NextResponse.json({ error: profileError.message }, { status: 500 });
+      return NextResponse.json({ error: safeErrorResponse(profileError, `فشل حذف صف project_dust_profiles ${activityId}`) }, { status: 500 });
     }
   }
 

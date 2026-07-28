@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // كل القرارات الموثَّقة (decision_records) عبر كل المشاريع — نفس نمط
 // admin/alerts بالضبط (decision_records.project_id له FK حقيقي لـ
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
     .select('*, projects!inner(id, name, city, user_id)')
     .order('created_at', { ascending: false })
     .limit(200);
-  if (decisionsError) return NextResponse.json({ error: decisionsError.message }, { status: 500 });
+  if (decisionsError) return NextResponse.json({ error: safeErrorResponse(decisionsError, 'admin/decisions fetch failed') }, { status: 500 });
 
   const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name');
   const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));

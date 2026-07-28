@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { randomBytes, createHash } from 'crypto';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // إدارة أجهزة الرصد المرتبطة بمشروع (project_devices) — يديرها صاحب
 // المشروع عبر جلسته العادية (requireUserId + verifyProjectOwnership)، لا
@@ -29,7 +30,7 @@ export async function GET(
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'devices list fetch failed') }, { status: 500 });
   return NextResponse.json({ devices: data || [] });
 }
 
@@ -70,7 +71,7 @@ export async function POST(
     .select(DEVICE_LIST_COLUMNS)
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device create failed') }, { status: 500 });
 
   return NextResponse.json({ device: inserted, apiKey: rawKey });
 }

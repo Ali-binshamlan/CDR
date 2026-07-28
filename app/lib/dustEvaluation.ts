@@ -6,7 +6,7 @@ import type { DustEngineInput, DustWindowEvaluation } from '@/app/utils/dust-eng
 import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
-import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive } from '@/app/utils/dust-compliance-engine';
+import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT } from '@/app/utils/dust-compliance-engine';
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
 import type { ReceptorWithinRadius } from '@/app/utils/dust-compliance-engine/geo';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
@@ -64,6 +64,10 @@ export interface FreshDeviceReading {
   // (راجع resolveFreshProjectDevice أدناه)، فقط لعرض "قِدم القراءة" في
   // الواجهة عندما تتجاوز DEVICE_READING_FRESHNESS_MINUTES.
   last_reading_at: string;
+  // وقت آخر وصول PM10 تحديداً (ISO) — عمود منفصل عن last_reading_at لأن
+  // الأخير يتحدّث عند أي push جزئي حتى بلا PM10 (راجع last_pm10_at في
+  // project_devices migration). null إن لم تُرسِل المحطة PM10 قط.
+  last_pm10_at: string | null;
 }
 
 export function buildDustInput(row: any, project: any, freshDevice?: FreshDeviceReading | null): DustEngineInput {
@@ -103,6 +107,7 @@ export function buildDustInput(row: any, project: any, freshDevice?: FreshDevice
     // حتى لو freshDevice غاب تماماً (لا صف جهاز نشط إطلاقاً).
     hasDeviceLink: !!row.device_id,
     deviceLastReadingAt: freshDevice?.last_reading_at ?? null,
+    devicePm10LastReadingAt: freshDevice?.last_pm10_at ?? null,
     deviceWindSpeedKmh: freshDevice?.last_wind_speed_kmh ?? null,
     deviceWindGustKmh: freshDevice?.last_wind_gust_kmh ?? null,
     deviceWindDirectionDeg: freshDevice?.last_wind_direction_deg ?? null,
@@ -157,7 +162,7 @@ export async function resolveFreshProjectDevice(
 ): Promise<FreshDeviceReading | null> {
   let query = supabaseAdmin
     .from('project_devices')
-    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c')
+    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at')
     .eq('project_id', projectId)
     .eq('is_active', true)
     .not('last_reading_at', 'is', null);
@@ -179,6 +184,7 @@ export async function resolveFreshProjectDevice(
     last_visibility_m: data.last_visibility_m ?? null,
     last_relative_humidity_percent: data.last_relative_humidity_percent ?? null,
     last_temperature_c: data.last_temperature_c ?? null,
+    last_pm10_at: data.last_pm10_at ?? null,
     last_reading_at: data.last_reading_at,
   };
 }
@@ -196,9 +202,9 @@ export interface Pm10SustainedStatus {
   currentReadingUgM3: number | null;
   sustainedMinutesAbove340: number;
   sustainedMinutesAbove250: number;
-  isConfirmedViolation340: boolean; // ≥340 لأكثر من دقيقتين متتاليتين
-  isPendingViolation340: boolean;   // ≥340 الآن لكن أقل من دقيقتين بعد
-  isSuspended250For30Min: boolean;  // ≥250 لمدة 30 دقيقة متواصلة أو أكثر
+  isConfirmedViolation340: boolean; // ≥340 لأكثر من دقيقتين متتاليتين، بمصدر جهاز فقط
+  isPendingViolation340: boolean;   // ≥340 الآن لكن أقل من دقيقتين بعد، أو مصدرها غير جهاز
+  isSuspended250For30Min: boolean;  // ≥250 لمدة 30 دقيقة متواصلة أو أكثر، بمصدر جهاز فقط
 }
 
 const PM10_SUSTAINED_VIOLATION_THRESHOLD = 340;
@@ -206,16 +212,38 @@ const PM10_SUSTAINED_WARNING_THRESHOLD = 250;
 const PM10_VIOLATION_CONFIRM_MINUTES = 2;
 const PM10_SUSPENSION_MINUTES = 30;
 // هامش استمرار: لو مضت أكثر من هذي المدة بين قراءتين متتاليتين، لا نعتبر
-// الفجوة "استمراراً بلا انقطاع" (مثال: جهاز توقف عن الإرسال ساعة كاملة ثم
-// عاد — لا يجوز حساب الساعة كلها كاستمرار واحد متواصل).
-const PM10_READING_GAP_TOLERANCE_MINUTES = 15;
+// الفجوة "استمراراً بلا انقطاع" — يطابق دورة إرسال الجهاز الفعلية (كل
+// دقيقتين، طلب صريح من المستخدم) بهامش تحمّل بسيط (تأخر شبكة/إعادة محاولة)
+// بدل الهامش القديم الفضفاض (15 دقيقة) الذي كان يسمح بقراءة معزولة واحدة
+// قديمة نسبياً أن تُحسب "استمراراً" كاملاً بلا أي دليل فعلي على القراءات
+// بينها. راجع أيضاً PM10_LAST_READING_FRESHNESS_MINUTES أدناه لضمان أن
+// "الآن" نفسه ليس بعيداً عن آخر قراءة فعلية.
+const PM10_READING_GAP_TOLERANCE_MINUTES = 4;
+// أقصى عمر لآخر قراءة حتى تبقى "حالة حية" — لو توقف الجهاز عن الإرسال
+// وتجاوز عمر آخر قراءة هذه العتبة، لا يجوز اعتبار الاستمرار "حياً حتى
+// الآن" (كان النظام سابقاً يُبقي isConfirmedViolation340/isSuspended250For30Min
+// صحيحة إلى الأبد طالما لم تتجاوز الفجوة القديمة 15 دقيقة، حتى لو توقف
+// الجهاز فعلياً عن الإرسال منذ ساعات — ثغرة اكتُشفت في مراجعة أمنية: تجمّد
+// حالة "مخالفة مستمرة" أو "معلَّق" بلا أي دليل حي، بدل التنبيه لانقطاع
+// الاتصال). القراءة نفسها تبقى ظاهرة (لا تُخفى)، فقط لا تُستخدم لإثبات
+// استمرار "حتى الآن" إن كانت أقدم من هذا الحد.
+const PM10_LAST_READING_FRESHNESS_MINUTES = 4;
 
 // دالة حسابية بحتة (بلا I/O) — تأخذ قراءات مرتّبة تنازلياً (الأحدث أولاً،
 // نفس ترتيب استعلام Supabase الطبيعي بـ order desc) وتحسب مدة الاستمرار
 // فوق كل عتبة بدءاً من أحدث قراءة رجوعاً للماضي، متوقفة عند أول قراءة دون
 // العتبة أو أول فجوة زمنية كبيرة بين قراءتين.
+//
+// source (اختياري لكل قراءة): 'device' | 'manual' | 'open-meteo'. الحالة
+// "المؤكَّدة" (isConfirmedViolation340) و"المعلَّقة الطويلة"
+// (isSuspended250For30Min) تُقصَران على مصدر 'device' فقط — قراءات API
+// الجوي (open-meteo) تقديرات ساعية من نموذج طقس عالمي، لا قياس محلي
+// مستمر، فلا تصلح دليلاً على "استمرار دقيقة بدقيقة" لقرار إيقاف إلزامي.
+// قراءة بمصدر غير device تبقى "معلَّقة" (isPendingViolation340) دائماً
+// بصرف النظر عن طول مدة التجاوز الظاهرية. قراءة بلا source (استدعاءات
+// قديمة/اختبارات) تُعامَل كـ'device' توافقياً (فشل آمن، لا كسر سلوك حالي).
 export function computeSustainedPm10Status(
-  readings: { pm10UgM3: number; recordedAt: string }[],
+  readings: { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo' }[],
   now: number = Date.now()
 ): Pm10SustainedStatus {
   if (readings.length === 0) {
@@ -233,12 +261,26 @@ export function computeSustainedPm10Status(
     (a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime()
   );
   const currentReadingUgM3 = sorted[0].pm10UgM3;
+  const currentSource = sorted[0].source ?? 'device';
+  const latestReadingAgeMinutes = (now - new Date(sorted[0].recordedAt).getTime()) / 60000;
+  const isLatestReadingFresh = latestReadingAgeMinutes <= PM10_LAST_READING_FRESHNESS_MINUTES;
+  const isCurrentSourceDevice = currentSource === 'device';
 
+  // خطأ مكتشَف ومُصلَح: كانت الحلقة تمتد عبر قراءات مختلطة المصدر بلا فحص
+  // (device مع open-meteo/manual معاً)، ويُكتفى بفحص مصدر آخر قراءة وحدها
+  // (isCurrentSourceDevice) لتقرير "مؤكَّدة". فنشاط بلا جهاز يتجاوز 3 دقائق
+  // بقراءات open-meteo تقديرية، ثم يُربط بجهاز وتصل منه قراءة واحدة ≥340
+  // خلال هامش الفجوة (4 دقائق)، كانت السلسلة تمتد للخلف عبر قراءات الطقس
+  // فيصل sustainedMinutesAbove340 لأكثر من دقيقتين، وتتأكد "مخالفة تنظيمية
+  // مؤكدة" بدليل استمرار مصدره فعلياً توقّع طقس لا قياس جهاز متواصل.
+  // الإصلاح: السلسلة تنقطع عند أول قراءة يختلف مصدرها عن مصدر أحدث قراءة —
+  // فالاستمرار المُثبَت يبقى دائماً من مصدر واحد متجانس، لا خليط.
   function streakMinutesAbove(threshold: number): number {
     if (sorted[0].pm10UgM3 < threshold) return 0;
     let streakStartMs = new Date(sorted[0].recordedAt).getTime();
     for (let i = 0; i < sorted.length; i++) {
       if (sorted[i].pm10UgM3 < threshold) break;
+      if ((sorted[i].source ?? 'device') !== currentSource) break;
       const currentMs = new Date(sorted[i].recordedAt).getTime();
       if (i > 0) {
         const prevMs = new Date(sorted[i - 1].recordedAt).getTime();
@@ -254,10 +296,20 @@ export function computeSustainedPm10Status(
   const sustainedMinutesAbove250 = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD);
 
   const isAbove340Now = currentReadingUgM3 >= PM10_SUSTAINED_VIOLATION_THRESHOLD;
-  const isConfirmedViolation340 = isAbove340Now && sustainedMinutesAbove340 >= PM10_VIOLATION_CONFIRM_MINUTES;
+  // "مؤكَّدة" تتطلب معاً: دقيقتين استمرار فعلي + قراءة حية (ليست قديمة) +
+  // مصدرها جهاز رصد حقيقي — أي شرط يفشل يُبقي الحالة "معلَّقة" فقط، أبداً
+  // "مؤكَّدة" بلا دليل كافٍ.
+  const isConfirmedViolation340 =
+    isAbove340Now &&
+    sustainedMinutesAbove340 >= PM10_VIOLATION_CONFIRM_MINUTES &&
+    isLatestReadingFresh &&
+    isCurrentSourceDevice;
   const isPendingViolation340 = isAbove340Now && !isConfirmedViolation340;
   const isSuspended250For30Min =
-    currentReadingUgM3 >= PM10_SUSTAINED_WARNING_THRESHOLD && sustainedMinutesAbove250 >= PM10_SUSPENSION_MINUTES;
+    currentReadingUgM3 >= PM10_SUSTAINED_WARNING_THRESHOLD &&
+    sustainedMinutesAbove250 >= PM10_SUSPENSION_MINUTES &&
+    isLatestReadingFresh &&
+    isCurrentSourceDevice;
 
   return {
     currentReadingUgM3,
@@ -283,7 +335,7 @@ export async function fetchPm10SustainedStatus(
   try {
     const { data } = await supabaseAdmin
       .from('pm10_readings_history')
-      .select('pm10_ug_m3, recorded_at, activity_group_id')
+      .select('pm10_ug_m3, recorded_at, activity_group_id, source')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
       .order('recorded_at', { ascending: false });
@@ -294,6 +346,7 @@ export async function fetchPm10SustainedStatus(
     const readings = relevant.map((row: any) => ({
       pm10UgM3: Number(row.pm10_ug_m3),
       recordedAt: row.recorded_at,
+      source: row.source as 'device' | 'manual' | 'open-meteo' | undefined,
     }));
     return computeSustainedPm10Status(readings);
   } catch {
@@ -315,7 +368,7 @@ async function resolveProjectDeviceMap(
   const map = new Map<string, FreshDeviceReading | null>();
   const { data } = await supabaseAdmin
     .from('project_devices')
-    .select('id, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c')
+    .select('id, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at')
     .eq('project_id', projectId)
     .eq('is_active', true);
 
@@ -331,6 +384,7 @@ async function resolveProjectDeviceMap(
       last_relative_humidity_percent: d.last_relative_humidity_percent ?? null,
       last_temperature_c: d.last_temperature_c ?? null,
       last_reading_at: d.last_reading_at,
+      last_pm10_at: d.last_pm10_at ?? null,
     });
   }
   return map;
@@ -375,7 +429,21 @@ export async function computeDustResults(dustRows: any[], project: any, supabase
         // التنظيمية حتى تتماشى شبكة "توقعات الطقس طوال فترة الدوام" مع
         // قرار الامتثال، بدل الاعتماد فقط على عتبات DVI الفيزيائي المختلفة.
         const isDustGenerating = row.is_dust_generating ?? true;
-        const isEnclosedOperation = row.is_enclosed_operation ?? false;
+        // خطأ مكتشَف ومُصلَح: كان يُستخدَم row.is_enclosed_operation الخام
+        // مباشرة هنا، بينما محطة الخلط (BATCHING_PLANT) مستثناة عمداً من
+        // اشتراطه إطلاقاً في محرك القرار الفعلي (isEnclosedExemptFromHighWind
+        // في dust-compliance-engine/engine.ts) — صوامع مغلقة + فلتر PM10
+        // ≥99% يكفيان، بصرف النظر عن إغلاق المحطة فيزيائياً. بلا هذا الإصلاح،
+        // شارة "بوابة الرياح التنظيمية" على بطاقات التوقعات الساعية كانت
+        // تظهر "مفعَّلة" لمحطة خلط مكشوفة فعلياً معفاة، رغم أن قرار الامتثال
+        // الفعلي (evaluateDustCompliance) لا يوقفها — تناقض مربك بين الشارة
+        // الإعلامية والقرار الملزم الفعلي لنفس النشاط.
+        const isBatchingPm10Exempt =
+          (row.regulatory_activity ?? 'OTHER') === 'BATCHING_PLANT' &&
+          row.silos_sealed === true &&
+          typeof row.pm10_filter_efficiency_percent === 'number' &&
+          row.pm10_filter_efficiency_percent >= BATCHING_PM10_FILTER_MIN_PERCENT;
+        const isEnclosedOperation = isBatchingPm10Exempt ? true : (row.is_enclosed_operation ?? false);
         const annotatedWindowEval: DustWindowEvaluation = {
           ...windowEval,
           worst: annotateHourWithRegulatoryGate(windowEval.worst, isDustGenerating, isEnclosedOperation),
@@ -464,15 +532,34 @@ export async function persistDustEvaluations(
         const evaluationId = (inserted as any)?.id;
         if (!evaluationId) return;
 
-        await supabaseAdmin.from('current_dust_decisions').upsert({
+        // كتابة محميّة من التزامن (compare-and-swap): كان upsert أعمى يستبدل
+        // الصف بلا شرط، فطلبان متزامنان لنفس النشاط (مثال: التحديث الدوري كل
+        // دقيقتين + طلب onCountdownElapsed بنفس اللحظة) يقرآن نفس existing ثم
+        // يكتبان معاً، فيفوز الذي يصل متأخراً للخادم لا الأحدث حساباً — فقد
+        // يستقر النظام على قرار محسوب من بيانات أقدم. الآن نشترط أن يكون
+        // updated_at لم يتغيّر منذ القراءة (eq على القيمة المقروءة)؛ إن تغيّر
+        // فطلب آخر كتب بالفعل ونتخطى الكتابة (فوز الأحدث فعلياً، لا الأبطأ).
+        const nowIso = new Date().toISOString();
+        const decisionRow = {
           activity_group_id: r.activityGroupId,
           project_id: projectId,
           latest_evaluation_id: evaluationId,
           decision: newDecision,
           triggered_rules: worst.triggeredRules ?? [],
           short_reason: worst.shortReason ?? null,
-          updated_at: new Date().toISOString(),
-        });
+          updated_at: nowIso,
+        };
+        if (existing?.updated_at) {
+          await supabaseAdmin
+            .from('current_dust_decisions')
+            .update(decisionRow)
+            .eq('activity_group_id', r.activityGroupId)
+            .eq('updated_at', existing.updated_at);
+        } else {
+          // لا صف سابق — insert عادي. تصادم نادر (طلبان أولان متزامنان تماماً)
+          // يفشل أحدهما على قيد المفتاح الأساسي، وهو السلوك الصحيح هنا.
+          await supabaseAdmin.from('current_dust_decisions').insert(decisionRow);
+        }
       } catch (error) {
         console.error(`فشل حفظ تقييم الغبار للنشاط ${r.activityId}:`, error);
       }
@@ -634,10 +721,20 @@ export async function computeDustComplianceResults(
         // يدوية لا يمكنه أبداً الوصول لحالة "مخالفة مؤكدة"، فيبقى "معلَّق"
         // إلى الأبد بصرف النظر عن طول مدة التجاوز الفعلية (ثغرة مكتشفة
         // ومصلَحة — راجع migration توسيع قيد source).
+        //
+        // خطأ مكتشَف ومُصلَح: كان الشرط يعتمد على preliminaryCtx.dataSource
+        // (تلخيص عام لأعلى مصدر فاز بأي حقل من كل حقول القراءة، device
+        // يفوز أولاً) بدل preliminaryCtx.pm10Source (مصدر PM10 تحديداً). في
+        // حالة رياح من الجهاز وPM10 من الطقس معاً، dataSource يصبح 'device'
+        // فيفشل الشرط (لا onsite ولا open-meteo)، فلا يُسجَّل PM10 هذا في أي
+        // مكان (ليس قراءة جهاز فعلية تُسجَّل عند الاستقبال، ولا onsite/
+        // open-meteo تُسجَّل هنا) — فتنقطع سلسلة إثبات الاستمرار لتلك
+        // القراءة كلياً. pm10Source (من merged.sources.pm10 مباشرة) يعكس
+        // مصدر PM10 الفعلي بصرف النظر عن مصدر بقية الحقول.
         let pm10Sustained: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null = null;
         if (supabaseAdmin && r.activityGroupId && project?.id) {
           if (
-            (preliminaryCtx.dataSource === 'onsite' || preliminaryCtx.dataSource === 'open-meteo') &&
+            (preliminaryCtx.pm10Source === 'onsite' || preliminaryCtx.pm10Source === 'weather') &&
             preliminaryCtx.pm10UgM3 !== null
           ) {
             try {
@@ -645,7 +742,7 @@ export async function computeDustComplianceResults(
                 activity_group_id: r.activityGroupId,
                 project_id: project.id,
                 pm10_ug_m3: preliminaryCtx.pm10UgM3,
-                source: preliminaryCtx.dataSource === 'onsite' ? 'manual' : 'open-meteo',
+                source: preliminaryCtx.pm10Source === 'onsite' ? 'manual' : 'open-meteo',
               });
             } catch {
               // فشل التسجيل لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
@@ -1032,17 +1129,31 @@ export async function persistDustComplianceEvaluations(
 
         const stoppedSince = computeStoppedSince(existing?.decision, existing?.stopped_since, newDecision);
 
-        await supabaseAdmin.from('current_dust_compliance_decisions').upsert({
+        // كتابة محميّة من التزامن (compare-and-swap) — نفس علة upsert الأعمى
+        // المشروحة في persistDustEvaluations أعلاه، وأخطر هنا لأن الصف يحمل
+        // stopped_since/pending_resume_since (عدّادات الإيقاف والاستئناف):
+        // كتابة متأخرة من طلب أقدم كانت قد تُرجِع عدّاداً لقيمة سابقة.
+        const nowIso = new Date().toISOString();
+        const complianceRow = {
           activity_group_id: r.activityGroupId,
           project_id: projectId,
           latest_evaluation_id: evaluationId,
           decision: newDecision,
           triggered_rules: r.result?.triggeredRules ?? [],
           short_reason: r.result?.shortReasonAr ?? null,
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso,
           stopped_since: stoppedSince,
           pending_resume_since: pendingResumeSince,
-        });
+        };
+        if (existing?.updated_at) {
+          await supabaseAdmin
+            .from('current_dust_compliance_decisions')
+            .update(complianceRow)
+            .eq('activity_group_id', r.activityGroupId)
+            .eq('updated_at', existing.updated_at);
+        } else {
+          await supabaseAdmin.from('current_dust_compliance_decisions').insert(complianceRow);
+        }
       } catch (error) {
         console.error(`فشل حفظ تقييم امتثال الغبار للنشاط ${r.activityId}:`, error);
       }

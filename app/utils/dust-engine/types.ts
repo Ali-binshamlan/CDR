@@ -127,6 +127,12 @@ export interface DustEngineInput {
   // buildStalenessAdvisory في Compliancewidgetcard.tsx). null إن كانت
   // المحطة لم ترسل أي قراءة إطلاقاً، أو hasDeviceLink=false أصلاً.
   deviceLastReadingAt?: string | null;
+  // خطأ مكتشَف: deviceLastReadingAt وحده كان يُستخدَم أيضاً لتقييم قِدم
+  // قراءة PM10 تحديداً، لكنه يتحدّث عند أي push جزئي من الجهاز (حتى لو
+  // الحرارة فقط، بلا PM10 إطلاقاً) — راجع last_pm10_at في project_devices
+  // (migration منفصلة). null إن كانت المحطة لم ترسل PM10 قط، undefined إن
+  // لم يُمرَّر أصلاً (فشل آمن: يُعامَل كـnull في buildStalenessAdvisory).
+  devicePm10LastReadingAt?: string | null;
   deviceWindSpeedKmh?: number | null;
   deviceWindGustKmh?: number | null;
   deviceWindDirectionDeg?: number | null;
@@ -173,6 +179,11 @@ export interface DviMergedReading {
   // آخر وقت إرسال فعلي للمحطة (ISO) — منسوخ من DustEngineInput.deviceLastReadingAt
   // فقط عندما hasDeviceLink=true، وإلا null دائماً.
   deviceLastReadingAt: string | null;
+  // آخر وقت وصول PM10 تحديداً من المحطة (ISO) — منسوخ من
+  // DustEngineInput.devicePm10LastReadingAt فقط عندما hasDeviceLink=true،
+  // وإلا null دائماً. راجع تعليق devicePm10LastReadingAt في DustEngineInput
+  // للسبب الكامل (لماذا لا يكفي deviceLastReadingAt وحده).
+  devicePm10LastReadingAt: string | null;
   sources: {
     windSpeedKmh: 'device' | 'weather' | 'onsite' | 'none';
     windGustKmh: 'device' | 'weather' | 'onsite' | 'none';

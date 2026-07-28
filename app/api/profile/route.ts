@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
+import { safeErrorResponse } from '@/app/lib/apiError';
 
 // ملف المستخدم — الهوية تُشتق من التوكن (requireUserId)، فكل مستخدم يقرأ/
 // يعدّل ملفه فقط. أعمدة profiles الفعلية: id, company_name, username,
@@ -46,7 +47,7 @@ export async function PATCH(request: NextRequest) {
     if (error.code === '23505') {
       return NextResponse.json({ error: 'اسم المستخدم مسجّل مسبقاً، اختر اسماً آخر.' }, { status: 400 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: safeErrorResponse(error, 'profile update failed') }, { status: 500 });
   }
   return NextResponse.json({ success: true });
 }
