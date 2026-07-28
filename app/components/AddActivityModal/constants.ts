@@ -238,6 +238,13 @@ export interface RegulatoryActivityItem {
   crusherUnits: CrusherUnit[];
   lat: number | null;
   lng: number | null;
+  // محطة الرصد (project_devices.id) التي ستؤخذ منها قراءات هذا النشاط —
+  // اختيارية: null يعني "بلا محطة"، فيأخذ النشاط قراءاته من API الطقس
+  // (Open-Meteo) بدل الجهاز تلقائياً (نفس أولوية جهاز > API > يدوي
+  // المعتادة). تُقترح تلقائياً كأقرب محطة نشطة لموقع النشاط عند تحديد
+  // lat/lng، وتبقى قابلة للتغيير أو الإلغاء يدوياً من القائمة المنسدلة في
+  // DustStep.tsx.
+  deviceId: string | null;
   startDate: string;
   endDate: string;
   timingMode: ActivityTimingMode;

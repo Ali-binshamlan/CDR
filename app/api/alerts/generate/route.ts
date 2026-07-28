@@ -84,15 +84,19 @@ function buildDustEngineInputSrv(
     onsiteVisibilityM: dbProfile.onsite_visibility_m ?? null,
     onsitePm10: dbProfile.onsite_pm10 ?? null,
     onsitePm25: dbProfile.onsite_pm25 ?? null,
-    // نفس أولوية جهاز > يدوي > طقس المطبّقة في computeDustResults (صفحة
-    // المشروع) — بدونها كانت تنبيهات Cron (SAFETY_BREACH/DUST) تُقيَّم على
-    // بيانات مختلفة صامتاً عمّا تعرضه صفحة المشروع لنفس النشاط.
+    // نفس عزل المصدر التام المطبّق في computeDustResults (صفحة المشروع) —
+    // بدونه كانت تنبيهات Cron (SAFETY_BREACH/DUST) تُقيَّم على بيانات
+    // مختلفة صامتاً عمّا تعرضه صفحة المشروع لنفس النشاط.
+    hasDeviceLink: !!dbProfile.device_id,
+    deviceLastReadingAt: freshDevice?.last_reading_at ?? null,
     deviceWindSpeedKmh: freshDevice?.last_wind_speed_kmh ?? null,
     deviceWindGustKmh: freshDevice?.last_wind_gust_kmh ?? null,
     deviceWindDirectionDeg: freshDevice?.last_wind_direction_deg ?? null,
     devicePm10: freshDevice?.last_pm10 ?? null,
     devicePm25: freshDevice?.last_pm25 ?? null,
     deviceVisibilityM: freshDevice?.last_visibility_m ?? null,
+    deviceRelativeHumidityPercent: freshDevice?.last_relative_humidity_percent ?? null,
+    deviceTemperatureC: freshDevice?.last_temperature_c ?? null,
   };
 }
 
@@ -167,6 +171,11 @@ async function insertAlert(params: {
   timing: 'BEFORE' | 'DURING';
   kind: string;
   message: string;
+  // نص رسمي بديل يُعرض لجهة الرصد (account_role='viewer') تحديداً بدل
+  // message التقني الموجَّه لصاحب المشروع — يُملأ فقط لتنبيهات
+  // COMPLIANCE_VIOLATION (طلب صريح من المستخدم). راجع app/api/admin/
+  // alerts/route.ts لموقع الاستبدال الفعلي حسب هوية الطالب.
+  viewerMessage?: string;
   metricLabel?: string;
   metricActual?: string;
   metricThreshold?: string;
@@ -180,6 +189,7 @@ async function insertAlert(params: {
     kind: params.kind,
     state: 'NEW',
     message: params.message,
+    viewer_message: params.viewerMessage || null,
     metric_label: params.metricLabel || null,
     metric_actual: params.metricActual || null,
     metric_threshold: params.metricThreshold || null,
@@ -323,7 +333,7 @@ export async function checkDustActivities(projectIds?: string[]) {
     }
 
     try {
-      const freshDevice = await resolveFreshProjectDevice(supabaseAdmin, profile.project_id).catch(() => null);
+      const freshDevice = await resolveFreshProjectDevice(supabaseAdmin, profile.project_id, profile.device_id).catch(() => null);
       const engineInput = buildDustEngineInputSrv(profile, lat, lon, freshDevice);
       const durationHours = Number(profile.duration_hours) || durationMinutes / 60;
       const windowEval = await evaluateDustVisibilityWindow(engineInput, startIso, durationHours);
@@ -462,10 +472,20 @@ export async function checkDustActivities(projectIds?: string[]) {
           // نص القاعدة (لا حقل رقمي منفصل موحّد عبر كل القواعد الـ44)،
           // فبطاقة "ما الذي حدث بالضبط" في alerts/page.tsx (تعرض alert.message
           // دائماً) تكفي وحدها بلا تكرار بطاقة مقياس فارغة/مضلِّلة بجانبها.
+          //
+          // viewerMessage: غلاف رسمي موحَّد لجهة الرصد تحديداً (طلب صريح من
+          // المستخدم) — فقط لـCOMPLIANCE_VIOLATION (المخالفة الفعلية)، لا
+          // COMPLIANCE_RESTRICTION/ADVISORY. نفس تفاصيل shortReasonAr الرقمية
+          // بلا تغيير، فقط بصياغة مختلفة عن نص صاحب المشروع التقني.
+          const viewerMessage =
+            complianceAlertKind === 'COMPLIANCE_VIOLATION'
+              ? `يُفيد هذا الإشعار بأنه تم رصد مخالفة تنظيمية في موقع ${profile.projects?.name || 'غير محدد'}.\nتفاصيل المخالفة: ${compliance.shortReasonAr}`
+              : undefined;
           await insertAlert({
             projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
             timing: 'DURING', kind: complianceAlertKind,
             message: compliance.shortReasonAr,
+            viewerMessage,
             recommendedAction: compliance.requiredActions.join('، ') || compliance.shortReasonAr,
           });
         }
@@ -495,12 +515,18 @@ export async function GET(request: Request) {
 }
 
 // -------------------------------------------------------------
-// لتشغيل هذا المسار دورياً على Vercel، أضف لملف vercel.json بجذر
-// المشروع (كل 15 دقيقة كمثال — عدّل حسب الحاجة):
+// vercel.json بجذر المشروع يشغّل هذا المسار دورياً على Vercel — لكن خطة
+// Hobby (المجانية) لا تقبل جدولة Cron بمعدل أقل من مرة واحدة يومياً (أي
+// تكرار أعلى يُرفض/يُخفَّض تلقائياً لخطة يومية). هذا كافٍ لتذكيرات
+// BEFORE_* العامة، لكنه غير كافٍ إطلاقاً لقواعد PM10 الزمنية الحسّاسة
+// (تأكيد المخالفة خلال دقيقتين، تعليق النشاط بعد 30 دقيقة، استقرار
+// الاستئناف بعد 10 دقائق) — تلك تحتاج فحصاً كل بضع دقائق على الأكثر.
 //
-// {
-//   "crons": [
-//     { "path": "/api/alerts/generate", "schedule": "*/15 * * * *" }
-//   ]
-// }
+// الاعتماد الفعلي حالياً على خطة Hobby هو /api/alerts/generate-mine
+// (استدعاء من المتصفح كل 5 دقائق طوال بقاء المستخدم في لوحة التحكم،
+// راجع app/dashboard/layout.tsx) — يعمل فقط أثناء وجود تبويب مفتوح فعلياً.
+// للتغطية الكاملة بلا شرط "تبويب مفتوح"، الخياران: (1) الترقية لخطة
+// Vercel Pro وتكثيف جدول هذا الـCron إلى كل 2-5 دقائق، أو (2) استخدام
+// خدمة Cron خارجية مجانية (مثل cron-job.org) تستدعي هذا المسار مباشرة
+// بنفس رأس Authorization: Bearer <CRON_SECRET> دون أي تعديل على الكود.
 // -------------------------------------------------------------

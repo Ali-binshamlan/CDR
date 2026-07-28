@@ -26,6 +26,12 @@ export async function GET(request: NextRequest) {
     .neq('state', 'CLOSED');
   if (!isViewer) {
     query = query.eq('projects.user_id', auth.userId);
+  } else {
+    // جهة الرصد تُقصَر على المخالفات التنظيمية الفعلية فقط
+    // (COMPLIANCE_VIOLATION) — نفس القيد المطبَّق في app/api/admin/alerts/
+    // route.ts، حتى يطابق عداد الشارة عدد الصفوف المعروضة فعلياً في جدول
+    // التنبيهات (AllAlertsTable)، لا كل الأنواع.
+    query = query.eq('kind', 'COMPLIANCE_VIOLATION');
   }
   const { count, error } = await query;
 

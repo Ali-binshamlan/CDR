@@ -256,17 +256,20 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
   // بروتوكول الملحق أ — أعلى من 25 كم/س: تُوقف كل الأنشطة المكشوفة
   // المولّدة للغبار عموماً (وليس فقط الهدم)؛ العمليات المغلقة فقط تستمر.
-  // استثناء إضافي لمحطة الخلط (BATCHING_PLANT) تحديداً: عملية مغلقة وحدها
-  // لا تكفي — يلزم أيضاً كفاءة فلتر PM10 لا تقل عن الحد الأدنى (نفس حد
-  // BATCHING-FILTER-002 في rulebook.ts)، وإلا فالإغلاق الفيزيائي بلا فلترة
-  // كافية لا يمنع تسرب الغبار فعلياً. pm10FilterEfficiencyPercent يبقى null
-  // بالبناء لأي نشاط غير BATCHING_PLANT (لا حقل إدخال له في الواجهة)، لذا
-  // الشرط الأشد يُطبَّق حصراً على BATCHING_PLANT — بقية الأنشطة المغلقة
-  // (هدم مغلق، قطع أحجار مغلق) تستمر بإعفاء isEnclosedOperation وحده كما
-  // كان دائماً، بلا أي تأثر بهذه الإضافة.
+  // استثناء محطة الخلط (BATCHING_PLANT) تحديداً: لا يُشترط isEnclosedOperation
+  // إطلاقاً (قد تكون المحطة فعلياً مكشوفة هيكلياً) — يكفي إحكام إغلاق
+  // الصوامع (silosSealed، مدخل حقيقي لكل وحدة خلط) + كفاءة فلتر PM10 لا
+  // تقل عن الحد الأدنى (نفس حد BATCHING-FILTER-002 في rulebook.ts) معاً،
+  // طلب صريح من المستخدم: "حتى لو كان مكشوف بس الفلاتر 99 والصوامع مغلق
+  // أبغاه يكون مسموح". بقية الأنشطة المغلقة (هدم مغلق، قطع أحجار مغلق)
+  // تستمر بإعفاء isEnclosedOperation وحده كما كان دائماً.
+  //
+  // نفس الشرط (صوامع مغلقة + فلتر ≥99%) يُستخدم الآن أيضاً لإعفاء محطة
+  // الخلط بالكامل من كل قواعد PM10 (احتراز/تحذير/تنبيه استباقي/تعليق
+  // ومؤكَّد) — بمصدر واحد موحَّد بدل تكرار الشرط في مكانين.
   const isEnclosedExemptFromHighWind =
     ctx.activity.regulatoryActivity === 'BATCHING_PLANT'
-      ? ctx.activity.isEnclosedOperation &&
+      ? ctx.activity.controls.silosSealed === true &&
         ctx.activity.controls.pm10FilterEfficiencyPercent !== null &&
         ctx.activity.controls.pm10FilterEfficiencyPercent !== undefined &&
         ctx.activity.controls.pm10FilterEfficiencyPercent >= BATCHING_PM10_FILTER_MIN_PERCENT
@@ -283,10 +286,25 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     );
   }
 
+  // إعفاء قواعد PM10 مقصور على BATCHING_PLANT تحديداً (مغلقة + فلتر ≥99%
+  // معاً) — أي نشاط آخر غير BATCHING_PLANT له isEnclosedExemptFromHighWind
+  // مبني فقط على isEnclosedOperation (بلا شرط فلتر إطلاقاً، لأن الحقل يبقى
+  // null بالبناء)، فلا يجوز استخدامه هنا مباشرة كإعفاء PM10 — إلا لو كان
+  // النشاط فعلياً BATCHING_PLANT.
+  const isPm10ExemptEnclosedBatching =
+    ctx.activity.regulatoryActivity === 'BATCHING_PLANT' && isEnclosedExemptFromHighWind;
+
   // 15-25 كم/س — تثبيط معزز عام (دون إيقاف)، و حدود PM10 التنظيمية —
   // "الاستخراج التنظيمي من المرفق" القسم 5-6. راجع rulebook.ts للتفاصيل.
   ruleHits.push(...enhancedSuppressionRule(ctx.activity.isDustGenerating, ctx.activity.isEnclosedOperation, windBand));
-  ruleHits.push(...pm10ThresholdRule(ctx.pm10UgM3, ctx.pm10SustainedMinutesAbove340, ctx.pm10SustainedMinutesAbove250));
+  ruleHits.push(
+    ...pm10ThresholdRule(
+      ctx.pm10UgM3,
+      ctx.pm10SustainedMinutesAbove340,
+      ctx.pm10SustainedMinutesAbove250,
+      isPm10ExemptEnclosedBatching
+    )
+  );
 
   // --- قواعد النشاط التنظيمي المحدد (القسم 9.4-9.10) ---
   ruleHits.push(...applyActivityRules(ctx.project, riskClass, windBand, ctx.activity, ctx.windSpeedKmh));
@@ -301,6 +319,26 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   const monitoringApplies = riskClass === 'CATEGORY_II_MEDIUM' || riskClass === 'CATEGORY_III_HIGH';
 
   let decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+
+  // قاعدة استئناف خاصة ببوابة الرياح >25 (GATE-WIND-ABOVE-25-004): طلب صريح
+  // من المستخدم — لا يُستأنف عند عودة الرياح إلى 25 كم/س بالضبط، بل يلزم
+  // انخفاضها إلى أقل من 25 صراحة. classifyWind يضع 25 بالضبط ضمن النطاق
+  // البرتقالي (FROM_15_TO_25، لا ABOVE_25)، فتتوقف بوابة الرياح عن التفعيل
+  // بمجرد وصول القراءة لـ25 بالضبط — لكن هذا لا يعني جواز الاستئناف عندها؛
+  // القاعدة التنظيمية للاستئناف أشد تحديداً من عتبة الإيقاف نفسها. يُطبَّق
+  // هذا فقط إن كان الإيقاف السابق ناتجاً عن هذه البوابة تحديداً (لا أي سبب
+  // إيقاف آخر)، ولا يُعاد تفعيله إن كانت الرياح ABOVE_25 فعلاً الآن (تلك
+  // حالتها تُعالَج أصلاً عبر ruleHits أعلاه بلا حاجة لهذا القيد).
+  const previousStopWasWindGate = ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';
+  if (
+    previousStopWasWindGate &&
+    windBand !== 'ABOVE_25' &&
+    ctx.windSpeedKmh !== null &&
+    ctx.windSpeedKmh >= 25 &&
+    DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY
+  ) {
+    decisionCategory = 'STOP_AFFECTED_ACTIVITY';
+  }
 
   // منع الاستئناف التلقائي الفوري بعد إيقاف — قرار كان موقِفاً
   // (MANDATORY_STOP أو STOP_AFFECTED_ACTIVITY) لا يتحسّن مباشرة بمجرد أن
@@ -435,6 +473,8 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
       pm25UgM3: ctx.pm25UgM3,
       relativeHumidityPercent: ctx.relativeHumidityPercent,
       temperatureC: ctx.temperatureC,
+      visibilityM: ctx.visibilityM,
+      deviceLastReadingAt: ctx.deviceLastReadingAt,
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
   };

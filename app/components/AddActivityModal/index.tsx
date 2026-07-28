@@ -16,7 +16,8 @@ import { ActivityTypeStep } from './ActivityTypeStep';
 import { DustStep } from './DustStep';
 import { DUST_FORM_DEFAULTS, BATCHING_UNIT_DEFAULTS, IDLE_SURFACE_UNIT_DEFAULTS, CRUSHER_UNIT_DEFAULTS, REGULATORY_ACTIVITY_FIELDS_DEFAULTS, REGULATORY_ACTIVITY_OPTIONS, INDICATOR_LABEL_AR, labelClass, getInputClass } from './constants';
 import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem, RegulatoryActivityKey } from './constants';
-import type { ActivityStep, AddActivityModalProps, IndicatorTab } from './types';
+import type { ActivityStep, AddActivityModalProps, IndicatorTab, ProjectDeviceLite } from './types';
+import { haversineDistanceM } from '@/app/utils/geo/zone';
 
 export default function AddActivityModal({ project }: AddActivityModalProps) {
   const router = useRouter();
@@ -26,6 +27,25 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
 
   const [isOpen, setIsOpen] = useState(false);
   const [step, setStep] = useState<ActivityStep>('choose');
+
+  // محطات رصد المشروع (project_devices) — تُجلب عند فتح المودال لعرضها في
+  // قائمة "محطة الرصد" لكل نشاط تنظيمي (DustStep.tsx) واقتراح أقرب محطة
+  // تلقائياً عند تحديد موقع النشاط. نفس مسار GET المستخدم فعلياً في صفحة
+  // إعدادات المشروع (settings/page.tsx)، بلا أي تعديل على الـAPI.
+  const [projectDevices, setProjectDevices] = useState<ProjectDeviceLite[]>([]);
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    apiClient
+      .get(`/projects/${project.id}/devices`)
+      .then(({ data }) => {
+        if (!cancelled) setProjectDevices(data?.devices || []);
+      })
+      .catch(() => {
+        if (!cancelled) setProjectDevices([]);
+      });
+    return () => { cancelled = true; };
+  }, [isOpen, project.id]);
 
   const [selectedActivityLabel, setSelectedActivityLabel] = useState('');
   const [activeIndicators, setActiveIndicators] = useState<IndicatorTab[]>([]);
@@ -155,8 +175,40 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
     );
   };
 
+  // أقرب محطة رصد نشطة لنقطة معيّنة — تُستخدم لاقتراح deviceId تلقائياً
+  // عند تحديد موقع نشاط لم يختر محطة يدوياً بعد. null إن لم توجد أي محطة
+  // نشطة بموقع معروف (المستخدم يُمنع لاحقاً من الحفظ برسالة واضحة).
+  const findNearestActiveDeviceId = (lat: number, lng: number): string | null => {
+    let nearestId: string | null = null;
+    let nearestDist = Infinity;
+    for (const d of projectDevices) {
+      if (!d.is_active || typeof d.lat !== 'number' || typeof d.lng !== 'number') continue;
+      const dist = haversineDistanceM({ lat, lng }, { lat: d.lat, lng: d.lng });
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestId = d.id;
+      }
+    }
+    return nearestId;
+  };
+
   const updateRegulatoryActivityLocation = (itemId: string, lat: number | null, lng: number | null) => {
-    setRegulatoryActivities((prev) => prev.map((item) => (item.id === itemId ? { ...item, lat, lng } : item)));
+    setRegulatoryActivities((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        // اقتراح أقرب محطة تلقائياً فقط إن لم يختر المستخدم محطة يدوياً بعد
+        // — يبقى الاختيار اليدوي دائماً أولوية على الاقتراح التلقائي.
+        const deviceId =
+          item.deviceId === null && typeof lat === 'number' && typeof lng === 'number'
+            ? findNearestActiveDeviceId(lat, lng)
+            : item.deviceId;
+        return { ...item, lat, lng, deviceId };
+      })
+    );
+  };
+
+  const updateRegulatoryActivityDevice = (itemId: string, deviceId: string | null) => {
+    setRegulatoryActivities((prev) => prev.map((item) => (item.id === itemId ? { ...item, deviceId } : item)));
   };
 
   const updateRegulatoryActivityTiming = (
@@ -195,10 +247,18 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
   // موقع النشاط العام (item.lat/lng) لأنشطة الخلاطة/الكسارة يتبع تلقائياً
   // موقع الوحدة الأولى — لا خريطة منفصلة "لموقع النشاط" مقابل "موقع
   // الوحدة" لهذين النوعين، فكلاهما نفس الشيء (راجع RegulatoryActivityItem).
-  const syncItemLocationFromUnit = (lat: string | number, lng: string | number) => {
+  // يقترح أقرب محطة أيضاً (نفس منطق updateRegulatoryActivityLocation)
+  // إن لم يكن deviceId قد اختير يدوياً بعد.
+  const syncItemLocationFromUnit = (
+    lat: string | number,
+    lng: string | number,
+    currentDeviceId: string | null
+  ) => {
     const numLat = typeof lat === 'number' ? lat : Number(lat);
     const numLng = typeof lng === 'number' ? lng : Number(lng);
-    return Number.isFinite(numLat) && Number.isFinite(numLng) ? { lat: numLat, lng: numLng } : {};
+    if (!Number.isFinite(numLat) || !Number.isFinite(numLng)) return {};
+    const deviceId = currentDeviceId === null ? findNearestActiveDeviceId(numLat, numLng) : currentDeviceId;
+    return { lat: numLat, lng: numLng, deviceId };
   };
 
   const updateBatchingUnit = (itemId: string, index: number, field: keyof BatchingUnit, value: any) => {
@@ -210,7 +270,8 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
           index === 0 && (field === 'batchingLat' || field === 'batchingLng')
             ? syncItemLocationFromUnit(
                 field === 'batchingLat' ? value : batchingUnits[0].batchingLat,
-                field === 'batchingLng' ? value : batchingUnits[0].batchingLng
+                field === 'batchingLng' ? value : batchingUnits[0].batchingLng,
+                item.deviceId
               )
             : {};
         return { ...item, batchingUnits, ...syncLoc };
@@ -227,7 +288,10 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
       prev.map((item) => {
         if (item.id !== itemId || item.batchingUnits.length <= 1) return item;
         const batchingUnits = item.batchingUnits.filter((_, i) => i !== index);
-        const syncLoc = index === 0 ? syncItemLocationFromUnit(batchingUnits[0].batchingLat, batchingUnits[0].batchingLng) : {};
+        const syncLoc =
+          index === 0
+            ? syncItemLocationFromUnit(batchingUnits[0].batchingLat, batchingUnits[0].batchingLng, item.deviceId)
+            : {};
         return { ...item, batchingUnits, ...syncLoc };
       })
     );
@@ -266,7 +330,8 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
           index === 0 && (field === 'crusherLat' || field === 'crusherLng')
             ? syncItemLocationFromUnit(
                 field === 'crusherLat' ? value : crusherUnits[0].crusherLat,
-                field === 'crusherLng' ? value : crusherUnits[0].crusherLng
+                field === 'crusherLng' ? value : crusherUnits[0].crusherLng,
+                item.deviceId
               )
             : {};
         return { ...item, crusherUnits, ...syncLoc };
@@ -283,7 +348,10 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
       prev.map((item) => {
         if (item.id !== itemId || item.crusherUnits.length <= 1) return item;
         const crusherUnits = item.crusherUnits.filter((_, i) => i !== index);
-        const syncLoc = index === 0 ? syncItemLocationFromUnit(crusherUnits[0].crusherLat, crusherUnits[0].crusherLng) : {};
+        const syncLoc =
+          index === 0
+            ? syncItemLocationFromUnit(crusherUnits[0].crusherLat, crusherUnits[0].crusherLng, item.deviceId)
+            : {};
         return { ...item, crusherUnits, ...syncLoc };
       })
     );
@@ -341,6 +409,7 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
       crusherUnits: [{ ...CRUSHER_UNIT_DEFAULTS }],
       lat: null,
       lng: null,
+      deviceId: null,
       startDate: today,
       endDate: today,
       timingMode: projectShifts.length > 0 ? 'shift' : 'custom',
@@ -446,7 +515,7 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
    const regulatoryFields = item.fields;
    return ({
     project_id: project.id, activity_group_id: currentActivityGroupId, activity_type: dustForm.activityType,
-    activity_lat: item.lat, activity_lng: item.lng,
+    activity_lat: item.lat, activity_lng: item.lng, device_id: item.deviceId,
     planned_date: item.startDate, planned_time: dailyStartTime, duration_hours: durationHours,
     shift_id: item.shiftId,
     has_earthworks: dustForm.hasEarthworks, internal_dirt_roads: dustForm.internalDirtRoads, heavy_equipment_movement: dustForm.heavyEquipmentMovement, loose_materials: dustForm.looseMaterials, large_exposed_area: dustForm.largeExposedArea, dry_surface: dustForm.drySurface, surface_wet: dustForm.surfaceWet, watering_available: dustForm.wateringAvailable, stockpiles_covered: dustForm.stockpilesCovered, speed_limit_applied: dustForm.speedLimitApplied, wheel_wash_available: dustForm.wheelWashAvailable, dust_screens_available: dustForm.dustScreensAvailable, field_monitoring_available: dustForm.fieldMonitoringAvailable, receptor_type: dustForm.receptorType, receptor_distance: dustForm.receptorDistance, receptor_is_downwind: dustForm.receptorIsDownwind, visible_dust_plume_reported: dustForm.visibleDustPlumeReported, open_concrete_pour: dustForm.openConcretePour, onsite_visibility_m: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsite_pm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsite_pm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25), aei_score: aeiScore, aei_status: aeiStatus,
@@ -654,6 +723,12 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
       if (typeof item.lat !== 'number' || typeof item.lng !== 'number') {
         return `النشاط ${i + 1}: حدد موقعه على الخريطة قبل الحفظ.`;
       }
+      // محطة الرصد (device_id) اختيارية — طلب صريح من المستخدم: من لا
+      // يختار محطة يُسمح له بالحفظ، والنشاط يأخذ قراءاته من API الطقس
+      // (Open-Meteo) بدل الجهاز، بنفس أولوية جهاز > API > يدوي المعتادة
+      // في resolveFreshProjectDevice/mergeDustReading — لا حاجة لأي منطق
+      // احتياطي إضافي هنا، فالمحرك يتعامل مع device_id=null كأنه لا يوجد
+      // جهاز مرتبط أصلاً.
     }
     return null;
   };
@@ -731,6 +806,11 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
           activityType: dustForm.activityType, latitude: item.lat as number, longitude: item.lng as number,
           site: { hasEarthworks: dustForm.hasEarthworks, internalDirtRoads: dustForm.internalDirtRoads, heavyEquipmentMovement: dustForm.heavyEquipmentMovement, looseMaterials: dustForm.looseMaterials, largeExposedArea: dustForm.largeExposedArea, drySurface: dustForm.drySurface, surfaceWet: dustForm.surfaceWet, wateringAvailable: dustForm.wateringAvailable, stockpilesCovered: dustForm.stockpilesCovered, speedLimitApplied: dustForm.speedLimitApplied, wheelWashAvailable: dustForm.wheelWashAvailable, dustScreensAvailable: dustForm.dustScreensAvailable, fieldMonitoringAvailable: dustForm.fieldMonitoringAvailable, receptorType: dustForm.receptorType, receptorDistance: dustForm.receptorDistance, receptorIsDownwind: dustForm.receptorIsDownwind, visibleDustPlumeReported: dustForm.visibleDustPlumeReported, openConcretePour: dustForm.openConcretePour },
           onsiteVisibilityM: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsitePm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsitePm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
+          // معاينة ما قبل الحفظ لا تجلب قراءة الجهاز فعلياً (لا نداء شبكة
+          // إضافي هنا) — hasDeviceLink يعكس فقط اختيار المستخدم للمحطة،
+          // فتظهر المعاينة بيانات فارغة بأمانة (بدل قراءة API خاطئة) حين
+          // تُختار محطة، تماماً كما ستظهر البطاقة الفعلية بعد الحفظ.
+          hasDeviceLink: !!item.deviceId,
         };
 
         const windowStartIso = new Date(`${item.startDate}T${daily.start}:00`).toISOString();
@@ -809,6 +889,8 @@ export default function AddActivityModal({ project }: AddActivityModalProps) {
                         removeRegulatoryActivity={removeRegulatoryActivity}
                         updateRegulatoryActivityField={updateRegulatoryActivityField}
                         updateRegulatoryActivityLocation={updateRegulatoryActivityLocation}
+                        projectDevices={projectDevices}
+                        updateRegulatoryActivityDevice={updateRegulatoryActivityDevice}
                         updateRegulatoryActivityTiming={updateRegulatoryActivityTiming}
                         updateRegulatoryActivityTimingMode={updateRegulatoryActivityTimingMode}
                         updateRegulatoryActivityShift={updateRegulatoryActivityShift}

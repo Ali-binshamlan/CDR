@@ -114,17 +114,27 @@ export interface DustEngineInput {
   onsitePm10?: number | null;
   onsitePm25?: number | null;
 
-  // قراءة حية من جهاز رصد مسجَّل على المشروع (project_devices) — أعلى ثقة
-  // من الإدخال اليدوي onsite_* ومن تقدير الطقس؛ يُملأ فقط عند وجود جهاز
-  // نشط بقراءة حديثة (راجع DEVICE_READING_FRESHNESS_MINUTES في
-  // app/lib/dustEvaluation.ts). null/undefined تعني "لا قراءة جهاز حالياً
-  // متاحة"، فيسقط الحساب تلقائياً لمسار onsite_*/الطقس كما هو دون تغيير.
+  // قراءة حية من جهاز رصد مسجَّل على المشروع (project_devices). عزل تام
+  // بطلب صريح من المستخدم: "لا شيء يعوض الآخر" — hasDeviceLink هو مفتاح
+  // الفرع الكامل في mergeDustReading (engine.ts): true = كل الحقول من
+  // الجهاز حصراً (حقل غائب من الجهاز يبقى null بلا أي تعويض من الطقس أو
+  // onsite_*)، false = كل الحقول من تقدير الطقس (Open-Meteo) حصراً (بلا
+  // تعويض من onsite_* أيضاً). onsite_* يبقى في النوع للتوافق لكنه غير
+  // مُستهلَك في mergeDustReading إطلاقاً بعد الآن.
+  hasDeviceLink: boolean;
+  // آخر وقت إرسال فعلي للمحطة المرتبطة (ISO) — لعرض "قِدم القراءة" في
+  // الواجهة عندما تتجاوز DEVICE_READING_FRESHNESS_MINUTES (راجع
+  // buildStalenessAdvisory في Compliancewidgetcard.tsx). null إن كانت
+  // المحطة لم ترسل أي قراءة إطلاقاً، أو hasDeviceLink=false أصلاً.
+  deviceLastReadingAt?: string | null;
   deviceWindSpeedKmh?: number | null;
   deviceWindGustKmh?: number | null;
   deviceWindDirectionDeg?: number | null;
   devicePm10?: number | null;
   devicePm25?: number | null;
   deviceVisibilityM?: number | null;
+  deviceRelativeHumidityPercent?: number | null;
+  deviceTemperatureC?: number | null;
 
   // أيام عمل المشروع (معرّفات sun..sat) — تُقيّد اقتراح أفضل/أسوأ نافذة
   // بديلة بأيام العمل فقط، فلا يُقترح يوم عطلة (مثل الجمعة). اختيارية.
@@ -146,6 +156,35 @@ export interface DustHourlySample extends DustWeatherSample {
   time: string; // ISO
 }
 
+// القراءة المدموجة فعلياً بعد تطبيق العزل التام (جهاز فقط أو طقس فقط،
+// راجع mergeDustReading في engine.ts وhasDeviceLink في DustEngineInput
+// أعلاه) — لا مزيج بين مصدرين أبداً لنفس التقييمة الواحدة. حقل sources
+// يوثّق أي مصدر فاز فعلياً لكل حقل (كله device/none أو كله weather/none
+// حسب hasDeviceLink، لا onsite أبداً بعد الآن — العمود تاريخي/توافقي).
+export interface DviMergedReading {
+  windSpeedKmh: number | null;
+  windGustKmh: number | null;
+  windDirectionDeg: number | null;
+  pm10: number | null;
+  pm25: number | null;
+  visibilityM: number | null;
+  relativeHumidityPercent: number | null;
+  temperatureC: number | null;
+  // آخر وقت إرسال فعلي للمحطة (ISO) — منسوخ من DustEngineInput.deviceLastReadingAt
+  // فقط عندما hasDeviceLink=true، وإلا null دائماً.
+  deviceLastReadingAt: string | null;
+  sources: {
+    windSpeedKmh: 'device' | 'weather' | 'onsite' | 'none';
+    windGustKmh: 'device' | 'weather' | 'onsite' | 'none';
+    windDirectionDeg: 'device' | 'weather' | 'onsite' | 'none';
+    pm10: 'device' | 'weather' | 'onsite' | 'none';
+    pm25: 'device' | 'weather' | 'onsite' | 'none';
+    visibilityM: 'device' | 'weather' | 'onsite' | 'none';
+    relativeHumidityPercent: 'device' | 'weather' | 'onsite' | 'none';
+    temperatureC: 'device' | 'weather' | 'onsite' | 'none';
+  };
+}
+
 // نتيجة تقييم ساعة واحدة ضمن نافذة النشاط
 export interface DviHourlyEvaluation extends DviEvaluationResult {
   time: string; // ISO
@@ -156,6 +195,12 @@ export interface DviHourlyEvaluation extends DviEvaluationResult {
   // هذا الحقل يسمح لطبقات استهلاك أخرى (مثل محرك الامتثال التنظيمي) بقراءة
   // القيم الخام دون أن يُعاد حساب DVI أو يُخرق ذلك العقد.
   rawWeatherSample: DustWeatherSample;
+  // القراءة بعد تطبيق أولوية جهاز > طقس > onsite (راجع DviMergedReading
+  // أعلاه) — حقل شقيق آخر لنفس السبب، يسمح لمحرك الامتثال بقراءة نفس
+  // القيم المدموجة التي استخدمها DVI فعلياً بدل إعادة اشتقاق سلسلة أولوية
+  // منفصلة قد تتعارض معها (كان هذا سبب تناقضات "بانر أخضر/بطاقة حمراء"
+  // سابقاً).
+  mergedReading: DviMergedReading;
 }
 
 // تقييم نافذة زمنية كاملة لنشاط له وقت بدء ومدة (مثال: 3 ساعات)

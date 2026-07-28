@@ -256,8 +256,16 @@ const PM10_SUSPENSION_MINUTES = 30;
 export function pm10ThresholdRule(
   pm10UgM3: number | null,
   sustainedMinutesAbove340?: number,
-  sustainedMinutesAbove250?: number
+  sustainedMinutesAbove250?: number,
+  // إعفاء محطة الخلط المغلقة بكفاءة فلتر PM10 ≥99% — طلب صريح من المستخدم:
+  // كل قواعد PM10 (الاحتراز، التحذير، التنبيه الاستباقي، التعليق/الإيقاف
+  // المعلَّق والمؤكَّد) تُستثنى بالكامل لهذا النشاط تحديداً، بنفس شرط بوابة
+  // الرياح >25 الحالية (isEnclosedExemptFromHighWind في engine.ts) — مغلقة
+  // فعلياً وكفاءة فلترة كافية معاً، لا أحدهما فقط. راجع computeBatchingPm10Exempt
+  // في engine.ts لمصدر هذه القيمة الموحَّد.
+  isPm10ExemptEnclosedBatching: boolean = false
 ): DustRuleHit[] {
+  if (isPm10ExemptEnclosedBatching) return [];
   if (pm10UgM3 === null || pm10UgM3 === undefined) return [];
 
   const hits: DustRuleHit[] = [];

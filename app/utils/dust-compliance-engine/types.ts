@@ -373,6 +373,14 @@ export interface DustComplianceResult {
     pm25UgM3: number | null;
     relativeHumidityPercent: number | null;
     temperatureC: number | null;
+    // للعرض فقط (تنبيهات إعلامية داخل بطاقة الامتثال) — لا تدخل في أي حساب/
+    // عتبة ضمن محرك الامتثال نفسه، تماماً كالرطوبة والحرارة أعلاه.
+    visibilityM: number | null;
+    // آخر وقت إرسال فعلي لمحطة الرصد المرتبطة (ISO) — undefined دائماً
+    // عندما لا يوجد ربط جهاز لهذا النشاط (وضع API)، فيُستخدم وجود الحقل
+    // (بصرف النظر عن قيمته null/string) كإشارة "هذا النشاط مرتبط بجهاز"
+    // في buildStalenessAdvisory (Compliancewidgetcard.tsx). للعرض فقط.
+    deviceLastReadingAt?: string | null;
   };
 
   // ملاحظات تحذيرية لصحة القراءة (من DVI، راجع DviEvaluationResult.caveatsAr)
@@ -413,10 +421,17 @@ export interface DustComplianceContext {
   // الامتثال نفسه.
   relativeHumidityPercent: number | null;
   temperatureC: number | null;
+  // للعرض فقط (تنبيهات إعلامية داخل بطاقة الامتثال) — لا تدخل في أي حساب/
+  // عتبة ضمن محرك الامتثال نفسه.
+  visibilityM: number | null;
+  // آخر وقت إرسال فعلي لمحطة الرصد المرتبطة بهذا النشاط (ISO) — null إن
+  // كان النشاط مرتبطاً بمحطة لم ترسل أي قراءة إطلاقاً بعد، undefined إن
+  // لم يكن مرتبطاً بمحطة أصلاً (وضع API). للعرض فقط (تحذير قِدم القراءة).
+  deviceLastReadingAt?: string | null;
   // ملاحظات DVI التحذيرية (راجع DviEvaluationResult.caveatsAr) تُمرَّر هنا
   // كما هي لتظهر في نتيجة الامتثال أيضاً — لا تُغيّر أي قرار.
   dviCaveatsAr?: string[];
-  dataSource: 'open-meteo' | 'onsite' | 'project-station' | 'none';
+  dataSource: 'device' | 'open-meteo' | 'onsite' | 'project-station' | 'none';
   sensitiveReceptors: SensitiveReceptor[];
 
   // آخر قرار امتثال مسجَّل لنفس activity_group_id (من

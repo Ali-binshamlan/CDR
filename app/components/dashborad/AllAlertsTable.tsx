@@ -6,7 +6,7 @@ import { apiClient } from '@/app/lib/apiClient';
 import { alertKindLabelAr, alertKindToDecision, decisionMeta } from '@/app/lib/decisionMeta';
 import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
-import { Loader2, CloudRain } from 'lucide-react';
+import { Loader2, CloudRain, MapPin } from 'lucide-react';
 
 const STATE_LABEL_AR: Record<string, string> = {
   NEW: 'جديد',
@@ -65,8 +65,14 @@ export default function AllAlertsTable() {
             <table className="w-full text-right text-sm whitespace-nowrap">
               <thead className="bg-slate-50/50 text-slate-500">
                 <tr>
+                  <th className="py-3 px-5 font-bold">#</th>
                   <th className="py-3 px-5 font-bold">المشروع</th>
                   <th className="py-3 px-5 font-bold">المالك</th>
+                  <th className="py-3 px-5 font-bold">رقم الجوال</th>
+                  <th className="py-3 px-5 font-bold">اسم المدير</th>
+                  <th className="py-3 px-5 font-bold">الموقع</th>
+                  <th className="py-3 px-5 font-bold">الحي</th>
+                  <th className="py-3 px-5 font-bold">المدينة</th>
                   <th className="py-3 px-5 font-bold">النشاط</th>
                   <th className="py-3 px-5 font-bold">النوع</th>
                   <th className="py-3 px-5 font-bold">الحالة</th>
@@ -75,16 +81,37 @@ export default function AllAlertsTable() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {alerts.map((a) => {
+                {alerts.map((a, idx) => {
                   const meta = decisionMeta[alertKindToDecision(a.kind)];
+                  const hasCoords = typeof a.projectLatitude === 'number' && typeof a.projectLongitude === 'number';
                   return (
                     <tr key={a.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="py-3 px-5 text-slate-400">{idx + 1}</td>
                       <td className="py-3 px-5">
                         <Link href={`/dashboard/Projects/${a.project_id}`} className="font-bold text-[#0176FB] hover:underline">
                           {a.projectName || '—'}
                         </Link>
                       </td>
                       <td className="py-3 px-5 text-slate-600">{a.ownerUsername || a.ownerCompany || '—'}</td>
+                      <td className="py-3 px-5 text-slate-600" dir="ltr">{a.ownerPhone || '—'}</td>
+                      <td className="py-3 px-5 text-slate-600">{a.projectManager || '—'}</td>
+                      <td className="py-3 px-5">
+                        {hasCoords ? (
+                          <a
+                            href={`https://www.google.com/maps?q=${a.projectLatitude},${a.projectLongitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[#0176FB] hover:underline"
+                          >
+                            <MapPin className="w-3.5 h-3.5" />
+                            عرض الموقع
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="py-3 px-5 text-slate-600">{a.projectNeighborhood || '—'}</td>
+                      <td className="py-3 px-5 text-slate-600">{a.projectCity || '—'}</td>
                       <td className="py-3 px-5 text-slate-600">
                         {a.regulatoryActivity && a.regulatoryActivity !== 'OTHER'
                           ? REGULATORY_ACTIVITY_LABEL_AR[a.regulatoryActivity] ?? translateActivityType(a.activityType)

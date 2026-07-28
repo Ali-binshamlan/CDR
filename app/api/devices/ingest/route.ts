@@ -18,6 +18,8 @@ const MEASUREMENT_FIELDS = [
   'pm10',
   'pm25',
   'visibilityM',
+  'relativeHumidityPercent',
+  'temperatureC',
 ] as const;
 
 const COLUMN_BY_FIELD: Record<(typeof MEASUREMENT_FIELDS)[number], string> = {
@@ -27,12 +29,27 @@ const COLUMN_BY_FIELD: Record<(typeof MEASUREMENT_FIELDS)[number], string> = {
   pm10: 'last_pm10',
   pm25: 'last_pm25',
   visibilityM: 'last_visibility_m',
+  relativeHumidityPercent: 'last_relative_humidity_percent',
+  temperatureC: 'last_temperature_c',
 };
 
 function validateValue(field: (typeof MEASUREMENT_FIELDS)[number], value: unknown): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return `${field} يجب أن يكون رقماً`;
   if (field === 'windDirectionDeg') {
     if (value < 0 || value > 360) return 'windDirectionDeg يجب أن يكون بين 0 و360';
+    return null;
+  }
+  // نطاق رطوبة نسبية فيزيائي صارم (0-100%) — أي قيمة خارجه خطأ جهاز واضح،
+  // بنفس منطق windDirectionDeg أعلاه.
+  if (field === 'relativeHumidityPercent') {
+    if (value < 0 || value > 100) return 'relativeHumidityPercent يجب أن يكون بين 0 و100';
+    return null;
+  }
+  // نطاق حرارة معقول لمستشعر ميداني بموقع إنشاءات بالرياض: -20 إلى 70°م —
+  // يغطي أي ظرف واقعي محلياً + هامش أخطاء جهاز، بلا رفض قراءات صيف شديدة
+  // الحرارة حقيقية.
+  if (field === 'temperatureC') {
+    if (value < -20 || value > 70) return 'temperatureC يجب أن يكون بين -20 و70';
     return null;
   }
   if (value < 0) return `${field} لا يمكن أن يكون سالباً`;

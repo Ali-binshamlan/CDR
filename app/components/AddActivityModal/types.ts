@@ -15,6 +15,17 @@ export type ActivityStep =
 // المؤشر الوحيد المتاح في DCR — الغبار فقط (لا رافعة ولا حرارة)
 export type IndicatorTab = 'dust';
 
+// شكل مبسّط لمحطة رصد (project_devices) كما يُعرض في قائمة اختيار محطة
+// النشاط — راجع GET /api/projects/[projectId]/devices للشكل الكامل؛ هنا
+// فقط الحقول اللازمة للعرض/اقتراح أقرب محطة (اسم، موقع، حالة التفعيل).
+export interface ProjectDeviceLite {
+  id: string;
+  name: string;
+  lat: number | null;
+  lng: number | null;
+  is_active: boolean;
+}
+
 // شكل مبسّط للمشروع كما يُستخدم داخل المودل (الحقول اللي فعليًا محتاجينها هنا فقط)
 export interface ProjectLite {
   id: string;

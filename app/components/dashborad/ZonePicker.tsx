@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Polygon, Circle, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { LatLng, ProjectZoneType } from '@/app/utils/geo/zone';
+import { SAUDI_BOUNDS } from '@/app/utils/geo/countryBounds';
 
 export interface ZonePickerValue {
   zoneType: ProjectZoneType;
@@ -68,6 +69,9 @@ export default function ZonePicker({ initialCenter, value }: ZonePickerProps) {
     <MapContainer
       center={[initialCenter.lat, initialCenter.lng]}
       zoom={15}
+      minZoom={5}
+      maxBounds={SAUDI_BOUNDS}
+      maxBoundsViscosity={1.0}
       style={{ height: '100%', width: '100%' }}
       zoomControl={true}
     >

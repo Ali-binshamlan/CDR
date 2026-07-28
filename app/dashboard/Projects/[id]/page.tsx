@@ -56,28 +56,28 @@ export default function ProjectDetailsPage({
   // التفاصيل الدقيقة داخل كل نشاط موحّد
   const [dustResults, setDustResults] = useState<any[]>([]);
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch(`/api/projects/${id}`);
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`/api/projects/${id}`);
 
-        if (!response.ok) {
-          if (response.status === 404) notFound();
-          throw new Error('حدث خطأ أثناء جلب بيانات المشروع');
-        }
-
-        const result = await response.json();
-        setData(result);
-        setRecentActivities(result.recentActivities || []);
-        setDustResults(result.dustResults || []);
-      } catch (err: any) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
+      if (!response.ok) {
+        if (response.status === 404) notFound();
+        throw new Error('حدث خطأ أثناء جلب بيانات المشروع');
       }
-    };
 
+      const result = await response.json();
+      setData(result);
+      setRecentActivities(result.recentActivities || []);
+      setDustResults(result.dustResults || []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     if (id) {
       fetchDashboardData();
     }
@@ -125,11 +125,12 @@ export default function ProjectDetailsPage({
     setRecentActivities((prev) => prev.filter((a) => a.activityGroupId !== activityGroupId));
   };
 
-  const handleEdit = (activity: RecentActivityItem) => {
-    // TODO: فتح نموذج/مودال التعديل الفعلي لهذا النشاط.
-    // MultiIndicatorActivityBox لا يملك منطق التعديل، فقط يستدعي onEdit
-    // ليقرر الأب (هذه الصفحة) كيف يفتح النموذج المناسب حسب نوع النشاط.
-    console.log('تعديل النشاط:', activity.activityGroupId);
+  // تعديل زمن النشاط يحدث داخل MultiIndicatorActivityBox نفسها (نموذج
+  // تاريخ/وقت مضمّن)، فيلزم فقط إعادة جلب بيانات الصفحة كاملة بعد نجاحه
+  // — الزمن الجديد يغيّر windowStartIso/windowEndIso/dustResults المشتقة
+  // من الخادم، بخلاف الحذف الذي يكفيه إزالة العنصر محلياً.
+  const handleEdited = () => {
+    fetchDashboardData();
   };
 
   return (
@@ -160,7 +161,7 @@ export default function ProjectDetailsPage({
                   windowStartIso={activity.windowStartIso}
                   windowEndIso={activity.windowEndIso}
                   durationMinutes={activity.durationMinutes}
-                  onEdit={() => handleEdit(activity)}
+                  onEdited={handleEdited}
                   onDeleted={() => handleDeleted(activity.activityGroupId)}
                 >
                   {/* بطاقات التفاصيل الدقيقة لهذا النشاط — مغذّاة بنتائج محرك
@@ -222,7 +223,6 @@ export default function ProjectDetailsPage({
                               projectId={id}
                               activityId={r.activityId}
                               projectName={project.name}
-                              hideDecisionPanel
                               hideSchedule
                             />
                           ))}

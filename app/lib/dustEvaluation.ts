@@ -58,6 +58,12 @@ export interface FreshDeviceReading {
   last_pm10: number | null;
   last_pm25: number | null;
   last_visibility_m: number | null;
+  last_relative_humidity_percent: number | null;
+  last_temperature_c: number | null;
+  // وقت آخر إرسال فعلي للمحطة (ISO) — لا يُستخدم لإسقاط القراءة بعد الآن
+  // (راجع resolveFreshProjectDevice أدناه)، فقط لعرض "قِدم القراءة" في
+  // الواجهة عندما تتجاوز DEVICE_READING_FRESHNESS_MINUTES.
+  last_reading_at: string;
 }
 
 export function buildDustInput(row: any, project: any, freshDevice?: FreshDeviceReading | null): DustEngineInput {
@@ -91,12 +97,20 @@ export function buildDustInput(row: any, project: any, freshDevice?: FreshDevice
     onsiteVisibilityM: row.onsite_visibility_m ?? null,
     onsitePm10: row.onsite_pm10 ?? null,
     onsitePm25: row.onsite_pm25 ?? null,
+    // hasDeviceLink يعكس اختيار المستخدم الفعلي (device_id على النشاط)،
+    // لا مجرد توفر freshDevice — هذا هو مفتاح العزل التام في
+    // mergeDustReading (engine.ts): نشاط مرتبط بمحطة يعرض بياناتها حصراً
+    // حتى لو freshDevice غاب تماماً (لا صف جهاز نشط إطلاقاً).
+    hasDeviceLink: !!row.device_id,
+    deviceLastReadingAt: freshDevice?.last_reading_at ?? null,
     deviceWindSpeedKmh: freshDevice?.last_wind_speed_kmh ?? null,
     deviceWindGustKmh: freshDevice?.last_wind_gust_kmh ?? null,
     deviceWindDirectionDeg: freshDevice?.last_wind_direction_deg ?? null,
     devicePm10: freshDevice?.last_pm10 ?? null,
     devicePm25: freshDevice?.last_pm25 ?? null,
     deviceVisibilityM: freshDevice?.last_visibility_m ?? null,
+    deviceRelativeHumidityPercent: freshDevice?.last_relative_humidity_percent ?? null,
+    deviceTemperatureC: freshDevice?.last_temperature_c ?? null,
     workDaysList: Array.isArray(project.work_days_list) ? project.work_days_list : undefined,
     workHoursStart: project.work_hours_start ?? undefined,
     workHoursEnd: project.work_hours_end ?? undefined,
@@ -118,36 +132,43 @@ function annotateHourWithRegulatoryGate<T extends { effectiveWindKmh: number | n
   };
 }
 
-// أقصى عمر لقراءة جهاز حتى تبقى "حية" وتُستخدم في التقييم — بعدها تُعامَل
-// كأنها غير موجودة ويسقط الحساب تلقائياً لـ onsite_*/الطقس. نفس نمط ثابت
-// "حداثة/تكرار" بسيط أعلى مستوى الملف مثل MIN_MINUTES_BETWEEN_UNCHANGED_EVALUATIONS
-// أدناه — قيمة مبدئية معقولة ضمن نطاق 15-30 دقيقة المقترح، قابلة للتعديل
-// لاحقاً حسب معدل إرسال الأجهزة الفعلي.
-const DEVICE_READING_FRESHNESS_MINUTES = 20;
+// عتبة "حداثة" القراءة — لم تعد تُستخدم لإسقاط القراءة في هذه الدالة (راجع
+// التعليق أدناه)، فقط كمرجع للواجهة (buildStalenessAdvisory في
+// Compliancewidgetcard.tsx) لتحديد متى تُعرض بطاقة تحذير "قراءة قديمة".
+export const DEVICE_READING_FRESHNESS_MINUTES = 20;
 
-// يجلب أحدث قراءة جهاز "حية" لمشروع معيّن — إن وُجد أكثر من جهاز نشط، يُختار
-// الأحدث تحديثاً (last_reading_at تنازلياً). لا مطابقة مكانية بين جهاز
-// ونشاط محدد في هذا الإصدار (لم تُطلَب) — أي جهاز حديث للمشروع يُستخدم
-// كقراءة المشروع الموحّدة. يرجع null صراحة عند غياب جهاز نشط أو انتهاء
-// حداثة أحدث قراءة، فيسلك buildDustInput مساره القديم دون أي تغيير سلوكي.
+// يجلب آخر قراءة معروفة لجهاز مشروع معيّن. مع تمرير deviceId (النشاط
+// مرتبط بمحطة محددة يختارها المستخدم عند الإضافة، راجع AddActivityModal)
+// يُقيَّد الاستعلام بذلك الجهاز تحديداً بدل أي جهاز آخر بالمشروع. بلا
+// deviceId: أحدث جهاز نشط بالمشروع (last_reading_at تنازلياً) — مسار
+// احتياطي للاستدعاءات القديمة/الاختبارات فقط، لا يُستخدم في التقييم الحي
+// بعد ربط كل نشاط بمحطته الخاصة.
+//
+// بطلب صريح من المستخدم ("لا شيء يعوض الآخر"): القراءة القديمة (أقدم من
+// DEVICE_READING_FRESHNESS_MINUTES) أو حتى المعدومة تماماً **لا تُسقَط
+// هنا بعد الآن** — تُرجَع كما هي دائماً طالما وُجد صف جهاز نشط، والواجهة
+// هي من تقرر عرض تحذير "قراءة قديمة" بدل الفشل الصامت والانتقال لـAPI
+// الطقس كما كان يحدث سابقاً. يرجع null فقط عند عدم وجود أي صف جهاز نشط
+// بقراءة واحدة مسجَّلة إطلاقاً (لا صف قابل للعرض أصلاً).
 export async function resolveFreshProjectDevice(
   supabaseAdmin: any,
-  projectId: string
+  projectId: string,
+  deviceId?: string | null
 ): Promise<FreshDeviceReading | null> {
-  const { data } = await supabaseAdmin
+  let query = supabaseAdmin
     .from('project_devices')
-    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m')
+    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c')
     .eq('project_id', projectId)
     .eq('is_active', true)
-    .not('last_reading_at', 'is', null)
-    .order('last_reading_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .not('last_reading_at', 'is', null);
+
+  query = deviceId
+    ? query.eq('id', deviceId)
+    : query.order('last_reading_at', { ascending: false });
+
+  const { data } = await query.limit(1).maybeSingle();
 
   if (!data?.last_reading_at) return null;
-
-  const ageMinutes = (Date.now() - new Date(data.last_reading_at).getTime()) / 60000;
-  if (ageMinutes > DEVICE_READING_FRESHNESS_MINUTES) return null;
 
   return {
     last_wind_speed_kmh: data.last_wind_speed_kmh ?? null,
@@ -156,6 +177,9 @@ export async function resolveFreshProjectDevice(
     last_pm10: data.last_pm10 ?? null,
     last_pm25: data.last_pm25 ?? null,
     last_visibility_m: data.last_visibility_m ?? null,
+    last_relative_humidity_percent: data.last_relative_humidity_percent ?? null,
+    last_temperature_c: data.last_temperature_c ?? null,
+    last_reading_at: data.last_reading_at,
   };
 }
 
@@ -278,19 +302,59 @@ export async function fetchPm10SustainedStatus(
   }
 }
 
+// يجلب كل أجهزة مشروع دفعة واحدة (استعلام واحد بدل استعلام لكل نشاط) ويبني
+// Map<deviceId, FreshDeviceReading|null> — يُستخدم في computeDustResults
+// لحلّ جهاز كل نشاط (row.device_id) محلياً بدل استدعاء الشبكة لكل صف.
+// نفس مبدأ resolveFreshProjectDevice: لا إسقاط للقراءة القديمة هنا — كل
+// جهاز نشط له last_reading_at يُضاف للخريطة بصرف النظر عن عمره؛ الواجهة
+// تقرر عرض تحذير القِدم.
+async function resolveProjectDeviceMap(
+  supabaseAdmin: any,
+  projectId: string
+): Promise<Map<string, FreshDeviceReading | null>> {
+  const map = new Map<string, FreshDeviceReading | null>();
+  const { data } = await supabaseAdmin
+    .from('project_devices')
+    .select('id, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c')
+    .eq('project_id', projectId)
+    .eq('is_active', true);
+
+  for (const d of data || []) {
+    if (!d.last_reading_at) continue;
+    map.set(d.id, {
+      last_wind_speed_kmh: d.last_wind_speed_kmh ?? null,
+      last_wind_gust_kmh: d.last_wind_gust_kmh ?? null,
+      last_wind_direction_deg: d.last_wind_direction_deg ?? null,
+      last_pm10: d.last_pm10 ?? null,
+      last_pm25: d.last_pm25 ?? null,
+      last_visibility_m: d.last_visibility_m ?? null,
+      last_relative_humidity_percent: d.last_relative_humidity_percent ?? null,
+      last_temperature_c: d.last_temperature_c ?? null,
+      last_reading_at: d.last_reading_at,
+    });
+  }
+  return map;
+}
+
 // تشغيل محرك الغبار لكل نشاط غبار، مع دمج AEI، وإرجاع شكل يطابق props
 // بطاقة DustWidgetCard (windowEval + aei + معرفات الربط).
 // supabaseAdmin اختياري: بلا تمريره (استدعاءات قديمة/اختبارات) يتجاهل
 // المسار مسار الجهاز بالكامل ويسلك onsite_*/الطقس كما كان دائماً — إضافة
 // تراكمية بحتة، بلا أي كسر توافقي.
 export async function computeDustResults(dustRows: any[], project: any, supabaseAdmin?: any) {
-  const freshDevice = supabaseAdmin && project?.id
-    ? await resolveFreshProjectDevice(supabaseAdmin, project.id).catch(() => null)
-    : null;
+  // كل نشاط قد يكون مرتبطاً بمحطة مختلفة (device_id، راجع AddActivityModal) —
+  // لم يعد ممكناً استخدام "أحدث جهاز واحد بالمشروع" لكل الأنشطة كما كان
+  // سابقاً. نجلب كل أجهزة المشروع دفعة واحدة، ثم نحلّ جهاز كل نشاط محلياً
+  // حسب row.device_id داخل الحلقة أدناه (أنشطة قديمة بلا device_id تحصل
+  // على null كما كان سلوكها سابقاً تماماً — فشل آمن).
+  const deviceMap = supabaseAdmin && project?.id
+    ? await resolveProjectDeviceMap(supabaseAdmin, project.id).catch(() => new Map<string, FreshDeviceReading | null>())
+    : new Map<string, FreshDeviceReading | null>();
 
   const results = await Promise.all(
     (dustRows || []).map(async (row) => {
       try {
+        const freshDevice = row.device_id ? deviceMap.get(row.device_id) ?? null : null;
         const input = buildDustInput(row, project, freshDevice);
         const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
         const durationHours = Math.max(1, Math.round(row.duration_hours || 1));

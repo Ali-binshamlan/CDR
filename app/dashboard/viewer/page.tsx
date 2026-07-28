@@ -42,5 +42,5 @@ export default function ViewerDashboardPage() {
     );
   }
 
-  return <GlobalDashboard apiEndpoint="/viewer/dashboard" />;
+  return <GlobalDashboard apiEndpoint="/viewer/dashboard" hideRawReadings />;
 }

@@ -215,6 +215,7 @@ function context(overrides: Partial<DustComplianceContext> = {}): DustCompliance
     pm25UgM3: 12,
     relativeHumidityPercent: 40,
     temperatureC: 30,
+    visibilityM: 5000,
     dataSource: 'onsite',
     sensitiveReceptors: [],
     ...overrides,
@@ -569,17 +570,18 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.isEnclosedOperation).toBe(false);
   });
 
-  // ربط استثناء البيتشنج المغلق بكفاءة فلتر PM10 — اعتماد من محرك القواعد
-  // الجديد (marqab-dust-rules-engine): إغلاق العملية وحده لا يكفي لمحطة
-  // الخلط تحديداً، يلزم أيضاً كفاءة فلتر ≥99% (نفس حد BATCHING-FILTER-002).
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% مستثناة من بوابة إيقاف الرياح فوق 25', () => {
+  // ربط استثناء البيتشنج بكفاءة فلتر PM10 + إحكام إغلاق الصوامع تحديداً —
+  // لا يُشترط isEnclosedOperation إطلاقاً لمحطة الخلط (قد تكون مكشوفة
+  // هيكلياً)، طلب صريح من المستخدم: "حتى لو كان مكشوف بس الفلاتر 99
+  // والصوامع مغلق أبغاه يكون مسموح".
+  it('محطة خلط بصوامع مغلقة + كفاءة فلتر ≥99% مستثناة من بوابة إيقاف الرياح فوق 25 (حتى لو مكشوفة)', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 30,
         activity: activityProfile({
           regulatoryActivity: 'BATCHING_PLANT',
-          isEnclosedOperation: true,
-          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: 99.5 },
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
         }),
       })
     );
@@ -587,28 +589,39 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
   });
 
-  it('محطة خلط مغلقة بكفاءة فلتر أقل من 99% لا تُستثنى من بوابة إيقاف الرياح فوق 25', () => {
+  it('محطة خلط بصوامع مغلقة بكفاءة فلتر أقل من 99% لا تُستثنى من بوابة إيقاف الرياح فوق 25', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 30,
         activity: activityProfile({
           regulatoryActivity: 'BATCHING_PLANT',
-          isEnclosedOperation: true,
-          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: 95 },
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 95 },
         }),
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
   });
 
-  it('محطة خلط مغلقة بلا قيمة كفاءة فلتر مُدخلة (null) لا تُستثنى من بوابة إيقاف الرياح', () => {
+  it('محطة خلط بصوامع مغلقة بلا قيمة كفاءة فلتر مُدخلة (null) لا تُستثنى من بوابة إيقاف الرياح', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 30,
         activity: activityProfile({
           regulatoryActivity: 'BATCHING_PLANT',
-          isEnclosedOperation: true,
-          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: null },
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: null },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
+  });
+
+  it('محطة خلط بصوامع غير مغلقة (silosSealed=false) بكفاءة فلتر ≥99% لا تُستثنى من بوابة إيقاف الرياح', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          controls: { ...activityProfile().controls, silosSealed: false, pm10FilterEfficiencyPercent: 99.5 },
         }),
       })
     );
@@ -633,6 +646,98 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+  });
+
+  // إعفاء محطة الخلط (صوامع مغلقة + فلتر ≥99%) من كل قواعد PM10 — طلب صريح
+  // من المستخدم، بنفس شرط إعفاء بوابة الرياح >25 أعلاه بالضبط. isEnclosedOperation
+  // لا يدخل في هذا الشرط إطلاقاً.
+  const exemptBatchingActivity = () =>
+    activityProfile({
+      regulatoryActivity: 'BATCHING_PLANT',
+      isEnclosedOperation: false,
+      controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
+    });
+
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=1500 (فوق 340 بكثير) → لا إيقاف إطلاقاً، لا معلَّق ولا مؤكَّد', () => {
+    const r = evaluateDustCompliance(
+      context({ pm10UgM3: 1500, pm10SustainedMinutesAbove340: 5, activity: exemptBatchingActivity() })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+  });
+
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=260 مستمرة 30 دقيقة → لا تعليق (RCRC-PM10-30M-SUSPENSION-012 مستثناة أيضاً)', () => {
+    const r = evaluateDustCompliance(
+      context({ pm10UgM3: 260, pm10SustainedMinutesAbove250: 30, activity: exemptBatchingActivity() })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(false);
+    expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+  });
+
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=200 (نطاق الاحتراز) → لا تنبيه احتراز إطلاقاً (الإعفاء يشمل كل المستويات، لا الإيقاف فقط)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 200, activity: exemptBatchingActivity() }));
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  it('محطة خلط بصوامع مغلقة بكفاءة فلتر أقل من 99% + PM10=1500 → لا تُستثنى، الإيقاف يعمل كالمعتاد', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 1500,
+        pm10SustainedMinutesAbove340: 5,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 95 },
+        }),
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+  });
+
+  it('محطة خلط مكشوفة (isEnclosedOperation=false) بصوامع مغلقة + فلتر ≥99% + PM10=1500 → مستثناة (الإغلاق الهيكلي غير مشترط)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 1500,
+        pm10SustainedMinutesAbove340: 5,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+  });
+
+  it('محطة خلط بصوامع غير مغلقة (silosSealed=false) بكفاءة فلتر ≥99% + PM10=1500 → لا تُستثنى (الصوامع شرط لازم)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 1500,
+        pm10SustainedMinutesAbove340: 5,
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          controls: { ...activityProfile().controls, silosSealed: false, pm10FilterEfficiencyPercent: 99.5 },
+        }),
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+  });
+
+  it('نشاط هدم مغلق (غير BATCHING_PLANT) بلا كفاءة فلتر + PM10=1500 → إعفاء PM10 لا يُطبَّق عليه إطلاقاً (مقصور على محطة الخلط فقط)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 1500,
+        pm10SustainedMinutesAbove340: 5,
+        activity: activityProfile({
+          regulatoryActivity: 'DEMOLITION',
+          isEnclosedOperation: true,
+          controls: { ...activityProfile().controls, pm10FilterEfficiencyPercent: null },
+        }),
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 });
 
@@ -746,6 +851,63 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
     // السبب المعروض يجب أن يكون قاعدة الرياح الفعلية، لا رسالة "بانتظار
     // استقرار" العامة — لأن القيد الجديد لم يُطبَّق هنا أصلاً (لا تحسّن).
     expect(r.shortReasonAr).not.toContain('بانتظار استقرار');
+  });
+
+  // طلب صريح من المستخدم: إيقاف بوابة الرياح >25 (GATE-WIND-ABOVE-25-004)
+  // لا يُستأنف عند عودة الرياح إلى 25 كم/س بالضبط — يلزم انخفاضها إلى أقل
+  // من 25 صراحة. classifyWind يضع 25 بالضبط ضمن النطاق البرتقالي (لا
+  // ABOVE_25)، فبلا هذا القيد المخصَّص كانت بوابة الرياح تتوقف عن التفعيل
+  // فور وصول القراءة لـ25 بالضبط، فيُخلَط هذا خطأً مع جواز الاستئناف رغم
+  // أن قاعدة الاستئناف التنظيمية أشد تحديداً من عتبة الإيقاف نفسها.
+  describe('قاعدة استئناف خاصة ببوابة الرياح >25 — لا يُستأنف عند 25 كم/س بالضبط', () => {
+    it('إيقاف سابق بسبب بوابة الرياح + الرياح الآن 25 كم/س بالضبط → يبقى موقِفاً (لا استئناف عند 25 بالضبط) حتى مع استيفاء قيد الاستقرار العام', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 25,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    });
+
+    it('إيقاف سابق بسبب بوابة الرياح + الرياح الآن 24.9 كم/س (أقل من 25 فعلياً) → يُستأنف طبيعياً (بعد استيفاء قيد الاستقرار العام أيضاً)', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 24.9,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    });
+
+    it('إيقاف سابق بسبب بوابة الرياح + الرياح الآن 26 كم/س (لا تزال ABOVE_25) → يبقى موقِفاً بالبوابة نفسها كالمعتاد (لا حاجة لهذا القيد المخصَّص)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 26,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
+    });
+
+    it('إيقاف سابق من MANDATORY_STOP (لا STOP_AFFECTED_ACTIVITY) + الرياح 25 بالضبط → لا يُطبَّق هذا القيد المخصَّص (خاص ببوابة الرياح فقط)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 25,
+          pm10UgM3: 20,
+          previousDecisionCategory: 'MANDATORY_STOP',
+          previousPendingResumeSince: new Date(Date.now() - 15 * 60000).toISOString(),
+        })
+      );
+      // القيد العام (10 دقائق استقرار) هو ما يحكم هنا، لا قيد الرياح
+      // المخصَّص — استقرار 15 دقيقة كافٍ فيستأنف طبيعياً.
+      expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    });
   });
 });
 
@@ -1567,7 +1729,35 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     time: new Date().toISOString(),
   };
 
-  it('يقرأ windGustKmh/windDirectionDeg/pm25 من rawWeatherSample عندما تتوفر (يصلح خلل as any القديم الذي كان يُرجع null دائماً)', () => {
+  // مصدر مشترك لهذه المجموعة — mergedReading (لا rawWeatherSample مباشرة)
+  // هو ما يُقرأ الآن فعلياً لـ windGustKmh/windDirectionDeg/pm10/pm25/
+  // الرطوبة/الحرارة، بعد إصلاح تضارب سلسلة أولوية الامتثال مع DVI (راجع
+  // خطة "إعادة ترتيب أولوية قراءات الغبار/الطقس").
+  function mergedReadingFixture(overrides: any = {}) {
+    return {
+      windSpeedKmh: 25,
+      windGustKmh: 39.78,
+      windDirectionDeg: 315,
+      pm10: 45,
+      pm25: 18,
+      visibilityM: 10000,
+      relativeHumidityPercent: 20,
+      temperatureC: 30,
+      sources: {
+        windSpeedKmh: 'weather',
+        windGustKmh: 'weather',
+        windDirectionDeg: 'weather',
+        pm10: 'weather',
+        pm25: 'weather',
+        visibilityM: 'weather',
+        relativeHumidityPercent: 'weather',
+        temperatureC: 'weather',
+      },
+      ...overrides,
+    };
+  }
+
+  it('يقرأ windGustKmh/windDirectionDeg/pm10/pm25/الرطوبة/الحرارة من mergedReading عندما تتوفر', () => {
     const dviHourly = {
       ...baseDviHourly,
       rawWeatherSample: {
@@ -1586,15 +1776,23 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
         dataSource: 'open-meteo' as const,
         isForecastStale: false,
       },
+      mergedReading: mergedReadingFixture(),
     };
     const ctx = buildComplianceContext({}, {}, dviHourly, []);
     expect(ctx.windGustKmh).toBe(39.78);
     expect(ctx.windDirectionDeg).toBe(315);
     expect(ctx.pm25UgM3).toBe(18);
-    expect(ctx.pm10UgM3).toBe(45); // لا يوجد onsite_pm10 في activityRow، فيسقط تلقائياً لقيمة العينة الخام
+    expect(ctx.pm10UgM3).toBe(45);
+    expect(ctx.relativeHumidityPercent).toBe(20);
+    expect(ctx.temperatureC).toBe(30);
+    expect(ctx.dataSource).toBe('open-meteo');
   });
 
-  it('onsite_pm10 على activityRow له الأولوية على العينة الخام عند توفره', () => {
+  // الفرضية معكوسة الآن بالكامل عن السلوك القديم: الجهاز يفوز على
+  // mergedReading.pm10 المدموج مسبقاً من DVI (الذي هو نفسه بالفعل نتيجة
+  // أولوية جهاز > طقس > onsite) — لم يعد activityRow.onsite_pm10 يُقرأ
+  // مباشرة هنا بمعزل عن الجهاز كما كان قديماً.
+  it('pm10UgM3 يعكس mergedReading.pm10 (الذي قد يكون من الجهاز)، لا onsite_pm10 مباشرة بمعزل عنه', () => {
     const dviHourly = {
       ...baseDviHourly,
       rawWeatherSample: {
@@ -1604,16 +1802,94 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
         pm10: 45, pm25: 18, dustConcentration: 100,
         dataSource: 'open-meteo' as const, isForecastStale: false,
       },
+      // الجهاز فاز بـ pm10=260 (لا 999 اليدوي ولا 45 الطقس) — يثبت أن
+      // القراءة المدموجة فعلياً هي المصدر، لا onsite_pm10 من activityRow.
+      mergedReading: mergedReadingFixture({ pm10: 260, sources: { ...mergedReadingFixture().sources, pm10: 'device' } }),
     };
     const ctx = buildComplianceContext({}, { onsite_pm10: 999 }, dviHourly, []);
-    expect(ctx.pm10UgM3).toBe(999);
+    expect(ctx.pm10UgM3).toBe(260);
+    expect(ctx.dataSource).toBe('device');
   });
 
-  it('بلا rawWeatherSample (نتيجة DVI مبنية مباشرة بلا عينة خام) → الحقول الجديدة null بأمان', () => {
+  it('mergedReading يفتقد pm10 (none) و onsite_pm10 موجود على activityRow → pm10UgM3 يبقى null (لا رجوع مباشر لـ onsite_pm10 خارج الدمج)', () => {
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({ pm10: null, sources: { ...mergedReadingFixture().sources, pm10: 'none' } }),
+    };
+    const ctx = buildComplianceContext({}, { onsite_pm10: 999 }, dviHourly, []);
+    expect(ctx.pm10UgM3).toBeNull();
+  });
+
+  it('بلا mergedReading (نتيجة DVI مبنية مباشرة بلا دمج) → الحقول الجديدة null بأمان', () => {
     const ctx = buildComplianceContext({}, {}, baseDviHourly as any, []);
     expect(ctx.windGustKmh).toBeNull();
     expect(ctx.windDirectionDeg).toBeNull();
     expect(ctx.pm25UgM3).toBeNull();
+    expect(ctx.relativeHumidityPercent).toBeNull();
+    expect(ctx.temperatureC).toBeNull();
+    expect(ctx.dataSource).toBe('none');
+  });
+
+  it('windSpeedKmh يبقى effectiveWindKmh عمداً، لا merged.windSpeedKmh — لا يُصلَح هذا مستقبلاً', () => {
+    const dviHourly = {
+      ...baseDviHourly,
+      effectiveWindKmh: 29.66,
+      mergedReading: mergedReadingFixture({ windSpeedKmh: 999 }),
+    };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    expect(ctx.windSpeedKmh).toBe(29.66);
+    expect(ctx.windSpeedKmh).not.toBe(999);
+  });
+
+  it("dataSource يُرجع 'device' إن فاز الجهاز بأي حقل، حتى لو حقول أخرى من الطقس", () => {
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({
+        windGustKmh: 12,
+        sources: { ...mergedReadingFixture().sources, windGustKmh: 'device', pm10: 'weather' },
+      }),
+    };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    expect(ctx.dataSource).toBe('device');
+  });
+
+  // deviceLastReadingAt: undefined صراحةً (لا null) عندما لا يوجد ربط
+  // جهاز أصلاً — يميّز "لا محطة" عن "محطة بلا قراءة بعد" في الواجهة
+  // (راجع buildStalenessAdvisory في Compliancewidgetcard.tsx).
+  it('dataSource=open-meteo (لا ربط جهاز) → deviceLastReadingAt يبقى undefined', () => {
+    const dviHourly = { ...baseDviHourly, mergedReading: mergedReadingFixture() };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    expect(ctx.dataSource).toBe('open-meteo');
+    expect(ctx.deviceLastReadingAt).toBeUndefined();
+  });
+
+  it('dataSource=device مع قراءة جهاز موجودة → deviceLastReadingAt ينقل القيمة الفعلية', () => {
+    const readingTime = '2026-07-28T09:00:00.000Z';
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({
+        pm10: 260,
+        sources: { ...mergedReadingFixture().sources, pm10: 'device' },
+        deviceLastReadingAt: readingTime,
+      }),
+    };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    expect(ctx.dataSource).toBe('device');
+    expect(ctx.deviceLastReadingAt).toBe(readingTime);
+  });
+
+  it('dataSource=device لكن deviceLastReadingAt=null (جهاز مرتبط بلا أي قراءة بعد) → يبقى null لا undefined', () => {
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({
+        pm10: null,
+        sources: { ...mergedReadingFixture().sources, pm10: 'device' },
+        deviceLastReadingAt: null,
+      }),
+    };
+    const ctx = buildComplianceContext({}, {}, dviHourly, []);
+    expect(ctx.dataSource).toBe('device');
+    expect(ctx.deviceLastReadingAt).toBeNull();
   });
 
   it('evaluateDustCompliance يُظهر windDirectionDeg/pm25UgM3 في evidence النهائي', () => {

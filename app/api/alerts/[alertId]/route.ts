@@ -33,3 +33,30 @@ export async function PATCH(
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });
 }
+
+// حذف تنبيه واحد نهائياً — يستبدل أي حذف مباشر من العميل، بنفس تحقق
+// الملكية غير المباشر أعلاه (JOIN على projects.user_id).
+export async function DELETE(
+  request: NextRequest,
+  context: { params: Promise<{ alertId: string }> }
+) {
+  const auth = await requireUserId(request);
+  if ('error' in auth) return auth.error;
+
+  const { alertId } = await context.params;
+
+  const { data: alertRow } = await supabaseAdmin
+    .from('alerts')
+    .select('id, project_id, projects!inner(user_id)')
+    .eq('id', alertId)
+    .single();
+
+  const ownerId = (alertRow as any)?.projects?.user_id;
+  if (!alertRow || ownerId !== auth.userId) {
+    return NextResponse.json({ error: 'لا تملك هذا التنبيه' }, { status: 403 });
+  }
+
+  const { error } = await supabaseAdmin.from('alerts').delete().eq('id', alertId);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ success: true });
+}

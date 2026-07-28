@@ -68,7 +68,6 @@ export default function CreateProjectPage() {
     neighborhood: '',
     project_status: 'not_started' as 'not_started' | 'in_progress',
     project_type: 'أبراج وإنشاءات',
-    site_nature: '',
     // طبيعة الأرض (نوع التربة) — قائمة اختيار محددة بدل النص الحر القديم
     soil_type: '' as '' | 'SANDY_FINE' | 'SANDY_COARSE' | 'CLAY' | 'MIXED',
     latitude: 24.7136,
@@ -511,7 +510,6 @@ export default function CreateProjectPage() {
           city: projectForm.city,
           neighborhood: projectForm.neighborhood,
           project_status: projectForm.project_status,
-          site_nature: projectForm.site_nature,
           soil_type: projectForm.soil_type || null,
           project_type: projectForm.project_type,
           latitude: projectForm.latitude,

@@ -258,17 +258,35 @@ export function buildComplianceContext(
   // فيسلك المحرك مساره الاحتياطي الآمن (معاملة القراءة كأنها لحظية فقط).
   pm10Sustained?: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null
 ): DustComplianceContext {
-  const dataSource: DustComplianceContext['dataSource'] =
-    activityRow?.onsite_pm10 !== null && activityRow?.onsite_pm10 !== undefined
-      ? 'onsite'
-      : 'open-meteo';
-
-  // العينة الخام (رياح/اتجاه/PM10/PM2.5) متوفرة فقط إن كان dviResult فعلياً
-  // DviHourlyEvaluation (الحالة الحقيقية دائماً في مسار التشغيل الفعلي عبر
-  // windowEval.worst) — راجع rawWeatherSample في dust-engine/types.ts.
+  // العينة الخام (لا تزال تُستخدم لاتجاه الرياح ضمن buildActivityComplianceProfile
+  // أدناه فقط) والقراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite —
+  // راجع mergeDustReading في dust-engine/engine.ts) متوفرتان فقط إن كان
+  // dviResult فعلياً DviHourlyEvaluation (الحالة الحقيقية دائماً في مسار
+  // التشغيل الفعلي عبر windowEval.worst).
+  //
+  // كل حقول القراءة هنا (عدا windSpeedKmh، انظر الملاحظة أدناه) تُقرأ الآن
+  // من mergedReading نفسه الذي حسبه DVI فعلاً — بدل اشتقاق سلسلة أولوية
+  // منفصلة هنا كانت متضاربة معه (بعض الحقول قديماً كانت تتجاهل الجهاز
+  // كلياً، وPM10 كان يُفضِّل onsite على كل شيء آخر). هذا هو سبب تناقضات
+  // "بانر أخضر مقابل بطاقة حمراء" التي أُصلحت سابقاً — قراءة واحدة موحَّدة
+  // بدل مصدرين قد يختلفان.
   const rawSample = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample;
+  const merged = (dviResult as Partial<DviHourlyEvaluation>).mergedReading;
   const rawWindDirectionDeg = toNullableNumber(rawSample?.windDirectionDeg);
   const trueNorthAlignmentDocumented = toNullableBoolean(project?.true_north_alignment_documented);
+
+  // dataSource للعرض فقط: أعلى مصدر فاز فعلياً عبر أي حقل من حقول
+  // mergedReading.sources، بترتيب device > open-meteo > onsite > none. لا
+  // يوجد مصدر واحد "صحيح" لكل الحقول دائماً (مثال: جهاز يرسل رياح فقط،
+  // فالرطوبة تبقى من الطقس رغم وجود جهاز فعلي) — هذا أفضل تلخيص ممكن.
+  const sourceValues = merged ? Object.values(merged.sources) : [];
+  const dataSource: DustComplianceContext['dataSource'] = sourceValues.includes('device')
+    ? 'device'
+    : sourceValues.includes('weather')
+    ? 'open-meteo'
+    : sourceValues.includes('onsite')
+    ? 'onsite'
+    : 'none';
 
   return {
     project: buildProjectComplianceProfile(project),
@@ -283,15 +301,22 @@ export function buildComplianceContext(
     dviMandatoryStop: dviResult.mandatoryStop,
     dviShortReason: dviResult.shortReason ?? null,
     dviConfidenceScore: dviResult.confidenceScore,
+    // ⚠️ استثناء مقصود: يبقى effectiveWindKmh (لا merged.windSpeedKmh) —
+    // ليس سرعة رياح خام بل max(سرعة، 0.85×هبة)، رقم مخاطر مشتق تعتمد عليه
+    // فعلياً قواعد بوابة الرياح (GATE-WIND-ABOVE-25-004 وغيرها). استبداله
+    // بالسرعة الخام يكسر تلك القواعد — لا تُصلح هذا السطر.
     windSpeedKmh: dviResult.effectiveWindKmh,
-    windGustKmh: toNullableNumber(rawSample?.windGustKmh),
-    windDirectionDeg: rawWindDirectionDeg,
-    pm10UgM3: activityRow?.onsite_pm10 !== null && activityRow?.onsite_pm10 !== undefined
-      ? toNullableNumber(activityRow?.onsite_pm10)
-      : toNullableNumber(rawSample?.pm10),
-    pm25UgM3: toNullableNumber(rawSample?.pm25),
-    relativeHumidityPercent: toNullableNumber(rawSample?.relativeHumidityPercent),
-    temperatureC: toNullableNumber(rawSample?.temperatureC),
+    windGustKmh: merged?.windGustKmh ?? null,
+    windDirectionDeg: merged?.windDirectionDeg ?? null,
+    pm10UgM3: merged?.pm10 ?? null,
+    pm25UgM3: merged?.pm25 ?? null,
+    relativeHumidityPercent: merged?.relativeHumidityPercent ?? null,
+    temperatureC: merged?.temperatureC ?? null,
+    visibilityM: merged?.visibilityM ?? null,
+    // undefined صراحةً (لا null) عندما لا يوجد ربط جهاز أصلاً (dataSource
+    // ليس 'device') — يميّز "لا محطة مرتبطة" عن "محطة مرتبطة بلا قراءة
+    // بعد" (null فعلياً)، حتى تعرف الواجهة متى تفعّل تحذير القِدم أصلاً.
+    deviceLastReadingAt: dataSource === 'device' ? merged?.deviceLastReadingAt ?? null : undefined,
     dviCaveatsAr: dviResult.caveatsAr ?? [],
     dataSource,
     sensitiveReceptors,

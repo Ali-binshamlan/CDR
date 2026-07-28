@@ -236,7 +236,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     neighborhood: '',
     project_status: 'not_started' as 'not_started' | 'in_progress',
     project_type: 'أبراج وإنشاءات',
-    site_nature: '',
     // طبيعة الأرض (نوع التربة) — نفس create/page.tsx
     soil_type: '' as '' | 'SANDY_FINE' | 'SANDY_COARSE' | 'CLAY' | 'MIXED',
     latitude: 24.7136,
@@ -311,7 +310,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
             neighborhood: projectData.neighborhood || '',
             project_status: normalizedStatus,
             project_type: projectData.project_type || 'أبراج وإنشاءات',
-            site_nature: projectData.site_nature || '',
             soil_type: projectData.soil_type || '',
             latitude: projectData.latitude || 24.7136,
             longitude: projectData.longitude || 46.6753,
@@ -674,10 +672,6 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                   <input type="text" name="neighborhood" value={projectForm.neighborhood} readOnly className={lockedInputClass} />
                 </div>
                 <div>
-                  <label className={labelClass}>طبيعة الموقع (إنشائياً)</label>
-                  <input type="text" name="site_nature" value={projectForm.site_nature} onChange={handleProjectChange} className={inputClass} />
-                </div>
-                <div>
                   <label className={labelClass}>طبيعة الأرض (نوع التربة)</label>
                   <select name="soil_type" value={projectForm.soil_type} onChange={handleProjectChange} className={complianceInputClass(!projectForm.soil_type)}>
                     <option value="">اختر نوع التربة...</option>
@@ -752,13 +746,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                   : 'مطلوبة بموجب لوائح الغبار التنظيمية للرياض لتصنيف فئة مخاطر المشروع. تركها فارغة لا يمنع الحفظ الآن، لكنه يُظهر تحذيراً أدناه ويُبقي المشروع "غير مصنَّف".'}
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                  <label className={labelClass}>مساحة الموقع (م²)</label>
-                  <input type="number" name="site_area_m2" placeholder="مثال: 3500" value={projectForm.site_area_m2} onChange={handleComplianceFieldChange} className={complianceInputClass(projectForm.site_area_m2 === '')} />
-                  {attemptedSubmit && projectForm.site_area_m2 === '' && (
-                    <p className="text-[10px] font-bold text-red-500 mt-1">حقل إلزامي تنظيمياً — تركه فارغاً يُبقي المشروع "غير مصنَّف".</p>
-                  )}
-                </div>
+               
                 <div>
                   <label className={labelClass}>حركة الشاحنات اليومية (رحلة/يوم)</label>
                   <input type="number" name="daily_truck_movements" placeholder="مثال: 20" value={projectForm.daily_truck_movements} onChange={handleComplianceFieldChange} className={complianceInputClass(projectForm.daily_truck_movements === '')} />
@@ -818,66 +806,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               })()}
             </div>
 
-            {/* التزامات الرصد التنظيمية (اختياري) — تؤثر فقط على درجة الثقة
-                في قرار الامتثال، وليست شرطاً لمنع أي نشاط. راجع القسم 10 من
-                دليل RCRC/NCEC (buildMonitoringObligations في engine.ts). */}
-            <div className="space-y-3 pt-3 border-t border-[#061B40]/5">
-              <div className="flex items-center justify-between mb-1">
-                <h2 className="text-sm font-bold text-[#061B40] border-r-4 border-[#3995FF] pr-2 bg-[#F4F7FB] py-1.5 rounded-l-md shadow-sm flex items-center gap-2">
-                  <Radar className="w-4 h-4 text-[#3995FF]" />
-                  التزامات الرصد التنظيمية
-                </h2>
-                <span className="text-[10px] font-bold text-[#3995FF] bg-[#3995FF]/10 px-2 py-1 rounded-full">اختياري</span>
-              </div>
-              <p className="text-[11px] font-semibold text-[#061B40]/50 -mt-1">
-                تؤثر فقط على درجة الثقة في قرار الامتثال لمشاريع الفئة الثانية/الثالثة، ولا توقف أي نشاط بحد ذاتها. تركها فارغة يعني "غير معروف".
-              </p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                  <label className={labelClass}>رصد أساسي قبل بدء الأعمال</label>
-                  <div className="relative">
-                    <input type="number" name="baseline_monitoring_days" placeholder="مثال: 14" value={projectForm.baseline_monitoring_days} onChange={handleComplianceFieldChange} className={`${inputClass} pl-10`} />
-                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-[#061B40]/35 pointer-events-none">يوم</span>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelClass}>فترة تسجيل بيانات الرصد</label>
-                  <div className="relative">
-                    <input type="number" name="monitoring_logging_interval_minutes" placeholder="مثال: 1" value={projectForm.monitoring_logging_interval_minutes} onChange={handleComplianceFieldChange} className={`${inputClass} pl-14`} />
-                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-[#061B40]/35 pointer-events-none">دقيقة</span>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelClass}>ارتفاع مقياس سرعة الرياح</label>
-                  <div className="relative">
-                    <input type="number" name="anemometer_height_m" placeholder="مثال: 2.5" value={projectForm.anemometer_height_m} onChange={handleComplianceFieldChange} className={`${inputClass} pl-8`} />
-                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-[#061B40]/35 pointer-events-none">م</span>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelClass}>مدة حفظ مقاطع الكاميرات</label>
-                  <div className="relative">
-                    <input type="number" name="camera_retention_days" placeholder="مثال: 90" value={projectForm.camera_retention_days} onChange={handleComplianceFieldChange} className={`${inputClass} pl-10`} />
-                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-[#061B40]/35 pointer-events-none">يوم</span>
-                  </div>
-                </div>
-                <div className="flex flex-col gap-2 justify-end">
-                  <label className="flex items-center gap-2 text-sm text-[#061B40]">
-                    <input type="checkbox" name="entry_exit_cameras_installed" checked={projectForm.entry_exit_cameras_installed} onChange={handleComplianceFieldChange} className="w-4 h-4 accent-[#3995FF]" />
-                    كاميرات مركّبة عند نقاط الدخول/الخروج
-                  </label>
-                  <label className="flex items-center gap-2 text-sm text-[#061B40]">
-                    <input type="checkbox" name="sensitivity_map_prepared" checked={projectForm.sensitivity_map_prepared} onChange={handleComplianceFieldChange} className="w-4 h-4 accent-[#3995FF]" />
-                    خريطة حساسية بيئية (GIS) معدة
-                  </label>
-                </div>
-              </div>
-
-              {/* أجهزة الرصد الفعلية (project_devices) لم تعد تُدار من هذا
-                  القسم — راجع قسم "أجهزة الرصد الحية" أدناه، وهو المصدر
-                  الوحيد الآن لعدد وموقع أجهزة الرصد. */}
-            </div>
-
+           
             {/* القسم 2: الجدولة وإدارة المشروع */}
             <div className="space-y-3 pt-3 border-t border-[#061B40]/5">
               <h2 className={sectionTitleClass}>الجدولة وفريق العمل</h2>
@@ -1022,35 +951,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                 ))}
               </div>
             </div>
-
-            {/* إقرار المستخدم بصحة البيانات وتحمّل المسؤولية الكاملة عنها —
-                إلزامي، يمنع الحفظ حتى يُفعَّل (راجع validateBasicFields)،
-                نفس create/page.tsx تماماً. */}
-            <div className="pt-3 border-t border-[#061B40]/5">
-              <label className={`flex items-start gap-2.5 rounded-lg p-3 cursor-pointer border ${attemptedSubmit && !projectForm.data_accuracy_confirmed ? 'bg-red-50 border-red-400' : 'bg-amber-50 border-amber-200'}`}>
-                <input
-                  type="checkbox"
-                  checked={projectForm.data_accuracy_confirmed}
-                  onChange={(e) => setProjectForm((prev) => ({ ...prev, data_accuracy_confirmed: e.target.checked }))}
-                  className="w-4 h-4 mt-0.5 accent-amber-600 shrink-0"
-                />
-                <span className={`text-[12px] font-bold leading-relaxed ${attemptedSubmit && !projectForm.data_accuracy_confirmed ? 'text-red-700' : 'text-amber-800'}`}>
-                  أقرّ بأن جميع البيانات المُدخلة أعلاه صحيحة وموثوقة، وأتحمّل المسؤولية الكاملة عن دقتها وأي قرارات تُبنى عليها.
-                </span>
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-[#3995FF] hover:bg-[#3995FF]/90 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 text-sm mt-4"
-            >
-              <Save className="w-5 h-5" />
-              {loading && submitStage ? submitStage : 'حفظ التعديلات'}
-            </button>
-          </form>
-
-          {/* أجهزة الرصد الحية — مورد فرعي مستقل عن نموذج المشروع (نداءات
+ {/* أجهزة الرصد الحية — مورد فرعي مستقل عن نموذج المشروع (نداءات
               API فورية خاصة به، لا تُجمَّع مع "حفظ التعديلات" أعلاه). كل
               جهاز يرسل قراءات لحظية عبر POST /api/devices/ingest بمفتاحه
               الخاص، وتُستخدم هذه القراءات في محرك DVI بأولوية أعلى من
@@ -1221,6 +1122,34 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               </div>
             )}
           </div>
+            {/* إقرار المستخدم بصحة البيانات وتحمّل المسؤولية الكاملة عنها —
+                إلزامي، يمنع الحفظ حتى يُفعَّل (راجع validateBasicFields)،
+                نفس create/page.tsx تماماً. */}
+            <div className="pt-3 border-t border-[#061B40]/5">
+              <label className={`flex items-start gap-2.5 rounded-lg p-3 cursor-pointer border ${attemptedSubmit && !projectForm.data_accuracy_confirmed ? 'bg-red-50 border-red-400' : 'bg-amber-50 border-amber-200'}`}>
+                <input
+                  type="checkbox"
+                  checked={projectForm.data_accuracy_confirmed}
+                  onChange={(e) => setProjectForm((prev) => ({ ...prev, data_accuracy_confirmed: e.target.checked }))}
+                  className="w-4 h-4 mt-0.5 accent-amber-600 shrink-0"
+                />
+                <span className={`text-[12px] font-bold leading-relaxed ${attemptedSubmit && !projectForm.data_accuracy_confirmed ? 'text-red-700' : 'text-amber-800'}`}>
+                  أقرّ بأن جميع البيانات المُدخلة أعلاه صحيحة وموثوقة، وأتحمّل المسؤولية الكاملة عن دقتها وأي قرارات تُبنى عليها.
+                </span>
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-[#3995FF] hover:bg-[#3995FF]/90 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 text-sm mt-4"
+            >
+              <Save className="w-5 h-5" />
+              {loading && submitStage ? submitStage : 'حفظ التعديلات'}
+            </button>
+          </form>
+
+         
 
           {/* منطقة الخطر - الحذف */}
           <div className="mt-8 pt-6 border-t border-red-100">

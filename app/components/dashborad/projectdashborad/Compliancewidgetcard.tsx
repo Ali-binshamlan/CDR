@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { apiClient } from '@/app/lib/apiClient';
 import {
   X, ArrowUpRight, Gauge,
-  Clock, AlertTriangle, Printer, CheckCircle2,
-  CheckCircle, ShieldAlert, Scale, Wind, Compass, CircleGauge, MapPin,
-  Thermometer, Droplets,
+  Clock, AlertTriangle, Printer,
+  ShieldAlert, Scale, Wind, Compass, CircleGauge, MapPin,
+  Thermometer, Droplets, Eye,
 } from 'lucide-react';
 import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
@@ -68,7 +68,6 @@ interface ComplianceWidgetCardProps {
   projectId?: string;
   activityId?: string;
   projectName?: string;
-  hideDecisionPanel?: boolean;
   hideSchedule?: boolean;
   windowStartIso?: string;
   windowEndIso?: string;
@@ -169,6 +168,91 @@ const RECEPTOR_TYPE_LABEL_AR: Record<SensitiveReceptorType, string> = {
 const fmt2 = (value: number | null | undefined): string =>
   value === null || value === undefined ? '—' : value.toFixed(2);
 
+// عتبات تنبيهات إعلامية بحتة داخل بطاقة الامتثال — بلا أي علاقة بقرار
+// الإيقاف/AEI (ذاك يبقى محسوباً حصراً من محرك DVI/الامتثال). هذه فقط
+// نصائح ميدانية عملية عند رؤية ضعيفة أو حرارة مرتفعة، بطلب صريح من
+// المستخدم: "اجعلها تنبيهات داخل بطاقة الامتثال لا تتدخل في قرارات
+// الإيقاف أبداً" + "لا تقول إيقاف إلزامي أبداً، أعطِ نصائح".
+const LOW_VISIBILITY_THRESHOLD_M = 500;
+const HIGH_TEMPERATURE_THRESHOLD_C = 40;
+
+interface AdvisoryTip {
+  titleAr: string;
+  tipsAr: string[];
+}
+
+function buildAdvisoryTips(visibilityM: number | null, temperatureC: number | null): AdvisoryTip[] {
+  const tips: AdvisoryTip[] = [];
+
+  if (visibilityM !== null && visibilityM < LOW_VISIBILITY_THRESHOLD_M) {
+    tips.push({
+      titleAr: `تنبيه إعلامي: رؤية ضعيفة (${Math.round(visibilityM)} م)`,
+      tipsAr: [
+        'تأنَّ عند تشغيل المعدات الثقيلة وحركة النقل داخل الموقع.',
+        'فعّل إضاءة تحذيرية إضافية وتأكد من وضوح إشارات المرور الداخلية.',
+        'زِد التباعد بين المعدات والعمالة في مسارات الحركة.',
+        'راقب تطور الرؤية دورياً وأبلغ مدير الموقع عند أي تدهور إضافي.',
+      ],
+    });
+  }
+
+  if (temperatureC !== null && temperatureC >= HIGH_TEMPERATURE_THRESHOLD_C) {
+    tips.push({
+      titleAr: `تنبيه إعلامي: درجة حرارة مرتفعة (${fmt2(temperatureC)}°م)`,
+      tipsAr: [
+        'وزّع فترات راحة متكررة للعمالة في الهواء الطلق وفّر مظلات تبريد.',
+        'شجّع على شرب الماء بانتظام لتفادي الإجهاد الحراري.',
+        'إن أمكن، أعِد جدولة الأعمال الشاقة إلى ساعات أبرد من اليوم.',
+        'راقب علامات الإجهاد الحراري لدى العمال وأبلغ فوراً عند ظهورها.',
+      ],
+    });
+  }
+
+  return tips;
+}
+
+// عتبة حداثة قراءة الجهاز — نفس DEVICE_READING_FRESHNESS_MINUTES في
+// app/lib/dustEvaluation.ts (لا استيراد مباشر بين مكوّن واجهة ومكتبة
+// خادمية، القيمة مكرَّرة عمداً بنفس القيمة الثابتة).
+const DEVICE_READING_STALENESS_MINUTES = 20;
+
+// نفس منطق formatRelativeAr المستخدم في MultiIndicatorActivityBox.tsx —
+// معرَّف محلياً هنا بنفس اتفاقية الملف (كل الدوال المساعدة محلية).
+function formatAgeAr(diffMs: number): string {
+  const mins = Math.round(Math.abs(diffMs) / 60000);
+  if (mins < 60) return `${mins} دقيقة`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} ساعة`;
+  const days = Math.round(hours / 24);
+  return `${days} يوم`;
+}
+
+// تنبيه إعلامي بحت (لا يُغيّر أي قرار/AEI، نفس قيد buildAdvisoryTips أعلاه)
+// يظهر فقط عندما يكون النشاط مرتبطاً فعلياً بمحطة رصد (deviceLastReadingAt
+// !== undefined في evidence — راجع buildComplianceContext) وكانت آخر
+// قراءة معروفة منها غائبة تماماً أو أقدم من عتبة الحداثة. بطلب صريح من
+// المستخدم: "تظهر آخر قراءة معروفة حتى لو قديمة، مع تنبيه قدمها" — لا
+// إخفاء صامت للبيانات، ولا رجوع لـAPI الطقس كبديل.
+function buildStalenessAdvisory(deviceLastReadingAt: string | null | undefined): AdvisoryTip | null {
+  if (deviceLastReadingAt === undefined) return null; // لا ربط جهاز أصلاً لهذا النشاط
+
+  if (deviceLastReadingAt === null) {
+    return {
+      titleAr: 'تنبيه إعلامي: لا توجد أي قراءة من محطة الرصد المختارة بعد',
+      tipsAr: ['تأكد من أن المحطة مفعَّلة ومتصلة فعلياً، أو راجع إعدادات ربطها بالمشروع.'],
+    };
+  }
+
+  const ageMs = Date.now() - new Date(deviceLastReadingAt).getTime();
+  const ageMinutes = ageMs / 60000;
+  if (ageMinutes <= DEVICE_READING_STALENESS_MINUTES) return null;
+
+  return {
+    titleAr: `تنبيه إعلامي: آخر قراءة من محطة الرصد قديمة (منذ ${formatAgeAr(ageMs)})`,
+    tipsAr: ['القراءات المعروضة هنا هي آخر ما أرسلته المحطة، وليست حية الآن — تحقّق من اتصال المحطة إن استمر التأخر.'],
+  };
+}
+
 // دالة تحويل الساعات إلى نصوص عربية منسقة
 const formatHoursLabel = (hours: number | undefined): string => {
   if (hours === undefined || hours === null) return '';
@@ -218,16 +302,6 @@ const EXTENDED_ACTIVITY_LABEL: Record<string, string> = {
   'HEAVY_EQUIPMENT_MOVEMENT': 'حركة معدات ثقيلة', 'MEP_EXTERNAL_WORK': 'أعمال ميكانيكية/كهربائية'
 };
 
-const getConfirmedUI = (status: string) => {
-  switch (status) {
-    case 'safe': return { text: 'تم اعتماد النشاط وتوثيقه', bg: 'bg-emerald-50', border: 'border-emerald-200', textCol: 'text-emerald-700', iconCol: 'text-emerald-500' };
-    case 'caution': return { text: 'تم اعتماد النشاط مع الحذر', bg: 'bg-amber-50', border: 'border-amber-200', textCol: 'text-amber-700', iconCol: 'text-amber-500' };
-    case 'stopped': return { text: 'تم إيقاف النشاط احترازياً', bg: 'bg-red-50', border: 'border-red-200', textCol: 'text-red-700', iconCol: 'text-red-500' };
-    case 'postpone': return { text: 'تم تأجيل النشاط احترازياً', bg: 'bg-indigo-50', border: 'border-indigo-200', textCol: 'text-indigo-700', iconCol: 'text-indigo-500' };
-    default: return { text: 'تم توثيق القرار', bg: 'bg-slate-50', border: 'border-slate-200', textCol: 'text-slate-700', iconCol: 'text-slate-500' };
-  }
-};
-
 export default function ComplianceWidgetCard({
   activityType,
   complianceList,
@@ -238,16 +312,13 @@ export default function ComplianceWidgetCard({
   projectId,
   activityId,
   projectName,
-  hideDecisionPanel = false,
   hideSchedule = false,
   windowStartIso,
   windowEndIso,
   durationHours,
 }: ComplianceWidgetCardProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [activeAlert, setActiveAlert] = useState<any>(null);
-  const [confirmedDecision, setConfirmedDecision] = useState<{ status: string; time: string } | null>(null);
 
   const complianceEntries = (complianceList ?? []).filter(Boolean);
   const worst = pickWorstCompliance(complianceEntries);
@@ -259,12 +330,6 @@ export default function ComplianceWidgetCard({
   const aeiStyle = aei ? getAeiStyle(aei.color) : null;
   const style = aeiStyle ?? (worst ? COMPLIANCE_DECISION_STYLE[worst.decisionCategory] : COMPLIANCE_DECISION_STYLE.ALLOW);
   const hourlyEntries = (complianceHourly ?? []).filter((h) => !!h?.result);
-
-  const complianceBlocksApproval = complianceEntries.some(
-    (c) => c.decisionCategory === 'MANDATORY_STOP' || c.decisionCategory === 'STOP_AFFECTED_ACTIVITY'
-  );
-
-  const isFutureActivity = !!windowStartIso && new Date(windowStartIso).getTime() > Date.now();
 
   // العنوان الفرعي = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) من قرار
   // الامتثال، لا التصنيف الفيزيائي العام (حركة معدات ثقيلة). نجمع كل الأنشطة
@@ -280,6 +345,16 @@ export default function ComplianceWidgetCard({
   );
   const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
 
+  // تنبيهات إعلامية (رؤية ضعيفة/حرارة مرتفعة) — إعلامية بحتة، لا تؤثر في
+  // worst.decisionCategory أو aei إطلاقاً. راجع buildAdvisoryTips أعلاه.
+  const advisoryTips = worst
+    ? buildAdvisoryTips(worst.evidence.visibilityM, worst.evidence.temperatureC)
+    : [];
+  // تنبيه قِدم قراءة محطة الرصد (راجع buildStalenessAdvisory أعلاه) —
+  // إعلامي بحت أيضاً، يُدمَج مع advisoryTips لعرضه بنفس النمط والمكان.
+  const stalenessAdvisory = worst ? buildStalenessAdvisory(worst.evidence.deviceLastReadingAt) : null;
+  const allAdvisoryTips = stalenessAdvisory ? [stalenessAdvisory, ...advisoryTips] : advisoryTips;
+
   useEffect(() => {
     async function fetchInitialData() {
       if (!projectId || !activityId) return;
@@ -293,61 +368,9 @@ export default function ComplianceWidgetCard({
       });
       const alertData = alertResp?.data;
       if (alertData && alertData.length > 0) setActiveAlert(alertData[0]);
-
-      const { data: decisionResp } = await apiClient.get('/decisions', {
-        params: { projectId, activityId, activitySource: 'dust' },
-      });
-      const decisionData = decisionResp?.data;
-
-      if (decisionData) {
-        setConfirmedDecision({
-          status: decisionData.status,
-          time: new Date(decisionData.created_at).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })
-        });
-      }
     }
     fetchInitialData();
   }, [projectId, activityId]);
-
-  const saveDecision = async (dbStatus: 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped') => {
-    if (!projectId || !activityId) {
-      alert("الربط بقاعدة البيانات غير مكتمل.");
-      return;
-    }
-    if (!worst) return;
-
-    setIsSaving(true);
-    try {
-      await apiClient.post('/decisions', {
-        insert: {
-          project_id: projectId,
-          activity_source: 'dust',
-          activity_id: activityId,
-          status: dbStatus,
-          reason: aei ? `مؤشر قابلية التنفيذ (AEI): ${aei.statusLabelAr}` : `الامتثال التنظيمي: ${worst.decisionLabelAr}`,
-          required_action: worst.requiredActions.join('، ') || 'لا توجد متطلبات إضافية',
-          approved_by: 'مستخدم النظام (مدير الموقع)',
-          approval_note: isFutureActivity && dbStatus === 'postpone' ? 'تم تأجيل النشاط بناءً على التوقعات' : 'قرار ميداني مباشر',
-          weather_snapshot: [
-            { label: 'سرعة الرياح', value: `${fmt2(worst.evidence.windSpeedKmh)} كم/س` },
-            { label: 'اتجاه الرياح', value: formatWindDirectionAr(worst.evidence.windDirectionDeg) },
-            { label: 'PM10', value: `${fmt2(worst.evidence.pm10UgM3)} ميكروغرام/م³` },
-          ]
-        },
-      });
-
-      setConfirmedDecision({
-        status: dbStatus,
-        time: new Date().toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })
-      });
-
-    } catch (error) {
-      console.error('Error saving decision:', error);
-      alert('حدث خطأ أثناء حفظ القرار.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   if (!worst) return null;
 
@@ -409,7 +432,14 @@ export default function ComplianceWidgetCard({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-4">
+          <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 mb-4">
+            <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
+              <Eye className="w-4 h-4 text-teal-500 mb-1.5" />
+              <span className="text-xs font-black text-slate-800" dir="ltr">
+                {worst.evidence.visibilityM !== null ? Math.round(worst.evidence.visibilityM) : '—'}
+              </span>
+              <span className="text-[8px] font-bold text-slate-400">الرؤية م</span>
+            </div>
             <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
               <Wind className="w-4 h-4 text-rose-500 mb-1.5" />
               <span className="text-xs font-black text-slate-800" dir="ltr">
@@ -463,6 +493,22 @@ export default function ComplianceWidgetCard({
                 >
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>{c}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {allAdvisoryTips.length > 0 && (
+            <div className="space-y-1.5 mb-4">
+              {allAdvisoryTips.map((tip, i) => (
+                <div
+                  key={i}
+                  className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[10px] font-bold text-sky-700 leading-relaxed"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{tip.titleAr}</span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -557,6 +603,12 @@ export default function ComplianceWidgetCard({
                     <div className="text-xs text-slate-400">درجة الحرارة</div>
                     <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(worst.evidence.temperatureC)}°م</div>
                   </div>
+                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
+                    <div className="text-xs text-slate-400">الرؤية</div>
+                    <div className="font-bold text-[#061B40]" dir="ltr">
+                      {worst.evidence.visibilityM !== null ? `${Math.round(worst.evidence.visibilityM)} م` : '—'}
+                    </div>
+                  </div>
                 </div>
                 {worst.caveatsAr && worst.caveatsAr.length > 0 && (
                   <div className="mt-3 space-y-2">
@@ -573,63 +625,24 @@ export default function ComplianceWidgetCard({
                 )}
               </div>
 
-              {/* المستقبِلات حول وحدة الكسارة/الخلاطة تحديداً — تُعرض قبل
-                  قائمة المشروع العامة لأنها الأوثق صلة بالقرار: مسافة
-                  الكسارة عن مستقبِل سكني/مدرسي/صحي تُفعّل إيقافاً إلزامياً
-                  فعلياً، بخلاف قائمة الـ1كم التوعوية. */}
-              {unitReceptors && unitReceptors.length > 0 && unitReceptors.map((unit) => (
-                <div
-                  key={`${unit.unitType}-${unit.lat}-${unit.lng}`}
-                  className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm"
-                >
-                  <h3 className="text-sm font-black text-[#061B40] mb-1 flex items-center gap-2">
-                    <MapPin className="w-4 h-4 text-rose-500" />
-                    المستقبِلات الحساسة حول {unit.unitLabelAr} (ضمن {unit.radiusM} م من موقعها)
+              {/* تنبيهات إعلامية (رؤية ضعيفة/حرارة مرتفعة) + نصائح ميدانية
+                  عملية — إعلامية بحتة، لا تمثّل قراراً/إيقافاً ولا تدخل ضمن
+                  محرك الامتثال أو AEI إطلاقاً. */}
+              {allAdvisoryTips.length > 0 && (
+                <div className="bg-white p-5 rounded-2xl border border-sky-200 shadow-sm space-y-4">
+                  <h3 className="text-sm font-black text-[#061B40] flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-sky-500" /> تنبيهات ونصائح ميدانية
                   </h3>
-                  {unit.receptors.length === 0 ? (
-                    <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-[13px] font-bold text-emerald-700">
-                      لا توجد مستقبِلات حساسة معروفة ضمن {unit.radiusM} م من موقع {unit.unitLabelAr}.
+                  {allAdvisoryTips.map((tip, i) => (
+                    <div key={i} className="rounded-xl bg-sky-50 border border-sky-200 p-3 space-y-2">
+                      <div className="text-[13px] font-black text-sky-700">{tip.titleAr}</div>
+                      <ul className="list-disc list-inside space-y-1 text-[12px] text-sky-700 font-medium">
+                        {tip.tipsAr.map((t, idx) => (
+                          <li key={idx}>{t}</li>
+                        ))}
+                      </ul>
                     </div>
-                  ) : (
-                    <ul className="space-y-2">
-                      {unit.receptors.map((receptor) => (
-                        <li
-                          key={receptor.id}
-                          className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
-                        >
-                          <span className="text-[13px] font-bold text-[#061B40] truncate">
-                            {RECEPTOR_TYPE_LABEL_AR[receptor.receptorType] ?? receptor.receptorType} — {receptor.name}
-                          </span>
-                          <span className="text-[12px] font-black text-rose-600 shrink-0" dir="ltr">
-                            {Math.round(receptor.distanceM)} م
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ))}
-
-              {nearbySensitiveReceptors && nearbySensitiveReceptors.length > 0 && (
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                  <h3 className="text-sm font-black text-[#061B40] mb-4 flex items-center gap-2">
-                    <MapPin className="w-4 h-4 text-rose-500" /> المستقبِلات الحساسة القريبة (ضمن 1كم من حدود المشروع)
-                  </h3>
-                  <ul className="space-y-2">
-                    {nearbySensitiveReceptors.map((receptor) => (
-                      <li
-                        key={receptor.id}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
-                      >
-                        <span className="text-[13px] font-bold text-[#061B40] truncate">
-                          {RECEPTOR_TYPE_LABEL_AR[receptor.receptorType] ?? receptor.receptorType} — {receptor.name}
-                        </span>
-                        <span className="text-[12px] font-black text-rose-600 shrink-0" dir="ltr">
-                          {Math.round(receptor.distanceM)} م
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                  ))}
                 </div>
               )}
 
@@ -873,67 +886,67 @@ export default function ComplianceWidgetCard({
                   </div>
                 </div>
               )}
-            </div>
 
-            {!hideDecisionPanel && (
-              <div className="bg-white shrink-0 border-t border-slate-200 z-20 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)]">
-                {confirmedDecision ? (
-                  <div className={`p-6 animate-in slide-in-from-bottom-4 fade-in duration-500 ${getConfirmedUI(confirmedDecision.status).bg}`}>
-                    <div className="flex items-start gap-4">
-                      <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 bg-white shadow-sm border ${getConfirmedUI(confirmedDecision.status).border}`}>
-                        <CheckCircle className={`w-6 h-6 ${getConfirmedUI(confirmedDecision.status).iconCol}`} />
-                      </div>
-                      <div>
-                        <h4 className={`text-lg font-black ${getConfirmedUI(confirmedDecision.status).textCol}`}>
-                          {getConfirmedUI(confirmedDecision.status).text}
-                        </h4>
-                        <p className="text-[13px] font-bold text-slate-500 mt-1 flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5" />
-                          تم حفظ قرارك رسمياً في سجل المشروع الساعة {confirmedDecision.time}
-                        </p>
-                      </div>
+              {/* المستقبِلات حول وحدة الكسارة/الخلاطة تحديداً، ثم مستقبِلات
+                  المشروع العامة — تُعرض في الأسفل بعد كل بيانات القرار
+                  (الطقس/النصائح/AEI/التوقعات الساعية)، بطلب صريح من
+                  المستخدم بوضع المستقبِلات آخر البطاقة. */}
+              {unitReceptors && unitReceptors.length > 0 && unitReceptors.map((unit) => (
+                <div
+                  key={`${unit.unitType}-${unit.lat}-${unit.lng}`}
+                  className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm"
+                >
+                  <h3 className="text-sm font-black text-[#061B40] mb-1 flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-rose-500" />
+                    المستقبِلات الحساسة حول {unit.unitLabelAr} (ضمن {unit.radiusM} م من موقعها)
+                  </h3>
+                  {unit.receptors.length === 0 ? (
+                    <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-[13px] font-bold text-emerald-700">
+                      لا توجد مستقبِلات حساسة معروفة ضمن {unit.radiusM} م من موقع {unit.unitLabelAr}.
                     </div>
-                  </div>
-                ) : (
-                  <div className="p-6 animate-in fade-in duration-300">
-                    <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-black text-[#061B40]">قرارك النهائي (مدير الموقع)</p>
-                        <p className="text-[11px] font-bold text-slate-500 mt-0.5">بصفتك المسؤول، اختر الإجراء الأنسب ليتم توثيقه في السجل.</p>
-                      </div>
-
-                      <div className="flex gap-2 w-full md:w-auto">
-                        {!complianceBlocksApproval && (
-                          <button
-                            disabled={isSaving}
-                            onClick={() => saveDecision('safe')}
-                            className="flex-1 md:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5"
-                          >
-                            <CheckCircle2 className="w-4 h-4" /> اعتماد التنفيذ
-                          </button>
-                        )}
-                        {!complianceBlocksApproval && (
-                          <button
-                            disabled={isSaving}
-                            onClick={() => saveDecision('caution')}
-                            className="flex-1 md:flex-none bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5"
-                          >
-                            <AlertTriangle className="w-4 h-4" /> اعتماد بحذر
-                          </button>
-                        )}
-                        <button
-                          disabled={isSaving}
-                          onClick={() => saveDecision(isFutureActivity ? 'postpone' : 'stopped')}
-                          className="flex-1 md:flex-none bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5"
+                  ) : (
+                    <ul className="space-y-2">
+                      {unit.receptors.map((receptor) => (
+                        <li
+                          key={receptor.id}
+                          className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
                         >
-                          <X className="w-4 h-4" /> {isFutureActivity ? 'تأجيل النشاط' : 'إيقاف النشاط'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+                          <span className="text-[13px] font-bold text-[#061B40] truncate">
+                            {RECEPTOR_TYPE_LABEL_AR[receptor.receptorType] ?? receptor.receptorType} — {receptor.name}
+                          </span>
+                          <span className="text-[12px] font-black text-rose-600 shrink-0" dir="ltr">
+                            {Math.round(receptor.distanceM)} م
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+
+              {nearbySensitiveReceptors && nearbySensitiveReceptors.length > 0 && (
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <h3 className="text-sm font-black text-[#061B40] mb-4 flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-rose-500" /> المستقبِلات الحساسة القريبة (ضمن 1كم من حدود المشروع)
+                  </h3>
+                  <ul className="space-y-2">
+                    {nearbySensitiveReceptors.map((receptor) => (
+                      <li
+                        key={receptor.id}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                      >
+                        <span className="text-[13px] font-bold text-[#061B40] truncate">
+                          {RECEPTOR_TYPE_LABEL_AR[receptor.receptorType] ?? receptor.receptorType} — {receptor.name}
+                        </span>
+                        <span className="text-[12px] font-black text-rose-600 shrink-0" dir="ltr">
+                          {Math.round(receptor.distanceM)} م
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

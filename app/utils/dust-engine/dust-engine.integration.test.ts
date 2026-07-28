@@ -60,6 +60,10 @@ function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
     onsiteVisibilityM: null,
     onsitePm10: null,
     onsitePm25: null,
+    // معظم اختبارات هذا الملف تختبر مسار تقدير الطقس (API) — hasDeviceLink=false
+    // افتراضياً، بلا ربط جهاز، مطابقاً لسلوك mergeDustReading الجديد
+    // (عزل تام، لا مزيج). اختبارات الجهاز الصريحة تُمرِّر hasDeviceLink:true.
+    hasDeviceLink: false,
     ...overrides,
   };
 }
@@ -287,11 +291,44 @@ describe('DVI تكامل — تصعيد المستقبِلات الحساسة', 
   });
 });
 
-describe('DVI تكامل — قياس ميداني له الأولوية على توقعات الطقس', () => {
-  it('رؤية ميدانية مُدخلة (onsiteVisibilityM) تتجاوز قيمة التوقعات', () => {
-    // توقعات تقول رؤية جيدة (10كم) لكن القياس الميداني 300م → يجب أن يسود القياس
+// عُزل مصدر القراءة تماماً بطلب صريح من المستخدم: "حسب ما يختار المستخدم
+// تظهر البيانات، لا شيء يعوّض الآخر". onsiteVisibilityM (الإدخال اليدوي)
+// لم يعد يُستهلَك في mergeDustReading إطلاقاً — لا في وضع API (hasDeviceLink=false)
+// ولا في وضع الجهاز (hasDeviceLink=true) — بعكس الترتيب القديم متعدد
+// المستويات الذي كان يستخدمه كملاذ أخير.
+describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في أي من الوضعين', () => {
+  it('وضع API (hasDeviceLink=false): onsiteVisibilityM لا يُستخدم حتى لو غابت قيمة الطقس تماماً', () => {
     const r = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300 }),
+      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300, hasDeviceLink: false }),
+      weather({ visibilityM: null })
+    );
+    // لا رؤية من الطقس ولا تعويض من onsite — visibilityM تبقى null فعلياً
+    // في القراءة المدموجة، فلا تُفعَّل بوابة "دون 500م" (تتطلب رقماً فعلياً).
+    expect(r.mandatoryVisibilityStop).toBe(false);
+  });
+
+  it('وضع API: توقعات الطقس هي المصدر الوحيد — قيمة onsite السيئة لا تفسد قراراً جيداً من الطقس', () => {
+    const r = computeDviResult(
+      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300, hasDeviceLink: false }),
+      weather({ visibilityM: 10000 })
+    );
+    expect(r.mandatoryVisibilityStop).toBe(false);
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+  });
+
+  it('وضع الجهاز (hasDeviceLink=true): قيمة الطقس الجيدة لا تُستخدم إطلاقاً — بلا deviceVisibilityM، الرؤية تبقى null', () => {
+    const r = computeDviResult(
+      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300, hasDeviceLink: true }),
+      weather({ visibilityM: 10000 })
+    );
+    // الجهاز لم يرسل deviceVisibilityM، والوضع لا يسمح بالرجوع للطقس ولا
+    // onsite — لا بوابة رؤية تُفعَّل من رقم غائب.
+    expect(r.mandatoryVisibilityStop).toBe(false);
+  });
+
+  it('وضع الجهاز: قراءة رؤية سيئة من الجهاز نفسه تُفعّل بوابة الإيقاف كالمعتاد', () => {
+    const r = computeDviResult(
+      input({ activityType: 'CRANE_LIFTING', hasDeviceLink: true, deviceVisibilityM: 300 }),
       weather({ visibilityM: 10000 })
     );
     expect(r.mandatoryVisibilityStop).toBe(true);

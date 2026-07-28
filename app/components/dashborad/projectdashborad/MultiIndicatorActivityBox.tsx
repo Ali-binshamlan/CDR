@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo, Children, cloneElement, isValidElement } from 'react';
+import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronDown, Wind, CheckCircle2, AlertTriangle, XCircle, X, CheckCircle, Clock3, Pencil, Trash2, Loader2 } from 'lucide-react';
+import { ChevronDown, Wind, CheckCircle2, AlertTriangle, XCircle, Clock3, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 
 // DCR: مؤشر واحد فقط (dust) — لا حرارة ولا رافعات إطلاقاً. النوع يبقى
@@ -26,8 +26,6 @@ export interface UnifiedDecisionTarget {
   requiredAction: string;
   weatherSnapshot: { label: string; value: string }[];
 }
-
-type DecisionStatus = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
 
 // 1. إصلاح مشكلة اللون الأخضر عند وجود إيقاف إلزامي
 //
@@ -53,16 +51,6 @@ function reasonIcon(weight: number, mandatoryStop: boolean) {
   if (weight >= 2) return <AlertTriangle className="w-3.5 h-3.5 text-orange-600 shrink-0" />;
   return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />;
 }
-
-const getConfirmedUI = (status: string) => {
-  switch (status) {
-    case 'safe': return { text: 'تم اعتماد النشاط وتوثيقه', bg: 'bg-emerald-50', border: 'border-emerald-200', textCol: 'text-emerald-700', iconCol: 'text-emerald-500' };
-    case 'caution': return { text: 'تم اعتماد النشاط مع الحذر', bg: 'bg-amber-50', border: 'border-amber-200', textCol: 'text-amber-700', iconCol: 'text-amber-500' };
-    case 'stopped': return { text: 'تم إيقاف النشاط احترازياً', bg: 'bg-red-50', border: 'border-red-200', textCol: 'text-red-700', iconCol: 'text-red-500' };
-    case 'postpone': return { text: 'تم تأجيل النشاط احترازياً', bg: 'bg-indigo-50', border: 'border-indigo-200', textCol: 'text-indigo-700', iconCol: 'text-indigo-500' };
-    default: return { text: 'تم توثيق القرار', bg: 'bg-slate-50', border: 'border-slate-200', textCol: 'text-slate-700', iconCol: 'text-slate-500' };
-  }
-};
 
 // تنسيق الدقائق إلى نص ساعات عربي، مطابق للدالة المستخدمة سابقاً داخل بطاقات المؤشرات
 function formatMinutesToHoursLabel(mins?: number | null): string {
@@ -97,8 +85,8 @@ export default function MultiIndicatorActivityBox({
   windowStartIso,
   windowEndIso,
   durationMinutes,
-  onEdit,
   onDeleted,
+  onEdited,
 }: {
   activityTitle: string;
   summaries: IndicatorSummary[];
@@ -107,26 +95,86 @@ export default function MultiIndicatorActivityBox({
   decisionTargets?: UnifiedDecisionTarget[];
   mandatoryStop?: boolean;
   isFutureActivity?: boolean;
-  /** بداية نافذة النشاط (ISO UTC) — تُعرض في معلومات النشاط العامة فقط، وليست داخل بطاقات المؤشرات */
+  /** بداية نافذة النشاط (ISO UTC) — تُستخدم أيضاً لتعبئة نموذج تعديل الزمن مبدئياً */
   windowStartIso?: string;
   /** نهاية نافذة النشاط (ISO UTC) */
   windowEndIso?: string;
   /** مدة النشاط بالدقائق، تُستخدم إن لم تُشتق المدة من الفارق بين البداية والنهاية */
   durationMinutes?: number;
-  /** يُستدعى عند الضغط على "تعديل" — الأب (page.tsx) هو من يملك نموذج التعديل الفعلي ويقرر كيف يفتحه */
-  onEdit?: () => void;
   /** يُستدعى بعد نجاح الحذف فعلياً من قاعدة البيانات، ليقوم الأب بإزالة هذا النشاط من القائمة المعروضة */
   onDeleted?: () => void;
+  /** يُستدعى بعد نجاح تعديل الزمن، ليُحدّث الأب بيانات الصفحة (نفس دور onDeleted) */
+  onEdited?: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
-  const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleted, setIsDeleted] = useState(false);
-  const [confirmedDecision, setConfirmedDecision] = useState<{ status: string; time: string } | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const router = useRouter();
 
-  const hasDecisionTargets = decisionTargets.length > 0;
+  // تحويل windowStartIso/windowEndIso (UTC) إلى تاريخ/وقت محلي بتوقيت
+  // الرياض لتعبئة نموذج التعديل — نفس منطق toLocaleDateString/TimeString
+  // أعلى الملف (calendar: 'gregory' صراحةً لنفس سبب scheduleInfo أدناه).
+  const riyadhDatePart = (iso: string) => {
+    const d = new Date(new Date(iso).getTime() + 3 * 3600000);
+    return d.toISOString().slice(0, 10);
+  };
+  const riyadhTimePart = (iso: string) => {
+    const d = new Date(new Date(iso).getTime() + 3 * 3600000);
+    return d.toISOString().slice(11, 16);
+  };
+
+  const [editDate, setEditDate] = useState(() => (windowStartIso ? riyadhDatePart(windowStartIso) : ''));
+  const [editStartTime, setEditStartTime] = useState(() => (windowStartIso ? riyadhTimePart(windowStartIso) : ''));
+  const [editEndTime, setEditEndTime] = useState(() => (windowEndIso ? riyadhTimePart(windowEndIso) : ''));
+
+  const openEdit = () => {
+    if (windowStartIso) setEditDate(riyadhDatePart(windowStartIso));
+    if (windowStartIso) setEditStartTime(riyadhTimePart(windowStartIso));
+    if (windowEndIso) setEditEndTime(riyadhTimePart(windowEndIso));
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (decisionTargets.length === 0) return;
+    if (!editDate || !editStartTime || !editEndTime) {
+      alert('حدد التاريخ ووقت البداية ووقت النهاية.');
+      return;
+    }
+    const toMin = (hhmm: string) => {
+      const [h, m] = hhmm.split(':').map(Number);
+      return (h || 0) * 60 + (m || 0);
+    };
+    const durationHours = (toMin(editEndTime) - toMin(editStartTime)) / 60;
+    if (durationHours <= 0) {
+      alert('وقت النهاية يجب أن يكون بعد وقت البداية.');
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      // تحقق الملكية والتحديث الفعلي مسؤولية PATCH /api/activities على
+      // الخادم (supabaseAdmin) — راجع app/api/activities/route.ts. يحدّث
+      // كل صفوف project_dust_profiles المشتركة في هذا النشاط (decisionTargets)
+      // بنفس القيم الجديدة دفعة واحدة.
+      await apiClient.patch('/activities', {
+        targets: decisionTargets.map((t) => ({ projectId: t.projectId, activityId: t.activityId })),
+        plannedDate: editDate,
+        plannedTime: editStartTime,
+        durationHours,
+      });
+
+      setIsEditing(false);
+      onEdited?.();
+      router.refresh();
+    } catch (error: any) {
+      console.error('خطأ أثناء تعديل زمن النشاط:', error);
+      alert(error?.response?.data?.error || 'حدث خطأ أثناء تعديل زمن النشاط.');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   const sortedSummaries = useMemo(
     () => [...summaries].sort((a, b) => b.riskWeight - a.riskWeight),
@@ -184,62 +232,6 @@ export default function MultiIndicatorActivityBox({
     };
   }, [hasSchedule, windowStartIso, windowEndIso, durationMinutes, mandatoryStop]);
 
-  useEffect(() => {
-    async function fetchLatestDecision() {
-      if (!hasDecisionTargets) return;
-      try {
-        const targets = decisionTargets.map((t) => ({
-          projectId: t.projectId,
-          activityId: t.activityId,
-          activitySource: t.source,
-        }));
-        const { data } = await apiClient.get('/decisions', {
-          params: { targets: JSON.stringify(targets) },
-        });
-        const latest = data?.data;
-        if (latest) {
-          setConfirmedDecision({
-            status: latest.status,
-            time: new Date(latest.created_at).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
-          });
-        }
-      } catch (error) {
-        console.error('فشل جلب القرار الموحد:', error);
-      }
-    }
-    fetchLatestDecision();
-  }, [decisionTargets.map((t) => `${t.projectId}-${t.activityId}-${t.source}`).join('|')]);
-
-  const saveDecision = async (status: DecisionStatus) => {
-    if (!hasDecisionTargets) return;
-    setIsSaving(true);
-    try {
-      const inserts = decisionTargets.map((t) => ({
-        project_id: t.projectId,
-        activity_source: t.source,
-        activity_id: t.activityId,
-        status,
-        reason: t.reason,
-        required_action: t.requiredAction || 'لا توجد متطلبات إضافية',
-        approved_by: 'مستخدم النظام (مدير الموقع)',
-        approval_note: 'قرار موحد لنشاط متعدد المؤشرات',
-        weather_snapshot: t.weatherSnapshot,
-      }));
-      await apiClient.post('/decisions', { inserts });
-
-      setConfirmedDecision({
-        status,
-        time: new Date().toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
-      });
-      setRefreshKey((k) => k + 1);
-    } catch (error) {
-      console.error('خطأ أثناء حفظ القرار الموحد:', error);
-      alert('حدث خطأ أثناء حفظ القرار.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const handleDelete = async () => {
     if (decisionTargets.length === 0) return;
     const confirmed = window.confirm(
@@ -275,26 +267,6 @@ export default function MultiIndicatorActivityBox({
     }
   };
 
-  // -----------------------------------------------------------
-  // زر الحذف لا يظهر إلا لو انتهى وقت تنفيذ النشاط فعلياً (تفاديًا
-  // لحذف نشاط جارٍ أو مجدول بالخطأ) — أو لا يوجد جدول زمني معروف له
-  // أصلاً، فلا يوجد أساس لمنع الحذف. التعديل يبقى متاحاً دائماً.
-  // -----------------------------------------------------------
-  const canDelete = !scheduleInfo || scheduleInfo.status === 'past';
-
-  // 2. تحديث المكونات الأبناء لتتفاعل مع الحفظ (تم إزالة حقن الخاصية لأن page.tsx تتولى ذلك)
-  const keyedChildren = useMemo(
-    () =>
-      Children.map(children, (child, idx) =>
-        isValidElement(child)
-          ? cloneElement(child as React.ReactElement<any>, { 
-              key: `${child.key ?? idx}-r${refreshKey}`
-            })
-          : child
-      ),
-    [children, refreshKey]
-  );
-
   if (isDeleted) {
     return (
       <div className="bg-slate-50 rounded-2xl border border-dashed border-slate-300 p-5 mb-6 text-center">
@@ -324,30 +296,84 @@ export default function MultiIndicatorActivityBox({
             )}
           </div>
 
-          {/* تعديل وحذف النشاط — الحذف يظهر فقط بعد انتهاء وقت تنفيذ النشاط فعلياً */}
+          {/* تعديل زمن النشاط وحذفه — كلاهما متاح دائماً بصرف النظر عن حالة النشاط */}
           <div className="flex items-center gap-2 shrink-0">
-            {onEdit && (
-              <button
-                type="button"
-                onClick={onEdit}
-                className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors"
-              >
-                <Pencil className="w-3.5 h-3.5" /> تعديل
-              </button>
-            )}
-            {canDelete && (
-              <button
-                type="button"
-                disabled={isDeleting}
-                onClick={handleDelete}
-                className="flex items-center gap-1.5 text-[11px] font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
-              >
-                {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                حذف
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={openEdit}
+              className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <Pencil className="w-3.5 h-3.5" /> تعديل
+            </button>
+            <button
+              type="button"
+              disabled={isDeleting}
+              onClick={handleDelete}
+              className="flex items-center gap-1.5 text-[11px] font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
+            >
+              {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              حذف
+            </button>
           </div>
         </div>
+
+        {/* لوحة تعديل زمن النشاط — تاريخ + وقت بداية/نهاية فقط (طلب صريح
+            من المستخدم: "التعديل يكون على زمن النشاط")، لا موقع/ضوابط/نوع.
+            تحدّث كل صفوف project_dust_profiles المشتركة في هذا النشاط
+            (decisionTargets) دفعة واحدة عبر PATCH /api/activities. */}
+        {isEditing && (
+          <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+            <p className="text-[12px] font-black text-[#061B40]">تعديل زمن النشاط</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">التاريخ</label>
+                <input
+                  type="date"
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  className="w-full text-[12px] font-bold border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">وقت البداية</label>
+                <input
+                  type="time"
+                  value={editStartTime}
+                  onChange={(e) => setEditStartTime(e.target.value)}
+                  className="w-full text-[12px] font-bold border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 block mb-1">وقت النهاية</label>
+                <input
+                  type="time"
+                  value={editEndTime}
+                  onChange={(e) => setEditEndTime(e.target.value)}
+                  className="w-full text-[12px] font-bold border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={isSavingEdit}
+                onClick={handleSaveEdit}
+                className="flex items-center gap-1.5 text-[11px] font-bold text-white bg-[#0176FB] hover:bg-[#0176FB]/90 px-4 py-1.5 rounded-lg transition-colors disabled:opacity-60"
+              >
+                {isSavingEdit ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                حفظ
+              </button>
+              <button
+                type="button"
+                disabled={isSavingEdit}
+                onClick={() => setIsEditing(false)}
+                className="text-[11px] font-bold text-slate-500 bg-white hover:bg-slate-100 border border-slate-200 px-4 py-1.5 rounded-lg transition-colors"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* القرار الموحد - تصميم واضح وصارم */}
         {driverSummary && (
@@ -384,55 +410,6 @@ export default function MultiIndicatorActivityBox({
                 ))}
               </div>
             </div>
-
-            {hasDecisionTargets && (
-              <div className={`mt-4 pt-4 border-t ${bannerStyle.soft}`}>
-                {confirmedDecision ? (
-                  <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-white shadow-sm border ${getConfirmedUI(confirmedDecision.status).border}`}>
-                      <CheckCircle className={`w-5 h-5 ${getConfirmedUI(confirmedDecision.status).iconCol}`} />
-                    </div>
-                    <div>
-                      <p className={`text-[13px] font-black ${bannerStyle.text}`}>{getConfirmedUI(confirmedDecision.status).text}</p>
-                      <p className={`text-[10px] font-bold mt-0.5 opacity-80 flex items-center gap-1 ${bannerStyle.text}`}>
-                        <Clock3 className="w-3 h-3" /> تم التوثيق الساعة {confirmedDecision.time}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                    <p className={`text-[11px] font-bold opacity-90 ${bannerStyle.text}`}>اختر إجراء واحداً ليتم اعتماده على النشاط ككل:</p>
-                    <div className="flex gap-2">
-                      {!mandatoryStop && (
-                        <button
-                          disabled={isSaving}
-                          onClick={() => saveDecision('safe')}
-                          className="flex-1 sm:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-xl text-[12px] font-bold transition-all shadow-sm flex items-center justify-center gap-1.5"
-                        >
-                          <CheckCircle2 className="w-4 h-4" /> اعتماد التنفيذ
-                        </button>
-                      )}
-                      {!mandatoryStop && (
-                        <button
-                          disabled={isSaving}
-                          onClick={() => saveDecision('caution')}
-                          className="flex-1 sm:flex-none bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-5 py-2 rounded-xl text-[12px] font-bold transition-all flex items-center justify-center gap-1.5"
-                        >
-                          <AlertTriangle className="w-4 h-4" /> التنفيذ بحذر
-                        </button>
-                      )}
-                      <button
-                        disabled={isSaving}
-                        onClick={() => saveDecision(isFutureActivity ? 'postpone' : 'stopped')}
-                        className="flex-1 sm:flex-none bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-5 py-2 rounded-xl text-[12px] font-bold transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <X className="w-4 h-4" /> {isFutureActivity ? 'تأجيل النشاط' : 'إيقاف النشاط'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -456,7 +433,7 @@ export default function MultiIndicatorActivityBox({
 
       {isOpen && (
         <div className="border-t border-slate-100 bg-slate-100/30 p-5 space-y-6">
-          {keyedChildren}
+          {children}
         </div>
       )}
     </div>

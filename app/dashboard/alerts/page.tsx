@@ -23,12 +23,9 @@ import {
   Activity,
   AlertOctagon,
   AlertTriangle,
-  User,
-  MessageCircle,
-  PauseCircle,
-  CheckCircle2,
   Scale,
-  ShieldQuestion
+  ShieldQuestion,
+  Trash2,
 } from 'lucide-react';
 
 // ============================================================
@@ -106,7 +103,6 @@ interface AlertItem {
   severity: Severity;
   metrics: { label: string; actual: string; threshold: string } | null;
   recommendedAction: string;
-  assignee: string;
 }
 
 // ============================================================
@@ -213,7 +209,6 @@ export default function AlertsPage() {
           created_at: a.created_at,
           metrics,
           recommendedAction: translateAlertMessage(a.recommended_action || getFallbackRecommendedAction(kind)),
-          assignee: a.assignee || 'غير معيّن بعد',
         };
       });
 
@@ -242,20 +237,23 @@ export default function AlertsPage() {
     );
   }, [alertsData, alertTimingFilter, alertProjectFilter, alertStateFilterVal, searchQuery]);
 
-  const toggleAlertState = async (alertId: string, newState: AlertState, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-
-    try {
-      setAlertsData(prev => prev.map(a => a.id === alertId ? { ...a, state: newState } : a));
-      await apiClient.patch(`/alerts/${alertId}`, { state: newState });
-    } catch (error) {
-      console.error('Error updating alert state:', error);
-      fetchAlertsData();
-    }
-  };
-
   const toggleExpand = (id: string) => {
     setExpandedAlertId(prev => prev === id ? null : id);
+  };
+
+  const deleteAlert = async (alertId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!confirm('هل أنت متأكد من حذف هذا التنبيه نهائياً؟')) return;
+
+    const previous = alertsData;
+    setAlertsData(prev => prev.filter(a => a.id !== alertId));
+    setExpandedAlertId(prev => (prev === alertId ? null : prev));
+    try {
+      await apiClient.delete(`/alerts/${alertId}`);
+    } catch (error) {
+      console.error('Error deleting alert:', error);
+      setAlertsData(previous);
+    }
   };
 
   if (isLoading) {
@@ -431,6 +429,13 @@ export default function AlertsPage() {
                         <span className={`px-3 py-1.5 rounded-full text-[11px] font-black border ${sMeta.bg} ${sMeta.text} ${sMeta.border}`}>
                           {stateLabel[alert.state]}
                         </span>
+                        <button
+                          onClick={(e) => deleteAlert(alert.id, e)}
+                          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
+                          title="حذف التنبيه"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                         <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-400 transition-colors">
                           {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
                         </button>
@@ -470,18 +475,6 @@ export default function AlertsPage() {
                                 </div>
                               )}
                             </div>
-
-                            <div>
-                              <h4 className="text-xs font-black text-slate-500 mb-2 flex items-center gap-1.5">
-                                <User className="w-4 h-4 text-emerald-500" /> المسؤول الميداني
-                              </h4>
-                              <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
-                                <span className="text-sm font-bold text-slate-700">{alert.assignee}</span>
-                                <button className="text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 p-1.5 rounded-lg transition-colors" title="مراسلة عبر الواتساب">
-                                  <MessageCircle className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
                           </div>
 
                           <div className="space-y-4">
@@ -491,47 +484,6 @@ export default function AlertsPage() {
                               </h4>
                               <div className="bg-orange-50 border border-orange-100 rounded-xl p-3 shadow-sm text-sm font-bold text-orange-800 leading-relaxed">
                                 {alert.recommendedAction}
-                              </div>
-                            </div>
-
-                            <div>
-                              <h4 className="text-xs font-black text-slate-500 mb-2 mt-4">الإجراءات السريعة</h4>
-                              <div className="flex flex-wrap gap-2">
-                                {alert.state === 'NEW' && (
-                                  <button
-                                    onClick={(e) => toggleAlertState(alert.id, 'REVIEWED', e)}
-                                    className="flex-1 bg-[#061B40] hover:bg-[#0a275e] text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2"
-                                  >
-                                    <CheckCircle2 className="w-4 h-4" /> تحديد كـ قيد المراجعة
-                                  </button>
-                                )}
-
-                                {alert.state === 'REVIEWED' && (
-                                  <button
-                                    onClick={(e) => toggleAlertState(alert.id, 'ACTION_TAKEN', e)}
-                                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2"
-                                  >
-                                    <CheckCircle2 className="w-4 h-4" /> تم تنفيذ الإجراء المطلوب
-                                  </button>
-                                )}
-
-                                {alert.severity === 'CRITICAL' && alert.state !== 'CLOSED' && (
-                                  <button
-                                    onClick={(e) => toggleAlertState(alert.id, 'ACTION_TAKEN', e)}
-                                    className="flex-1 bg-red-50 border border-red-200 text-red-600 hover:bg-red-100 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2"
-                                  >
-                                    <PauseCircle className="w-4 h-4" /> إيقاف النشاط مؤقتاً
-                                  </button>
-                                )}
-
-                                {alert.state !== 'CLOSED' && (
-                                  <button
-                                    onClick={(e) => toggleAlertState(alert.id, 'CLOSED', e)}
-                                    className="flex-none bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors"
-                                  >
-                                    إغلاق
-                                  </button>
-                                )}
                               </div>
                             </div>
                           </div>

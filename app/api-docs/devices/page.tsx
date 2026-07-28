@@ -28,6 +28,8 @@ const FIELDS: FieldRow[] = [
   { field: 'pm10', unit: 'ميكروجرام/م³', type: 'رقم', range: '≥ 0' },
   { field: 'pm25', unit: 'ميكروجرام/م³', type: 'رقم', range: '≥ 0' },
   { field: 'visibilityM', unit: 'متر', type: 'رقم', range: '≥ 0' },
+  { field: 'relativeHumidityPercent', unit: '%', type: 'رقم', range: '0 – 100' },
+  { field: 'temperatureC', unit: '°م', type: 'رقم', range: '-20 – 70' },
 ];
 
 interface ErrorRow {

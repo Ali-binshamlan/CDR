@@ -2,10 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildDustInput, resolveFreshProjectDevice, type FreshDeviceReading } from './dustEvaluation';
 
 // =====================================================================
-// اختبارات مسار "قراءة جهاز حية" — راجع خطة "ربط أجهزة الرصد بالمشاريع".
-// buildDustInput: التوصيل الصحيح لحقول device* من FreshDeviceReading.
-// resolveFreshProjectDevice: اختيار أحدث جهاز نشط بقراءة حديثة، والتجاهل
-// الصحيح لجهاز قديم/غير نشط/معدوم.
+// اختبارات مسار "قراءة جهاز حية" — راجع خطة "عزل مصادر القراءة: محطة
+// محددة فقط أو API فقط، بلا أي تعويض بينهما".
+// buildDustInput: التوصيل الصحيح لحقول device*/hasDeviceLink من
+// FreshDeviceReading + device_id. resolveFreshProjectDevice: يرجع آخر
+// قراءة معروفة للجهاز المطلوب دائماً (حتى لو قديمة) — لا إسقاط صامت
+// بعد الآن، القِدم مسؤولية طبقة العرض.
 // =====================================================================
 
 const baseRow = {
@@ -40,40 +42,52 @@ function freshDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceRe
     last_pm10: 260,
     last_pm25: 90,
     last_visibility_m: 1200,
+    last_relative_humidity_percent: 45,
+    last_temperature_c: 38,
+    last_reading_at: new Date().toISOString(),
     ...overrides,
   };
 }
 
-describe('buildDustInput — توصيل قراءة الجهاز إلى DustEngineInput', () => {
-  it('بلا freshDevice، كل حقول device* تكون null (سلوك قديم محفوظ تماماً)', () => {
+describe('buildDustInput — توصيل قراءة الجهاز وhasDeviceLink إلى DustEngineInput', () => {
+  it('بلا device_id على الصف، hasDeviceLink=false وكل حقول device* تكون null', () => {
     const input = buildDustInput(baseRow, baseProject);
+    expect(input.hasDeviceLink).toBe(false);
     expect(input.deviceWindSpeedKmh).toBeNull();
     expect(input.deviceWindGustKmh).toBeNull();
     expect(input.deviceWindDirectionDeg).toBeNull();
     expect(input.devicePm10).toBeNull();
     expect(input.devicePm25).toBeNull();
     expect(input.deviceVisibilityM).toBeNull();
+    expect(input.deviceRelativeHumidityPercent).toBeNull();
+    expect(input.deviceTemperatureC).toBeNull();
+    expect(input.deviceLastReadingAt).toBeNull();
   });
 
-  it('بوجود freshDevice، تُملأ حقول device* من قيمه مباشرة', () => {
-    const input = buildDustInput(baseRow, baseProject, freshDevice());
+  it('بوجود device_id + freshDevice، hasDeviceLink=true وتُملأ حقول device* من قيمه مباشرة', () => {
+    const row = { ...baseRow, device_id: 'device-1' };
+    const input = buildDustInput(row, baseProject, freshDevice());
+    expect(input.hasDeviceLink).toBe(true);
     expect(input.deviceWindSpeedKmh).toBe(22);
     expect(input.deviceWindGustKmh).toBe(30);
     expect(input.deviceWindDirectionDeg).toBe(180);
     expect(input.devicePm10).toBe(260);
     expect(input.devicePm25).toBe(90);
     expect(input.deviceVisibilityM).toBe(1200);
+    expect(input.deviceRelativeHumidityPercent).toBe(45);
+    expect(input.deviceTemperatureC).toBe(38);
   });
 
-  it('freshDevice=null صراحةً (جهاز موجود لكن قديم) يساوي عدم تمرير المعامل أصلاً', () => {
-    const withNull = buildDustInput(baseRow, baseProject, null);
-    const withoutParam = buildDustInput(baseRow, baseProject);
-    expect(withNull.deviceWindSpeedKmh).toBe(withoutParam.deviceWindSpeedKmh);
-    expect(withNull.devicePm10).toBe(withoutParam.devicePm10);
+  it('device_id موجود لكن freshDevice غاب (لا صف جهاز نشط) — hasDeviceLink يبقى true رغم فراغ الحقول', () => {
+    const row = { ...baseRow, device_id: 'device-1' };
+    const input = buildDustInput(row, baseProject, null);
+    expect(input.hasDeviceLink).toBe(true);
+    expect(input.devicePm10).toBeNull();
+    expect(input.deviceLastReadingAt).toBeNull();
   });
 
-  it('حقول device* لا تتعارض مع onsite_* — كلاهما يُمرَّر، الأولوية تُحسَم لاحقاً في computeDviResult', () => {
-    const row = { ...baseRow, onsite_pm10: 900, onsite_visibility_m: 800 };
+  it('onsite_* يبقى يُمرَّر في DustEngineInput (توافقية) لكن لم يعد يؤثر على الدمج في mergeDustReading', () => {
+    const row = { ...baseRow, device_id: 'device-1', onsite_pm10: 900, onsite_visibility_m: 800 };
     const input = buildDustInput(row, baseProject, freshDevice({ last_pm10: 260, last_visibility_m: 1200 }));
     expect(input.onsitePm10).toBe(900);
     expect(input.devicePm10).toBe(260);
@@ -83,16 +97,18 @@ describe('buildDustInput — توصيل قراءة الجهاز إلى DustEngin
 describe('resolveFreshProjectDevice — اختيار أحدث قراءة جهاز حية للمشروع', () => {
   // عميل Supabase مموّه بأقل ما يلزم من السلسلة المستخدمة فعلياً في
   // resolveFreshProjectDevice: from().select().eq().eq().not().order().limit().maybeSingle()
+  // (أو .eq(id) بدل .order() عند تمرير deviceId — راجع chain.eq أدناه).
   function mockSupabase(row: any) {
+    const eqCalls: any[] = [];
     const chain: any = {
       select: () => chain,
-      eq: () => chain,
+      eq: (...args: any[]) => { eqCalls.push(args); return chain; },
       not: () => chain,
       order: () => chain,
       limit: () => chain,
       maybeSingle: async () => ({ data: row }),
     };
-    return { from: vi.fn(() => chain) };
+    return { from: vi.fn(() => chain), _eqCalls: eqCalls };
   }
 
   it('يرجع null إن لم يوجد أي صف (لا أجهزة مسجَّلة أصلاً)', async () => {
@@ -101,7 +117,7 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
     expect(result).toBeNull();
   });
 
-  it('يرجع null إن كانت last_reading_at أقدم من 20 دقيقة (قراءة غير حديثة)', async () => {
+  it('يرجع القراءة حتى لو كانت last_reading_at أقدم من 20 دقيقة — لا إسقاط صامت بعد الآن', async () => {
     const staleTime = new Date(Date.now() - 25 * 60000).toISOString();
     const supabase = mockSupabase({
       last_reading_at: staleTime,
@@ -111,12 +127,16 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
       last_pm10: null,
       last_pm25: null,
       last_visibility_m: null,
+      last_relative_humidity_percent: null,
+      last_temperature_c: null,
     });
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result?.last_wind_speed_kmh).toBe(40);
+    expect(result?.last_reading_at).toBe(staleTime);
   });
 
-  it('يرجع القراءة عند وجود صف حديث (ضمن 20 دقيقة)', async () => {
+  it('يرجع القراءة عند وجود صف حديث (ضمن 20 دقيقة) — يشمل last_reading_at', async () => {
     const freshTime = new Date(Date.now() - 5 * 60000).toISOString();
     const supabase = mockSupabase({
       last_reading_at: freshTime,
@@ -126,6 +146,8 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
       last_pm10: 150,
       last_pm25: 60,
       last_visibility_m: 3000,
+      last_relative_humidity_percent: 55,
+      last_temperature_c: 41,
     });
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
     expect(result).toEqual({
@@ -135,21 +157,66 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
       last_pm10: 150,
       last_pm25: 60,
       last_visibility_m: 3000,
+      last_relative_humidity_percent: 55,
+      last_temperature_c: 41,
+      last_reading_at: freshTime,
     });
   });
 
-  it('حدّ العتبة (20 دقيقة بالضبط) يُعامَل كغير طازج (>، لا >=)', async () => {
-    const exactlyAtThreshold = new Date(Date.now() - 20 * 60000 - 1000).toISOString();
+  it('قراءة قديمة جداً (أياماً) تُرجَع أيضاً — القِدم مسؤولية طبقة العرض لا هذه الدالة', async () => {
+    const veryOldTime = new Date(Date.now() - 5 * 24 * 3600000).toISOString();
     const supabase = mockSupabase({
-      last_reading_at: exactlyAtThreshold,
+      last_reading_at: veryOldTime,
       last_wind_speed_kmh: 10,
       last_wind_gust_kmh: null,
       last_wind_direction_deg: null,
       last_pm10: null,
       last_pm25: null,
       last_visibility_m: null,
+      last_relative_humidity_percent: null,
+      last_temperature_c: null,
     });
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result?.last_reading_at).toBe(veryOldTime);
+  });
+
+  it('مع تمرير deviceId، يُفلتر الاستعلام بـ.eq("id", deviceId) بدل أحدث جهاز بالمشروع', async () => {
+    const freshTime = new Date(Date.now() - 5 * 60000).toISOString();
+    const supabase = mockSupabase({
+      last_reading_at: freshTime,
+      last_wind_speed_kmh: 12,
+      last_wind_gust_kmh: null,
+      last_wind_direction_deg: null,
+      last_pm10: null,
+      last_pm25: null,
+      last_visibility_m: null,
+      last_relative_humidity_percent: null,
+      last_temperature_c: null,
+    });
+    const result = await resolveFreshProjectDevice(supabase, 'project-1', 'device-42');
+    expect(result?.last_wind_speed_kmh).toBe(12);
+    // .eq('project_id', ...) و .eq('is_active', true) دائماً، بالإضافة إلى
+    // .eq('id', 'device-42') تحديداً عند تمرير deviceId — تأكيد أن التقييد
+    // بمحطة محددة يحدث فعلاً، لا فقط قبول المعامل بصمت.
+    expect(supabase._eqCalls).toContainEqual(['id', 'device-42']);
+  });
+
+  it('بلا deviceId (أو null)، لا يُستدعى .eq("id", ...) — يبقى السلوك القديم (أحدث جهاز بالمشروع)', async () => {
+    const freshTime = new Date(Date.now() - 5 * 60000).toISOString();
+    const supabase = mockSupabase({
+      last_reading_at: freshTime,
+      last_wind_speed_kmh: 12,
+      last_wind_gust_kmh: null,
+      last_wind_direction_deg: null,
+      last_pm10: null,
+      last_pm25: null,
+      last_visibility_m: null,
+      last_relative_humidity_percent: null,
+      last_temperature_c: null,
+    });
+    await resolveFreshProjectDevice(supabase, 'project-1', null);
+    const idCalls = supabase._eqCalls.filter((args: any[]) => args[0] === 'id');
+    expect(idCalls.length).toBe(0);
   });
 });

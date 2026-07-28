@@ -4,10 +4,10 @@ import { useMemo, useState, useEffect } from 'react';
 import { Wind, Plus, Trash2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { DUST_FORM_DEFAULTS, getInputClass, labelClass, sectionTitleClass, REGULATORY_ACTIVITY_LABEL_AR } from './constants';
 import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem } from './constants';
-import type { ProjectLite } from './types';
+import type { ProjectLite, ProjectDeviceLite } from './types';
 import { MultiActivityMapPicker, buildMapPoints } from './MultiActivityMapPicker';
 import type { MapPoint } from './MultiActivityMapPicker';
-import { buildProjectZoneFromRow } from '@/app/utils/geo/zone';
+import { buildProjectZoneFromRow, haversineDistanceM } from '@/app/utils/geo/zone';
 
 type DustForm = typeof DUST_FORM_DEFAULTS;
 
@@ -24,6 +24,8 @@ interface DustStepProps {
   removeRegulatoryActivity: (itemId: string) => void;
   updateRegulatoryActivityField: (itemId: string, field: keyof RegulatoryActivityFields, value: any) => void;
   updateRegulatoryActivityLocation: (itemId: string, lat: number | null, lng: number | null) => void;
+  projectDevices: ProjectDeviceLite[];
+  updateRegulatoryActivityDevice: (itemId: string, deviceId: string | null) => void;
   updateRegulatoryActivityTiming: (itemId: string, field: 'startDate' | 'endDate' | 'customStartTime' | 'customEndTime', value: string) => void;
   updateRegulatoryActivityTimingMode: (itemId: string, timingMode: 'shift' | 'custom') => void;
   updateRegulatoryActivityShift: (itemId: string, shiftId: string | null) => void;
@@ -53,6 +55,11 @@ const COMPLIANCE_RELEVANT_CONTROL_KEYS = new Set<keyof DustForm>(['dustScreensAv
 // في dust-engine/engine.ts)، ولا علاقة لها بمحرك الامتثال التنظيمي إطلاقاً.
 const SHOW_CONTROL_MEASURES_SECTION = false;
 
+// BATCHING_PLANT عمداً غير مدرجة هنا: إعفاء بوابة الرياح لمحطة الخلط لا
+// يعتمد على isEnclosedOperation إطلاقاً (راجع isEnclosedExemptFromHighWind
+// في dust-compliance-engine/engine.ts) — يكفي إحكام إغلاق الصوامع
+// (silosSealed، مدخل موجود أصلاً لكل وحدة خلط) + فلتر PM10 ≥99%، طلب صريح
+// من المستخدم بعدم اشتراط إغلاق المحطة فيزيائياً.
 const SENSITIVE_REGULATORY_ACTIVITIES = new Set(['DEMOLITION', 'CRUSHER', 'STONE_CUTTING']);
 
 // -----------------------------------------------------------------------
@@ -122,6 +129,7 @@ export function DustStep({
   dustForm, updateDustField, dustLoading, onSubmit,
   regulatoryActivities, expandedActivityIds, toggleRegulatoryActivityExpanded, removeRegulatoryActivity,
   updateRegulatoryActivityField, updateRegulatoryActivityLocation, updateRegulatoryActivityTiming, updateRegulatoryActivityTimingMode, updateRegulatoryActivityShift,
+  projectDevices, updateRegulatoryActivityDevice,
   updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
   updateIdleSurfaceUnit, addIdleSurfaceUnit, removeIdleSurfaceUnit,
   updateCrusherUnit, addCrusherUnit, removeCrusherUnit,
@@ -671,6 +679,41 @@ export function DustStep({
                               </div>
                             </div>
                           ))}
+                        </div>
+                      )}
+
+                      {/* محطة الرصد التي ستؤخذ منها قراءات هذا النشاط تحديداً —
+                          اختيارية: من لا يختار محطة يأخذ النشاط قراءاته من
+                          API الطقس (Open-Meteo) بدل الجهاز تلقائياً، بنفس
+                          أولوية جهاز > API > يدوي المعتادة (راجع
+                          resolveFreshProjectDevice في app/lib/dustEvaluation.ts).
+                          تُقترح أقرب محطة نشطة تلقائياً عند تحديد موقع
+                          النشاط (updateRegulatoryActivityLocation)، وتبقى
+                          قابلة للتغيير أو الإلغاء يدوياً هنا. */}
+                      {projectDevices.length > 0 && (
+                        <div>
+                          <label className={labelClass}>محطة الرصد (مصدر القراءات) — اختياري</label>
+                          <select
+                            value={item.deviceId ?? ''}
+                            onChange={(e) => updateRegulatoryActivityDevice(item.id, e.target.value || null)}
+                            className={getInputClass(false)}
+                          >
+                            <option value="">بلا محطة — استخدم API الطقس</option>
+                            {projectDevices.map((d) => {
+                              const distanceLabel =
+                                typeof item.lat === 'number' &&
+                                typeof item.lng === 'number' &&
+                                typeof d.lat === 'number' &&
+                                typeof d.lng === 'number'
+                                  ? ` — ${Math.round(haversineDistanceM({ lat: item.lat, lng: item.lng }, { lat: d.lat, lng: d.lng }))} م`
+                                  : '';
+                              return (
+                                <option key={d.id} value={d.id} disabled={!d.is_active}>
+                                  {d.name}{!d.is_active ? ' (معطّلة)' : ''}{distanceLabel}
+                                </option>
+                              );
+                            })}
+                          </select>
                         </div>
                       )}
 

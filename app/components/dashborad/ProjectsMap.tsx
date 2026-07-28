@@ -5,6 +5,7 @@ import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { apiClient } from '@/app/lib/apiClient';
+import { SAUDI_BOUNDS, SAUDI_CENTER } from '@/app/utils/geo/countryBounds';
 
 export type Decision = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
 
@@ -31,16 +32,21 @@ function makeIcon(color: string) {
   });
 }
 
-// يضبط تكبير/تمركز الخريطة تلقائياً بحيث تظهر كل نقاط المشاريع
+// يضبط تكبير/تمركز الخريطة تلقائياً بحيث تظهر كل نقاط المشاريع — لكن دون
+// تجاوز حدود المملكة الصلبة (SAUDI_BOUNDS)، فلا "يهرب" التكبير التلقائي
+// خارج المنطقة المسموحة حتى لو وُجدت نقاط مشاريع خارجها فعلياً.
 function FitBounds({ points }: { points: { latitude: number; longitude: number }[] }) {
   const map = useMap();
 
   useEffect(() => {
     if (points.length === 0) return;
-    if (points.length === 1) {
-      map.setView([points[0].latitude, points[0].longitude], 11);
+    const saudi = L.latLngBounds(SAUDI_BOUNDS);
+    const withinSaudi = points.filter((p) => saudi.contains([p.latitude, p.longitude]));
+    if (withinSaudi.length === 0) return;
+    if (withinSaudi.length === 1) {
+      map.setView([withinSaudi[0].latitude, withinSaudi[0].longitude], 11);
     } else {
-      const bounds = L.latLngBounds(points.map((p) => [p.latitude, p.longitude] as [number, number]));
+      const bounds = L.latLngBounds(withinSaudi.map((p) => [p.latitude, p.longitude] as [number, number]));
       map.fitBounds(bounds, { padding: [40, 40] });
     }
   }, [points, map]);
@@ -103,14 +109,24 @@ function degToCompassAr(deg: number): string {
 function HoverCard({
   point,
   screenPosition,
+  hideRawReadings = false,
 }: {
   point: ProjectPoint;
   screenPosition: { x: number; y: number };
+  // طلب صريح من المستخدم: جهة الرصد لا تُعرض لها القراءات الحية الخام
+  // (رياح/PM10/PM2.5) — الاسم/الموقع/لون وحالة القرار/سبب الحالة يبقى
+  // ظاهراً كما هو. حين مفعَّل، لا يُستدعى /api/weather إطلاقاً (لا فقط
+  // إخفاء العرض بعد الجلب) — توفير طلب شبكة لا داعي له.
+  hideRawReadings?: boolean;
 }) {
   const [weather, setWeather] = useState<LiveWeather | null>(null);
   const [isLoadingWeather, setIsLoadingWeather] = useState(true);
 
   useEffect(() => {
+    if (hideRawReadings) {
+      setIsLoadingWeather(false);
+      return;
+    }
     let cancelled = false;
     setWeather(null);
     setIsLoadingWeather(true);
@@ -128,7 +144,7 @@ function HoverCard({
     return () => {
       cancelled = true;
     };
-  }, [point.id, point.latitude, point.longitude]);
+  }, [point.id, point.latitude, point.longitude, hideRawReadings]);
 
   return (
     <div
@@ -157,29 +173,31 @@ function HoverCard({
         أنشطة اليوم: <span className="font-bold text-slate-700">{point.todayActivitiesCount ?? 0}</span>
       </div>
 
-      <div className="pt-2 border-t border-slate-100 space-y-1">
-        {isLoadingWeather ? (
-          <div className="text-[11px] text-slate-400">جاري جلب قراءات الطقس...</div>
-        ) : weather ? (
-          <>
-            <div className="text-[11px] text-slate-500">
-              الرياح:{' '}
-              <span className="font-bold text-slate-700">
-                {weather.windSpeedKmh != null ? `${weather.windSpeedKmh} كم/س` : '—'}
-                {weather.windDirectionDeg != null ? ` (${degToCompassAr(weather.windDirectionDeg)})` : ''}
-              </span>
-            </div>
-            <div className="text-[11px] text-slate-500">
-              PM10: <span className="font-bold text-slate-700">{weather.pm10 != null ? `${weather.pm10} µg/m³` : '—'}</span>
-            </div>
-            <div className="text-[11px] text-slate-500">
-              PM2.5: <span className="font-bold text-slate-700">{weather.pm25 != null ? `${weather.pm25} µg/m³` : '—'}</span>
-            </div>
-          </>
-        ) : (
-          <div className="text-[11px] text-slate-400">تعذّر جلب قراءات الطقس</div>
-        )}
-      </div>
+      {!hideRawReadings && (
+        <div className="pt-2 border-t border-slate-100 space-y-1">
+          {isLoadingWeather ? (
+            <div className="text-[11px] text-slate-400">جاري جلب قراءات الطقس...</div>
+          ) : weather ? (
+            <>
+              <div className="text-[11px] text-slate-500">
+                الرياح:{' '}
+                <span className="font-bold text-slate-700">
+                  {weather.windSpeedKmh != null ? `${weather.windSpeedKmh} كم/س` : '—'}
+                  {weather.windDirectionDeg != null ? ` (${degToCompassAr(weather.windDirectionDeg)})` : ''}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                PM10: <span className="font-bold text-slate-700">{weather.pm10 != null ? `${weather.pm10} µg/m³` : '—'}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                PM2.5: <span className="font-bold text-slate-700">{weather.pm25 != null ? `${weather.pm25} µg/m³` : '—'}</span>
+              </div>
+            </>
+          ) : (
+            <div className="text-[11px] text-slate-400">تعذّر جلب قراءات الطقس</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -187,22 +205,23 @@ function HoverCard({
 export default function ProjectsMap({
   points,
   onSelect,
+  hideRawReadings = false,
 }: {
   points: ProjectPoint[];
   onSelect?: (id: string) => void;
+  hideRawReadings?: boolean;
 }) {
   const [hovered, setHovered] = useState<{ point: ProjectPoint; screenPosition: { x: number; y: number } } | null>(null);
-
-  // الرياض كمركز افتراضي عند عدم وجود نقاط
-  const defaultCenter: [number, number] =
-    points.length > 0 ? [points[0].latitude, points[0].longitude] : [24.7136, 46.6753];
 
   return (
     <div className="relative w-full h-full">
       <MapContainer
-        center={defaultCenter}
+        center={SAUDI_CENTER}
         zoom={6}
+        minZoom={5}
         scrollWheelZoom
+        maxBounds={SAUDI_BOUNDS}
+        maxBoundsViscosity={1.0}
         style={{ height: '100%', width: '100%' }}
       >
         <TileLayer
@@ -230,7 +249,9 @@ export default function ProjectsMap({
           />
         ))}
       </MapContainer>
-      {hovered && <HoverCard point={hovered.point} screenPosition={hovered.screenPosition} />}
+      {hovered && (
+        <HoverCard point={hovered.point} screenPosition={hovered.screenPosition} hideRawReadings={hideRawReadings} />
+      )}
     </div>
   );
 }

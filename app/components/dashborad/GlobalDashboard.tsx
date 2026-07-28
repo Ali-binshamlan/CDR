@@ -23,9 +23,12 @@ interface GlobalDashboardProps {
   // (viewer) تمرر '/viewer/dashboard' (نفس شكل الاستجابة تماماً، بلا فلترة
   // user_id) لعرض كل المشاريع عبر كل المستخدمين بنفس منطق الخريطة والنقاط.
   apiEndpoint?: string;
+  // طلب صريح من المستخدم: جهة الرصد لا تُعرض لها القراءات الحية الخام على
+  // الخريطة (رياح/PM10/PM2.5) — راجع hideRawReadings في ProjectsMap.tsx.
+  hideRawReadings?: boolean;
 }
 
-export default function GlobalDashboard({ apiEndpoint = '/dashboard/global' }: GlobalDashboardProps) {
+export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hideRawReadings = false }: GlobalDashboardProps) {
   const router = useRouter();
 
   const [projects, setProjects] = useState<any[]>([]);
@@ -102,7 +105,11 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global' }: G
             لا تتوفر إحداثيات (latitude / longitude) للمشاريع بعد.
           </div>
         ) : (
-          <ProjectsMap points={mapPoints} onSelect={(id) => router.push(`/dashboard/Projects/${id}`)} />
+          <ProjectsMap
+            points={mapPoints}
+            onSelect={(id) => router.push(`/dashboard/Projects/${id}`)}
+            hideRawReadings={hideRawReadings}
+          />
         )}
       </div>
     </div>

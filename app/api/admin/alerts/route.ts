@@ -11,17 +11,30 @@ import { requireSuperAdmin, requireViewer } from '@/app/lib/apiAuth';
 // admin/alerts/page.tsx وapp/dashboard/viewer/alerts/page.tsx معاً.
 export async function GET(request: NextRequest) {
   const adminAuth = await requireSuperAdmin(request);
-  const auth = 'error' in adminAuth ? await requireViewer(request) : adminAuth;
+  // requireSuperAdmin/requireViewer يُرجعان نفس الشكل {userId} بلا أي حقل
+  // يميّز أيهما نجح فعلياً — فشل الأدمن هنا يعني أن الفرع الثاني (viewer)
+  // هو من سيُقرَّر لاحقاً، فنستخدم هذا الفرع الشرطي نفسه لمعرفة هوية
+  // الطالب الفعلية، بلا أي تعديل على apiAuth.ts.
+  const isViewerCaller = 'error' in adminAuth;
+  const auth = isViewerCaller ? await requireViewer(request) : adminAuth;
   if ('error' in auth) return auth.error;
 
-  const { data: alerts, error: alertsError } = await supabaseAdmin
+  // جهة الرصد تحديداً تُقصَر على المخالفات التنظيمية الفعلية فقط
+  // (COMPLIANCE_VIOLATION) — طلب صريح من المستخدم: لا تريد كل أنواع
+  // التنبيهات (استعداد/بدء نشاط/بلا قرار/تقييد/تنبيه استباقي) ظاهرة لها،
+  // فقط المخالفة المؤكَّدة. السوبر أدمن يبقى يرى كل الأنواع كالمعتاد.
+  let alertsQuery = supabaseAdmin
     .from('alerts')
-    .select('*, projects!inner(id, name, city, user_id)')
+    .select('*, projects!inner(id, name, city, neighborhood, latitude, longitude, project_manager, user_id)')
     .order('created_at', { ascending: false })
     .limit(200);
+  if (isViewerCaller) {
+    alertsQuery = alertsQuery.eq('kind', 'COMPLIANCE_VIOLATION');
+  }
+  const { data: alerts, error: alertsError } = await alertsQuery;
   if (alertsError) return NextResponse.json({ error: alertsError.message }, { status: 500 });
 
-  const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name');
+  const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name, phone_number');
   const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));
 
   // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي، نفس
@@ -39,10 +52,20 @@ export async function GET(request: NextRequest) {
     const dustProfile = dustProfileById.get(alert.activity_id);
     return {
       ...alert,
+      // جهة الرصد تحديداً تُعرَض لها viewer_message (النص الرسمي) بدل
+      // message التقني الموجَّه لصاحب المشروع، فقط عندما تكون موجودة فعلاً
+      // (اليوم: COMPLIANCE_VIOLATION فقط — راجع alerts/generate/route.ts) —
+      // غير ذلك يبقى message كما هو (فشل آمن، لا كسر لأي تنبيه بلا viewer_message).
+      message: isViewerCaller && alert.viewer_message ? alert.viewer_message : alert.message,
       projectName: alert.projects?.name || null,
       projectCity: alert.projects?.city || null,
+      projectNeighborhood: alert.projects?.neighborhood || null,
+      projectLatitude: alert.projects?.latitude ?? null,
+      projectLongitude: alert.projects?.longitude ?? null,
+      projectManager: alert.projects?.project_manager || null,
       ownerUsername: owner?.username || null,
       ownerCompany: owner?.company_name || null,
+      ownerPhone: owner?.phone_number || null,
       activityType: dustProfile?.activity_type || null,
       regulatoryActivity: dustProfile?.regulatory_activity || null,
     };

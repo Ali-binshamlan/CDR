@@ -13,6 +13,7 @@ import {
   DviEvaluationResult,
   DviHourlyEvaluation,
   DviLevel,
+  DviMergedReading,
   DustWindowEvaluation,
 } from './types';
 import {
@@ -337,23 +338,91 @@ function baseRequiredActions(decision: DviDecisionCategory): string[] {
 }
 
 // -------------------------------------------------------------
+// دمج مصدر القراءة — عزل تام بطلب صريح من المستخدم: "حسب ما يختار
+// المستخدم تظهر البيانات، لا شيء يعوّض الآخر". input.hasDeviceLink
+// (يعكس project_dust_profiles.device_id للنشاط) يحدد فرعاً كاملاً واحداً
+// بلا أي خلط بين المصدرين:
+//   • hasDeviceLink=true  (المستخدم اختار محطة رصد): كل الحقول من الجهاز
+//     حصراً. حقل غائب فعلياً من الجهاز (null) يبقى null — لا تعويض من
+//     الطقس ولا onsite_* إطلاقاً، حتى لو كانا متوفرين.
+//   • hasDeviceLink=false (لم يُختَر محطة): كل الحقول من تقدير الطقس
+//     (Open-Meteo) حصراً — لا تعويض من onsite_* حتى لو أُدخل يدوياً.
+// onsite_* لم يعد يُستهلَك هنا في أي من الفرعين (يبقى في DustEngineInput
+// للتوافق فقط). القراءة القديمة (أقدم من DEVICE_READING_FRESHNESS_MINUTES)
+// لا تُسقَط هنا — تُعرَض كما هي مع تحذير قِدم في الواجهة (راجع
+// buildStalenessAdvisory في Compliancewidgetcard.tsx)، فمسؤولية هذه
+// الدالة الوحيدة هي اختيار المصدر الصحيح، لا فلترة حداثته.
+export function mergeDustReading(input: DustEngineInput, weather: DustWeatherSample): DviMergedReading {
+  if (input.hasDeviceLink) {
+    const sourceOfDevice = <T,>(device: T | null | undefined): 'device' | 'none' =>
+      device !== null && device !== undefined ? 'device' : 'none';
+
+    return {
+      windSpeedKmh: input.deviceWindSpeedKmh ?? null,
+      windGustKmh: input.deviceWindGustKmh ?? null,
+      windDirectionDeg: input.deviceWindDirectionDeg ?? null,
+      pm10: input.devicePm10 ?? null,
+      pm25: input.devicePm25 ?? null,
+      visibilityM: input.deviceVisibilityM ?? null,
+      relativeHumidityPercent: input.deviceRelativeHumidityPercent ?? null,
+      temperatureC: input.deviceTemperatureC ?? null,
+      deviceLastReadingAt: input.deviceLastReadingAt ?? null,
+      sources: {
+        windSpeedKmh: sourceOfDevice(input.deviceWindSpeedKmh),
+        windGustKmh: sourceOfDevice(input.deviceWindGustKmh),
+        windDirectionDeg: sourceOfDevice(input.deviceWindDirectionDeg),
+        pm10: sourceOfDevice(input.devicePm10),
+        pm25: sourceOfDevice(input.devicePm25),
+        visibilityM: sourceOfDevice(input.deviceVisibilityM),
+        relativeHumidityPercent: sourceOfDevice(input.deviceRelativeHumidityPercent),
+        temperatureC: sourceOfDevice(input.deviceTemperatureC),
+      },
+    };
+  }
+
+  const sourceOfWeather = <T,>(weatherVal: T | null | undefined): 'weather' | 'none' =>
+    weatherVal !== null && weatherVal !== undefined ? 'weather' : 'none';
+
+  return {
+    windSpeedKmh: weather.windSpeedKmh ?? null,
+    windGustKmh: weather.windGustKmh ?? null,
+    windDirectionDeg: weather.windDirectionDeg ?? null,
+    pm10: weather.pm10 ?? null,
+    pm25: weather.pm25 ?? null,
+    visibilityM: weather.visibilityM ?? null,
+    relativeHumidityPercent: weather.relativeHumidityPercent ?? null,
+    temperatureC: weather.temperatureC ?? null,
+    deviceLastReadingAt: null,
+    sources: {
+      windSpeedKmh: sourceOfWeather(weather.windSpeedKmh),
+      windGustKmh: sourceOfWeather(weather.windGustKmh),
+      windDirectionDeg: sourceOfWeather(weather.windDirectionDeg),
+      pm10: sourceOfWeather(weather.pm10),
+      pm25: sourceOfWeather(weather.pm25),
+      visibilityM: sourceOfWeather(weather.visibilityM),
+      relativeHumidityPercent: sourceOfWeather(weather.relativeHumidityPercent),
+      temperatureC: sourceOfWeather(weather.temperatureC),
+    },
+  };
+}
+
+// -------------------------------------------------------------
 // الحساب الأساسي وحل التناقضات اللفظية
 // -------------------------------------------------------------
 export function computeDviResult(input: DustEngineInput, weather: DustWeatherSample): DviEvaluationResult {
-  // أولوية 3 مستويات: قراءة جهاز حية > إدخال يدوي onsite_* > تقدير الطقس
-  // (Open-Meteo، دون أي تعديل على weather.ts نفسه). الرياح لم تملك من قبل
-  // طبقة onsite وسطى (فقط الرؤية/PM10/PM2.5)، فتصبح device ?? weather
-  // مباشرة — تبسيط طبيعي حيث لا توجد طبقة وسطى ليُتخطّى.
-  const visibilityM = input.deviceVisibilityM ?? input.onsiteVisibilityM ?? weather.visibilityM;
+  const merged = mergeDustReading(input, weather);
+  const visibilityM = merged.visibilityM;
   const visibilityKm = visibilityM !== null ? visibilityM / 1000 : null;
 
-  const pm10 = input.devicePm10 ?? input.onsitePm10 ?? weather.pm10;
-  const pm25 = input.devicePm25 ?? input.onsitePm25 ?? weather.pm25;
+  const pm10 = merged.pm10;
+  const pm25 = merged.pm25;
 
-  const windSpeedKmh = input.deviceWindSpeedKmh ?? weather.windSpeedKmh;
-  const windGustKmh = input.deviceWindGustKmh ?? weather.windGustKmh ?? windSpeedKmh;
+  const windSpeedKmh = merged.windSpeedKmh;
+  const windGustKmh = merged.windGustKmh ?? windSpeedKmh;
   const effectiveWindKmh =
     windSpeedKmh !== null ? Math.max(windSpeedKmh, 0.85 * (windGustKmh ?? windSpeedKmh)) : null;
+  const relativeHumidityPercent = merged.relativeHumidityPercent;
+  const temperatureC = merged.temperatureC;
 
   const VR = visibilityKm !== null ? visibilityRisk(visibilityKm) : 30;
   const pm10R = pm10 !== null ? pm10Risk(pm10) : null;
@@ -426,14 +495,16 @@ export function computeDviResult(input: DustEngineInput, weather: DustWeatherSam
 
   // ملاحظات تحذيرية لصحة القراءة نفسها — طلب صريح من المستخدم بالنص الحرفي.
   // لا تُغيّر level/decisionCategory/shortReason إطلاقاً ("لا تُلغى القراءة
-  // أو التجاوز")، فقط تُضاف كتنبيهات منفصلة.
+  // أو التجاوز")، فقط تُضاف كتنبيهات منفصلة. تُقرأ من القيمة المدموجة
+  // (قد تأتي من الجهاز) لا من weather الخام مباشرة، حتى يعكس التحذير
+  // القراءة الفعلية التي حدَّدت القرار.
   const caveatsAr: string[] = [];
-  if (weather.relativeHumidityPercent !== null && weather.relativeHumidityPercent >= 80) {
+  if (relativeHumidityPercent !== null && relativeHumidityPercent >= 80) {
     caveatsAr.push(
       'الرطوبة مرتفعة وقد تؤثر في بعض حساسات الجسيمات البصرية؛ لا تُلغى القراءة أو التجاوز، ويلزم التحقق وفق إجراءات الجودة.'
     );
   }
-  if (weather.temperatureC !== null && weather.temperatureC >= 50) {
+  if (temperatureC !== null && temperatureC >= 50) {
     caveatsAr.push(
       'درجة الحرارة عند أو فوق 50°م؛ تحقّق من أن جهاز PM10 مصنف للعمل في هذه الدرجة. لا يُلغى التجاوز تلقائياً.'
     );
@@ -496,7 +567,12 @@ export async function evaluateDustVisibilityHourly(
   hoursAhead: number = 24
 ): Promise<DviHourlyEvaluation[]> {
   const samples = await fetchDustWeatherHourly(input.latitude, input.longitude, hoursAhead);
-  return samples.map((sample) => ({ ...computeDviResult(input, sample), time: sample.time, rawWeatherSample: sample }));
+  return samples.map((sample) => ({
+    ...computeDviResult(input, sample),
+    time: sample.time,
+    rawWeatherSample: sample,
+    mergedReading: mergeDustReading(input, sample),
+  }));
 }
 
 // -------------------------------------------------------------
@@ -561,7 +637,12 @@ export async function evaluateDustVisibilityWorkDayHourly(
   });
   if (workDaySamples.length === 0) return [];
 
-  return workDaySamples.map((sample) => ({ ...computeDviResult(input, sample), time: sample.time, rawWeatherSample: sample }));
+  return workDaySamples.map((sample) => ({
+    ...computeDviResult(input, sample),
+    time: sample.time,
+    rawWeatherSample: sample,
+    mergedReading: mergeDustReading(input, sample),
+  }));
 }
 
 const DVI_LEVEL_RANK: Record<DviLevel, number> = { GREEN: 0, YELLOW: 1, ORANGE: 2, RED: 3, DARK_RED: 4, BLACK: 5 };
@@ -633,6 +714,7 @@ export async function evaluateDustVisibilityWindow(
     ...computeDviResult(input, sample),
     time: sample.time,
     rawWeatherSample: sample,
+    mergedReading: mergeDustReading(input, sample),
   }));
 
   let windowSamples = allSamples.filter((s) => {
@@ -654,6 +736,7 @@ export async function evaluateDustVisibilityWindow(
     ...computeDviResult(input, aggregatedSample),
     time: windowSamples[0]?.time ?? new Date(startMs).toISOString(),
     rawWeatherSample: aggregatedSample,
+    mergedReading: mergeDustReading(input, aggregatedSample),
   };
 
   let bestWindowStartIso: string | null = null;
@@ -682,6 +765,7 @@ export async function evaluateDustVisibilityWindow(
       ...computeDviResult(input, blockAggregatedSample),
       time: blockSamples[0].time,
       rawWeatherSample: blockAggregatedSample,
+      mergedReading: mergeDustReading(input, blockAggregatedSample),
     };
     if (isWorkDay(blockSamples[0].time) && (!bestWindowWorst || severityRank(blockWorst) < severityRank(bestWindowWorst))) {
       bestWindowWorst = blockWorst;

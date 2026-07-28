@@ -14,6 +14,7 @@ import { MapPin } from 'lucide-react';
 import { MapController } from './MapController';
 import type { ProjectZone } from '@/app/utils/geo/zone';
 import { clampPointToZone, isPointInProjectZone } from '@/app/utils/geo/zone';
+import { SAUDI_BOUNDS } from '@/app/utils/geo/countryBounds';
 
 let customIcon: any = null;
 if (typeof window !== 'undefined') {
@@ -103,7 +104,15 @@ export function SinglePointMapPicker({
 
       {isMounted && typeof window !== 'undefined' ? (
         <div className="w-full h-[220px] rounded-xl border border-[#061B40]/20 shadow-inner relative z-0">
-          <MapContainer center={mapCenter} zoom={position ? 16 : 12} scrollWheelZoom style={{ height: '100%', width: '100%', zIndex: 10 }}>
+          <MapContainer
+            center={mapCenter}
+            zoom={position ? 16 : 12}
+            minZoom={5}
+            scrollWheelZoom
+            maxBounds={SAUDI_BOUNDS}
+            maxBoundsViscosity={1.0}
+            style={{ height: '100%', width: '100%', zIndex: 10 }}
+          >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

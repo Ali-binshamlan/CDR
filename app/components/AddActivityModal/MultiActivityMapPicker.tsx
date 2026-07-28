@@ -17,6 +17,7 @@ import { MapPin } from 'lucide-react';
 import { MapController } from './MapController';
 import type { ProjectZone } from '@/app/utils/geo/zone';
 import { clampPointToZone, isPointInProjectZone } from '@/app/utils/geo/zone';
+import { SAUDI_BOUNDS } from '@/app/utils/geo/countryBounds';
 import type { RegulatoryActivityItem } from './constants';
 import { REGULATORY_ACTIVITY_LABEL_AR } from './constants';
 
@@ -249,7 +250,15 @@ export function MultiActivityMapPicker({
 
       {isMounted && typeof window !== 'undefined' ? (
         <div className="w-full h-[340px] rounded-xl border border-[#061B40]/20 shadow-inner relative z-0">
-          <MapContainer center={[centerLat, centerLng]} zoom={16} scrollWheelZoom style={{ height: '100%', width: '100%', zIndex: 10 }}>
+          <MapContainer
+            center={[centerLat, centerLng]}
+            zoom={16}
+            minZoom={5}
+            scrollWheelZoom
+            maxBounds={SAUDI_BOUNDS}
+            maxBoundsViscosity={1.0}
+            style={{ height: '100%', width: '100%', zIndex: 10 }}
+          >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
