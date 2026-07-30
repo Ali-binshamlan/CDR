@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { MapPin, Settings, ArrowRight } from 'lucide-react';
+import { MapPin, Settings, ArrowRight, LineChart } from 'lucide-react';
 // تأكدي من صحة مسار مكون AddActivityModal حسب هيكلة مشروعك
 import AddActivityModal from '@/app/components/AddActivityModal';
 
@@ -30,6 +30,15 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
         >
           <Settings className="w-4 h-4 text-[#3995FF]" /> إعدادات المشروع
         </Link>
+
+        {/* رسم بياني لسجل قراءات PM10 لكل نشاط — راجع
+            app/dashboard/Projects/[id]/readings/page.tsx */}
+        {/* <Link
+          href={`/dashboard/Projects/${project.id}/readings`}
+          className="bg-white border border-slate-200 hover:bg-[#F4F7FB] text-[#061B40] px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all"
+        >
+          <LineChart className="w-4 h-4 text-[#3995FF]" /> سجل القراءات
+        </Link> */}
 
         {/* نافذة إضافة نشاط */}
         <AddActivityModal

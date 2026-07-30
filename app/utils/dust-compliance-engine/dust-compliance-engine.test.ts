@@ -200,7 +200,17 @@ function activityProfile(overrides: Partial<DustActivityComplianceProfile> = {})
   };
 }
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كان pm10ThresholdRule يعيد اشتقاق
+// "مؤكَّدة"/"معلَّقة 30 دقيقة" من pm10SustainedMinutesAbove340/250 مباشرة —
+// الآن يقرأ pm10ConfirmedViolation340/pm10Suspended250For30Min الجاهزتين
+// من computeSustainedPm10Status، لا يعيد الحساب. context() هنا تشتقهما
+// تلقائياً من رقمي الدقائق (بنفس عتبات computeSustainedPm10Status: >2
+// دقيقة للتأكيد، ≥30 دقيقة للتعليق) إن لم يُمرَّرا صراحةً بـoverrides —
+// حتى تبقى كل اختبارات هذا الملف (المكتوبة أصلاً بمصطلح "الدقائق") صحيحة
+// دلالياً بلا إعادة كتابة كل استدعاء context() يدوياً.
 function context(overrides: Partial<DustComplianceContext> = {}): DustComplianceContext {
+  const sustainedMinutesAbove340 = overrides.pm10SustainedMinutesAbove340;
+  const sustainedMinutesAbove250 = overrides.pm10SustainedMinutesAbove250;
   return {
     project: projectProfile(),
     activity: activityProfile(),
@@ -218,6 +228,10 @@ function context(overrides: Partial<DustComplianceContext> = {}): DustCompliance
     visibilityM: 5000,
     dataSource: 'onsite',
     sensitiveReceptors: [],
+    pm10ConfirmedViolation340:
+      sustainedMinutesAbove340 !== undefined ? sustainedMinutesAbove340 > 2 : undefined,
+    pm10Suspended250For30Min:
+      sustainedMinutesAbove250 !== undefined ? sustainedMinutesAbove250 >= 30 : undefined,
     ...overrides,
   };
 }
@@ -288,10 +302,61 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
     expect(r.missingCriticalInputs.some((m) => m.includes('DMP'))).toBe(true);
   });
 
-  it('وراثة bowabة DVI mandatoryStop → إيقاف إلزامي', () => {
+  it('وراثة bowabة DVI mandatoryStop (خطر فيزيائي فوري، لا PM10 — رؤية حرجة/رياح شديدة) → إيقاف إلزامي فوري كما هو', () => {
     const r = evaluateDustCompliance(context({ dviMandatoryStop: true }));
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
     expect(r.triggeredRules.some((h) => h.code === 'GATE-DVI-002')).toBe(true);
+  });
+
+  // ملاحظة مراجعة خارجية: "DVI يصدر إيقافاً تنظيمياً فور قراءة واحدة" —
+  // dust-engine كان يُشعِل mandatoryStop من أول قراءة PM10≥340 لحظية بلا
+  // أي شرط استمرار، وGATE-DVI-002 هنا كان يرث ذلك كـMANDATORY_STOP تنظيمي
+  // قطعي مباشرة، متجاوزاً بالكامل عتبة "استمرار >دقيقتين" التي يشترطها
+  // pm10ThresholdRule (PM10-VIOLATION-STOP-006 مقابل MRQ-PM10-BLACK-
+  // PENDING-104) — لأن decisionFromRules يختار أعلى severity من كل
+  // القواعد معاً، فيطغى MANDATORY_STOP من GATE-DVI-002 على STOP_AFFECTED_
+  // ACTIVITY "المعلَّق" الصحيح من pm10ThresholdRule.
+  describe('GATE-DVI-002 — PM10 لحظي فقط يشترط نفس دليل الاستمرار من pm10ThresholdRule', () => {
+    it('dviMandatoryStop سببه PM10 فقط + لا دليل استمرار (pm10ConfirmedViolation340 غائب) → STOP_AFFECTED_ACTIVITY معلَّق، لا MANDATORY_STOP', () => {
+      const r = evaluateDustCompliance(
+        context({
+          dviMandatoryStop: true,
+          dviMandatoryStopIsPm10Only: true,
+          pm10UgM3: 350,
+          // لا pm10ConfirmedViolation340 صراحة — يُعامَل كـfalse (فشل آمن).
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+      expect(r.pendingConfirmation).toBe(true);
+      expect(r.canOverride).toBe(false); // معلَّق يبقى غير قابل للتجاوز، فقط ليس "قطعياً"
+    });
+
+    it('dviMandatoryStop سببه PM10 فقط + دليل استمرار مؤكَّد (pm10ConfirmedViolation340=true) → MANDATORY_STOP فعلي', () => {
+      const r = evaluateDustCompliance(
+        context({
+          dviMandatoryStop: true,
+          dviMandatoryStopIsPm10Only: true,
+          pm10UgM3: 350,
+          pm10ConfirmedViolation340: true,
+          pm10SustainedMinutesAbove340: 5,
+        })
+      );
+      expect(r.decisionCategory).toBe('MANDATORY_STOP');
+      expect(r.pendingConfirmation).toBe(false);
+    });
+
+    it('dviMandatoryStopIsPm10Only=false (خطر فيزيائي آخر مساهم، لا PM10 وحده) → إيقاف فوري كالسابق بلا اشتراط استمرار', () => {
+      const r = evaluateDustCompliance(
+        context({
+          dviMandatoryStop: true,
+          dviMandatoryStopIsPm10Only: false,
+          pm10UgM3: 350,
+        })
+      );
+      expect(r.decisionCategory).toBe('MANDATORY_STOP');
+      expect(r.pendingConfirmation).toBe(false);
+    });
   });
 
   it('تعطل نظام التثبيط على نشاط مولّد للغبار → إيقاف إلزامي', () => {
@@ -462,6 +527,55 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.pendingConfirmation).toBe(true);
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كانت المقارنتان `pm10UgM3 >= 340`
+  // و`sustainedMinutesAbove340 >= 2` تُدرجان القيمة الحدّية بالضبط (340.000
+  // أو 2:00.000) ضمن "مخالفة"، رغم أن النص التنظيمي "تجاوز 340" و"أكثر من
+  // دقيقتين" يعني `>` صراحة لا `>=`. الاختبارات التالية تثبّت السلوك الصحيح
+  // عند الحدود الأربعة بالضبط.
+  it.each([
+    { pm10: 340, minutes: 60, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تنبيه استباقي فقط، لا معلَّق ولا مؤكَّد' },
+    { pm10: 340.01, minutes: 1.99, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → معلَّق فقط' },
+    { pm10: 340.01, minutes: 2, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط (لم يتجاوز) → معلَّق فقط، ليس مؤكَّداً بعد' },
+    { pm10: 340.01, minutes: 2.01, decision: 'MANDATORY_STOP', label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → مخالفة مؤكدة' },
+  ] as const)('$label', ({ pm10, minutes, decision }) => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: pm10, pm10SustainedMinutesAbove340: minutes }));
+    expect(r.decisionCategory).toBe(decision);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — ملاحظة #2): كانت pm10ThresholdRule
+  // تُعيد اشتقاق "مؤكَّدة" من pm10SustainedMinutesAbove340 مباشرة بمعزل تام
+  // عن الأدلة الحقيقية (مصدر السلسلة device فعلاً؟ آخر قراءة حديثة؟) التي
+  // تُحسَب في computeSustainedPm10Status. الاختباران التاليان يثبّتان أن
+  // القرار الآن يعتمد حصراً على pm10ConfirmedViolation340/
+  // pm10Suspended250For30Min الجاهزتين — لا على رقم الدقائق نفسه — بتمرير
+  // رقم دقائق "يوافق" على المخالفة مع تعليم صريح بأن الدليل غير كافٍ
+  // (المصدر ليس جهازاً، أو القراءة قديمة)، فالقرار يجب أن يبقى معلَّقاً.
+  it('sustainedMinutesAbove340 يتجاوز دقيقتين لكن pm10ConfirmedViolation340=false صراحةً (دليل غير كافٍ) → يبقى معلَّقاً، لا مخالفة مؤكدة', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 345,
+        pm10SustainedMinutesAbove340: 10, // رقم يوهم بالتأكيد لو أُعيد اشتقاقه محلياً
+        pm10ConfirmedViolation340: false, // لكن الدليل الفعلي (مصدر/حداثة) غير كافٍ
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.pendingConfirmation).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
+  });
+
+  it('sustainedMinutesAbove340 أقل من دقيقتين لكن pm10ConfirmedViolation340=true صراحةً → مخالفة مؤكدة (القرار يثق بالحقل الجاهز لا بالرقم)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 345,
+        pm10SustainedMinutesAbove340: 0.5, // رقم يوهم بعدم الاكتمال لو أُعيد اشتقاقه محلياً
+        pm10ConfirmedViolation340: true, // لكن الدليل الجاهز يؤكد الاستمرار الفعلي
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.pendingConfirmation).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+  });
+
   // سيناريو حقيقي رصده المستخدم بالصورة: PM10=1687.6 غير مؤكَّد بعد (أقل من
   // دقيقتين استمرار)، لكن هدم مكشوف + رياح 15-25 كم/س (DEMO-WIND-STOP-001)
   // يوقف النشاط إلزامياً بشكل مستقل تماماً وفوري. القرار النهائي MANDATORY_
@@ -483,6 +597,53 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     // القاعدة المعلَّقة لا تظهر في القوائم المعروضة رغم أنها فعّالة داخلياً
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
     expect(r.requiredActions.some((a) => a.includes('احترازياً'))).toBe(false);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة PM10 معلَّقة قد
+  // تتغلب على توقف مؤكَّد"): بخلاف الاختبار أعلاه (DEMO-WIND-STOP-001 أشد
+  // من STOP_AFFECTED_ACTIVITY فيفوز بالأولوية العددية وحدها)، هذا السيناريو
+  // يبني تعادلاً حقيقياً بنفس الشدة: BATCHING-LEAK-003 (STOP_AFFECTED_ACTIVITY
+  // مؤكَّد، يُدفَع عبر applyActivityRules بعد pm10ThresholdRule ترتيبياً في
+  // ruleHits) وMRQ-PM10-BLACK-PENDING-104 (STOP_AFFECTED_ACTIVITY معلَّق،
+  // يُدفَع قبله) — كلاهما نفس الشدة بالضبط. decidingRule = ruleHits.find(...)
+  // القديمة كانت تختار قاعدة PM10 المعلَّقة لمجرد سبقها ترتيبياً، فيظهر
+  // البانر "معلَّق — بانتظار التأكيد" رغم تسرب فعلي مؤكَّد من صومعة الإسمنت
+  // لا علاقة له باستمرار PM10 إطلاقاً.
+  it('تعادل حقيقي بنفس الشدة (STOP_AFFECTED_ACTIVITY): تسرب صومعة مؤكَّد + PM10 معلَّق بالتوازي → القاعدة المؤكَّدة تفوز، لا معلَّق', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 345,
+        pm10ConfirmedViolation340: false, // معلَّق: لم يثبت استمرار >دقيقتين بعد
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          controls: { ...activityProfile().controls, leakDetected: true },
+        }),
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-LEAK-003')).toBe(true);
+    // القرار يجب أن يفوز بالتفسير المؤكَّد (تسرب) لا المعلَّق (PM10) رغم
+    // تعادل الشدة العددية بينهما بالضبط
+    expect(r.pendingConfirmation).toBe(false);
+    expect(r.shortReasonAr).toContain('تسرب');
+    expect(r.shortReasonAr).not.toContain('بانتظار');
+    // القاعدة المعلَّقة لا تظهر في القوائم المعروضة (نفس معاملة الاختبار أعلاه)
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
+  });
+
+  it('نفس تعادل الشدة، لكن كلتا القاعدتين معلَّقتان معاً → pendingConfirmation يبقى true (لا قاعدة مؤكَّدة بينهما لتفضيلها)', () => {
+    // GATE-DVI-002 بseverity=STOP_AFFECTED_ACTIVITY تُعامَل كمعلَّقة أيضاً
+    // حين تكون PM10 لحظياً وحده سبب dviMandatoryStop — راجع isPendingRuleHit.
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 345,
+        pm10ConfirmedViolation340: false,
+        dviMandatoryStop: true,
+        dviMandatoryStopIsPm10Only: true,
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.pendingConfirmation).toBe(true);
   });
 
   it('PM10=260 (≥250) استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012)، ليس معلَّقاً (تعليق مؤكَّد لا احترازي)', () => {
@@ -570,6 +731,63 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.isEnclosedOperation).toBe(false);
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي يستخدم
+  // رقمًا مشتقًا من الهبات"): windBand (بروتوكول الملحق أ) كان يُبنى من
+  // effectiveWindKmh = max(سرعة، 0.85×هبة) بدل سرعة الرياح الخام — فهبة
+  // عابرة كانت تكفي لتصنيف "سرعة مستدامة >25 كم/س" وتفعيل GATE-WIND-ABOVE-
+  // 25-004 (إيقاف تنظيمي) بلا أي استمرار فعلي. الآن windBand مبني حصراً من
+  // ctx.windSpeedKmh الخام؛ الهبات لها قاعدة سلامة منفصلة (GATE-WIND-GUST-
+  // SAFETY) لا تؤثر على windBand ولا تصل شدة الإيقاف الإلزامي.
+  it('سرعة رياح مستدامة 18 كم/س + هبة قصيرة 30 كم/س → windBand يبقى FROM_15_TO_25 (لا ABOVE_25 من الهبة)', () => {
+    const r = evaluateDustCompliance(context({ windSpeedKmh: 18, windGustKmh: 30 }));
+    expect(r.windBand).toBe('FROM_15_TO_25');
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+  });
+
+  it('سرعة رياح مستدامة 10 كم/س + هبة قوية جداً 60 كم/س → windBand يبقى BELOW_15 (الهبة لا تُحسب ضمن السرعة النظامية)', () => {
+    const r = evaluateDustCompliance(context({ windSpeedKmh: 10, windGustKmh: 60 }));
+    expect(r.windBand).toBe('BELOW_15');
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(false);
+  });
+
+  describe('GATE-WIND-GUST-SAFETY — احتراز هبات منفصل عن بروتوكول الملحق أ', () => {
+    it('هبة ≥50 كم/س لنشاط مكشوف مولّد للغبار → GATE-WIND-GUST-SAFETY يُفعَّل (تنبيه، لا إيقاف إلزامي)', () => {
+      const r = evaluateDustCompliance(context({ windSpeedKmh: 10, windGustKmh: 55 }));
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(true);
+      const hit = r.triggeredRules.find((h) => h.code === 'GATE-WIND-GUST-SAFETY');
+      expect(hit?.severity).toBe('ALLOW_WITH_CONTROLS');
+      expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+    });
+
+    it('هبة 49.99 كم/س (تحت العتبة) → GATE-WIND-GUST-SAFETY لا يُفعَّل', () => {
+      const r = evaluateDustCompliance(context({ windSpeedKmh: 10, windGustKmh: 49.99 }));
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(false);
+    });
+
+    it('عملية مغلقة (isEnclosedOperation=true) مستثناة من احتراز الهبات أيضاً', () => {
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 10,
+          windGustKmh: 60,
+          activity: activityProfile({ isEnclosedOperation: true }),
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(false);
+    });
+
+    it('هبة قوية بلا نشاط مولّد للغبار (isDustGenerating=false) → لا تُفعَّل', () => {
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 10,
+          windGustKmh: 60,
+          activity: activityProfile({ isDustGenerating: false }),
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(false);
+    });
+  });
+
   // ربط استثناء البيتشنج بكفاءة فلتر PM10 + إحكام إغلاق الصوامع تحديداً —
   // لا يُشترط isEnclosedOperation إطلاقاً لمحطة الخلط (قد تكون مكشوفة
   // هيكلياً)، طلب صريح من المستخدم: "حتى لو كان مكشوف بس الفلاتر 99
@@ -648,45 +866,60 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
   });
 
-  // إعفاء محطة الخلط (صوامع مغلقة + فلتر ≥99%) من كل قواعد PM10 — طلب صريح
-  // من المستخدم، بنفس شرط إعفاء بوابة الرياح >25 أعلاه بالضبط. isEnclosedOperation
-  // لا يدخل في هذا الشرط إطلاقاً.
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
+  // للمرجع"): كانت محطة الخلط (صوامع مغلقة + فلتر ≥99%) تُعفى بالكامل من كل
+  // قواعد PM10 (250/340/تعليق 30 دقيقة)، بنفس شرط إعفاء بوابة الرياح >25.
+  // لكن نسبة الـ99% نفسها (BATCHING_PM10_FILTER_MIN_PERCENT في rulebook.ts)
+  // موثّقة تنظيمياً كـ"الحد المعتمد للاستمرار أثناء إيقاف الرياح فوق 25
+  // كم/س" فقط — لا كإعفاء من عتبات تركيز PM10 المستقلة (قياس فعلي في الهواء
+  // بصرف النظر عن سرعة الرياح). الاختبارات أدناه تعكس التوقعات: محطة الخلط
+  // المستوفية للشرطين تبقى مستثناة من بوابتي الرياح فقط (راجع الاختبارات
+  // أعلاه)، وتخضع الآن لقواعد PM10 كأي نشاط آخر.
   const exemptBatchingActivity = () =>
     activityProfile({
       regulatoryActivity: 'BATCHING_PLANT',
       isEnclosedOperation: false,
       controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
+      // مسافة آمنة صراحةً (BATCHING-DISTANCE-200 غير موضوع اختبار هذه
+      // الحالات — تختبر فقط سلوك قواعد PM10) — بلا هذا، الافتراضي null
+      // (لا إحداثيات مُدخلة) يُفعِّل BATCHING-DISTANCE-MISSING/
+      // FIELD_VERIFICATION_REQUIRED ويُخفي قرار PM10 الفعلي محل الاختبار.
+      measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 1000 },
     });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=1500 (فوق 340 بكثير) → لا إيقاف إطلاقاً، لا معلَّق ولا مؤكَّد', () => {
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=1500 مستمرة >دقيقتين → مخالفة تنظيمية مؤكدة كأي نشاط آخر (لا إعفاء PM10)', () => {
     const r = evaluateDustCompliance(
-      context({ pm10UgM3: 1500, pm10SustainedMinutesAbove340: 5, activity: exemptBatchingActivity() })
+      context({ pm10UgM3: 1500, pm10SustainedMinutesAbove340: 5, pm10ConfirmedViolation340: true, activity: exemptBatchingActivity() })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
-    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
-    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
-    expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=260 مستمرة 30 دقيقة → لا تعليق (RCRC-PM10-30M-SUSPENSION-012 مستثناة أيضاً)', () => {
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=260 مستمرة 30 دقيقة → تعليق النشاط كأي نشاط آخر (لا إعفاء)', () => {
     const r = evaluateDustCompliance(
-      context({ pm10UgM3: 260, pm10SustainedMinutesAbove250: 30, activity: exemptBatchingActivity() })
+      context({
+        pm10UgM3: 260,
+        pm10SustainedMinutesAbove250: 30,
+        pm10Suspended250For30Min: true,
+        activity: exemptBatchingActivity(),
+      })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(false);
-    expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(true);
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
   });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=200 (نطاق الاحتراز) → لا تنبيه احتراز إطلاقاً (الإعفاء يشمل كل المستويات، لا الإيقاف فقط)', () => {
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=200 (نطاق الاحتراز) → تنبيه احتراز كأي نشاط آخر (لا إعفاء)', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 200, activity: exemptBatchingActivity() }));
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(false);
-    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(true);
+    expect(r.decisionCategory).toBe('PRECAUTION');
   });
 
-  it('محطة خلط بصوامع مغلقة بكفاءة فلتر أقل من 99% + PM10=1500 → لا تُستثنى، الإيقاف يعمل كالمعتاد', () => {
+  it('محطة خلط بصوامع مغلقة بكفاءة فلتر أقل من 99% + PM10=1500 مستمرة → مخالفة مؤكَّدة كالمعتاد (بلا تغيير)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 1500,
         pm10SustainedMinutesAbove340: 5,
+        pm10ConfirmedViolation340: true,
         activity: activityProfile({
           regulatoryActivity: 'BATCHING_PLANT',
           controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 95 },
@@ -696,11 +929,12 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 
-  it('محطة خلط مكشوفة (isEnclosedOperation=false) بصوامع مغلقة + فلتر ≥99% + PM10=1500 → مستثناة (الإغلاق الهيكلي غير مشترط)', () => {
+  it('محطة خلط مكشوفة (isEnclosedOperation=false) بصوامع مغلقة + فلتر ≥99% + PM10=1500 مستمرة → مخالفة مؤكَّدة (الإغلاق الهيكلي/الفلتر لا يعفيان من PM10)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 1500,
         pm10SustainedMinutesAbove340: 5,
+        pm10ConfirmedViolation340: true,
         activity: activityProfile({
           regulatoryActivity: 'BATCHING_PLANT',
           isEnclosedOperation: false,
@@ -708,7 +942,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
         }),
       })
     );
-    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 
   // خطأ مكتشَف ومُصلَح: كان enhancedSuppressionRule (GATE-WIND-15-25-ENHANCED-005)
@@ -747,11 +981,10 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
   });
 
-  // خطأ مكتشَف ومُصلَح: عدّاد "متبقٍ حتى تعليق النشاط" في الواجهة
-  // (Compliancewidgetcard.tsx) كان يظهر لمحطة خلط معفاة بالكامل من قواعد
-  // PM10، رغم أن الخادم لن يعلّقها بسبب PM10 أبداً — pm10RulesExempt هو
-  // الحقل الذي أضيف تحديداً ليمنع هذا التناقض.
-  it('pm10RulesExempt=true لمحطة خلط مستوفية الشرطين معاً (صوامع مغلقة + فلتر ≥99%)، بصرف النظر عن قراءة PM10', () => {
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي): pm10RulesExempt (كان يُخفي
+  // عدّادات PM10 في الواجهة لمحطة خلط "معفاة") حُذف بالكامل من
+  // DustComplianceResult — لم يعد هناك أي إعفاء PM10 يُعفى الحقل عنه.
+  it('DustComplianceResult لا يحمل حقل pm10RulesExempt إطلاقاً (محذوف مع إزالة إعفاء PM10)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 500,
@@ -763,40 +996,15 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
         }),
       })
     );
-    expect(r.pm10RulesExempt).toBe(true);
+    expect('pm10RulesExempt' in r).toBe(false);
   });
 
-  it('pm10RulesExempt=false لمحطة خلط ناقصة أحد الشرطين', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'BATCHING_PLANT',
-          isEnclosedOperation: false,
-          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 95 },
-        }),
-      })
-    );
-    expect(r.pm10RulesExempt).toBe(false);
-  });
-
-  it('pm10RulesExempt=false لنشاط غير BATCHING_PLANT حتى لو مغلقاً بكفاءة فلتر عالية', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'CRUSHER',
-          isEnclosedOperation: true,
-          controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
-        }),
-      })
-    );
-    expect(r.pm10RulesExempt).toBe(false);
-  });
-
-  it('محطة خلط بصوامع غير مغلقة (silosSealed=false) بكفاءة فلتر ≥99% + PM10=1500 → لا تُستثنى (الصوامع شرط لازم)', () => {
+  it('محطة خلط بصوامع غير مغلقة (silosSealed=false) بكفاءة فلتر ≥99% + PM10=1500 مستمرة → مخالفة مؤكَّدة (الصوامع لم تكن شرط إعفاء PM10 أصلاً، والآن لا إعفاء PM10 مطلقاً)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 1500,
         pm10SustainedMinutesAbove340: 5,
+        pm10ConfirmedViolation340: true,
         activity: activityProfile({
           regulatoryActivity: 'BATCHING_PLANT',
           controls: { ...activityProfile().controls, silosSealed: false, pm10FilterEfficiencyPercent: 99.5 },
@@ -806,11 +1014,12 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 
-  it('نشاط هدم مغلق (غير BATCHING_PLANT) بلا كفاءة فلتر + PM10=1500 → إعفاء PM10 لا يُطبَّق عليه إطلاقاً (مقصور على محطة الخلط فقط)', () => {
+  it('نشاط هدم مغلق (غير BATCHING_PLANT) بلا كفاءة فلتر + PM10=1500 مستمرة → مخالفة مؤكَّدة كأي نشاط (لا إعفاء PM10 لأي نشاط الآن)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 1500,
         pm10SustainedMinutesAbove340: 5,
+        pm10ConfirmedViolation340: true,
         activity: activityProfile({
           regulatoryActivity: 'DEMOLITION',
           isEnclosedOperation: true,
@@ -839,7 +1048,16 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
       })
     );
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
-    expect(r.canOverride).toBe(false);
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
+    // والقرار النهائي غير مكتمل"): كان canOverride يُشتق من decisionCategory
+    // العامة فقط (STOP_AFFECTED_ACTIVITY = دائماً false)، بصرف النظر عن كون
+    // السبب الفعلي مخالفة تنظيمية مؤكَّدة أم مجرد حجز زمني احترازي. حجز
+    // استقرار الاستئناف (RESUME-STABILITY-HOLD) الآن قاعدة DustRuleHit فعلية
+    // بـoverridable=true (راجع overridable في types.ts وengine.ts) — فهو
+    // "انتظر قليلاً أكثر"، لا مخالفة قائمة بذاتها كـGATE-SUPPRESSION-003
+    // (الذي يبقى overridable=false بوضوح). canOverride تعكس الآن قابلية
+    // القاعدة الفعلية الحاسمة، لا فئة القرار العامة.
+    expect(r.canOverride).toBe(true);
     expect(r.resumeHoldApplied).toBe(true);
     expect(r.restartConditions.some((c) => c.includes('10 دقائق'))).toBe(true);
   });
@@ -947,10 +1165,19 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
         context({
           windSpeedKmh: 25,
           previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousDecidingRuleCode: 'GATE-WIND-ABOVE-25-004',
           previousPendingResumeSince: fifteenMinutesAgo,
         })
       );
       expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
+      // والقرار النهائي غير مكتمل"): هذا القيد كان يُعدِّل decisionCategory
+      // مباشرة بمعزل تام عن ruleHits — الآن قاعدة DustRuleHit فعلية
+      // (GATE-WIND-ABOVE-25-RESUME-HOLD) ظاهرة في triggeredRules وغير قابلة
+      // للتجاوز (نفس عتبة GATE-WIND-ABOVE-25-004 الأصلية التي بنت الإيقاف).
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-RESUME-HOLD')).toBe(true);
+      expect(r.decidingRuleCode).toBe('GATE-WIND-ABOVE-25-RESUME-HOLD');
+      expect(r.canOverride).toBe(false);
     });
 
     it('إيقاف سابق بسبب بوابة الرياح + الرياح الآن 24.9 كم/س (أقل من 25 فعلياً) → يُستأنف طبيعياً (بعد استيفاء قيد الاستقرار العام أيضاً)', () => {
@@ -959,6 +1186,7 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
         context({
           windSpeedKmh: 24.9,
           previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousDecidingRuleCode: 'GATE-WIND-ABOVE-25-004',
           previousPendingResumeSince: fifteenMinutesAgo,
         })
       );
@@ -970,6 +1198,7 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
         context({
           windSpeedKmh: 26,
           previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousDecidingRuleCode: 'GATE-WIND-ABOVE-25-004',
         })
       );
       expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
@@ -988,6 +1217,28 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
       // القيد العام (10 دقائق استقرار) هو ما يحكم هنا، لا قيد الرياح
       // المخصَّص — استقرار 15 دقيقة كافٍ فيستأنف طبيعياً.
       expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    });
+
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "سبب الإيقاف السابق يُستنتج
+    // من فئة القرار فقط"): previousStopWasWindGate كان يعتمد فقط على
+    // previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY'، فيُطبَّق قيد
+    // بوابة الرياح المخصَّص حتى لو كان الإيقاف السابق سببه شيء آخر تماماً
+    // (هنا: PM10 معلَّق MRQ-PM10-BLACK-PENDING-104). الإصلاح: previousDecidingRuleCode
+    // (كود القاعدة الفعلية، لا الفئة) هو ما يُقارَن الآن.
+    it('إيقاف سابق بفئة STOP_AFFECTED_ACTIVITY لكن سببه PM10 معلَّق (لا بوابة الرياح) + الرياح الآن 25 بالضبط → يُستأنف طبيعياً (قيد بوابة الرياح لا يُطبَّق)', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: 25,
+          pm10UgM3: 20,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousDecidingRuleCode: 'MRQ-PM10-BLACK-PENDING-104',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      // القيد العام (10 دقائق استقرار) يُستوفى (15 دقيقة)، وقيد بوابة الرياح
+      // المخصَّص لا يُطبَّق هنا لأن السبب السابق لم يكن GATE-WIND-ABOVE-25-004.
+      expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
     });
   });
 });
@@ -1564,11 +1815,100 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
     expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DRYCLEAN-004')).toBe(true);
   });
 
-  it('محطة خلط مطابقة بالكامل → لا مخالفات', () => {
+  it('محطة خلط مطابقة بالكامل (بما فيها مسافة آمنة عن مستقبِل حساس) → لا مخالفات', () => {
     const r = evaluateDustCompliance(
-      context({ activity: activityProfile({ regulatoryActivity: 'BATCHING_PLANT' }) })
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 1000 },
+        }),
+      })
     );
     expect(r.decisionCategory).toBe('ALLOW');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة 200م لمحطة الخلط غير
+  // منفذة"): المرجع التنظيمي (القسم 3.5) يمنع محطات الخلط/تخزين المواد ضمن
+  // 200م من مدرسة/مستشفى/مسجد/منطقة سكنية — الإحداثيات والمسافة المحسوبة
+  // تلقائياً كانتا تُجمَعان (adapters.ts/geo.ts) لكن لا قاعدة كانت تستهلكهما.
+  describe('BATCHING-DISTANCE-200 — الحد الأدنى 200م عن أقرب مستقبِل حساس', () => {
+    it('مسافة 199.999م (أقل من 200 بالضبط) → إيقاف إلزامي', () => {
+      const r = evaluateDustCompliance(
+        context({
+          activity: activityProfile({
+            regulatoryActivity: 'BATCHING_PLANT',
+            measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 199.999 },
+          }),
+        })
+      );
+      expect(r.decisionCategory).toBe('MANDATORY_STOP');
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(true);
+    });
+
+    it('مسافة 200م بالضبط (الحد نفسه، لا تجاوز) → لا إيقاف بسبب المسافة', () => {
+      const r = evaluateDustCompliance(
+        context({
+          activity: activityProfile({
+            regulatoryActivity: 'BATCHING_PLANT',
+            measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 200 },
+          }),
+        })
+      );
+      expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(false);
+    });
+
+    it('مسافة 250م (أعلى من الحد) → لا مخالفة مسافة', () => {
+      const r = evaluateDustCompliance(
+        context({
+          activity: activityProfile({
+            regulatoryActivity: 'BATCHING_PLANT',
+            measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 250 },
+          }),
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(false);
+    });
+
+    it('لا إحداثيات مُدخلة لمحطة الخلط (null، لا Infinity) → يتطلب تحقق ميداني، لا ALLOW نظيف', () => {
+      const r = evaluateDustCompliance(
+        context({
+          activity: activityProfile({
+            regulatoryActivity: 'BATCHING_PLANT',
+            measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: null },
+          }),
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(true);
+      expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+    });
+
+    it('إحداثيات مُدخلة لكن لا مستقبِلات حساسة مسجَّلة قريباً (Infinity) → لا مخالفة، ولا تحقق ميداني (موقع مُثبَت فعلياً وآمن)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          activity: activityProfile({
+            regulatoryActivity: 'BATCHING_PLANT',
+            measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: Infinity },
+          }),
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(false);
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(false);
+      expect(r.decisionCategory).toBe('ALLOW');
+    });
+
+    it('نشاط غير BATCHING_PLANT (كسارة) → القاعدة لا تُطبَّق إطلاقاً حتى لو المسافة قريبة جداً', () => {
+      const r = evaluateDustCompliance(
+        context({
+          activity: activityProfile({
+            regulatoryActivity: 'CRUSHER',
+            measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 50 },
+          }),
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(false);
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(false);
+    });
   });
 });
 
@@ -1737,6 +2077,25 @@ describe('محرك امتثال الغبار — الثقة ومنع القرا�
     );
     expect(r.confidenceScore).toBeLessThan(70);
     expect(r.decisionCategory).not.toBe('ALLOW');
+  });
+
+  // نفس السيناريو أعلاه لكن بمعزل عن missingCriticalInputs (windSpeedKmh هنا
+  // متوفر) — يعزل مسار الثقة المنخفضة تحديداً عن مسار نقص البيانات الحرجة
+  // (كلاهما ينتج FIELD_VERIFICATION_REQUIRED لكن بقاعدة مختلفة تماماً).
+  it('ثقة منخفضة فقط (dviConfidenceScore) بلا أي نقص بيانات حرجة → LOW-CONFIDENCE-VERIFICATION قاعدة فعلية ظاهرة، قابلة للتجاوز', () => {
+    const r = evaluateDustCompliance(context({ dviConfidenceScore: 40 }));
+    expect(r.confidenceScore).toBeLessThan(70);
+    expect(r.missingCriticalInputs.length).toBe(0);
+    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
+    // والقرار النهائي غير مكتمل"): تحويل ALLOW→FIELD_VERIFICATION_REQUIRED
+    // بسبب الثقة المنخفضة كان يُعدِّل decisionCategory مباشرة بمعزل تام عن
+    // ruleHits — لا يظهر في triggeredRules، ولا decidingRuleCode يفسّر
+    // السبب الفعلي. الآن قاعدة DustRuleHit فعلية (LOW-CONFIDENCE-VERIFICATION)
+    // تظهر في القوائم المعروضة للمستخدم كأي قاعدة أخرى.
+    expect(r.triggeredRules.some((h) => h.code === 'LOW-CONFIDENCE-VERIFICATION')).toBe(true);
+    expect(r.decidingRuleCode).toBe('LOW-CONFIDENCE-VERIFICATION');
+    expect(r.canOverride).toBe(true);
   });
 
   it('بيانات كاملة وثقة عالية وبلا مخالفات → ALLOW', () => {
@@ -1911,15 +2270,24 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     expect(ctx.dataSource).toBe('none');
   });
 
-  it('windSpeedKmh يبقى effectiveWindKmh عمداً، لا merged.windSpeedKmh — لا يُصلَح هذا مستقبلاً', () => {
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي يستخدم
+  // رقمًا مشتقًا من الهبات"): كان هذا الاختبار يثبّت عمداً أن ctx.windSpeedKmh
+  // يحمل dviResult.effectiveWindKmh (max(سرعة، 0.85×هبة)) بدل السرعة الخام
+  // — فهبة عابرة واحدة كانت كافية لتصنيف "سرعة الرياح" النظامية (بروتوكول
+  // الملحق أ) فوق 25 كم/س وتفعيل إيقاف تنظيمي بلا أي استمرار فعلي. عُكس
+  // التوقع بالكامل: windSpeedKmh يحمل الآن merged.windSpeedKmh الخام حصراً؛
+  // effectiveWindKmh يبقى محصوراً في DVI الفيزيائي الداخلي (dust-engine)،
+  // والهبات لها قاعدة سلامة منفصلة (GATE-WIND-GUST-SAFETY عبر windGustKmh)
+  // لا علاقة لها ببروتوكول الملحق أ.
+  it('windSpeedKmh يحمل merged.windSpeedKmh الخام، لا effectiveWindKmh المشتق من الهبات', () => {
     const dviHourly = {
       ...baseDviHourly,
-      effectiveWindKmh: 29.66,
-      mergedReading: mergedReadingFixture({ windSpeedKmh: 999 }),
+      effectiveWindKmh: 29.66, // رقم مخاطر DVI الداخلي — يجب ألا يظهر هنا
+      mergedReading: mergedReadingFixture({ windSpeedKmh: 18 }),
     };
     const ctx = buildComplianceContext({}, {}, dviHourly, []);
-    expect(ctx.windSpeedKmh).toBe(29.66);
-    expect(ctx.windSpeedKmh).not.toBe(999);
+    expect(ctx.windSpeedKmh).toBe(18);
+    expect(ctx.windSpeedKmh).not.toBe(29.66);
   });
 
   it("dataSource يُرجع 'device' إن فاز الجهاز بأي حقل، حتى لو حقول أخرى من الطقس", () => {

@@ -33,6 +33,16 @@ export async function requireUserId(
 // الأدمن صلاحية كتابة كاملة (تعديل/حذف/إضافة) على كل مشروع تلقائياً في كل
 // موقع يستدعي هذه الدالة (decisions/dust-profiles/alerts/[projectId] PATCH
 // و DELETE)، بلا حاجة لتعديل كل موقع استدعاء على حدة.
+//
+// خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "يمكن للمستخدم رفع
+// نفسه إلى Super Admin أو Viewer"): is_super_admin/account_role كانا
+// عمودين في profiles، وسياسة RLS الوحيدة عليه (auth.uid() = id) لا تقيّد
+// أي عمود — فأي مستخدم قادر يرفع نفسه Super Admin مباشرة من المتصفح
+// (عميل anon في app/lib/supabase.ts) بلا أي تدخل خلفي. الإصلاح: نُقلا
+// لجدول user_authorizations منفصل تماماً، ممنوع الوصول إليه كلياً من
+// anon/authenticated (REVOKE ALL) — القراءة هنا تمر حصراً عبر supabaseAdmin
+// (service_role) من الخادم. راجع supabase-add-user-authorizations-table-
+// migration.sql للتفصيل الكامل.
 export async function verifyProjectOwnership(
   projectId: string,
   userId: string
@@ -45,12 +55,12 @@ export async function verifyProjectOwnership(
     .maybeSingle();
   if (data) return true;
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles')
+  const { data: authz } = await supabaseAdmin
+    .from('user_authorizations')
     .select('is_super_admin')
-    .eq('id', userId)
+    .eq('user_id', userId)
     .maybeSingle();
-  if (!profile?.is_super_admin) return false;
+  if (!authz?.is_super_admin) return false;
 
   const { data: exists } = await supabaseAdmin
     .from('projects')
@@ -60,50 +70,53 @@ export async function verifyProjectOwnership(
   return !!exists;
 }
 
-// تحقق صلاحية "سوبر أدمن" — عمود is_super_admin في profiles، يُمنح يدوياً
-// فقط عبر SQL Editor مباشرة (لا مسار في الواجهة/الـ API لتفعيله ذاتياً).
-// role: 'admin' حقل تمييز صريح — بدونه، هذا الشكل يطابق requireViewer
-// حرفياً ({userId} | {error})، ما اضطر admin/alerts/route.ts سابقاً لاستنتاج
-// "أي فرع نجح فعلياً" من ترتيب استدعاء الدالتين بدل قراءة الهوية مباشرة —
-// هش لأي إعادة ترتيب مستقبلية. الحقل الجديد إضافة تراكمية بحتة (لا يكسر
-// أي استدعاء حالي يتحقق فقط من 'error' in result).
+// تحقق صلاحية "سوبر أدمن" — عمود is_super_admin في user_authorizations
+// (منفصل عن profiles، ممنوع الوصول له من anon/authenticated إطلاقاً — راجع
+// تعليق verifyProjectOwnership أعلاه)، يُمنح يدوياً فقط عبر SQL Editor
+// مباشرة (لا مسار في الواجهة/الـ API لتفعيله ذاتياً). role: 'admin' حقل
+// تمييز صريح — بدونه، هذا الشكل يطابق requireViewer حرفياً ({userId} |
+// {error})، ما اضطر admin/alerts/route.ts سابقاً لاستنتاج "أي فرع نجح
+// فعلياً" من ترتيب استدعاء الدالتين بدل قراءة الهوية مباشرة — هش لأي
+// إعادة ترتيب مستقبلية. الحقل الجديد إضافة تراكمية بحتة (لا يكسر أي
+// استدعاء حالي يتحقق فقط من 'error' in result).
 export async function requireSuperAdmin(
   request: Request
 ): Promise<{ userId: string; role: 'admin' } | { error: NextResponse }> {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth;
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles')
+  const { data: authz } = await supabaseAdmin
+    .from('user_authorizations')
     .select('is_super_admin')
-    .eq('id', auth.userId)
+    .eq('user_id', auth.userId)
     .maybeSingle();
 
-  if (!profile?.is_super_admin) {
+  if (!authz?.is_super_admin) {
     return { error: NextResponse.json({ error: 'هذه الصفحة مخصصة للسوبر أدمن فقط' }, { status: 403 }) };
   }
 
   return { userId: auth.userId, role: 'admin' };
 }
 
-// تحقق صلاحية "جهة مراقبة" — عمود account_role='viewer' في profiles، حساب
-// قراءة فقط يرى كل المشاريع عبر كل المستخدمين (خريطة/تنبيهات/تقارير) بلا
-// أي صلاحية تعديل. مستقل تماماً عن is_super_admin — بوابتان منفصلتان
-// لغرضين مختلفين (الأدمن قراءة+كتابة، المراقب قراءة فقط فقط)، الأدمن لا
-// يُعامَل تلقائياً كمراقب هنا (عنده أصلاً وصول أوسع عبر /api/admin/**).
+// تحقق صلاحية "جهة مراقبة" — عمود account_role='viewer' في
+// user_authorizations (نفس الفصل الأمني أعلاه)، حساب قراءة فقط يرى كل
+// المشاريع عبر كل المستخدمين (خريطة/تنبيهات/تقارير) بلا أي صلاحية تعديل.
+// مستقل تماماً عن is_super_admin — بوابتان منفصلتان لغرضين مختلفين (الأدمن
+// قراءة+كتابة، المراقب قراءة فقط فقط)، الأدمن لا يُعامَل تلقائياً كمراقب
+// هنا (عنده أصلاً وصول أوسع عبر /api/admin/**).
 export async function requireViewer(
   request: Request
 ): Promise<{ userId: string; role: 'viewer' } | { error: NextResponse }> {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth;
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles')
+  const { data: authz } = await supabaseAdmin
+    .from('user_authorizations')
     .select('account_role')
-    .eq('id', auth.userId)
+    .eq('user_id', auth.userId)
     .maybeSingle();
 
-  if (profile?.account_role !== 'viewer') {
+  if (authz?.account_role !== 'viewer') {
     return { error: NextResponse.json({ error: 'هذه الصفحة مخصصة لجهة المراقبة فقط' }, { status: 403 }) };
   }
 

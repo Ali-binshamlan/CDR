@@ -13,10 +13,12 @@ import {
   classifyWind,
   decisionFromRules,
   enhancedSuppressionRule,
+  windGustSafetyRule,
   pm10ThresholdRule,
   REGULATORY_ACTIVITY_LABEL_AR,
   DECISION_PRIORITY,
   BATCHING_PM10_FILTER_MIN_PERCENT,
+  ruleHit,
 } from './rulebook';
 import type {
   DustComplianceContext,
@@ -44,17 +46,26 @@ const CONFIDENCE_MIN_FOR_ALLOW = 70;
 // لمدة لا تقل عن 90 يوماً.
 const CAMERA_RETENTION_MIN_DAYS = 90;
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة PM10 معلَّقة قد تتغلب
+// على توقف مؤكَّد"): كانت هذه الدالة تشتق "القاعدة الحاسمة" بنفسها عبر
+// ruleHits.find((r) => r.severity === decision) — نسخة ثانية مستقلة تماماً
+// من نفس منطق decidingRule في evaluateDustCompliance أدناه، بنفس العلة
+// (أول قاعدة بترتيب الدفع تفوز، بصرف النظر عن كونها معلَّقة أم مؤكَّدة).
+// حتى بعد إصلاح decidingRule ليُفضِّل القاعدة المؤكَّدة، كان shortReasonAr
+// المعروض فعلياً للمستخدم سيبقى نص القاعدة المعلَّقة لأن هذه الدالة تعيد
+// الاشتقاق بمعزل تام. الإصلاح: تستقبل decidingRule الجاهزة (نفس القاعدة
+// المُفضَّلة فعلياً) بدل إعادة البحث في ruleHits من الصفر — مصدر واحد فقط
+// لـ"ما القاعدة الحاسمة"، لا مصدرين قد يختلفان.
 function shortReasonFor(
   decision: DustComplianceDecisionCategory,
-  ruleHits: DustRuleHit[],
+  decidingRule: DustRuleHit | undefined,
   resumeHoldApplied: boolean
 ): string {
   if (resumeHoldApplied) {
     return 'الظروف تحسّنت لكن لم يمضِ وقت كافٍ على استقرارها بعد آخر إيقاف — بانتظار استقرار القراءة (10 دقائق) قبل الاستئناف';
   }
   if (decision === 'ALLOW') return 'لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي';
-  const topRule = ruleHits.find((r) => r.severity === decision);
-  return topRule?.messageAr ?? DECISION_LABEL_AR[decision];
+  return decidingRule?.messageAr ?? DECISION_LABEL_AR[decision];
 }
 
 function buildMonitoringObligations(
@@ -219,6 +230,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
         severity: 'MANDATORY_STOP',
         messageAr: 'إيقاف إلزامي: نشاط غبار نشط/مخطط بلا موافقة معتمدة على خطة إدارة الغبار (DMP)',
         actionAr: 'أوقف النشاط حتى تصدر موافقة معتمدة على خطة إدارة الغبار (DMP) من الجهة المختصة',
+        overridable: false,
       }
     );
   }
@@ -235,17 +247,44 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     // التقني صحيح (القاعدة موروثة من قياس DVI الفيزيائي المباشر لا من
     // مخالفة ضابط تحكم)، لكن الصياغة يجب أن تبقى دائماً بلغة امتثال تنظيمي
     // موحّدة — لا عرض قرارين متنافسين لنفس النشاط.
+    //
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "DVI يصدر إيقافاً تنظيمياً
+    // فور قراءة واحدة"): كانت هذه البوابة تُصدر MANDATORY_STOP فوراً بمجرد
+    // ctx.dviMandatoryStop=true، بلا أي فحص استمرار — حتى لو كان السبب
+    // الوحيد قراءة PM10≥340 *لحظية واحدة* (DVI-DUST-ACTIVITY-STOP-004 في
+    // dust-engine/engine.ts يُشعِلها من أول قراءة تصل، لا من استمرار). هذا
+    // يتجاوز بالكامل pm10ThresholdRule أدناه (نفس الملف) الذي يشترط بحكمة
+    // >دقيقتين استمرار فعلي (pm10ConfirmedViolation340) قبل تأكيد المخالفة
+    // — وبما أن decisionFromRules يختار أعلى severity من كل القواعد معاً،
+    // MANDATORY_STOP هنا كان يطغى دائماً على STOP_AFFECTED_ACTIVITY
+    // "المعلَّق" الصحيح من pm10ThresholdRule، فتتحول قراءة لحظية واحدة إلى
+    // إيقاف إلزامي قطعي غير قابل للتجاوز دون أي دليل استمرار.
+    //
+    // الإصلاح: عندما يكون سبب dviMandatoryStop الوحيد هو PM10 (لا خطر
+    // فيزيائي فوري آخر كرؤية حرجة/رياح شديدة مساهم بنفس اللحظة —
+    // dviMandatoryStopIsPm10Only)، تُطبَّق نفس عتبة الاستمرار هنا بالضبط:
+    // مؤكَّدة (MANDATORY_STOP) فقط إن أثبت computeSustainedPm10Status
+    // استمراراً فعلياً >دقيقتين من مصدر جهاز حقيقي (pm10ConfirmedViolation340)،
+    // وإلا STOP_AFFECTED_ACTIVITY "معلَّق" فقط — طابق تماماً منطق
+    // pm10ThresholdRule بدل التناقض معه. خطر الرؤية الحرجة/الرياح الشديدة
+    // (dviMandatoryStopIsPm10Only=false) يبقى إيقافاً فورياً صحيحاً كما كان
+    // — هذا خطر فيزيائي فعلي لا يحتاج "استمراراً" ليُصدَّق (لا يمكن انتظار
+    // دقيقتين بينما الرؤية معدومة والرياح شديدة).
+    const isPm10OnlyPending = ctx.dviMandatoryStopIsPm10Only === true && ctx.pm10ConfirmedViolation340 !== true;
     ruleHits.push(
       {
         code: 'GATE-DVI-002',
-        severity: 'MANDATORY_STOP',
+        severity: isPm10OnlyPending ? 'STOP_AFFECTED_ACTIVITY' : 'MANDATORY_STOP',
         messageAr:
           ctx.dviShortReason ||
-          'إيقاف إلزامي تنظيمي: تجاوز خطر فوري في تركيز الغبار أو انعدام الرؤية بموقع النشاط',
+          (isPm10OnlyPending
+            ? 'تعليق مؤقت (معلَّق): تجاوز فوري في تركيز الغبار — بانتظار استمرار القراءة أكثر من دقيقتين لتصنيفها مخالفة تنظيمية مؤكدة'
+            : 'إيقاف إلزامي تنظيمي: تجاوز خطر فوري في تركيز الغبار أو انعدام الرؤية بموقع النشاط'),
         // الإجراء هنا مختلف جوهرياً عن بقية القواعد: لا يوجد ما "يُصلحه"
         // المقاول في الموقع — الظرف الجوي نفسه هو المانع، فالإجراء انتظار
         // تحسّن الحالة وإخلاء العمالة، لا استكمال ضابط تحكم ناقص.
         actionAr: 'أخلِ منطقة العمل وانتظر تحسّن حالة الجو (الرؤية وتركيز الغبار) — لا يمكن استئناف العمل بإجراء تنظيمي',
+        overridable: isPm10OnlyPending,
       }
     );
   }
@@ -257,6 +296,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
         severity: 'MANDATORY_STOP',
         messageAr: 'إيقاف إلزامي: نظام تثبيط الغبار غير عامل على نشاط مولّد للغبار',
         actionAr: 'أعد تشغيل نظام تثبيط الغبار وتحقق من عمله فعلياً قبل استئناف النشاط',
+        overridable: false,
       }
     );
   }
@@ -266,14 +306,13 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   // استثناء محطة الخلط (BATCHING_PLANT) تحديداً: لا يُشترط isEnclosedOperation
   // إطلاقاً (قد تكون المحطة فعلياً مكشوفة هيكلياً) — يكفي إحكام إغلاق
   // الصوامع (silosSealed، مدخل حقيقي لكل وحدة خلط) + كفاءة فلتر PM10 لا
-  // تقل عن الحد الأدنى (نفس حد BATCHING-FILTER-002 في rulebook.ts) معاً،
-  // طلب صريح من المستخدم: "حتى لو كان مكشوف بس الفلاتر 99 والصوامع مغلق
-  // أبغاه يكون مسموح". بقية الأنشطة المغلقة (هدم مغلق، قطع أحجار مغلق)
-  // تستمر بإعفاء isEnclosedOperation وحده كما كان دائماً.
-  //
-  // نفس الشرط (صوامع مغلقة + فلتر ≥99%) يُستخدم الآن أيضاً لإعفاء محطة
-  // الخلط بالكامل من كل قواعد PM10 (احتراز/تحذير/تنبيه استباقي/تعليق
-  // ومؤكَّد) — بمصدر واحد موحَّد بدل تكرار الشرط في مكانين.
+  // تقل عن الحد الأدنى (نفس حد BATCHING-FILTER-002 في rulebook.ts) معاً —
+  // هذا هو الإعفاء التنظيمي الموثَّق فعلياً في "الاستخراج التنظيمي من
+  // المرفق" (القسم الرابع/السادس، راجع BATCHING_PM10_FILTER_MIN_PERCENT في
+  // rulebook.ts): "الحد المعتمد للاستمرار أثناء إيقاف الرياح فوق 25 كم/س"
+  // — مقصور على بوابة الرياح تحديداً، لا قواعد PM10 المستقلة (راجع تعليق
+  // مصلَح أدناه). بقية الأنشطة المغلقة (هدم مغلق، قطع أحجار مغلق) تستمر
+  // بإعفاء isEnclosedOperation وحده كما كان دائماً.
   const isEnclosedExemptFromHighWind =
     ctx.activity.regulatoryActivity === 'BATCHING_PLANT'
       ? ctx.activity.controls.silosSealed === true &&
@@ -289,39 +328,38 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
         severity: 'STOP_AFFECTED_ACTIVITY',
         messageAr: 'إيقاف الأنشطة المكشوفة المولّدة للغبار: سرعة الرياح تتجاوز 25 كم/س ',
         actionAr: 'أوقف الأنشطة المكشوفة وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون 25 كم/س',
+        overridable: false,
       }
     );
   }
 
-  // إعفاء قواعد PM10 مقصور على BATCHING_PLANT تحديداً (مغلقة + فلتر ≥99%
-  // معاً) — أي نشاط آخر غير BATCHING_PLANT له isEnclosedExemptFromHighWind
-  // مبني فقط على isEnclosedOperation (بلا شرط فلتر إطلاقاً، لأن الحقل يبقى
-  // null بالبناء)، فلا يجوز استخدامه هنا مباشرة كإعفاء PM10 — إلا لو كان
-  // النشاط فعلياً BATCHING_PLANT.
-  const isPm10ExemptEnclosedBatching =
-    ctx.activity.regulatoryActivity === 'BATCHING_PLANT' && isEnclosedExemptFromHighWind;
-
   // 15-25 كم/س — تثبيط معزز عام (دون إيقاف)، و حدود PM10 التنظيمية —
   // "الاستخراج التنظيمي من المرفق" القسم 5-6. راجع rulebook.ts للتفاصيل.
   //
-  // خطأ مكتشَف ومُصلَح: كان يُمرَّر ctx.activity.isEnclosedOperation الخام
-  // (سؤال بنيوي: هل المحطة مغلقة فيزيائياً؟) بدل isEnclosedExemptFromHighWind
-  // (الإعفاء الفعلي المطبَّق أعلاه لبوابة الرياح >25 وPM10 معاً). محطة الخلط
-  // مستثناة عمداً من اشتراط isEnclosedOperation إطلاقاً (طلب صريح من
-  // المستخدم: "حتى لو كان مكشوف بس الفلاتر 99 والصوامع مغلق أبغاه يكون
-  // مسموح") — فمحطة خلط مكشوفة فيزيائياً لكن بصوامع مغلقة وفلتر ≥99% كانت
-  // لا تزال تُفعِّل GATE-WIND-15-25-ENHANCED-005 (تثبيط معزز إضافي) عند رياح
-  // 15-25 كم/س، رغم استثنائها الكامل من البوابة الأشد (>25) والقواعد
-  // الأخرى. استخدام isEnclosedExemptFromHighWind هنا يوحّد شرط الإعفاء لكل
-  // بوابات الرياح معاً — الاستثناء إما كامل أو لا يطبَّق إطلاقاً.
+  // isEnclosedExemptFromHighWind (لا isEnclosedOperation الخام) يُستخدم هنا
+  // أيضاً لبوابة الرياح 15-25 المعززة — محطة خلط مكشوفة فيزيائياً لكن
+  // بصوامع مغلقة وفلتر ≥99% تُستثنى من كلتا بوابتي الرياح معاً (>25 و15-25)
+  // بنفس الشرط الموحَّد، لا فقط الأشد.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
+  // للمرجع"): كان يُمرَّر معامل isPm10ExemptEnclosedBatching منفصل لـ
+  // pm10ThresholdRule يُعفي محطة الخلط من قواعد PM10 المستقلة (250/340)
+  // بنفس شرط بوابة الرياح — لكن النص التنظيمي المصدر لنسبة الـ99% (راجع
+  // BATCHING_PM10_FILTER_MIN_PERCENT في rulebook.ts) يوثّقها كحد استمرار
+  // *أثناء إيقاف الرياح* تحديداً، لا إعفاءً عاماً من عتبات تركيز PM10
+  // الفعلي في الهواء (قياس مباشر لا علاقة له بسرعة الرياح أو حالة الصوامع).
+  // إعفاء PM10 كلياً كان توسيعاً غير موثَّق — حُذف بالكامل من pm10ThresholdRule
+  // ومن استدعائها هنا؛ محطة الخلط الآن تخضع لقواعد PM10 (250/340/تعليق)
+  // كأي نشاط آخر، وتبقى معفاة من بوابتي الرياح فقط.
   ruleHits.push(...enhancedSuppressionRule(ctx.activity.isDustGenerating, isEnclosedExemptFromHighWind, windBand));
+  // احتراز هبات منفصل تماماً عن بروتوكول الملحق أ (windBand أعلاه، مبني
+  // فقط على ctx.windSpeedKmh الخام الآن) — راجع windGustSafetyRule في
+  // rulebook.ts وتعليق windSpeedKmh في types.ts للسبب الكامل.
   ruleHits.push(
-    ...pm10ThresholdRule(
-      ctx.pm10UgM3,
-      ctx.pm10SustainedMinutesAbove340,
-      ctx.pm10SustainedMinutesAbove250,
-      isPm10ExemptEnclosedBatching
-    )
+    ...windGustSafetyRule(ctx.activity.isDustGenerating, isEnclosedExemptFromHighWind, ctx.windGustKmh)
+  );
+  ruleHits.push(
+    ...pm10ThresholdRule(ctx.pm10UgM3, ctx.pm10ConfirmedViolation340, ctx.pm10Suspended250For30Min)
   );
 
   // --- قواعد النشاط التنظيمي المحدد (القسم 9.4-9.10) ---
@@ -336,6 +374,19 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   const { obligations } = buildMonitoringObligations(ctx, riskClass);
   const monitoringApplies = riskClass === 'CATEGORY_II_MEDIUM' || riskClass === 'CATEGORY_III_HIGH';
 
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
+  // والقرار النهائي غير مكتمل"): الطبقات الثلاث أدناه (استئناف بوابة الرياح،
+  // استقرار الاستئناف RESUME_STABILITY_MINUTES، ثقة<70) كانت تُعدِّل
+  // decisionCategory مباشرة *بعد* decisionFromRules بمعزل تام عن نظام
+  // ruleHits/DustRuleHit — فلا تظهر كقاعدة في triggeredRules، ولا تشارك في
+  // اختيار decidingRule (فيعرض النظام قاعدة أخرى أضعف كسبب للقرار بينما
+  // السبب الفعلي إحدى هذه الطبقات)، ولا تحمل overridable خاصاً بها. الإصلاح:
+  // كل طبقة تُبنى الآن كـDustRuleHit فعلي يُدفَع إلى ruleHits، ثم يُعاد حساب
+  // decisionFromRules على المجموعة الكاملة — نفس آلية اختيار "الأعلى فوزاً"
+  // المستخدمة لكل قاعدة أخرى، لا استثناء خاص. الحلقة (evaluate → أضف قاعدة
+  // ناتجة عن القرار الحالي → أعد التقييم) تتوقف تلقائياً حين لا تعود أي طبقة
+  // تُضيف قاعدة جديدة (كل الطبقات أحادية الاتجاه: لا تُخفِّض قراراً، فقط
+  // تُصعِّده أو تُبقيه، فتتقارب خلال تكرار واحد كحد أقصى عملياً).
   let decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
 
   // قاعدة استئناف خاصة ببوابة الرياح >25 (GATE-WIND-ABOVE-25-004): طلب صريح
@@ -347,15 +398,27 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   // هذا فقط إن كان الإيقاف السابق ناتجاً عن هذه البوابة تحديداً (لا أي سبب
   // إيقاف آخر)، ولا يُعاد تفعيله إن كانت الرياح ABOVE_25 فعلاً الآن (تلك
   // حالتها تُعالَج أصلاً عبر ruleHits أعلاه بلا حاجة لهذا القيد).
-  const previousStopWasWindGate = ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';
+  //
+  // previousDecidingRuleCode (كود القاعدة الفعلية المخزَّن، لا فئة القرار
+  // العامة) هو الدليل الصحيح على أن السبب كان بوابة الرياح تحديداً — راجع
+  // تعليق previousDecidingRuleCode في types.ts لسبب استبعاد فئة القرار وحدها.
+  const previousStopWasWindGate = ctx.previousDecidingRuleCode === 'GATE-WIND-ABOVE-25-004';
   if (
     previousStopWasWindGate &&
     windBand !== 'ABOVE_25' &&
     ctx.windSpeedKmh !== null &&
-    ctx.windSpeedKmh >= 25 &&
-    DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY
+    ctx.windSpeedKmh >= 25
   ) {
-    decisionCategory = 'STOP_AFFECTED_ACTIVITY';
+    ruleHits.push(
+      ruleHit(
+        'GATE-WIND-ABOVE-25-RESUME-HOLD',
+        'STOP_AFFECTED_ACTIVITY',
+        'الإيقاف السابق كان بسبب رياح تجاوزت 25 كم/س — الاستئناف يتطلب انخفاضها إلى ما دون 25 كم/س صراحة، لا مجرد العودة إلى 25 بالضبط',
+        'انتظر انخفاض سرعة الرياح إلى ما دون 25 كم/س صراحة قبل الاستئناف',
+        false
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
   }
 
   // منع الاستئناف التلقائي الفوري بعد إيقاف — قرار كان موقِفاً
@@ -382,8 +445,17 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
       ? (Date.now() - new Date(ctx.previousPendingResumeSince).getTime()) / 60000
       : 0; // لا استقرار مسجَّل بعد = بداية الاستقرار الآن (فشل آمن نحو المنع)
     if (minutesSinceGoodReadingBegan < RESUME_STABILITY_MINUTES) {
-      decisionCategory = 'STOP_AFFECTED_ACTIVITY';
       resumeHoldApplied = true;
+      ruleHits.push(
+        ruleHit(
+          'RESUME-STABILITY-HOLD',
+          'STOP_AFFECTED_ACTIVITY',
+          'الظروف تحسّنت لكن لم يمضِ وقت كافٍ على استقرارها بعد آخر إيقاف — بانتظار استقرار القراءة (10 دقائق) قبل الاستئناف',
+          `أبقِ النشاط موقوفاً حتى تستقر القراءة الجيدة لمدة ${RESUME_STABILITY_MINUTES} دقائق متواصلة قبل الاستئناف`,
+          true
+        )
+      );
+      decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
     }
   }
 
@@ -391,19 +463,61 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
   // منع قرار ALLOW مع ثقة أقل من 70 — يتحول تلقائياً لتحقق ميداني.
   if (decisionCategory === 'ALLOW' && confidenceScore < CONFIDENCE_MIN_FOR_ALLOW) {
-    decisionCategory = 'FIELD_VERIFICATION_REQUIRED';
+    ruleHits.push(
+      ruleHit(
+        'LOW-CONFIDENCE-VERIFICATION',
+        'FIELD_VERIFICATION_REQUIRED',
+        `مستوى الثقة في القرار (${confidenceScore}) أقل من الحد الأدنى المطلوب للسماح التلقائي (${CONFIDENCE_MIN_FOR_ALLOW})`,
+        'راجع البيانات الناقصة/غير المؤكدة ميدانياً قبل اعتماد القرار كسماح كامل',
+        true
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
   }
 
   const mandatoryStop = decisionCategory === 'MANDATORY_STOP';
-  const canOverride = !mandatoryStop && decisionCategory !== 'STOP_AFFECTED_ACTIVITY';
 
-  // القاعدة التي حدَّدت هذا القرار فعلياً — نفس منطق shortReasonFor أدناه.
-  // إن كانت MRQ-PM10-BLACK-PENDING-104 تحديداً، فالقرار "معلَّق" بانتظار
-  // تأكيد استمرار القراءة، لا مخالفة مؤكَّدة — يجب ألا يظهر بنفس لغة
-  // MANDATORY_STOP القطعية في الواجهة (راجع تعليق pendingConfirmation في
-  // types.ts للسبب الكامل).
-  const decidingRule = ruleHits.find((r) => r.severity === decisionCategory);
-  const pendingConfirmation = decidingRule?.code === 'MRQ-PM10-BLACK-PENDING-104';
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة PM10 معلَّقة قد
+  // تتغلب على توقف مؤكَّد"): كان decidingRule = ruleHits.find(...) يختار
+  // أول قاعدة بنفس شدة القرار النهائي بترتيب الدفع في ruleHits — بلا أي
+  // اعتبار لكون تلك القاعدة معلَّقة أم مؤكَّدة. مثال حقيقي: نشاط هدم برياح
+  // شديدة (DEMO-WIND-STOP-001، STOP_AFFECTED_ACTIVITY مؤكَّد، يُدفَع عبر
+  // applyActivityRules في آخر الدالة) + PM10>340 لحظي لم يستمر بعد دقيقتين
+  // (MRQ-PM10-BLACK-PENDING-104، STOP_AFFECTED_ACTIVITY معلَّق، يُدفَع عبر
+  // pm10ThresholdRule *قبل* applyActivityRules) — كلاهما بنفس الشدة، فكان
+  // .find() يختار قاعدة PM10 المعلَّقة لمجرد سبقها ترتيبياً، فيظهر القرار
+  // بأكمله "معلَّق — بانتظار التأكيد" رغم وجود سبب إيقاف مؤكَّد آخر مستقل
+  // تماماً لا علاقة له باستمرار PM10 إطلاقاً — يُوهم المستخدم بأن الإيقاف
+  // قد يزول تلقائياً بينما هو مؤكَّد وقائم فعلاً.
+  //
+  // الإصلاح: بين كل القواعد المتعادلة بأعلى شدة (topHits)، تُفضَّل أي قاعدة
+  // غير معلَّقة (confirmedHit) على القاعدة المعلَّقة — القرار المعروض يعكس
+  // دائماً أشد تفسير مؤكَّد متاح، لا أول ما وصل ترتيبياً. pendingConfirmation
+  // النهائية تصبح true فقط لو كانت *كل* القواعد المتعادلة بأعلى شدة معلَّقة
+  // معاً (لا قاعدة مؤكَّدة واحدة بينها تكفي لإسقاط الصفة المعلَّقة عن القرار
+  // بأكمله).
+  //
+  // isPendingRuleHit: نفس تعريف "معلَّق" المستخدم سابقاً حرفياً — إما
+  // MRQ-PM10-BLACK-PENDING-104 تحديداً، أو GATE-DVI-002 حين يكون سببها
+  // الوحيد PM10 لحظي لم يثبت استمراره بعد (راجع isPm10OnlyPending أعلاه).
+  const isPendingRuleHit = (hit: DustRuleHit): boolean =>
+    hit.code === 'MRQ-PM10-BLACK-PENDING-104' ||
+    (hit.code === 'GATE-DVI-002' && ctx.dviMandatoryStopIsPm10Only === true && ctx.pm10ConfirmedViolation340 !== true);
+
+  const topHits = ruleHits.filter((r) => r.severity === decisionCategory);
+  const confirmedHit = topHits.find((hit) => !isPendingRuleHit(hit));
+  const decidingRule = confirmedHit ?? topHits[0];
+  const pendingConfirmation = topHits.length > 0 && topHits.every((hit) => isPendingRuleHit(hit));
+
+  // canOverride مشتقة الآن من overridable الفعلي لقاعدة(قواعد) القرار
+  // الحاسمة (topHits)، لا من فئة decisionCategory العامة كما كانت سابقاً —
+  // راجع تعليق overridable في types.ts للسبب الكامل. أي قاعدة غير قابلة
+  // للتجاوز بين المتعادلات بأعلى شدة تكفي لمنع تجاوز القرار بأكمله (نفس
+  // مبدأ "الأشد يفوز" المطبَّق في كل مكان آخر بهذا المحرك) — افتراض true
+  // لقاعدة لا تحدد overridable إطلاقاً (توافقاً مع تعريفها الافتراضي في
+  // ruleHit()). لا topHits إطلاقاً (decisionCategory=ALLOW بلا أي ruleHits)
+  // يعني قابلية تجاوز كاملة بداهة.
+  const canOverride = topHits.length === 0 || topHits.every((hit) => hit.overridable !== false);
 
   // إن كان القرار النهائي إيقافاً مؤكَّداً فعلياً (MANDATORY_STOP أو
   // STOP_AFFECTED_ACTIVITY) من قاعدة أخرى غير MRQ-PM10-BLACK-PENDING-104
@@ -466,11 +580,12 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
     canOverride,
     pendingConfirmation,
     resumeHoldApplied,
-    shortReasonAr: shortReasonFor(decisionCategory, ruleHits, resumeHoldApplied),
+    decidingRuleCode: decidingRule?.code ?? null,
+    decidingRuleMessageAr: decidingRule?.messageAr ?? null,
+    shortReasonAr: shortReasonFor(decisionCategory, decidingRule, resumeHoldApplied),
 
     pm10SustainedMinutesAbove340: ctx.pm10SustainedMinutesAbove340,
     pm10SustainedMinutesAbove250: ctx.pm10SustainedMinutesAbove250,
-    pm10RulesExempt: isPm10ExemptEnclosedBatching,
 
     triggeredRules: displayedRuleHits,
     requiredActions,

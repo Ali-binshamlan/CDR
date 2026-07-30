@@ -19,7 +19,8 @@ export async function GET(request: NextRequest) {
 
   const { data: dbProjects, error: projectsError } = await supabaseAdmin
     .from('projects')
-    .select('id, name');
+    .select('id, name')
+    .is('archived_at', null);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'viewer/reports projects fetch failed') }, { status: 500 });
 
   const projectIds = (dbProjects || []).map((p: any) => p.id);

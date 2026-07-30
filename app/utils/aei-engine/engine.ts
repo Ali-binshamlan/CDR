@@ -77,6 +77,7 @@ export function evaluateAei(
       gateReasonAr: `⛔ إيقاف إلزامي للعمل: انعدام الرؤية أو كثافة الغبار تمنع العمل بأمان (${dvi.decisionLabelAr}).`,
       shortReasonAr: dvi.shortReason,
       recommendationAr: 'يُمنع العمل حالياً بسبب سوء الأحوال الجوية. يُرجى الانتظار حتى تنجلي موجة الغبار وتتحسن الرؤية.',
+      isHoldForVerification: false,
       sources,
     };
   }
@@ -110,6 +111,15 @@ export function evaluateAei(
   if (forceRestrict && (status === 'ALLOW' || status === 'MONITOR')) {
     status = 'RESTRICT';
     cappedByGate = true;
+  }
+
+  // طلب صريح من المستخدم: بطاقة AEI لا يجوز أن تظهر "قابل للتنفيذ" أخضر بينما
+  // بانر DVI يعرض حالة احتراز/مراقبة صفراء (ALLOW_WITH_MONITORING) — الدرجة
+  // الرقمية وحدها قد تتجاوز 69 وتُخرج ALLOW رغم أن DVI نفسه لم يعطِ تشغيلاً
+  // عادياً نظيفاً. نُقيَّد الحالة هنا لتطابق DVI في كل الحالات، لا فقط عندما
+  // يفعّل AEI_CAPPING_DVI_DECISIONS سقفاً صريحاً.
+  if (dvi.decisionCategory === 'ALLOW_WITH_MONITORING' && status === 'ALLOW') {
+    status = 'MONITOR';
   }
 
   // المرحلة 4 — تحديد السبب الرئيسي للقصور
@@ -150,6 +160,7 @@ export function evaluateAei(
     gateReasonAr: cappedByGate ? `⚠️ تنبيه وقائي: تم تقييد النشاط حفاظاً على سلامة العمال وجودة العمل بناءً على (${capReason}).` : null,
     shortReasonAr,
     recommendationAr,
+    isHoldForVerification: false,
     sources,
   };
 }

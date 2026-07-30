@@ -8,8 +8,18 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 // (مثال: .neq('state', 'CLOSED') في alerts/count/route.ts).
 const VALID_ALERT_STATES = ['NEW', 'REVIEWED', 'ACTION_TAKEN', 'CLOSED'] as const;
 
-// يستبدل supabase.from('alerts').update({state}).eq('id', alertId)
-// المباشر من dashboard/alerts/page.tsx (toggleAlertState)
+// خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "سجل القرارات والتنبيهات
+// قابل للتعديل والحذف"): كان هذا المسار يُنفِّذ UPDATE alerts SET state=...
+// مباشرة — مالك المشروع يقدر يغيّر حالة تنبيه مخالفة تنظيمية (COMPLIANCE_
+// VIOLATION) إلى CLOSED بنفسه بلا أي أثر تدقيق يوثّق من غيّر الحالة ومتى
+// وماذا كانت الحالة السابقة. الإصلاح: تغيير الحالة الآن حدث جديد يُدرَج في
+// alert_state_events (append-only، trigger يمنع UPDATE/DELETE عليه أيضاً،
+// راجع supabase-append-only-evidence-and-alert-events-migration.sql) بدل
+// استبدال الحالة القديمة. trigger في قاعدة البيانات (alert_state_events_
+// sync) يُحدِّث alerts.state تلقائياً بعد كل إدراج — فكل قراءات alerts.state
+// الحالية في التطبيق (9+ موقع: العدادات، لوحة التحكم، الخريطة، التقارير)
+// تستمر بالعمل بلا أي تعديل، فقط مسار الكتابة تغيّر جذرياً. actor_user_id
+// يوثّق مَن غيّر الحالة فعلياً — معلومة لم تكن مسجَّلة إطلاقاً سابقاً.
 export async function PATCH(
   request: NextRequest,
   context: { params: Promise<{ alertId: string }> }
@@ -28,7 +38,7 @@ export async function PATCH(
   // JOIN بدل تمرير project_id من العميل (لا يمكن الوثوق به)
   const { data: alertRow } = await supabaseAdmin
     .from('alerts')
-    .select('id, project_id, projects!inner(user_id)')
+    .select('id, project_id, state, projects!inner(user_id)')
     .eq('id', alertId)
     .single();
 
@@ -37,34 +47,26 @@ export async function PATCH(
     return NextResponse.json({ error: 'لا تملك هذا التنبيه' }, { status: 403 });
   }
 
-  const { error } = await supabaseAdmin.from('alerts').update({ state }).eq('id', alertId);
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'alerts/[alertId] update failed') }, { status: 500 });
+  const { error } = await supabaseAdmin.from('alert_state_events').insert({
+    alert_id: alertId,
+    previous_state: (alertRow as any).state ?? null,
+    new_state: state,
+    actor_user_id: auth.userId,
+  });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'alerts/[alertId] state event insert failed') }, { status: 500 });
   return NextResponse.json({ success: true });
 }
 
-// حذف تنبيه واحد نهائياً — يستبدل أي حذف مباشر من العميل، بنفس تحقق
-// الملكية غير المباشر أعلاه (JOIN على projects.user_id).
-export async function DELETE(
-  request: NextRequest,
-  context: { params: Promise<{ alertId: string }> }
-) {
-  const auth = await requireUserId(request);
-  if ('error' in auth) return auth.error;
-
-  const { alertId } = await context.params;
-
-  const { data: alertRow } = await supabaseAdmin
-    .from('alerts')
-    .select('id, project_id, projects!inner(user_id)')
-    .eq('id', alertId)
-    .single();
-
-  const ownerId = (alertRow as any)?.projects?.user_id;
-  if (!alertRow || ownerId !== auth.userId) {
-    return NextResponse.json({ error: 'لا تملك هذا التنبيه' }, { status: 403 });
-  }
-
-  const { error } = await supabaseAdmin.from('alerts').delete().eq('id', alertId);
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'alerts/[alertId] delete failed') }, { status: 500 });
-  return NextResponse.json({ success: true });
+// حذف تنبيه — أُزيل نهائياً (كان مراجعة كود خبير خارجي أيضاً: "المالك
+// يستطيع حذف سجل المخالفة"). alerts هو سجل أدلة تنظيمية (COMPLIANCE_
+// VIOLATION وغيرها) لا مجرد إشعار UI — لا يجوز لمالك المشروع أن يمحو دليل
+// مخالفة واجهها فعلياً. حالة "لم يعد التنبيه ذا صلة" تُعبَّر عنها بتغيير
+// الحالة إلى CLOSED عبر PATCH أعلاه (حدث جديد موثَّق)، لا بالحذف. 405 بدل
+// حذف المسار بالكامل — يوضّح للعميل أن هذا تغيير سياسة متعمَّد، لا مسار
+// منسي أو خطأ توجيه.
+export async function DELETE() {
+  return NextResponse.json(
+    { error: 'حذف التنبيهات معطَّل — سجل أدلة تنظيمي غير قابل للحذف. استخدم تغيير الحالة إلى "مغلق" بدلاً من ذلك.' },
+    { status: 405 }
+  );
 }

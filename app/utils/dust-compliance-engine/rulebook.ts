@@ -197,13 +197,25 @@ export function decisionFromRules(
 
 // actionAr مستقل تماماً عن messageAr (راجع تعليق DustRuleHit في types.ts) —
 // إجراء تصحيحي موجَّه للمستخدم، وليس إعادة وصف للمخالفة نفسها.
-function ruleHit(
+//
+// overridable اختياري — يفترض تلقائياً نفس القاعدة العامة القديمة (severity
+// دون MANDATORY_STOP/STOP_AFFECTED_ACTIVITY = قابل للتجاوز) لأي قاعدة لا
+// تحدده صراحة، فلا حاجة لتعديل عشرات نداءات ruleHit() الحالية. مرِّر القيمة
+// صراحة فقط حين تختلف قابلية القاعدة عن افتراض severity العام (راجع
+// overridable في types.ts للسبب الكامل).
+//
+// مُصدَّرة (لا محلية فقط) لأن engine.ts يبنيها أيضاً لطبقات القرار الثلاث
+// (استئناف بوابة الرياح/استقرار الاستئناف/الثقة المنخفضة) بعد تحويلها من
+// تعديل decisionCategory مباشرة إلى DustRuleHit فعلي — راجع تعليق الفصل بين
+// القواعد والقرار في engine.ts.
+export function ruleHit(
   code: string,
   severity: DustRuleHit['severity'],
   messageAr: string,
-  actionAr: string
+  actionAr: string,
+  overridable: boolean = severity !== 'MANDATORY_STOP' && severity !== 'STOP_AFFECTED_ACTIVITY'
 ): DustRuleHit {
-  return { code, severity, messageAr, actionAr };
+  return { code, severity, messageAr, actionAr, overridable };
 }
 
 // بوابة عامة على كل الأنشطة المكشوفة المولّدة للغبار — "الاستخراج التنظيمي
@@ -230,16 +242,58 @@ export function enhancedSuppressionRule(
   ];
 }
 
+// هبة قوية عابرة — احتراز سلامة إضافي منّا، لا بند من "بروتوكول الملحق أ"
+// (النص التنظيمي يذكر "سرعة الرياح" فقط بعتبتي 15/25 كم/س، بلا أي إشارة
+// للهبات). يقرأ windGustKmh الخام مباشرة (لا effectiveWindKmh، ولا يؤثر
+// على windBand/classifyWind إطلاقاً) — منفصل تماماً عن بوابتي الرياح
+// النظاميتين أعلاه (GATE-WIND-ABOVE-25-004/GATE-WIND-15-25-ENHANCED-005)،
+// برمز مستقل (GATE-WIND-GUST-SAFETY) وseverity أخف (تنبيه/تثبيط، لا إيقاف
+// إلزامي قطعي) حتى لا تُقرأ الواجهة أنها مخالفة تنظيمية بموجب الملحق أ.
+// العتبة (50 كم/س) أعلى بكثير من حد الملحق أ (25) عمداً — هبة عابرة عند
+// 30 مثلاً لا تستحق أي إجراء إضافي فوق ما تفرضه سرعة الرياح المستدامة
+// نفسها؛ فقط هبات شديدة الخطورة فعلياً (قريبة من عتبة DVI-WIND-LOOSE-
+// MATERIAL-005 الفيزيائية في dust-engine/engine.ts) تستحق تنبيهاً منفصلاً.
+const WIND_GUST_SAFETY_THRESHOLD_KMH = 50;
+
+export function windGustSafetyRule(
+  isDustGenerating: boolean,
+  isEnclosedOperation: boolean,
+  windGustKmh: number | null
+): DustRuleHit[] {
+  if (
+    windGustKmh === null ||
+    windGustKmh === undefined ||
+    windGustKmh < WIND_GUST_SAFETY_THRESHOLD_KMH ||
+    !isDustGenerating ||
+    isEnclosedOperation
+  ) {
+    return [];
+  }
+  return [
+    ruleHit(
+      'GATE-WIND-GUST-SAFETY',
+      'ALLOW_WITH_CONTROLS',
+      `هبة رياح قوية عابرة رُصدت (${windGustKmh} كم/س) — احتراز سلامة إضافي، ليست مخالفة بموجب بروتوكول الملحق أ`,
+      'أمّن المواد السائبة والمعدات الخفيفة فوراً حتى تهدأ الهبة، وراقب استقرار سرعة الرياح المستدامة'
+    ),
+  ];
+}
+
 // مدة الاستمرار الدنيا (بالدقائق) قبل تصنيف قراءة ≥340 "مخالفة تنظيمية
 // مؤكدة" (RCRC-PM10-340-VIOLATION-011) بدل "معلَّقة" فقط (MRQ-PM10-BLACK-
-// PENDING-104) — النص التنظيمي: "لأكثر من دقيقتين". للاختبار اليدوي السريع،
-// عطّل السطر الأول وفعّل الثاني، ثم أعده كما هو قبل أي استخدام حقيقي.
-const PM10_VIOLATION_CONFIRM_MINUTES = 2;
-// const PM10_VIOLATION_CONFIRM_MINUTES = 0.5; // ← اختبار سريع فقط
+// PENDING-104) — النص التنظيمي: "لأكثر من دقيقتين". العتبة الفعلية
+// (PM10_VIOLATION_CONFIRM_MINUTES) لم تعد هنا — انتقلت مع الحساب بالكامل
+// إلى computeSustainedPm10Status في app/lib/dustEvaluation.ts، المصدر
+// الوحيد الآن لقرار "مؤكَّدة" (راجع pm10ConfirmedViolation340 في
+// DustComplianceContext وتعليق pm10ThresholdRule أدناه). لا ثابت مكرَّر هنا
+// كي لا يبدو مصدراً فعلياً للقرار بينما هو ليس كذلك.
 
 // مدة الاستمرار الدنيا لتفعيل تعليق النشاط الكامل عند ≥250 (RCRC-PM10-30M-
 // SUSPENSION-012) — أشد من مجرد تحذير/تنبيه استباقي عاديين لنفس المدى.
-// نفس ملاحظة الاختبار السريع أعلاه.
+// يبقى مستخدَماً هنا للعرض النصي فقط بالرسالة (عدد الدقائق بالجملة) — قرار
+// "معلَّقة 30 دقيقة" نفسه يُقرأ جاهزاً من pm10Suspended250For30Min، لا يُشتق
+// من هذا الثابت. للاختبار اليدوي السريع، عطّل السطر الأول وفعّل الثاني، ثم
+// أعده كما هو قبل أي استخدام حقيقي — يؤثر فقط على النص المعروض هنا.
 const PM10_SUSPENSION_MINUTES = 30;
 // const PM10_SUSPENSION_MINUTES = 3; // ← اختبار سريع فقط
 
@@ -248,30 +302,48 @@ const PM10_SUSPENSION_MINUTES = 30;
 // ACTIVITY-STOP-004 في dust-engine/engine.ts) — هذه عتبات تنظيمية رسمية
 // من الوثيقة مباشرة، لا تقديرات فيزيائية.
 //
-// sustainedMinutesAbove340/250 اختياريان (undefined = لا بيانات استمرار،
-// راجع fetchPm10SustainedStatus في dustEvaluation.ts) — بغيابهما، القراءة
-// ≥340 تُعامَل معاملة "معلَّقة" فقط (STOP_AFFECTED_ACTIVITY، لا MANDATORY_
-// STOP) حتى يثبت الاستمرار فعلياً؛ فشل آمن يمنع إيقافاً إلزامياً غير قابل
-// للتجاوز بناءً على قراءة لحظية واحدة بلا دليل استمرار.
+// خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كانت هذي الدالة تستقبل رقمي الدقائق
+// (sustainedMinutesAbove340/250) وتُعيد اشتقاق "مؤكَّدة"/"معلَّقة 30 دقيقة"
+// بنفسها من مقارنة محلية بسيطة — فتفقد كل فحوص computeSustainedPm10Status
+// الحقيقية (هل مصدر السلسلة device فعلاً؟ هل آخر قراءة حديثة أم الجهاز
+// متوقف؟)، وقد تقارن رقم دقائق محسوباً من سلسلة قراءات مصدرها مختلف عن
+// pm10UgM3 نفسه (قراءات جهاز على مستوى المشروع تُدمَج لأي نشاط، راجع
+// fetchPm10SustainedStatus). الإصلاح: القرار يُحسب مرة واحدة فقط في
+// computeSustainedPm10Status (حيث كل الأدلة متوفرة معاً) ويُمرَّر هنا جاهزاً
+// كـconfirmedViolation340/suspended250For30Min — لا إعادة اشتقاق من أرقام
+// خام هنا إطلاقاً.
 export function pm10ThresholdRule(
   pm10UgM3: number | null,
-  sustainedMinutesAbove340?: number,
-  sustainedMinutesAbove250?: number,
-  // إعفاء محطة الخلط المغلقة بكفاءة فلتر PM10 ≥99% — طلب صريح من المستخدم:
-  // كل قواعد PM10 (الاحتراز، التحذير، التنبيه الاستباقي، التعليق/الإيقاف
-  // المعلَّق والمؤكَّد) تُستثنى بالكامل لهذا النشاط تحديداً، بنفس شرط بوابة
-  // الرياح >25 الحالية (isEnclosedExemptFromHighWind في engine.ts) — مغلقة
-  // فعلياً وكفاءة فلترة كافية معاً، لا أحدهما فقط. راجع computeBatchingPm10Exempt
-  // في engine.ts لمصدر هذه القيمة الموحَّد.
-  isPm10ExemptEnclosedBatching: boolean = false
+  // الحالتان الجاهزتان من computeSustainedPm10Status (عبر DustComplianceContext.
+  // pm10ConfirmedViolation340/pm10Suspended250For30Min) — undefined يعني "لا
+  // بيانات استمرار متاحة"، فيُعامَل كـfalse (فشل آمن: يبقى القرار معلَّقاً لا
+  // مؤكَّداً بلا دليل).
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
+  // للمرجع"): كان هذا التوقيع يقبل معامل isPm10ExemptEnclosedBatching يُعفي
+  // محطة خلط (صوامع مغلقة + فلتر ≥99%) من قواعد PM10 كلها (احتراز/تحذير/
+  // تنبيه استباقي/تعليق 30 دقيقة/مخالفة مؤكدة). لكن نسبة الـ99% نفسها
+  // (BATCHING_PM10_FILTER_MIN_PERCENT أعلاه) موثّقة صراحة كـ"الحد المعتمد
+  // للاستمرار أثناء إيقاف الرياح فوق 25 كم/س" — أي القسم الرابع/السادس من
+  // "الاستخراج التنظيمي من المرفق" يُعفي محطة الخلط المغلقة والمفلترة من
+  // بوابة الرياح >25 تحديداً، لا من عتبات PM10 المستقلة (250/340) التي هي
+  // قياس تركيز فعلي في الهواء بصرف النظر عن سرعة الرياح أو حالة الصوامع.
+  // إعفاء PM10 كلياً كان توسيعاً غير موثَّق للنص التنظيمي، فحُذف بالكامل —
+  // الإعفاء يبقى مقصوراً على بوابة الرياح (isEnclosedExemptFromHighWind في
+  // engine.ts) كما كان مصدره الأصلي دائماً.
+  confirmedViolation340?: boolean,
+  suspended250For30Min?: boolean
 ): DustRuleHit[] {
-  if (isPm10ExemptEnclosedBatching) return [];
   if (pm10UgM3 === null || pm10UgM3 === undefined) return [];
 
   const hits: DustRuleHit[] = [];
 
-  if (pm10UgM3 >= PM10_VIOLATION_STOP_UG_M3) {
-    const isConfirmed = (sustainedMinutesAbove340 ?? 0) >= PM10_VIOLATION_CONFIRM_MINUTES;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود): كانت `>=` تُدرج القراءة 340 بالضبط
+  // ضمن "مخالفة" — لكن النص التنظيمي يقول "تجاوز 340" (exceeds)، أي `>`
+  // صراحة لا `>=`. قراءة 340.000 بالضبط يجب أن تبقى "تحذير/تنبيه استباقي"
+  // لا "مخالفة"، حتى تتجاوز الحد فعلياً.
+  if (pm10UgM3 > PM10_VIOLATION_STOP_UG_M3) {
+    const isConfirmed = confirmedViolation340 === true;
     if (isConfirmed) {
       hits.push(
         ruleHit(
@@ -323,7 +395,9 @@ export function pm10ThresholdRule(
   // RCRC-PM10-30M-SUSPENSION-012: استمرار ≥250 لمدة 30 دقيقة متواصلة يُفعِّل
   // تعليق النشاط — منفصلة عن الشرط أعلاه (قد يتحقق الاثنان معاً لو القراءة
   // ≥340 ومستمرة لأكثر من 30 دقيقة أيضاً؛ decisionFromRules يختار الأشد).
-  if (pm10UgM3 >= PM10_WARNING_UG_M3 && (sustainedMinutesAbove250 ?? 0) >= PM10_SUSPENSION_MINUTES) {
+  // نفس مبدأ confirmedViolation340 أعلاه: القرار جاهز من computeSustainedPm10Status،
+  // لا يُعاد اشتقاقه من مقارنة الدقائق محلياً.
+  if (pm10UgM3 >= PM10_WARNING_UG_M3 && suspended250For30Min === true) {
     hits.push(
       ruleHit(
         'RCRC-PM10-30M-SUSPENSION-012',
@@ -546,9 +620,47 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
     );
   }
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة 200م لمحطة الخلط غير
+  // منفذة"): المرجع التنظيمي (القسم 3.5، تخزين المواد) يمنع إنشاء محطات
+  // خلط أو تخزين مواد ضمن 200م من المدارس/المستشفيات/المساجد/المناطق
+  // السكنية — نفس الحد المستخدم فعلاً لأقرب مستقبِل حساس للكسارة
+  // (CRUSHER_GENERAL_RECEPTOR_DISTANCE_M أعلاه). الإحداثيات والمسافة
+  // المحسوبة تلقائياً (batchingDistanceToNearestReceptorAutoM، عبر
+  // adapters.ts + geo.ts) كانتا تُجمَعان وتُمرَّران بالكامل حتى
+  // DustActivityComplianceProfile، لكن لا قاعدة هنا كانت تستهلكهما —
+  // فمحطة خلط على بُعد أمتار من مدرسة كانت تمر بلا أي مخالفة مسافة إطلاقاً.
+  //
+  // null (لا Infinity) يعني تحديداً "لم تُدخَل إحداثيات محطة الخلط على
+  // الخريطة بعد" (راجع nearestReceptorDistancesM في geo.ts: lat/lng غائبين
+  // → null؛ إحداثيات موجودة بلا أي مستقبِل حساس مسجَّل قريب → Infinity) —
+  // لا يوجد حقل مسافة يدوي احتياطي لمحطة الخلط (بخلاف الكسارة
+  // crusherDistanceToReceptorM)، فـFIELD_VERIFICATION_REQUIRED هنا يمنع
+  // فقط قرار ALLOW نظيف بلا أي إثبات موقع، بدل تمرير القاعدة بصمت.
+  const batchingDistance = activity.measurements.batchingDistanceToNearestReceptorAutoM;
+  if (batchingDistance === null) {
+    hits.push(
+      ruleHit(
+        'BATCHING-DISTANCE-MISSING',
+        'FIELD_VERIFICATION_REQUIRED',
+        'تعذر إثبات مسافة محطة الخلط عن أقرب مستقبل حساس (لا إحداثيات مُدخلة لموقع المحطة)',
+        'حدّد موقع محطة الخلط على الخريطة للتحقق التلقائي من مسافتها عن أقرب مستقبِل حساس'
+      )
+    );
+  } else if (batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
+    hits.push(
+      ruleHit(
+        'BATCHING-DISTANCE-200',
+        'MANDATORY_STOP',
+        `مسافة محطة الخلط عن أقرب مستقبل حساس (محسوبة تلقائياً: ${batchingDistance} م) أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`,
+        `أوقف تشغيل محطة الخلط أو انقلها لمسافة لا تقل عن ${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)`
+      )
+    );
+  }
+
   // بقية ضوابط محطة الخلط (صيانة الفلاتر، فحص موانع التسرب، حظر الكنس
   // الجاف/الهواء المضغوط، رطوبة النفايات) تحوّلت إلى تنبيهات نصية عامة —
-  // حُذف تأثيرها من القرار هنا. الحقول الخمسة أعلاه تبقى مدخلات حقيقية.
+  // حُذف تأثيرها من القرار هنا. الحقول الخمسة السابقة + مسافة المستقبِل
+  // الحساس أعلاه تبقى مدخلات حقيقية.
 
   return hits;
 }

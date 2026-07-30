@@ -25,7 +25,6 @@ import {
   AlertTriangle,
   Scale,
   ShieldQuestion,
-  Trash2,
 } from 'lucide-react';
 
 // ============================================================
@@ -36,7 +35,7 @@ type AlertState = 'NEW' | 'REVIEWED' | 'ACTION_TAKEN' | 'CLOSED';
 type AlertKind =
   | 'BEFORE_2H' | 'BEFORE_1H' | 'BEFORE_START'
   | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH'
-  | 'NO_DECISION_YET' | 'PM10_APPROACHING_LIMIT'
+  | 'NO_DECISION_YET' | 'PM10_APPROACHING_LIMIT' | 'FORECAST_WARNING'
   | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'COMPLIANCE_ADVISORY';
 type Severity = 'CRITICAL' | 'WARNING' | 'INFO';
 
@@ -73,6 +72,7 @@ const alertKindIcon: Record<AlertKind, React.ElementType> = {
   COMPLIANCE_ADVISORY: AlertTriangle,
   NO_DECISION_YET: AlertOctagon,
   PM10_APPROACHING_LIMIT: AlertTriangle,
+  FORECAST_WARNING: Clock,
 };
 
 const alertKindLabel: Record<AlertKind, string> = {
@@ -87,6 +87,7 @@ const alertKindLabel: Record<AlertKind, string> = {
   COMPLIANCE_ADVISORY: 'تنبيه استباقي (امتثال الغبار)',
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
+  FORECAST_WARNING: 'تحذير توقّعي (ساعة قادمة ضمن النافذة)',
 };
 
 interface AlertItem {
@@ -110,7 +111,7 @@ interface AlertItem {
 // ============================================================
 function getSeverity(kind: AlertKind): Severity {
   if (['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(kind)) return 'CRITICAL';
-  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'COMPLIANCE_RESTRICTION', 'COMPLIANCE_ADVISORY'].includes(kind)) return 'WARNING';
+  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'FORECAST_WARNING', 'COMPLIANCE_RESTRICTION', 'COMPLIANCE_ADVISORY'].includes(kind)) return 'WARNING';
   return 'INFO';
 }
 
@@ -131,6 +132,8 @@ function getFallbackRecommendedAction(kind: AlertKind): string {
       return 'النشاط قيد التنفيذ ولم يُسجَّل له أي قرار بعد — راجعه في لوحة التحكم واتّخذ القرار المناسب (اعتماد/تقييد/تأجيل).';
     case 'PM10_APPROACHING_LIMIT':
       return 'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة.';
+    case 'FORECAST_WARNING':
+      return 'توقّع طقس/غبار يشير لخطورة مرتفعة في ساعة قادمة ضمن نافذة تنفيذ النشاط — راجع الجدول وجهّز إجراءً وقائياً مسبقاً قبل وصول تلك الساعة.';
     default:
       return 'راجع خطة النشاط والتأكد من تجهيزات السلامة قبل البدء أو الاستمرار.';
   }
@@ -239,21 +242,6 @@ export default function AlertsPage() {
 
   const toggleExpand = (id: string) => {
     setExpandedAlertId(prev => prev === id ? null : id);
-  };
-
-  const deleteAlert = async (alertId: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (!confirm('هل أنت متأكد من حذف هذا التنبيه نهائياً؟')) return;
-
-    const previous = alertsData;
-    setAlertsData(prev => prev.filter(a => a.id !== alertId));
-    setExpandedAlertId(prev => (prev === alertId ? null : prev));
-    try {
-      await apiClient.delete(`/alerts/${alertId}`);
-    } catch (error) {
-      console.error('Error deleting alert:', error);
-      setAlertsData(previous);
-    }
   };
 
   if (isLoading) {
@@ -429,13 +417,6 @@ export default function AlertsPage() {
                         <span className={`px-3 py-1.5 rounded-full text-[11px] font-black border ${sMeta.bg} ${sMeta.text} ${sMeta.border}`}>
                           {stateLabel[alert.state]}
                         </span>
-                        <button
-                          onClick={(e) => deleteAlert(alert.id, e)}
-                          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
-                          title="حذف التنبيه"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
                         <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-400 transition-colors">
                           {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
                         </button>

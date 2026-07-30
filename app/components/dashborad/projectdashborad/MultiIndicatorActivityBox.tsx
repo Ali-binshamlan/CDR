@@ -207,15 +207,20 @@ export default function MultiIndicatorActivityBox({
 
     let statusLabel: string;
     let statusColor: string;
-    if (mandatoryStop) {
+    // نشاط منتهٍ فعلياً (status==='past') يجب أن يعرض "انتهى منذ..." دائماً
+    // بصرف النظر عن mandatoryStop — تلك حالة إيقاف حية مبنية على طقس هذه
+    // اللحظة، لا تنطبق على نشاط لم يعد قائماً أصلاً. يجب فحص status==='past'
+    // قبل mandatoryStop، وإلا يظهر "إيقاف إلزامي نظامي" بجانب الساعة لنشاط
+    // منتهى من دقائق/ساعات رغم أن القرار الموحد أسفله يعرض "انتهى النشاط".
+    if (status === 'past') {
+      statusLabel = `انتهى منذ ${formatRelativeAr(nowTs - endTs)}`;
+      statusColor = 'text-slate-400';
+    } else if (mandatoryStop) {
       statusLabel = '● إيقاف إلزامي نظامي';
       statusColor = 'text-red-600';
     } else if (status === 'ongoing') {
       statusLabel = '● جارٍ الآن';
       statusColor = 'text-emerald-600';
-    } else if (status === 'past') {
-      statusLabel = `انتهى منذ ${formatRelativeAr(nowTs - endTs)}`;
-      statusColor = 'text-slate-400';
     } else {
       statusLabel = `يبدأ خلال ${formatRelativeAr(startTs - nowTs)}`;
       statusColor = 'text-blue-600';
@@ -296,15 +301,19 @@ export default function MultiIndicatorActivityBox({
             )}
           </div>
 
-          {/* تعديل زمن النشاط وحذفه — كلاهما متاح دائماً بصرف النظر عن حالة النشاط */}
+          {/* تعديل زمن النشاط: مخفي لنشاط منتهٍ فعلياً (لا معنى لتعديل زمن
+              نافذة انقضت أصلاً) — الحذف يبقى متاحاً دائماً بصرف النظر عن
+              حالة النشاط. */}
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={openEdit}
-              className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors"
-            >
-              <Pencil className="w-3.5 h-3.5" /> تعديل
-            </button>
+            {scheduleInfo?.status !== 'past' && (
+              <button
+                type="button"
+                onClick={openEdit}
+                className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                <Pencil className="w-3.5 h-3.5" /> تعديل
+              </button>
+            )}
             <button
               type="button"
               disabled={isDeleting}
@@ -375,14 +384,33 @@ export default function MultiIndicatorActivityBox({
           </div>
         )}
 
-        {/* القرار الموحد - تصميم واضح وصارم */}
-        {driverSummary && (
+        {/* القرار الموحد - تصميم واضح وصارم
+            نشاط منتهٍ فعلياً (نافذته الزمنية انقضت، scheduleInfo.status
+            === 'past') لا يجوز أن يعرض قراراً حياً مبنياً على طقس/DVI هذه
+            اللحظة (قد يظهر "إيقاف إلزامي نظامي" بنقطة نابضة حمراء لنشاط
+            انتهى من دقائق ولا حاجة لأي إجراء بشأنه) — نعرض بدلاً عنه حالة
+            محايدة واضحة "انتهى النشاط" بلا أي قرار تشغيلي أو نبض تنبيهي. */}
+        {driverSummary && scheduleInfo?.status === 'past' && (
+          <div className="rounded-xl border p-5 bg-slate-50 border-slate-200">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-2 h-2 rounded-full shrink-0 bg-slate-400" />
+              <span className="text-[11px] font-black uppercase tracking-wide opacity-80 text-slate-500">القرار الموحد للنشاط</span>
+            </div>
+
+            <p className="text-xl font-black mb-1 text-slate-600">انتهى النشاط</p>
+            <p className="text-[12px] font-bold text-slate-500">
+              انقضت نافذة تنفيذ هذا النشاط ({scheduleInfo.statusLabel}) — لا يوجد قرار تشغيلي حالي بشأنه.
+            </p>
+          </div>
+        )}
+
+        {driverSummary && scheduleInfo?.status !== 'past' && (
           <div className={`rounded-xl border p-5 ${bannerStyle.bg} ${bannerStyle.border}`}>
             <div className="flex items-center gap-2 mb-1">
               <span className={`w-2 h-2 rounded-full shrink-0 ${bannerStyle.dot} ${mandatoryStop ? 'animate-pulse' : ''}`} />
               <span className={`text-[11px] font-black uppercase tracking-wide opacity-80 ${bannerStyle.text}`}>القرار الموحد للنشاط</span>
             </div>
-            
+
             <p className={`text-xl font-black mb-4 ${bannerStyle.text}`}>
               {mandatoryStop ? 'إيقاف إلزامي نظامي' : driverSummary.decisionLabel}
             </p>

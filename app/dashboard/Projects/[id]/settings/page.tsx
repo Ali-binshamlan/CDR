@@ -590,16 +590,20 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     }
   };
 
-  // 3. حذف المشروع عبر الـ API
+  // 3. أرشفة المشروع عبر الـ API — لم يعد حذفاً فعلياً (راجع تعليق DELETE
+  // في app/api/projects/[projectId]/route.ts): المشروع يُخفى من القوائم
+  // النشطة، لكن كل الأدلة المرتبطة (تنبيهات/قرارات/تقييمات) تبقى محفوظة
+  // بالكامل لأغراض التدقيق. نفس نقطة النهاية (DELETE /projects/:id)، فقط
+  // السلوك الفعلي خلفها تغيّر.
   const handleDelete = async () => {
     setLoading(true);
     try {
       await apiClient.delete(`/projects/${projectId}`);
-      toast.success('تم حذف المشروع بنجاح');
+      toast.success('تمت أرشفة المشروع بنجاح');
       router.push('/dashboard/Projects');
     } catch (error: any) {
-      const message = error?.response?.data?.error || error?.message || 'فشل الحذف من الخادم';
-      toast.error(`فشل الحذف: ${message}`);
+      const message = error?.response?.data?.error || error?.message || 'فشل الأرشفة من الخادم';
+      toast.error(`فشل الأرشفة: ${message}`);
       setLoading(false);
     }
   };
@@ -1148,17 +1152,17 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
 
          
 
-          {/* منطقة الخطر - الحذف */}
+          {/* منطقة الخطر - الأرشفة (لم تعد حذفاً فعلياً، راجع handleDelete أعلاه) */}
           <div className="mt-8 pt-6 border-t border-red-100">
             <h2 className="text-sm font-bold text-red-600 mb-2 flex items-center gap-2">
               <AlertTriangle className="w-4 h-4" /> منطقة الخطر
             </h2>
             {showDeleteConfirm ? (
               <div className="bg-red-50 p-4 rounded-xl border border-red-200">
-                <p className="text-sm font-bold text-red-800 mb-3">هل أنت متأكد من رغبتك في حذف هذا المشروع نهائياً؟ (لا يمكن التراجع)</p>
+                <p className="text-sm font-bold text-red-800 mb-3">هل أنت متأكد من رغبتك في أرشفة هذا المشروع؟ سيختفي من قوائمك النشطة، لكن كل التنبيهات والقرارات والتقييمات المرتبطة به تبقى محفوظة لأغراض التدقيق.</p>
                 <div className="flex gap-3">
                   <button onClick={handleDelete} disabled={loading} className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all">
-                    نعم، احذف المشروع
+                    نعم، أرشف المشروع
                   </button>
                   <button onClick={() => setShowDeleteConfirm(false)} disabled={loading} className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-4 py-2 rounded-lg text-sm font-bold transition-all">
                     إلغاء
@@ -1170,7 +1174,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                 onClick={() => setShowDeleteConfirm(true)}
                 className="bg-white border border-red-200 hover:bg-red-50 text-red-600 font-bold py-2.5 px-4 rounded-xl transition-all flex items-center justify-center gap-2 text-sm w-full md:w-auto"
               >
-                <Trash2 className="w-4 h-4" /> حذف المشروع بالكامل
+                <Trash2 className="w-4 h-4" /> أرشفة المشروع
               </button>
             )}
           </div>

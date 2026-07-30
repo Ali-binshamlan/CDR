@@ -11,25 +11,31 @@ export async function GET(request: NextRequest) {
   if ('error' in auth) return auth.error;
   const userId = auth.userId;
 
+  // archived_at is null: مشاريع مؤرشفة (راجع DELETE في projects/[projectId]/
+  // route.ts) لا تظهر في قائمة "مشاريعي" النشطة — نفس مبدأ عدم الحذف
+  // الفعلي، فقط الإخفاء عن القوائم اليومية.
   const { data: dbProjects, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('*')
     .eq('user_id', userId)
+    .is('archived_at', null)
     .order('created_at', { ascending: false });
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/projects-list projects fetch failed') }, { status: 500 });
 
   const { data: alerts, error: alertsError } = await supabaseAdmin
     .from('alerts')
-    .select('*, projects!inner(user_id)')
+    .select('*, projects!inner(user_id, archived_at)')
     .neq('state', 'CLOSED')
     .eq('projects.user_id', userId)
+    .is('projects.archived_at', null)
     .order('created_at', { ascending: false });
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/projects-list alerts fetch failed') }, { status: 500 });
 
   const { data: dustActivities, error: dustError } = await supabaseAdmin
     .from('project_dust_profiles')
-    .select('id, project_id, projects!inner(user_id)')
-    .eq('projects.user_id', userId);
+    .select('id, project_id, projects!inner(user_id, archived_at)')
+    .eq('projects.user_id', userId)
+    .is('projects.archived_at', null);
   if (dustError) return NextResponse.json({ error: safeErrorResponse(dustError, 'dashboard/projects-list dust fetch failed') }, { status: 500 });
 
   return NextResponse.json({

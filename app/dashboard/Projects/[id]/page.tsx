@@ -289,6 +289,7 @@ export default function ProjectDetailsPage({
                               durationHours={r.windowEval?.durationHours}
                               projectId={id}
                               activityId={r.activityId}
+                              activityGroupId={r.activityGroupId}
                               projectName={project.name}
                               hideSchedule
                               onCountdownElapsed={handleCountdownElapsed}

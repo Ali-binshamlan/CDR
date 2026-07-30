@@ -12,9 +12,20 @@ export async function GET(request: NextRequest) {
 
   const { data: profiles, error: profilesError } = await supabaseAdmin
     .from('profiles')
-    .select('id, company_name, username, phone_number, role, is_super_admin, created_at')
+    .select('id, company_name, username, phone_number, role, created_at')
     .order('created_at', { ascending: false });
   if (profilesError) return NextResponse.json({ error: safeErrorResponse(profilesError, 'admin/users profiles fetch failed') }, { status: 500 });
+
+  // is_super_admin منفصل تماماً عن profiles الآن (user_authorizations، راجع
+  // apiAuth.ts) — نداء واحد إضافي بدل JOIN عبر PostgREST بين جدولين لا FK
+  // مباشرة بينهما هنا (كلاهما يشير لـ auth.users فقط).
+  const { data: authzRows, error: authzError } = await supabaseAdmin
+    .from('user_authorizations')
+    .select('user_id, is_super_admin');
+  if (authzError) return NextResponse.json({ error: safeErrorResponse(authzError, 'admin/users authorizations fetch failed') }, { status: 500 });
+  const isSuperAdminByUserId = new Map<string, boolean>(
+    (authzRows || []).map((a: any) => [a.user_id, a.is_super_admin])
+  );
 
   const emailByUserId = new Map<string, string>();
   let page = 1;
@@ -29,7 +40,12 @@ export async function GET(request: NextRequest) {
     page++;
   }
 
-  const { data: projectRows, error: projectsError } = await supabaseAdmin.from('projects').select('user_id');
+  // archived_at is null: عدد المشاريع المعروض لكل مستخدم يعكس مشاريعه
+  // النشطة فقط — إدراج المؤرشفة كان سيضخّم العدد بلا معنى تشغيلي.
+  const { data: projectRows, error: projectsError } = await supabaseAdmin
+    .from('projects')
+    .select('user_id')
+    .is('archived_at', null);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'admin/users projects fetch failed') }, { status: 500 });
 
   const projectCountByUserId = new Map<string, number>();
@@ -43,7 +59,7 @@ export async function GET(request: NextRequest) {
     companyName: p.company_name,
     phoneNumber: p.phone_number,
     role: p.role,
-    isSuperAdmin: p.is_super_admin,
+    isSuperAdmin: isSuperAdminByUserId.get(p.id) ?? false,
     createdAt: p.created_at,
     email: emailByUserId.get(p.id) || null,
     projectCount: projectCountByUserId.get(p.id) || 0,

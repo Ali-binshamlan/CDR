@@ -61,7 +61,7 @@ export type DviDecisionCategory =
 export interface DustWeatherSample {
   visibilityM: number | null;
   weatherCode: number | null;
-  weatherSymbol: 'SANDSTORM' | 'BLOWING_DUST' | 'FOG' | 'RAIN' | 'CLEAR' | 'UNKNOWN';
+  weatherSymbol: 'SANDSTORM' | 'BLOWING_DUST' | 'FOG' | 'RAIN' | 'THUNDERSTORM' | 'CLEAR' | 'UNKNOWN';
   windSpeedKmh: number | null;
   windGustKmh: number | null;
   windDirectionDeg: number | null;

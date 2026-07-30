@@ -1,0 +1,64 @@
+-- =====================================================================
+-- DCR — 202607290003_sensor_events.sql
+-- =====================================================================
+-- ⚠ مسودة غير مُختبرة على بيئة Supabase فعلية — راجع تحذير
+-- 202607290001_baseline_final.sql. يُشغَّل بعد 202607290002 مباشرة.
+--
+-- ملاحظة تسمية: الاسم "sensor_events" مأخوذ حرفياً من التسمية المقترحة —
+-- لكن بعد دمج كل جداول أجهزة الرصد/سجل PM10/التوقعات (project_devices،
+-- pm10_readings_history، weather_forecasts) بحالتها النهائية الصحيحة مباشرة
+-- في 202607290001_baseline_final.sql (بدل بنائها هنا تدريجياً)، لم يتبقَّ
+-- DDL جديد لجداول "أحداث المستشعر" يستحق هذا الاسم فعلياً. المحتوى الوحيد
+-- المتبقي غير المصنَّف بالملفين 1/2/4 هو ترحيل بيانات لمرة واحدة (data
+-- backfill)، لا تعريف مخطط (schema) جديد — أبقيناه هنا فقط لأن الترحيل
+-- الأصلي (supabase-backfill-monitoring-stations-to-devices-migration.sql)
+-- يخص أعمدة/جدول أجهزة الرصد تحديداً (أقرب صلة ممكنة لاسم "sensor_events"
+-- من بين الملفات الأربعة).
+--
+-- =====================================================================
+-- ترحيل بيانات لمرة واحدة: projects.monitoring_station_locations (jsonb
+-- قديم) → صفوف حقيقية في project_devices
+-- =====================================================================
+-- مصدر: supabase-backfill-monitoring-stations-to-devices-migration.sql.
+-- ⚠ هذا الملف الأصلي كان يعتمد على وجود عمود projects.monitoring_station_
+-- locations فعلياً وقت التشغيل، ثم حذفه لاحقاً بملف منفصل
+-- (supabase-drop-monitoring-station-columns-migration.sql) بعد التحقق
+-- اليدوي من نجاح الترحيل. بما أن 202607290001_baseline_final.sql يبني
+-- الحالة النهائية الصحيحة مباشرة (بلا هذا العمود على projects إطلاقاً —
+-- استُبدل بالكامل بـproject_devices)، فهذا البلوك **لن يُنفَّذ شيئاً على
+-- قاعدة جديدة مبنية من هذا المسار** (WHERE يطابق صفراً من الصفوف لعدم وجود
+-- العمود أصلاً)، ويبقى هنا فقط للتوثيق التاريخي/لتطبيقه يدوياً على قاعدة
+-- قديمة فعلية لا تزال تحمل بيانات monitoring_station_locations حقيقية قبل
+-- الانتقال لمسار الملفات الأربعة هذا. لا تُشغِّل هذا البلوك على قاعدة لم
+-- يعد فيها العمود موجوداً أصلاً (سيفشل بخطأ "column does not exist").
+--
+-- إن كنت تُرحِّل قاعدة إنتاج فعلية لا تزال تحمل هذا العمود: علّق هذا
+-- البلوك (--) قبل تشغيل 202607290001 (الذي لا يُنشئ العمود أصلاً)، أو
+-- شغّله يدوياً بشكل منفصل على تلك القاعدة قبل الانتقال للمسار الجديد، ثم
+-- تحقق يدوياً من النتائج:
+--   select project_id, count(*) from public.project_devices
+--   where api_key_prefix = 'legacy__' group by project_id;
+--
+-- create extension if not exists pgcrypto;
+--
+-- insert into public.project_devices (
+--   project_id, name, lat, lng,
+--   api_key_hash, api_key_prefix,
+--   is_active, created_at, revoked_at
+-- )
+-- select
+--   p.id,
+--   coalesce(nullif(trim(station->>'label'), ''), 'محطة مستوردة (بيانات قديمة)'),
+--   (station->>'lat')::numeric,
+--   (station->>'lng')::numeric,
+--   encode(digest('legacy-backfill:' || gen_random_uuid()::text, 'sha256'), 'hex'),
+--   'legacy__',
+--   false,
+--   now(),
+--   now()
+-- from public.projects p,
+--      jsonb_array_elements(p.monitoring_station_locations) as station
+-- where jsonb_typeof(p.monitoring_station_locations) = 'array'
+--   and jsonb_array_length(p.monitoring_station_locations) > 0
+--   and station->>'lat' is not null
+--   and station->>'lng' is not null;

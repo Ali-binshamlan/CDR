@@ -5,6 +5,7 @@ import {
   computeDustComplianceResults,
   persistDustEvaluations,
   persistDustComplianceEvaluations,
+  persistFinalDecisions,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
@@ -66,9 +67,22 @@ export async function POST(
 
     await persistDustEvaluations(supabaseAdmin, projectId, dustResults, 'user_refresh');
 
-    const { data: sensitiveReceptorRows } = await supabaseAdmin
+    // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "فشل استعلام المستقبلات
+    // الحساسة يتحول إلى مصفوفة فارغة ثم Infinity؛ قد يظهر الموقع آمناً عند
+    // تعطل البيانات"): هذا المسار هو نقطة الكتابة الفعلية لقرارات الامتثال
+    // (dust_compliance_evaluations/final_decisions) — فشل صامت هنا يعني
+    // تسجيل قرار "آمن" (مسافة Infinity) في سجل تدقيق دائم لموقع قد يكون
+    // فعلياً قريباً جداً من مستقبِل حساس. يوقف التقييم بالكامل الآن بدل
+    // المتابعة بأمان زائف.
+    const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
       .from('sensitive_receptors')
       .select('id, name, receptor_type, lat, lng');
+    if (sensitiveReceptorsError) {
+      return NextResponse.json(
+        { error: safeErrorResponse(sensitiveReceptorsError, 'sensitive_receptors fetch failed') },
+        { status: 500 }
+      );
+    }
     const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
 
     const dustComplianceResults = await computeDustComplianceResults(
@@ -76,11 +90,17 @@ export async function POST(
       project,
       dustResults,
       sensitiveReceptors,
-      supabaseAdmin
+      supabaseAdmin,
+      true // مسار الكتابة الصريح الوحيد — يُسجِّل عينة PM10 جديدة في السجل التاريخي.
     );
     if (dustComplianceResults.length > 0) {
       await persistDustComplianceEvaluations(supabaseAdmin, projectId, dustComplianceResults, 'user_refresh');
     }
+
+    // نقطة الكتابة الوحيدة لـfinal_decisions — راجع تعليق persistFinalDecisions
+    // في dustEvaluation.ts: يحسم القرار النهائي (decideFinal) مرة واحدة هنا
+    // فقط، بدل إعادة حسابه بمعزل في كل مسار عرض (البانر/الخريطة/التنبيهات).
+    await persistFinalDecisions(supabaseAdmin, projectId, dustResults, dustComplianceResults);
 
     return NextResponse.json({ success: true, persisted: dustResults.length });
   } catch (error) {

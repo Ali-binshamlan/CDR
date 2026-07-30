@@ -57,18 +57,28 @@ export async function PATCH(request: NextRequest) {
   return NextResponse.json({ success: true });
 }
 
-// حذف نشاط غبار واحد (صف project_dust_profiles) وكل ما يرتبط به —
+// حذف نشاط غبار واحد (صف project_dust_profiles) —
 // يُستدعى من MultiIndicatorActivityBox.tsx (handleDelete)، جسم الطلب:
 // { targets: [{ projectId, activityId, source: 'dust' }, ...] } — دايماً
 // عنصر واحد فعلياً (مؤشر الغبار وحده في DCR)، لكن الشكل مصفوفة لمرونة
 // مستقبلية (توافقاً مع UnifiedDecisionTarget[] في MultiIndicatorActivityBox).
 //
-// ترتيب الحذف يطابق DELETE /api/projects/[projectId] بالضبط (نفس القيود:
-// current_dust_decisions/current_dust_compliance_decisions تشير عبر
-// latest_evaluation_id لـ dust_evaluations/dust_compliance_evaluations
-// بلا cascade، فيجب حذفها أولاً) — لكن مفلترة هنا بـ activity_group_id
-// (dust-{activityId}, أو activity_group_id المخصص إن وُجد) بدل project_id
-// كاملاً، حتى لا تُحذف بقية أنشطة نفس المشروع.
+// خطأ مكتشَف ومُصلَح: بعد تطبيق append-only على جداول الأدلة (dust_evaluations/
+// dust_compliance_evaluations/alerts/decision_records — راجع
+// supabase-append-only-evidence-and-alert-events-migration.sql)، كان هذا
+// المسار لا يزال يحاول حذف صفوف من تلك الجداول الأربعة صراحةً — فشل كل
+// حذف نشاط بخطأ 500 (trigger forbid_evidence_mutation يرفض DELETE حتى من
+// service_role). لم يُعدَّل هذا المسار في حينها لأن التركيز كان على DELETE
+// /api/projects/[projectId] فقط، ونُسي هذا المسار المنفصل (حذف نشاط فردي
+// لا مشروع كامل).
+//
+// الإصلاح: التوقف نهائياً عن حذف جداول الأدلة الأربعة — تبقى محفوظة
+// كاملة حتى بعد حذف النشاط، غير مربوطة بنشاط مرئي بعد الآن لكن قابلة
+// للتدقيق دائماً (نفس مبدأ أرشفة المشروع، بلا حاجة لعمود archived_at على
+// project_dust_profiles نفسه لأنه ليس جدول أدلة — حذفه الفعلي آمن).
+// current_dust_decisions/current_dust_compliance_decisions ليسا جدولي
+// أدلة (مجرد "آخر قرار حالي" مرجعي يُعاد بناؤه من دورة التقييم القادمة)،
+// فحذفهما يبقى كما هو.
 export async function DELETE(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -119,17 +129,13 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: safeErrorResponse(currentComplianceError, `فشل حذف current_dust_compliance_decisions للنشاط ${activityId}`) }, { status: 500 });
     }
 
-    // dust_evaluations وdust_compliance_evaluations لهما on delete cascade
-    // من project_dust_profiles، لكن نحذفهما صراحة قبل الصف الأب لضمان عدم
-    // بقاء أي صف يتيم لو تغيّر تعريف القيد لاحقاً — بلا اعتماد صامت على cascade.
-    const childTables = ['dust_evaluations', 'dust_compliance_evaluations', 'alerts', 'decision_records'];
-    for (const table of childTables) {
-      const column = table === 'dust_evaluations' || table === 'dust_compliance_evaluations' ? 'dust_profile_id' : 'activity_id';
-      const { error: childError } = await supabaseAdmin.from(table).delete().eq(column, activityId);
-      if (childError && childError.code !== '42703' && childError.code !== '42P01') {
-        return NextResponse.json({ error: safeErrorResponse(childError, `فشل حذف صفوف ${table} للنشاط ${activityId} (${childError.code})`) }, { status: 500 });
-      }
-    }
+    // dust_evaluations/dust_compliance_evaluations/decision_records أصبحت
+    // append-only (trigger forbid_evidence_mutation يرفض أي DELETE عليها،
+    // راجع supabase-append-only-evidence-and-alert-events-migration.sql)،
+    // وalerts يبقى محفوظاً كأثر تدقيق أيضاً — فلا نحذف من أي منها هنا بعد
+    // الآن. dust_evaluations/dust_compliance_evaluations.dust_profile_id لها
+    // on delete set null (راجع supabase-fix-evidence-cascade-delete-migration.sql)
+    // فتُفصَل تلقائياً عن النشاط المحذوف دون أي حذف صريح مطلوب من هذا المسار.
 
     const { error: profileError } = await supabaseAdmin
       .from('project_dust_profiles')

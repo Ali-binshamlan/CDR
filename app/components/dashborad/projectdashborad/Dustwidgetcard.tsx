@@ -136,7 +136,7 @@ export const DUST_RULES_TRANSLATIONS: Record<string, string> = {
   'DVI-DUST-ACTIVITY-STOP-004': 'توصية بإيقاف الأعمال المثيرة للغبار بسبب التلوث العالي مع رياح نشطة',
   'DVI-WIND-LOOSE-MATERIAL-005': 'رياح نشطة مع وجود مواد سائبة مكشوفة تتطلب التغطية فوراً',
   'DVI-RECEPTOR-ESCALATION-006': 'تصعيد القيود بسبب الرياح التي تنقل الغبار نحو جوار حساس',
-  'DVI-NCM-DUST-WARNING-007': 'تحذير عاصفة رملية أو غبار كثيف متوقع',
+  'DVI-OPENMETEO-DUST-WARNING-007': 'تحذير عاصفة رملية أو غبار كثيف متوقع',
 };
 
 const getDecisionStyle = (decision: DviDecisionCategory, mandatoryStop: boolean) => {
@@ -391,6 +391,9 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
     
     setIsSaving(true);
     try {
+      // approved_by/created_at لا يُرسَلان من هنا — الخادم يشتق approved_by
+      // من هوية المستخدم المصادَق عليه فعلياً (raw عبر Authorization)، لا
+      // نص حر من العميل (راجع POST /api/decisions للسبب الكامل).
       await apiClient.post('/decisions', {
         insert: {
           project_id: projectId,
@@ -399,7 +402,6 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
           status: dbStatus,
           reason: `توصية مرقاب: ${result.decisionLabelAr} (${result.score} نقطة)`,
           required_action: result.requiredActions.join('، ') || 'لا توجد متطلبات إضافية',
-          approved_by: 'مستخدم النظام (مدير الموقع)',
           approval_note: isFutureActivity && dbStatus === 'postpone' ? 'تم تأجيل النشاط بناءً على التوقعات' : 'قرار ميداني مباشر',
           weather_snapshot: [
             { label: 'الرؤية', value: `${fmt2(result.visibilityKm)} كم` },
@@ -517,7 +519,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
             {aei && (
               <div className={`border rounded-xl px-3 py-2 text-center shrink-0 ${aeiStyle.bg} ${aeiStyle.border}`}>
                 <div className="text-[9px] font-bold text-slate-400 mb-0.5">مؤشر AEI المدمج</div>
-                <div className={`text-xs font-black ${aeiStyle.text}`}>{aei.score} · {aei.statusLabelAr}</div>
+                <div className={`text-xs font-black ${aeiStyle.text}`}>{aei.statusLabelAr}</div>
               </div>
             )}
           </div>
@@ -745,27 +747,16 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                     <h3 className={`font-black text-base ${aeiStyle.text}`}>
                       مؤشر التنفيذ المدمج (AEI): {aei.statusLabelAr}
                     </h3>
-                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-white/70 text-[#061B40]">
-                      التقييم الكلي = {aei.score}
-                    </span>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                     <div className="bg-white/70 rounded-lg p-2">
                       <div className="text-xs text-[#061B40]/60">النشاط</div>
                       <div className="font-bold text-[#061B40] truncate" title={activityLabel}>{activityLabel}</div>
                     </div>
                     <div className="bg-white/70 rounded-lg p-2">
-                      <div className="text-xs text-[#061B40]/60">درجة السلامة</div>
-                      <div className="font-bold text-[#061B40]">{aei.score}</div>
-                    </div>
-                    <div className="bg-white/70 rounded-lg p-2">
-                      <div className="text-xs text-[#061B40]/60">درجة الجودة</div>
-                      <div className="font-bold text-[#061B40]">{aei.qualityScore}</div>
-                    </div>
-                    <div className="bg-white/70 rounded-lg p-2">
-                      <div className="text-xs text-[#061B40]/60">التقييم الأولي</div>
-                      <div className="font-bold text-[#061B40]">{aei.baseScore}</div>
+                      <div className="text-xs text-[#061B40]/60">الحالة</div>
+                      <div className="font-bold text-[#061B40]">{aei.statusLabelAr}</div>
                     </div>
                   </div>
 

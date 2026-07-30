@@ -43,6 +43,10 @@ export const ALERT_KIND_WEIGHT: Record<string, number> = {
   // WARNING-007 عند 300-339 قبل حد المخالفة 340) — بطلب صريح: تنبيه قبل
   // وقوع المخالفة الفعلية، لا بعدها فقط. نفس درجة PM10_APPROACHING_LIMIT.
   COMPLIANCE_ADVISORY: 2,
+  // تحذير توقّعي (ساعة قادمة ضمن نافذة النشاط لا حالة حيّة الآن) — أخطر من
+  // تذكير BEFORE_START البحت لكن أقل من أي حالة حيّة فعلية، فلا يجوز أن
+  // يرفع لون نقطة المشروع بالخريطة لدرجة "إيقاف/تأجيل" لخطر لم يقع بعد.
+  FORECAST_WARNING: 1,
   BEFORE_START: 1,
   BEFORE_1H: 0,
   BEFORE_2H: 0,
@@ -57,6 +61,7 @@ export function alertKindToDecision(kind: string): Decision {
     case 'COMPLIANCE_ADVISORY': return 'caution';
     case 'PM10_APPROACHING_LIMIT': return 'caution';
     case 'NO_DECISION_YET': return 'caution';
+    case 'FORECAST_WARNING': return 'caution';
     case 'BEFORE_START': return 'caution';
     default: return 'safe'; // BEFORE_1H / BEFORE_2H — تذكير بحت، لا يرفع حالة الخطر
   }
@@ -81,6 +86,7 @@ export const alertKindLabelAr: Record<string, string> = {
   COMPLIANCE_ADVISORY: 'تنبيه استباقي (امتثال الغبار)',
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
+  FORECAST_WARNING: 'تحذير توقّعي (ساعة قادمة ضمن النافذة)',
 };
 
 // يحوّل مستوى DVI الحي (DviLevel: GREEN..BLACK، محرك dust-engine) إلى نفس

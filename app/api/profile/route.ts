@@ -5,22 +5,44 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 
 // ملف المستخدم — الهوية تُشتق من التوكن (requireUserId)، فكل مستخدم يقرأ/
 // يعدّل ملفه فقط. أعمدة profiles الفعلية: id, company_name, username,
-// phone_number, role, is_super_admin. البريد يأتي من auth.users (وليس profiles).
+// phone_number, role. البريد يأتي من auth.users (وليس profiles).
+//
+// is_super_admin/account_role لم تعودا في profiles (نُقلتا لجدول
+// user_authorizations منفصل تماماً، ممنوع الوصول له من anon/authenticated
+// إطلاقاً — راجع supabase-add-user-authorizations-table-migration.sql
+// وتعليق verifyProjectOwnership في apiAuth.ts للسبب الأمني الكامل). شكل
+// استجابة GET هذه بقي كما هو تماماً (نفس المفتاحين ضمن data) حتى لا يحتاج
+// أي من صفحات الواجهة الثمانية التي تقرأ profileResp.data.is_super_admin/
+// account_role أي تعديل — فقط مصدر القراءة الخلفي تغيّر.
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles')
-    .select('company_name, username, phone_number, role, is_super_admin, account_role')
-    .eq('id', auth.userId)
-    .single();
+  const [{ data: profile }, { data: authz }] = await Promise.all([
+    supabaseAdmin
+      .from('profiles')
+      .select('company_name, username, phone_number, role')
+      .eq('id', auth.userId)
+      .single(),
+    supabaseAdmin
+      .from('user_authorizations')
+      .select('is_super_admin, account_role')
+      .eq('user_id', auth.userId)
+      .maybeSingle(),
+  ]);
 
   // البريد من نظام المصادقة (المصدر الوحيد الموثوق له)
   const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(auth.userId);
   const email = userRes?.user?.email ?? '';
 
-  return NextResponse.json({ data: { ...(profile ?? {}), email } });
+  return NextResponse.json({
+    data: {
+      ...(profile ?? {}),
+      is_super_admin: authz?.is_super_admin ?? false,
+      account_role: authz?.account_role ?? 'user',
+      email,
+    },
+  });
 }
 
 // حفظ تعديلات ملف المستخدم

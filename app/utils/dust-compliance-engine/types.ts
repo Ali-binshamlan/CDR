@@ -309,6 +309,19 @@ export interface DustRuleHit {
   // نفس الجملة مرتين في الواجهة (نفس المشكلة معروضة كأنها معلومتان مختلفتان).
   messageAr: string;
   actionAr: string;
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
+  // والقرار النهائي غير مكتمل"): قابلية التجاوز (canOverride في
+  // DustComplianceResult) كانت تُشتق في engine.ts من فئة القرار النهائي
+  // العامة (decisionCategory !== 'MANDATORY_STOP' && !== 'STOP_AFFECTED_ACTIVITY')،
+  // لا من القاعدة الفعلية التي بنت القرار — أي قاعدتين بنفس severity كانتا
+  // تُعامَلان معاملة واحدة حتماً حتى لو كانت إحداهما (فيزيائياً) غير قابلة
+  // للتجاوز إطلاقاً بينما الأخرى قابلة استثنائياً. الآن كل قاعدة تحمل
+  // قابليتها الخاصة صراحة — canOverride النهائي يُشتق من decidingRule.overridable
+  // تحديداً (راجع engine.ts)، لا من فئة القرار العامة. افتراضي true (نفس
+  // سلوك decisionCategory !== MANDATORY_STOP/STOP_AFFECTED_ACTIVITY السابق)
+  // لأي قاعدة لا تحدد الحقل صراحة — القواعد الأشد (MANDATORY_STOP) تضبطه
+  // false صراحة عبر ruleHit() في rulebook.ts.
+  overridable?: boolean;
 }
 
 export interface DustMonitoringObligation {
@@ -352,6 +365,18 @@ export interface DustComplianceResult {
   // MANDATORY_STOP بمجرد التقييم التالي.
   pendingConfirmation: boolean;
 
+  // كود القاعدة الفعلية التي بنت القرار النهائي (decidingRule.code في
+  // engine.ts) — مثال: 'GATE-WIND-ABOVE-25-004' أو 'MRQ-PM10-BLACK-PENDING-104'.
+  // يُخزَّن في current_dust_compliance_decisions.deciding_rule_code ويُقرأ لاحقاً
+  // كـ previousDecidingRuleCode أدناه، حتى نعرف *سبب* أي إيقاف سابق بدقة
+  // بدل استنتاجه خطأً من decisionCategory وحده (راجع previousDecidingRuleCode
+  // للسبب الكامل). null لو لم توجد أي قاعدة فائزة (decisionCategory=ALLOW
+  // بلا أي ruleHits).
+  decidingRuleCode: string | null;
+  // messageAr الخاص بنفس decidingRule أعلاه — يُخزَّن كـ stop_cause (نص عربي
+  // مختصر لسبب الإيقاف، للعرض/التدقيق المباشر بلا حاجة لترجمة الكود).
+  decidingRuleMessageAr: string | null;
+
   // استمرار PM10 الفعلي حتى لحظة هذا التقييم (من pm10SustainedMinutesAbove340/
   // 250 في DustComplianceContext، راجع computeSustainedPm10Status في
   // dustEvaluation.ts) — يُمرَّر هنا للعرض فقط، حتى تقدر الواجهة تبني عدّاد
@@ -360,14 +385,6 @@ export interface DustComplianceResult {
   // جهاز/قراءة مرتبطة، أو فشل الاستعلام) — الواجهة تُخفي العدّاد حينها.
   pm10SustainedMinutesAbove340?: number;
   pm10SustainedMinutesAbove250?: number;
-  // true فقط لمحطة خلط (BATCHING_PLANT) مستثناة بالكامل من كل قواعد PM10
-  // (احتراز/تحذير/تنبيه استباقي/تعليق 30 دقيقة/مخالفة مؤكدة معاً — راجع
-  // isPm10ExemptEnclosedBatching في engine.ts): صوامع مغلقة + فلتر PM10
-  // ≥99% معاً. خطأ مكتشَف ومُصلَح: عدّاد "متبقٍ حتى تعليق النشاط" في
-  // Compliancewidgetcard.tsx كان يظهر بصرف النظر عن هذا الاستثناء — يعرض
-  // تحذيراً بتعليق قادم لنشاط لن يُعلَّق أبداً فعلياً لأنه معفى من القاعدة
-  // نفسها من جذورها. الواجهة يجب أن تُخفي عدّادات PM10 كلها إن كان هذا true.
-  pm10RulesExempt: boolean;
 
   triggeredRules: DustRuleHit[];
   requiredActions: string[];
@@ -429,12 +446,30 @@ export interface DustComplianceContext {
   dviScore: number;
   dviDecision: DviDecisionCategory;
   dviMandatoryStop: boolean;
+  // true فقط عندما يكون سبب dviMandatoryStop الوحيد هو تجاوز PM10≥340
+  // اللحظي، بلا أي خطر فيزيائي فوري آخر (رؤية حرجة/رياح شديدة) مساهم —
+  // راجع dust-engine/engine.ts (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY)
+  // وGATE-DVI-002 في engine.ts للاستخدام الفعلي. اختياري (undefined =
+  // false توافقياً) حتى لا تنكسر استدعاءات context() القديمة في الاختبارات
+  // التي تبني dviMandatoryStop:true يدوياً بلا هذا الحقل.
+  dviMandatoryStopIsPm10Only?: boolean;
   // السبب النصي المحدَّد لتوقف DVI (مثال: "PM10 = 1806.8")، من
   // DviEvaluationResult.shortReason — يُستخدم في رسالة GATE-DVI-002 بدل نص
   // عام لا يذكر الرقم/السبب الفعلي. اختياري: null/undefined يبقيان الرسالة
   // العامة كما كانت (فشل آمن، لا كسر لأي مستهلك حالي للسياق).
   dviShortReason?: string | null;
   dviConfidenceScore: number;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي يستخدم
+  // رقمًا مشتقًا من الهبات"): كان هذا الحقل يحمل dviResult.effectiveWindKmh
+  // (= max(السرعة, 0.85×الهبة))، رقم مخاطر مشتق مصمَّم لدرجة DVI الفيزيائية
+  // الداخلية — لا سرعة الرياح الفعلية التي يعرّفها "بروتوكول الملحق أ"
+  // (classifyWind في rulebook.ts، عتبتا 15/25 كم/س). هبة عابرة واحدة كانت
+  // كافية لرفع هذا الرقم فوق 25 وتُصنَّف كأنها سرعة رياح مستدامة >25 كم/س،
+  // فتُفعِّل GATE-WIND-ABOVE-25-004 (إيقاف تنظيمي) استناداً لخطأ لحظي لا
+  // استمرار فعلي. الآن يحمل سرعة الرياح الخام فقط (merged.windSpeedKmh) —
+  // نفس الرقم الذي يعرّفه النص التنظيمي حرفياً بلا اشتقاق. راجع
+  // windGustKmh أدناه وwindGustSafetyRule في rulebook.ts للهبات تحديداً
+  // (قاعدة سلامة منفصلة، لا جزءاً من بروتوكول الملحق أ).
   windSpeedKmh: number | null;
   windGustKmh: number | null;
   windDirectionDeg: number | null;
@@ -479,6 +514,16 @@ export interface DustComplianceContext {
   // موقِفاً سابقاً (لتفعيل قيد الاستئناف أصلاً). null/undefined تعني "لا
   // قرار سابق"، فلا قيد يُطبَّق (سلوك المحرك بلا تغيير).
   previousDecisionCategory?: DustComplianceDecisionCategory | null;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "سبب الإيقاف السابق يُستنتج
+  // من فئة القرار فقط"): previousStopWasWindGate في engine.ts كان يفترض أن
+  // أي قرار سابق بفئة STOP_AFFECTED_ACTIVITY سببه بالضرورة بوابة الرياح
+  // (GATE-WIND-ABOVE-25-004) — خطأ، لأن عشرات القواعد الأخرى (PM10 معلَّق،
+  // تسرب صومعة، غسيل إطارات، ارتفاع تفريغ مواد...) تنتج نفس الفئة تماماً.
+  // previousDecidingRuleCode (من current_dust_compliance_decisions.deciding_rule_code)
+  // هو مصدر الحقيقة الدقيق: كود القاعدة الفعلية التي بنت القرار السابق، لا
+  // فئته العامة فقط. null/undefined = لا كود مسجَّل (صفوف قديمة قبل هذه
+  // الإضافة، أو لا قرار سابق) — فشل آمن: لا يُطبَّق أي قيد خاص ببوابة الرياح.
+  previousDecidingRuleCode?: string | null;
   // لا تُستخدم لحساب مدة الاستقرار — أُبقيت فقط لتوافق الاستدعاءات القديمة.
   // راجع previousPendingResumeSince أدناه للحقل الصحيح المستخدم فعلياً.
   previousDecisionUpdatedAt?: string | null;
@@ -498,6 +543,26 @@ export interface DustComplianceContext {
   // SUSPENSION-012 (تعليق بعد 30 دقيقة عند ≥250). 0/undefined يعني "لا
   // بيانات استمرار متاحة" — فشل آمن نحو معاملة القراءة كأنها لحظية فقط
   // (السلوك القديم قبل هذه الإضافة، بلا كسر توافقي).
+  //
+  // هذان الرقمان (بالدقائق) يبقيان للعرض/التوعية فقط (مثال: عدّاد "متبقٍ
+  // كذا" بالواجهة) — لا يجوز إعادة اشتقاق قرار "مؤكَّدة"/"معلَّقة" منهما في
+  // rulebook.ts. راجع confirmedViolation340/suspended250For30Min أدناه
+  // للقيمتين اللتين يجب أن يعتمد عليهما القرار الفعلي.
   pm10SustainedMinutesAbove340?: number;
   pm10SustainedMinutesAbove250?: number;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كانت pm10ThresholdRule بـrulebook.ts
+  // تستقبل فقط الرقمين أعلاه وتُعيد اشتقاق "مؤكَّدة"/"معلَّقة" بنفسها من
+  // مقارنة بسيطة (sustainedMinutesAbove340 > 2) — فيفقد القرار كل فحوص
+  // computeSustainedPm10Status الحقيقية (مصدر السلسلة device فعلاً؟ آخر
+  // قراءة حديثة أم متوقفة؟). أخطر من ذلك: القراءة الحالية المقارَنة بـ340
+  // (ctx.pm10UgM3) قد تكون من مصدر مختلف تماماً عن السلسلة المستخدَمة لحساب
+  // الدقائق (قراءات جهاز على مستوى المشروع تُدمَج لأي نشاط بلا activity_group_id
+  // خاص بها، راجع fetchPm10SustainedStatus)، فيُقارَن رقمان غير مرتبطين
+  // منطقياً ببعضهما. الإصلاح: القرار المؤكَّد/المعلَّق يُحسب مرة واحدة فقط في
+  // computeSustainedPm10Status (حيث كل الأدلة اللازمة متوفرة معاً)، ويُمرَّر
+  // هنا كحالة جاهزة — rulebook.ts يقرأ القرار، لا يعيد اشتقاقه.
+  // undefined = لا بيانات استمرار متاحة (نفس فشل آمن الحقلين أعلاه).
+  pm10ConfirmedViolation340?: boolean;
+  pm10Suspended250For30Min?: boolean;
 }

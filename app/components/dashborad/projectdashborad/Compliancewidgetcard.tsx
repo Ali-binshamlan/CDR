@@ -11,6 +11,7 @@ import {
 import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
 import { ACTIVITY_LABEL_AR } from '@/app/utils/dust-engine/tables';
+import ActivityReadingsCharts from './ActivityReadingsCharts';
 
 /** قرار امتثال ساعة واحدة ضمن ساعات دوام اليوم — نفس نمط DviHourlyEvaluation
  * في DustWidgetCard، لكن كل ساعة هنا هي DustComplianceResult كامل محسوب عبر
@@ -67,6 +68,10 @@ interface ComplianceWidgetCardProps {
   unitReceptors?: UnitReceptorGroup[];
   projectId?: string;
   activityId?: string;
+  /** معرّف مجموعة النشاط (activity_group_id) — يربط سجل قراءات الجهاز
+   * التاريخية (device_readings_history) بهذا النشاط تحديداً في
+   * ActivityReadingsCharts، بخلاف activityId (وحدة واحدة داخل النشاط). */
+  activityGroupId?: string;
   projectName?: string;
   hideSchedule?: boolean;
   windowStartIso?: string;
@@ -406,6 +411,7 @@ export default function ComplianceWidgetCard({
   unitReceptors,
   projectId,
   activityId,
+  activityGroupId,
   projectName,
   hideSchedule = false,
   windowStartIso,
@@ -418,13 +424,20 @@ export default function ComplianceWidgetCard({
 
   const complianceEntries = (complianceList ?? []).filter(Boolean);
   const worst = pickWorstCompliance(complianceEntries);
+  // نشاط انتهت نافذته الزمنية فعلياً (windowEndIso في الماضي) — لا يجوز عرض
+  // قرار حي (AEI/امتثال) أو عدّادات تنازلية أو تنبيهات مبنية على طقس هذه
+  // اللحظة لنشاط منتهٍ منذ دقائق/ساعات. نفس مفهوم scheduleInfo.status==='past'
+  // في MultiIndicatorActivityBox (البطاقة الأم)، محسوب محلياً هنا لأن هذا
+  // المكوّن لا يستقبل ذلك الكائن جاهزاً.
+  const isEnded = Boolean(windowEndIso && new Date(windowEndIso).getTime() < Date.now());
   // مؤشر AEI هو القرار الموحّد المعروض فعلياً في كل أنحاء البطاقة (العنوان،
   // اللون، البطاقة المطوية، شبكة الساعات) — قرار الامتثال (worst) يبقى
   // مصدر البيانات الداعمة (القواعد/الإجراءات/الأدلة) فقط، وليس عنواناً
   // منافساً. AEI مضمون توفره عملياً (يُمرَّر من الأب دائماً)، لكن نتوقّع
   // غيابه نظرياً فنستخدم أسلوب امتثال محايد كـ fallback أخير فقط.
   const aeiStyle = aei ? getAeiStyle(aei.color) : null;
-  const style = aeiStyle ?? (worst ? COMPLIANCE_DECISION_STYLE[worst.decisionCategory] : COMPLIANCE_DECISION_STYLE.ALLOW);
+  const endedStyle = { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-500', dot: 'bg-slate-400' };
+  const style = isEnded ? endedStyle : aeiStyle ?? (worst ? COMPLIANCE_DECISION_STYLE[worst.decisionCategory] : COMPLIANCE_DECISION_STYLE.ALLOW);
   const hourlyEntries = (complianceHourly ?? []).filter((h) => !!h?.result);
 
   // العنوان الفرعي = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) من قرار
@@ -450,19 +463,31 @@ export default function ComplianceWidgetCard({
   const sustained250 = worst?.pm10SustainedMinutesAbove250;
   const snapshotAtMs = useMemo(() => Date.now(), [sustained340, sustained250]);
 
-  // خطأ مكتشَف ومُصلَح: محطة خلط مستثناة بالكامل من قواعد PM10 (صوامع مغلقة
-  // + فلتر ≥99%، راجع worst.pm10RulesExempt المحسوب في engine.ts) كانت لا
-  // تزال تُظهر عدّادات "متبقٍ حتى..." رغم أن الخادم لن يعلّقها/يوقفها بسبب
-  // PM10 أبداً — تحذير مضلِّل لحالة لن تتحقق فعلياً لأن القاعدة نفسها معفاة
-  // من جذورها لهذا النشاط. كلا العدّادين يُخفيان تماماً عند الإعفاء.
-  const pm10RulesExempt = worst?.pm10RulesExempt === true;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
+  // للمرجع"): كان pm10RulesExempt (محطة خلط بصوامع مغلقة + فلتر ≥99%) يُخفي
+  // عدّادات PM10 كلياً هنا بحجة أن الخادم "لن يعلّقها بسبب PM10 أبداً" — لكن
+  // ذلك الإعفاء الخلفي نفسه كان توسيعاً غير موثَّق تنظيمياً (راجع
+  // pm10ThresholdRule في rulebook.ts)، فحُذف من engine.ts. محطة الخلط تخضع
+  // الآن لقواعد PM10 كأي نشاط آخر، فحقل pm10RulesExempt لم يعد موجوداً على
+  // DustComplianceResult — العدّادان يُبنيان بلا أي استثناء خاص بمحطة الخلط.
+
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "التايمر موجود والقراءات
+  // موجودة، أصلح أيضاً"): worst هنا هو DustComplianceResult، محسوب بمعزل
+  // تام عن decideFinal/aei.isHoldForVerification — لا يعرف أصلاً أن غياب
+  // جهاز الرصد يجعل worst.evidence.pm10UgM3 (وكل عدّاد مبني عليه) تقديرَ
+  // طقس (Open-Meteo) لا قراءة جهاز حقيقية. بلا هذا الفحص، عدّادا "متبقٍ
+  // حتى..." يستمران بالظهور بثقة كاملة رغم أن البانر الموحَّد أعلاهما يعرض
+  // "بانتظار تحقق ميداني" لنفس اللحظة — تناقض مباشر. aei.isHoldForVerification
+  // (راجع applyFinalDecisionToAei في dustEvaluation.ts) هو الإشارة الموثوقة
+  // الوحيدة هنا، لا إعادة اشتقاق شرط "هل يوجد جهاز؟" محلياً في هذا المكوّن.
+  const isAwaitingVerification = aei?.isHoldForVerification === true;
 
   // عدّاد "متبقٍ حتى تتأكد المخالفة" — يظهر فقط أثناء pendingConfirmation
   // (القراءة ≥340 لكن لم تستمر بعد دقيقتين). onElapsed يطلب إعادة تقييم
   // فورية من الخادم بالضبط عند انتهاء المهلة (لا انتظار دورة polling
   // التالية)، فينعكس القرار الفعلي (مؤكَّد أو ALLOW) في أقرب وقت ممكن.
   const confirmRemainingSec = useCountdownRemainingSeconds(
-    worst?.pendingConfirmation && !pm10RulesExempt ? sustained340 : undefined,
+    !isEnded && !isAwaitingVerification && worst?.pendingConfirmation ? sustained340 : undefined,
     PM10_VIOLATION_CONFIRM_MINUTES,
     snapshotAtMs,
     onCountdownElapsed
@@ -474,8 +499,9 @@ export default function ComplianceWidgetCard({
   const alreadyStopped =
     worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
   const showSuspensionCountdown =
+    !isEnded &&
+    !isAwaitingVerification &&
     !!worst &&
-    !pm10RulesExempt &&
     !alreadyStopped &&
     worst.evidence.pm10UgM3 !== null &&
     worst.evidence.pm10UgM3 >= 250 &&
@@ -498,7 +524,7 @@ export default function ComplianceWidgetCard({
   const stalenessAdvisory = worst
     ? buildStalenessAdvisory(worst.evidence.deviceLastReadingAt, worst.evidence.devicePm10LastReadingAt)
     : null;
-  const allAdvisoryTips = stalenessAdvisory ? [stalenessAdvisory, ...advisoryTips] : advisoryTips;
+  const allAdvisoryTips = isEnded ? [] : stalenessAdvisory ? [stalenessAdvisory, ...advisoryTips] : advisoryTips;
 
   useEffect(() => {
     async function fetchInitialData() {
@@ -524,7 +550,7 @@ export default function ComplianceWidgetCard({
       <div className="bg-white rounded-[24px] border border-slate-200 shadow-sm hover:shadow-md transition-all duration-300 flex flex-col overflow-hidden relative">
         <div className={`absolute top-0 left-0 w-full h-1 ${style.dot}`}></div>
 
-        {activeAlert && (
+        {!isEnded && activeAlert && (
           <div className="bg-red-500 text-white text-[10px] font-black px-4 py-1.5 flex items-center gap-2 animate-pulse">
             <ShieldAlert className="w-3.5 h-3.5" />
             يوجد تنبيه أمني نشط لهذا النشاط يرجى المراجعة!
@@ -563,11 +589,13 @@ export default function ComplianceWidgetCard({
             <div className="w-full">
               <div className="flex items-baseline gap-2 mb-1.5">
                 <span className={`text-2xl font-black leading-none ${style.text}`}>
-                  {aei ? `${aei.score} · ${aei.statusLabelAr}` : worst.decisionLabelAr}
+                  {isEnded ? 'انتهى النشاط' : aei ? aei.statusLabelAr : worst.decisionLabelAr}
                 </span>
               </div>
               <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
-                {aei ? aei.shortReasonAr : worst.shortReasonAr}
+                {isEnded
+                  ? 'انقضت نافذة تنفيذ هذا النشاط — لا يوجد قرار تشغيلي حالي بشأنه.'
+                  : aei ? aei.shortReasonAr : worst.shortReasonAr}
               </p>
               {complianceEntries.length > 1 && (
                 <span className="inline-block mt-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-slate-500">
@@ -688,7 +716,7 @@ export default function ComplianceWidgetCard({
             <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-500">
               درجة الثقة: {worst.confidenceScore} · {worst.confidenceLabelAr}
             </span>
-            {aei?.closedByGate && (
+            {!isEnded && aei?.closedByGate && (
               <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-900/5 border border-slate-700 text-slate-800">
                 إيقاف إلزامي
               </span>
@@ -696,14 +724,16 @@ export default function ComplianceWidgetCard({
           </div>
         </div>
 
-        <div className="p-4 pt-0 mt-auto">
-          <button
-            onClick={() => setIsOpen(true)}
-            className="w-full bg-white border border-slate-200 hover:border-[#3995FF] hover:bg-blue-50 text-slate-600 hover:text-[#0176FB] text-[13px] font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"
-          >
-            عرض التفاصيل الكاملة واتخاذ القرار <ArrowUpRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        {!isEnded && (
+          <div className="p-4 pt-0 mt-auto">
+            <button
+              onClick={() => setIsOpen(true)}
+              className="w-full bg-white border border-slate-200 hover:border-[#3995FF] hover:bg-blue-50 text-slate-600 hover:text-[#0176FB] text-[13px] font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"
+            >
+              عرض التفاصيل الكاملة واتخاذ القرار <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ======================= MODAL ======================= */}
@@ -793,6 +823,13 @@ export default function ComplianceWidgetCard({
                     ))}
                   </div>
                 )}
+
+                {/* رسم بياني منفصل لكل عنصر قياس (PM10/PM2.5/رياح/رؤية/
+                    رطوبة/حرارة) لسجل قراءات هذا النشاط تحديداً — طلب صريح
+                    من المستخدم: "مؤشر للقراءات حق النشاط، رسم بياني منفصل
+                    لكل عنصر". يعتمد على activityGroupId (لا activityId
+                    الوحدة الواحدة) لأن سجل الجهاز مربوط بالنشاط ككل. */}
+                <ActivityReadingsCharts projectId={projectId} activityGroupId={activityGroupId} />
               </div>
 
               {/* نفس عدّاد "متبقٍ حتى..." المعروض في البطاقة المطوية، مكرَّر
@@ -847,17 +884,14 @@ export default function ComplianceWidgetCard({
                   في مؤشر AEI الموحّد. فئة المشروع (risk class) محذوفة عمداً
                   من هذا العرض لأنها غير مهمة للمستخدم. */}
               {aei && aeiStyle && (
-                <div className={`rounded-2xl border-2 p-5 space-y-4 ${aeiStyle.bg} ${aeiStyle.border}`}>
+                <div className={`rounded-2xl border-2 p-5 space-y-4 ${isEnded ? `${endedStyle.bg} ${endedStyle.border}` : `${aeiStyle.bg} ${aeiStyle.border}`}`}>
                   <div className="flex items-center justify-between flex-wrap gap-2">
-                    <h3 className={`font-black text-base ${aeiStyle.text}`}>
-                      مؤشر قابلية التنفيذ (AEI): {aei.statusLabelAr}
+                    <h3 className={`font-black text-base ${isEnded ? endedStyle.text : aeiStyle.text}`}>
+                      مؤشر قابلية التنفيذ (AEI): {isEnded ? 'انتهى النشاط' : aei.statusLabelAr}
                     </h3>
-                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-white/70 text-[#061B40]">
-                      التقييم الكلي = {aei.score}
-                    </span>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                     <div className="bg-white/70 rounded-lg p-2">
                       <div className="text-xs text-[#061B40]/60">النشاط</div>
                       <div
@@ -868,36 +902,32 @@ export default function ComplianceWidgetCard({
                       </div>
                     </div>
                     <div className="bg-white/70 rounded-lg p-2">
-                      <div className="text-xs text-[#061B40]/60">درجة السلامة</div>
-                      <div className="font-bold text-[#061B40]">{aei.score}</div>
-                    </div>
-                    <div className="bg-white/70 rounded-lg p-2">
-                      <div className="text-xs text-[#061B40]/60">درجة الجودة</div>
-                      <div className="font-bold text-[#061B40]">{aei.qualityScore}</div>
-                    </div>
-                    <div className="bg-white/70 rounded-lg p-2">
-                      <div className="text-xs text-[#061B40]/60">التقييم الأولي</div>
-                      <div className="font-bold text-[#061B40]">{aei.baseScore}</div>
+                      <div className="text-xs text-[#061B40]/60">الحالة</div>
+                      <div className="font-bold text-[#061B40]">{isEnded ? 'انتهى النشاط' : aei.statusLabelAr}</div>
                     </div>
                   </div>
 
                   <div>
                     <div className="text-xs font-bold text-[#061B40]/60 mb-1">السبب المباشر</div>
-                    <div className="text-sm text-[#061B40]">{aei.shortReasonAr}</div>
+                    <div className="text-sm text-[#061B40]">
+                      {isEnded ? 'انقضت نافذة تنفيذ هذا النشاط — لا يوجد قرار تشغيلي حالي بشأنه.' : aei.shortReasonAr}
+                    </div>
                   </div>
 
-                  <div>
-                    <div className="text-xs font-bold text-[#061B40]/60 mb-1">التوصية النهائية</div>
-                    <div className="text-sm text-[#061B40]">{aei.recommendationAr}</div>
-                  </div>
+                  {!isEnded && (
+                    <div>
+                      <div className="text-xs font-bold text-[#061B40]/60 mb-1">التوصية النهائية</div>
+                      <div className="text-sm text-[#061B40]">{aei.recommendationAr}</div>
+                    </div>
+                  )}
 
-                  {aei.gateReasonAr && (
+                  {!isEnded && aei.gateReasonAr && (
                     <div className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg p-2 mt-2">
                       {aei.gateReasonAr}
                     </div>
                   )}
 
-                  {aei.closedByGate && (
+                  {!isEnded && aei.closedByGate && (
                     <div className="text-red-600 text-xs font-bold mt-1">
                       تم الإيقاف عبر بوابة حاكمة، دون المرور بحساب الدرجة.
                     </div>

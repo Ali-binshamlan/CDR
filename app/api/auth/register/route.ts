@@ -80,6 +80,21 @@ export async function POST(request: Request) {
 
         return NextResponse.json({ error: safeErrorResponse(profileError, 'register profile insert failed') }, { status: 400 });
       }
+
+      // صف صلاحيات منفصل (is_super_admin=false, account_role='user' —
+      // القيم الافتراضية فقط، بلا أي مسار يسمح بضبطهما من هذا الطلب) —
+      // راجع supabase-add-user-authorizations-table-migration.sql. عميل
+      // service_role هنا (المعرَّف أعلاه) يتجاوز REVOKE ALL FROM anon,
+      // authenticated على هذا الجدول، وهو المسار الوحيد المسموح له بالكتابة.
+      const { error: authzError } = await supabaseAdmin
+        .from('user_authorizations')
+        .insert([{ user_id: authData.user.id }]);
+      if (authzError) {
+        console.error('User authorization row creation error:', authzError);
+        await supabaseAdmin.from('profiles').delete().eq('id', authData.user.id);
+        await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+        return NextResponse.json({ error: safeErrorResponse(authzError, 'register authorization insert failed') }, { status: 400 });
+      }
     }
 
     // 4. التحقق مما إذا كان الحساب يحتاج تأكيد البريد الإلكتروني

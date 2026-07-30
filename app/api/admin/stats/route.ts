@@ -17,7 +17,9 @@ export async function GET(request: NextRequest) {
     { count: totalDecisions },
   ] = await Promise.all([
     supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true }),
-    supabaseAdmin.from('projects').select('id, city, project_status'),
+    // archived_at is null: إحصائيات "المشاريع حسب الحالة/المدينة" تعكس
+    // المشاريع النشطة — إدراج المؤرشفة يُضخّم المجموع بلا معنى تشغيلي فعلي.
+    supabaseAdmin.from('projects').select('id, city, project_status').is('archived_at', null),
     supabaseAdmin.from('alerts').select('id, kind').neq('state', 'CLOSED'),
     supabaseAdmin.from('decision_records').select('id', { count: 'exact', head: true }),
   ]);

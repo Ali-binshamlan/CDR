@@ -11,10 +11,14 @@ export async function POST(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
 
+  // archived_at is null: لا فائدة من فحص أنشطة مشروع أرشفه المستخدم بنفسه
+  // — checkDustActivities تُصفّي نفس الشيء عند استعلامها الداخلي أيضاً
+  // (دفاع مضاعف)، لكن تصفيتها هنا تمنع تمرير معرّفات مشاريع مؤرشفة أصلاً.
   const { data: projects } = await supabaseAdmin
     .from('projects')
     .select('id')
-    .eq('user_id', auth.userId);
+    .eq('user_id', auth.userId)
+    .is('archived_at', null);
 
   const projectIds = (projects || []).map((p: any) => p.id);
   if (projectIds.length === 0) {

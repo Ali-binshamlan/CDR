@@ -48,6 +48,13 @@ describe('classifyCause — تصنيف سبب ضعف الرؤية', () => {
     expect(classifyCause(sample({ weatherSymbol: 'RAIN' }), 20)).toBe('RAIN_REDUCED_VISIBILITY');
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي): أكواد WMO 95/96/99 (عواصف
+  // رعدية) كانت تُصنَّف CLEAR بالخطأ في mapWeatherCodeToSymbol — بعد التصحيح
+  // تصير THUNDERSTORM، وتُعامَل هنا معاملة RAIN (تقليل رؤية، لا إشارة غبار).
+  it('يصنّف عاصفة رعدية (THUNDERSTORM) كـ RAIN_REDUCED_VISIBILITY، مثل المطر تماماً', () => {
+    expect(classifyCause(sample({ weatherSymbol: 'THUNDERSTORM' }), 20)).toBe('RAIN_REDUCED_VISIBILITY');
+  });
+
   it('يصنّف وجود هطول مطري خلال 24 ساعة كـ RAIN_REDUCED_VISIBILITY', () => {
     expect(classifyCause(sample({ weatherSymbol: 'CLEAR', rainfallLast24hMm: 5 }), 20)).toBe('RAIN_REDUCED_VISIBILITY');
   });
@@ -247,13 +254,55 @@ describe('computeDviResult — confidenceScore يعتمد على القراءة 
 // (input.device*) لأي عينة، بصرف النظر عن وقتها الفعلي — فكل ساعة توقّع
 // مستقبلية (evaluateDustVisibilityHourly/WorkDayHourly) لنشاط مرتبط بجهاز
 // كانت تُعيد قراءة "الآن" حرفياً، وكأن الجهاز يتنبأ بالمستقبل. sampleTimeIso
-// (المعامل الثالث) يفصل عينة "الآن" (ضمن هامش تحمّل) عن عينة مستقبلية
-// بعيدة — الأخيرة يجب أن تسقط لعينة الطقس (توقّع حقيقي)، لا الجهاز.
+// (المعامل الثالث) يفصل عينة "الآن" (نفس جرس الساعة الحالية) عن عينة
+// مستقبلية/ماضية بعيدة — الأخيرة يجب أن تسقط لعينة الطقس (توقّع حقيقي)، لا
+// الجهاز.
+//
+// خطأ ثانٍ مكتشَف ومُصلَح لاحقاً (تقرير مستخدم — "التايمر ينتهي ولا يسجّل
+// مخالفة، ويُعاد مع كل تحديث" + "نزول من 350 إلى 150 يسمح بتشغيل اعتيادي
+// بلا قانون 10 دقائق"): الفحص الأصلي كان |الآن - sampleTimeIso| <= 30 دقيقة
+// — لكن sampleTimeIso (worstTimeIso) مربوط دائماً ببداية الساعة (Open-Meteo
+// hourly، مثال 14:00:00Z)، لا بـ"الآن" الفعلي. فتقييم يقع بعد الدقيقة 30 من
+// نفس الساعة الحالية (مثال: تقييم 14:45 لعينة توقيتها 14:00) كان يُرفَض
+// خطأً كـ"بعيد عن الآن" فيسقط لعينة الطقس رغم أن 14:00 هي فعلاً الساعة
+// الجارية — فمصدر PM10 يتذبذب device/weather بلا أي تغيّر حقيقي بالجهاز،
+// يُصفِّر عداد الاستمرار المؤكَّد (يشترط مصدر device) في نصف كل ساعة تقريباً.
+// الإصلاح: المقارنة أصبحت بمطابقة جرس الساعة (sampleTimeIso <= الآن <
+// sampleTimeIso + ساعة)، لا فارقاً زمنياً مطلقاً ثابتاً.
+//
+// خطأ ثالث مكتشَف ومُصلَح (تقرير مستخدم — "مشروع باقي له 4 دقايق ولا ياخذ
+// بيانات الجهاز، ياخذ الطقس"): مطابقة جرس الساعة وحدها (الإصلاح أعلاه) كسرت
+// نشاطاً سيبدأ خلال دقائق قليلة قبل الساعة القادمة — windowSamples تستبعد
+// عينة الساعة الحالية (أبعد من 30 دقيقة تسامح عن بداية النافذة)، فيصبح
+// worstTimeIso = بداية الساعة القادمة بالضبط، وهذي "ساعة مستقبلية" حسب جرس
+// الساعة رغم كونها بعد دقائق فقط. الإصلاح النهائي: جرس الساعة *أو* فارق
+// مطلق ≤30 دقيقة (أيهما تحقق يكفي) — يغطي كلا الحالتين معاً.
 describe('mergeDustReading/computeDviResult — لا يُعاد استخدام قراءة الجهاز الثابتة لساعات مستقبلية بعيدة', () => {
-  it('sampleTimeIso قريب من الآن (ضمن 30 دقيقة) → يُستخدَم الجهاز كالمعتاد', () => {
+  it('sampleTimeIso = بداية الساعة الحالية بالضبط (الآن) → يُستخدَم الجهاز', () => {
     const input = baseInput({ hasDeviceLink: true, devicePm10: 300, deviceWindSpeedKmh: 15 });
-    const nearNowIso = new Date(Date.now() + 5 * 60000).toISOString();
-    const merged = mergeDustReading(input, sample({ pm10: 20, windSpeedKmh: 5 }), nearNowIso);
+    const currentHourStartIso = new Date(Date.now()).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20, windSpeedKmh: 5 }), currentHourStartIso);
+    expect(merged.pm10).toBe(300);
+    expect(merged.sources.pm10).toBe('device');
+  });
+
+  it('sampleTimeIso = بداية الساعة الحالية، لكن "الآن" وقع بعد الدقيقة 30 منها (مثال: تقييم د.45) → يُستخدَم الجهاز أيضاً (لا يسقط لعينة الطقس)', () => {
+    const input = baseInput({ hasDeviceLink: true, devicePm10: 300, deviceWindSpeedKmh: 15 });
+    // يحاكي worstTimeIso الحقيقي: بداية الساعة الحالية (Open-Meteo hourly)،
+    // مُقيَّماً بعد 45 دقيقة من بداية تلك الساعة — بالضبط سيناريو الخلل المُصلَح.
+    const currentHourStart = new Date(Date.now() - 45 * 60000).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20, windSpeedKmh: 5 }), currentHourStart);
+    expect(merged.pm10).toBe(300);
+    expect(merged.sources.pm10).toBe('device');
+  });
+
+  it('sampleTimeIso = بداية الساعة القادمة، لكن النشاط سيبدأ خلال 4 دقائق فقط (سيناريو المستخدم الفعلي) → يُستخدَم الجهاز (لا يسقط لعينة الطقس)', () => {
+    const input = baseInput({ hasDeviceLink: true, devicePm10: 300, deviceWindSpeedKmh: 15 });
+    // يحاكي worstTimeIso الحقيقي حين يبدأ النشاط قبل 4 دقائق من الساعة
+    // القادمة: windowSamples تستبعد عينة الساعة الحالية، فيصبح worstTimeIso
+    // = بداية الساعة القادمة — بعد 4 دقائق من "الآن" فقط، لا ساعة كاملة.
+    const nextHourStart = new Date(Date.now() + 4 * 60000).toISOString();
+    const merged = mergeDustReading(input, sample({ pm10: 20, windSpeedKmh: 5 }), nextHourStart);
     expect(merged.pm10).toBe(300);
     expect(merged.sources.pm10).toBe('device');
   });

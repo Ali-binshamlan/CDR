@@ -293,7 +293,6 @@ export const REGULATORY_ACTIVITY_OPTIONS: RegulatoryActivityOption[] = [
   { key: 'STONE_CUTTING', label: 'قطع أحجار', dviCategory: 'HEAVY_EQUIPMENT_MOVEMENT' },
   { key: 'CD_WASTE_TRANSPORT', label: 'نقل مخلفات هدم وبناء', dviCategory: 'MATERIAL_TRANSPORT' },
   { key: 'IDLE_SURFACE', label: 'سطح غير نشط', dviCategory: 'GENERAL_OUTDOOR_WORK' },
-  { key: 'OTHER', label: 'أخرى / غير محدد', dviCategory: 'GENERAL_OUTDOOR_WORK' },
 ];
 
 // خريطة key النشاط التنظيمي إلى تسميته العربية الكاملة — إعادة تصدير من

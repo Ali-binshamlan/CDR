@@ -34,6 +34,15 @@ export interface AeiEvaluationResult {
   cappedByGate: boolean; // سقف إجباري (المرحلة 3)
   gateReasonAr: string | null;
 
+  // true فقط عندما FinalDecision.operationalDecision === 'HOLD_FOR_VERIFICATION'
+  // (لا جهاز رصد مرتبط بالنشاط أصلاً، راجع deriveEvidenceQuality في
+  // final-decision-engine/adapters.ts) — يميّز هذه الحالة صراحةً (بدل
+  // الاعتماد على مقارنة نصية هشة لـstatusLabelAr) حتى تقدر الواجهة (مثال:
+  // عدّادات "متبقٍ حتى تتأكد المخالفة" في Compliancewidgetcard.tsx) تُخفي
+  // أي عدّاد/رقم PM10 خام يوحي بثقة في قرار مبني فعلياً على تقدير طقس لا
+  // قراءة جهاز حقيقية.
+  isHoldForVerification: boolean;
+
   shortReasonAr: string;
   recommendationAr: string;
 

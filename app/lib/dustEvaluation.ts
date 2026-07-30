@@ -10,6 +10,9 @@ import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateAct
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
 import type { ReceptorWithinRadius } from '@/app/utils/dust-compliance-engine/geo';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import { decideFinal, buildFinalDecisionInput } from '@/app/utils/final-decision-engine';
+import type { FinalDecision } from '@/app/utils/final-decision-engine';
+import type { DviEvaluationResult } from '@/app/utils/dust-engine/types';
 
 /** مجموعة المستقبِلات الحساسة حول وحدة واحدة (كسارة/خلاطة) ضمن نصف قطرها
  * التنظيمي — راجع computeUnitReceptors أدناه. */
@@ -242,6 +245,9 @@ const PM10_LAST_READING_FRESHNESS_MINUTES = 4;
 // قراءة بمصدر غير device تبقى "معلَّقة" (isPendingViolation340) دائماً
 // بصرف النظر عن طول مدة التجاوز الظاهرية. قراءة بلا source (استدعاءات
 // قديمة/اختبارات) تُعامَل كـ'device' توافقياً (فشل آمن، لا كسر سلوك حالي).
+// ملاحظة: 'open-meteo' لم تعد تصل هذه الدالة عملياً بعد فصل التوقعات إلى
+// weather_forecasts (راجع computeDustComplianceResults أدناه) — تبقى في
+// النوع دفاعياً فقط لأي صف قديم قد يبقى قبل تطبيق migration الترحيل.
 export function computeSustainedPm10Status(
   readings: { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo' }[],
   now: number = Date.now()
@@ -275,9 +281,24 @@ export function computeSustainedPm10Status(
   // مؤكدة" بدليل استمرار مصدره فعلياً توقّع طقس لا قياس جهاز متواصل.
   // الإصلاح: السلسلة تنقطع عند أول قراءة يختلف مصدرها عن مصدر أحدث قراءة —
   // فالاستمرار المُثبَت يبقى دائماً من مصدر واحد متجانس، لا خليط.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — ملاحظة #3): كانت المدة تُحسب
+  // (now - streakStartMs) — أي منذ "أقدم قراءة بالسلسلة" وحتى اللحظة
+  // الحالية، لا حتى "أحدث قراءة فعلية". فقراءة جهاز واحدة فقط بقيمة 350
+  // (streakStartMs = وقت تلك القراءة نفسها، i=0 فقط) تُنتج "3 دقائق استمرار"
+  // بمجرد مرور 3 دقائق منذ وصولها — بلا أي قراءة ثانية تثبت بقاء التركيز
+  // مرتفعاً طوال تلك المدة؛ عدم وصول عينة جديدة لا يعني أن التركيز بقي كما
+  // هو، وقد يعني توقف الجهاز عن الإرسال. الإصلاح: (1) تُشترط عينتان على
+  // الأقل بالسلسلة، وإلا فلا استمرار مُثبَت (صفر)، (2) المدة تُحسب بين أقدم
+  // وأحدث عينة فعلية بالسلسلة (streakEndMs - streakStartMs)، لا بين أقدم
+  // عينة والآن. حداثة "الآن" نفسه (هل توقف الجهاز مؤخراً؟) تبقى مسؤولية
+  // isLatestReadingFresh المنفصلة أدناه — فصل واضح بين "هل الاستمرار مُثبَت
+  // فعلياً بين عينتين" و"هل آخر عينة لا تزال حية الآن"، بلا خلط الاثنين.
   function streakMinutesAbove(threshold: number): number {
     if (sorted[0].pm10UgM3 < threshold) return 0;
     let streakStartMs = new Date(sorted[0].recordedAt).getTime();
+    const streakEndMs = streakStartMs;
+    let sampleCount = 0;
     for (let i = 0; i < sorted.length; i++) {
       if (sorted[i].pm10UgM3 < threshold) break;
       if ((sorted[i].source ?? 'device') !== currentSource) break;
@@ -288,20 +309,38 @@ export function computeSustainedPm10Status(
         if (gapMinutes > PM10_READING_GAP_TOLERANCE_MINUTES) break;
       }
       streakStartMs = currentMs;
+      sampleCount++;
     }
-    return (now - streakStartMs) / 60000;
+    // عينة واحدة فقط بالسلسلة = لا استمرار مُثبَت بين عينتين فعليتين، بصرف
+    // النظر عن قِدمها — فشل آمن نحو "صفر" لا "منذ وصولها وحتى الآن".
+    if (sampleCount < 2) return 0;
+    return (streakEndMs - streakStartMs) / 60000;
   }
 
   const sustainedMinutesAbove340 = streakMinutesAbove(PM10_SUSTAINED_VIOLATION_THRESHOLD);
   const sustainedMinutesAbove250 = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD);
 
-  const isAbove340Now = currentReadingUgM3 >= PM10_SUSTAINED_VIOLATION_THRESHOLD;
-  // "مؤكَّدة" تتطلب معاً: دقيقتين استمرار فعلي + قراءة حية (ليست قديمة) +
-  // مصدرها جهاز رصد حقيقي — أي شرط يفشل يُبقي الحالة "معلَّقة" فقط، أبداً
-  // "مؤكَّدة" بلا دليل كافٍ.
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "حد PM10 ما زال خاطئاً"): كان
+  // isAbove340Now يستخدم `>=` بينما النص التنظيمي يقول "تجاوز 340"
+  // (exceeds)، أي `>` صراحة — نفس عتبة pm10ThresholdRule في rulebook.ts
+  // بالضبط (>PM10_VIOLATION_STOP_UG_M3، لا >=). قراءة 340.000 بالضبط تبقى
+  // "تحذير/تنبيه استباقي" لا "مخالفة"، بنفس معاملة محرك الامتثال تماماً —
+  // بقاء `>=` هنا كان يجعل هذه الدالة (المصدر الوحيد لـpm10ConfirmedViolation340
+  // الذي يقرأه pm10ThresholdRule) تُقرّر "أعلى من 340 الآن" لقيمة لا يعتبرها
+  // pm10ThresholdRule نفسه تجاوزاً أصلاً، فيتناقض المصدر مع المستهلك على
+  // نفس القيمة بالضبط.
+  const isAbove340Now = currentReadingUgM3 > PM10_SUSTAINED_VIOLATION_THRESHOLD;
+  // "مؤكَّدة" تتطلب معاً: أكثر من دقيقتين استمرار فعلي + قراءة حية (ليست
+  // قديمة) + مصدرها جهاز رصد حقيقي — أي شرط يفشل يُبقي الحالة "معلَّقة"
+  // فقط، أبداً "مؤكَّدة" بلا دليل كافٍ.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كان `>=` — المرجع التنظيمي يشترط
+  // "أكثر من دقيقتين" (المُوثَّق في تعليقات هذا الملف نفسه أعلاه)، أي `>`
+  // صراحة لا `>=`. استمرار دقيقتين بالضبط (120.000 ثانية تماماً، لا أكثر)
+  // كان يُصنَّف "مؤكَّدة" خلافاً للمرجع الذي يشترط تجاوز تلك المدة فعلياً.
   const isConfirmedViolation340 =
     isAbove340Now &&
-    sustainedMinutesAbove340 >= PM10_VIOLATION_CONFIRM_MINUTES &&
+    sustainedMinutesAbove340 > PM10_VIOLATION_CONFIRM_MINUTES &&
     isLatestReadingFresh &&
     isCurrentSourceDevice;
   const isPendingViolation340 = isAbove340Now && !isConfirmedViolation340;
@@ -323,26 +362,41 @@ export function computeSustainedPm10Status(
 
 // يجلب سجل قراءات PM10 الأخيرة (آخر 40 دقيقة كافية لكل القواعد الحالية:
 // أقصاها 30 دقيقة + هامش) لنشاط معيّن، مفضِّلاً activity_group_id (أدق،
-// قراءات يدوية مرتبطة بنشاط محدد) مع دمج قراءات الجهاز على مستوى المشروع
-// (project_id، لا نشاط محدد لها) — كلاهما يُعتبر جزءاً من نفس الاستمرار
+// قراءات يدوية مرتبطة بنشاط محدد) مع دمج قراءات الجهاز المحدد لهذا النشاط
+// تحديداً (لا أي جهاز بالمشروع) — كلاهما يُعتبر جزءاً من نفس الاستمرار
 // الزمني الفعلي لهذا الموقع.
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود مدير — ملاحظة #4): كان الاستعلام يجلب كل
+// قراءات المشروع (project_id فقط، بلا فلترة device_id) — فمشروع فيه جهازان
+// A وB (A مرتبط بنشاط 1، B مرتبط بنشاط 2) كان يخلط قراءاتهما معاً عند حساب
+// استمرار أي نشاط، فقراءات جهاز B قد "تُثبت" جزئياً استمراراً لنشاط 1 غير
+// مرتبط به إطلاقاً. الإصلاح: deviceId (اختياري، من project_dust_profiles.
+// device_id الخاص بهذا النشاط تحديداً) يُقصر قراءات source='device' على هذا
+// الجهاز فقط. نشاط بلا جهاز مرتبط (deviceId=null) لا يستقبل أي قراءة
+// device إطلاقاً — فقط manual الخاصة بـactivity_group_id نفسه (open-meteo
+// لم يعد يُسجَّل في هذا الجدول إطلاقاً، راجع weather_forecasts أدناه).
 export async function fetchPm10SustainedStatus(
   supabaseAdmin: any,
   projectId: string,
-  activityGroupId: string
+  activityGroupId: string,
+  deviceId?: string | null
 ): Promise<Pm10SustainedStatus> {
   const sinceIso = new Date(Date.now() - (PM10_SUSPENSION_MINUTES + 10) * 60000).toISOString();
   try {
     const { data } = await supabaseAdmin
       .from('pm10_readings_history')
-      .select('pm10_ug_m3, recorded_at, activity_group_id, source')
+      .select('pm10_ug_m3, recorded_at, activity_group_id, source, device_id')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
       .order('recorded_at', { ascending: false });
 
-    const relevant = (data || []).filter(
-      (row: any) => row.activity_group_id === activityGroupId || row.activity_group_id === null
-    );
+    const relevant = (data || []).filter((row: any) => {
+      if (row.activity_group_id === activityGroupId) return true;
+      // قراءة جهاز على مستوى المشروع (activity_group_id=null): تخص هذا
+      // النشاط فقط لو device_id يطابق جهازه المحدد فعلياً — لا أي جهاز آخر.
+      if (row.activity_group_id === null) return !!deviceId && row.device_id === deviceId;
+      return false;
+    });
     const readings = relevant.map((row: any) => ({
       pm10UgM3: Number(row.pm10_ug_m3),
       recordedAt: row.recorded_at,
@@ -649,12 +703,25 @@ export function computeUnitReceptors(
 // المسار جلب "القرار السابق" بالكامل، فيسلك محرك الامتثال مساره القديم
 // بلا قيد استئناف — إضافة تراكمية بحتة، بلا أي كسر توافقي (نفس نمط
 // resolveFreshProjectDevice في computeDustResults).
+//
+// أمن الأدلة (مراجعة كود خبير خارجي): هذه الدالة تُستدعى من مسارات GET
+// (project/[projectId]، dashboard/global، viewer/dashboard) *وأيضاً* من
+// POST /evaluate الكاتب فعلياً. كانت تُدرِج قراءة PM10 في
+// pm10_readings_history كأثر جانبي دائم بصرف النظر عن الاستدعاء — أي فتح
+// لصفحة GET كان يضيف عينة استمرار زمني حقيقية، فيُطيل مدة إثبات
+// "المخالفة المستمرة" (RCRC-PM10-340-VIOLATION-011) خلافاً لدلالة GET
+// (idempotent، بلا أثر جانبي، نفس مبدأ التعليق في route.ts). الآن الإدراج
+// مشروط بـpersistPm10Reading (افتراضياً false): GET يبقى قراءة بحتة دائماً
+// (fetchPm10SustainedStatus لا تزال تُقرأ من السجل الحالي كما هو)، وPOST
+// /evaluate فقط (المسار الكاتب المُصرَّح صراحة من الواجهة) يُمرِّر true
+// ليُسجِّل العينة الجديدة فعلياً — لا كتابة أدلة بلا فعل مستخدم صريح.
 export async function computeDustComplianceResults(
   dustRows: any[],
   project: any,
   dustResults: any[],
   sensitiveReceptors: any[] = [],
-  supabaseAdmin?: any
+  supabaseAdmin?: any,
+  persistPm10Reading: boolean = false
 ): Promise<DustComplianceResult[]> {
   const rowsById = new Map<string, any>((dustRows || []).map((row) => [String(row.id), row]));
 
@@ -672,7 +739,7 @@ export async function computeDustComplianceResults(
   // دقائق ولو لم تتراكم دقيقة فعلية واحدة من القراءة الجيدة بعد.
   let previousDecisionsByGroup = new Map<
     string,
-    { decision: string; updated_at: string; pending_resume_since: string | null }
+    { decision: string; updated_at: string; pending_resume_since: string | null; deciding_rule_code: string | null }
   >();
   if (supabaseAdmin) {
     const groupIds = Array.from(
@@ -682,7 +749,7 @@ export async function computeDustComplianceResults(
       try {
         const { data } = await supabaseAdmin
           .from('current_dust_compliance_decisions')
-          .select('activity_group_id, decision, updated_at, stopped_since, pending_resume_since')
+          .select('activity_group_id, decision, updated_at, stopped_since, pending_resume_since, deciding_rule_code')
           .in('activity_group_id', groupIds);
         previousDecisionsByGroup = new Map(
           (data || []).map((row: any) => [
@@ -691,6 +758,7 @@ export async function computeDustComplianceResults(
               decision: row.decision,
               updated_at: row.stopped_since ?? row.updated_at,
               pending_resume_since: row.pending_resume_since ?? null,
+              deciding_rule_code: row.deciding_rule_code ?? null,
             },
           ])
         );
@@ -713,14 +781,26 @@ export async function computeDustComplianceResults(
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
         const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision);
 
-        // تسجيل قراءة PM10 في السجل التاريخي — يُستخدم لحساب استمرار القراءة
-        // (دقيقتين/30 دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
+        // تسجيل قراءة PM10 — يُستخدم لحساب استمرار القراءة (دقيقتين/30
+        // دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
         // (devices/ingest/route.ts)، لا هنا، لتفادي تكرار نفس القراءة في كل
-        // تقييم صفحة/cron. قراءات onsite (يدوية) وopen-meteo (توقّع ساعي)
-        // تُسجَّلان هنا معاً — بدون تسجيل open-meteo، أي نشاط بلا جهاز/قراءة
-        // يدوية لا يمكنه أبداً الوصول لحالة "مخالفة مؤكدة"، فيبقى "معلَّق"
-        // إلى الأبد بصرف النظر عن طول مدة التجاوز الفعلية (ثغرة مكتشفة
-        // ومصلَحة — راجع migration توسيع قيد source).
+        // تقييم صفحة/cron.
+        //
+        // قراءة onsite (يدوية، دليل ميداني حقيقي) تُسجَّل في
+        // pm10_readings_history — نفس الجدول الذي يقرأ منه
+        // fetchPm10SustainedStatus لإثبات "استمرار مخالفة".
+        //
+        // توقّع open-meteo (نموذج طقس عالمي، دقة ساعية، بلا محطة معتمدة) لا
+        // يُسجَّل في ذلك الجدول إطلاقاً — يُسجَّل في weather_forecasts
+        // المنفصل تماماً (evidence_eligible=false دائماً، راجع
+        // supabase-add-weather-forecasts-table-migration.sql). فصل بنيوي لا
+        // منطقي فقط: fetchPm10SustainedStatus أدناه يستعلم pm10_readings_
+        // history حصراً، فلا سبيل لتوقّع طقس أن "يُثبت استمراراً" لقرار
+        // إلزامي (MANDATORY_STOP) بصرف النظر عن أي تعديل مستقبلي على شروط
+        // الفلترة — التصنيف يحدث عند الكتابة، لا عند القراءة فقط.
+        // نتيجة ذلك: نشاط بلا جهاز/قراءة يدوية يعتمد فقط على توقّع الطقس
+        // يبقى "معلَّق" (isPendingViolation340) إلى الأبد، لا "مخالفة
+        // مؤكدة" — وهذا هو السلوك الصحيح المقصود (توقّع لا يصلح دليلاً).
         //
         // خطأ مكتشَف ومُصلَح: كان الشرط يعتمد على preliminaryCtx.dataSource
         // (تلخيص عام لأعلى مصدر فاز بأي حقل من كل حقول القراءة، device
@@ -731,24 +811,54 @@ export async function computeDustComplianceResults(
         // open-meteo تُسجَّل هنا) — فتنقطع سلسلة إثبات الاستمرار لتلك
         // القراءة كلياً. pm10Source (من merged.sources.pm10 مباشرة) يعكس
         // مصدر PM10 الفعلي بصرف النظر عن مصدر بقية الحقول.
-        let pm10Sustained: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null = null;
+        // خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كان هذا المتغيّر يُعلَن بنوع
+        // مُجرَّد يستقطع فقط الرقمين (sustainedMinutesAbove340/250) من الكائن
+        // الكامل Pm10SustainedStatus — فيضيع isConfirmedViolation340/
+        // isSuspended250For30Min (المحسوبتان بكل الأدلة: المصدر، حداثة
+        // القراءة) قبل ما تصل حتى لـbuildComplianceContext، مضطرّاً
+        // pm10ThresholdRule لإعادة اشتقاق القرار من الدقائق الخام بمعزل عن
+        // تلك الأدلة. النوع الكامل الآن يبقى سليماً من fetchPm10SustainedStatus
+        // حتى buildComplianceContext.
+        let pm10Sustained: Pm10SustainedStatus | null = null;
         if (supabaseAdmin && r.activityGroupId && project?.id) {
-          if (
-            (preliminaryCtx.pm10Source === 'onsite' || preliminaryCtx.pm10Source === 'weather') &&
-            preliminaryCtx.pm10UgM3 !== null
-          ) {
-            try {
-              await supabaseAdmin.from('pm10_readings_history').insert({
-                activity_group_id: r.activityGroupId,
-                project_id: project.id,
-                pm10_ug_m3: preliminaryCtx.pm10UgM3,
-                source: preliminaryCtx.pm10Source === 'onsite' ? 'manual' : 'open-meteo',
-              });
-            } catch {
-              // فشل التسجيل لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
+          if (persistPm10Reading && preliminaryCtx.pm10UgM3 !== null) {
+            if (preliminaryCtx.pm10Source === 'onsite') {
+              // قراءة يدوية فعلية (onsite_pm10) — دليل ميداني حقيقي، تُسجَّل
+              // في pm10_readings_history كما هي دائماً.
+              try {
+                await supabaseAdmin.from('pm10_readings_history').insert({
+                  activity_group_id: r.activityGroupId,
+                  project_id: project.id,
+                  pm10_ug_m3: preliminaryCtx.pm10UgM3,
+                  source: 'manual',
+                });
+              } catch {
+                // فشل التسجيل لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
+              }
+            } else if (preliminaryCtx.pm10Source === 'weather') {
+              // توقّع Open-Meteo — نموذج طقس عالمي بدقة ساعية، بلا محطة رصد
+              // معتمدة ولا معايرة، ليس قياساً ميدانياً. يُسجَّل في جدول
+              // منفصل تماماً (weather_forecasts، evidence_eligible=false
+              // دائماً) بدل pm10_readings_history — لا يجوز خلطه مع أدلة
+              // ميدانية حقيقية قد تُبنى عليها مخالفة/إيقاف إلزامي (راجع
+              // supabase-add-weather-forecasts-table-migration.sql).
+              // fetchPm10SustainedStatus أدناه يقرأ من pm10_readings_history
+              // فقط، فلا سبيل لهذا التوقّع أن "يُثبت استمراراً" لقرار ملزم.
+              try {
+                await supabaseAdmin.from('weather_forecasts').insert({
+                  activity_group_id: r.activityGroupId,
+                  project_id: project.id,
+                  provider: 'open-meteo',
+                  forecast_valid_at: new Date().toISOString(),
+                  pm10_ug_m3: preliminaryCtx.pm10UgM3,
+                  evidence_eligible: false,
+                });
+              } catch {
+                // فشل التسجيل لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
+              }
             }
           }
-          pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, project.id, r.activityGroupId);
+          pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, project.id, r.activityGroupId, row.device_id ?? null);
         }
 
         const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained);
@@ -810,10 +920,12 @@ export function computeDustComplianceHourly(
       const hourlyCompliance = hourly.map((hour) => {
         const ctx = buildComplianceContext(project, row, hour, sensitiveReceptors);
         const result = evaluateDustCompliance(ctx);
-        const hourAei = applyComplianceGateToAei(
-          evaluateAei(hour, r.activityType),
-          result
-        );
+        const rawAei = evaluateAei(hour, r.activityType);
+        // mode='PLANNING' — نفس ساعة توقّع بلا استمرار PM10/استقرار استئناف
+        // (لم تُمرَّر previousDecision/pm10Sustained لـbuildComplianceContext
+        // أعلاه أصلاً)، راجع FinalDecisionMode في final-decision-engine/types.ts.
+        const decision = decideFinal(buildFinalDecisionInput(`${r.activityId}:${hour.time}`, hour, result, rawAei, 'PLANNING'));
+        const hourAei = applyFinalDecisionToAei(rawAei, decision, result);
         return { time: hour.time, result, aei: hourAei };
       });
       byActivityId.set(r.activityId, hourlyCompliance);
@@ -825,43 +937,77 @@ export function computeDustComplianceHourly(
   return byActivityId;
 }
 
-const AEI_COMPLIANCE_CLOSED_DECISIONS = new Set(['MANDATORY_STOP', 'STOP_AFFECTED_ACTIVITY']);
-// أي قرار امتثال غير ALLOW يمثّل قيداً تنظيمياً حقيقياً على النشاط، حتى لو
-// لم يصل لحد الإيقاف الكامل — يجب أن يظهر هذا في AEI أيضاً (سقف مقيَّد)
-// بدل تجاهله بالكامل، وإلا يظهر AEI "قابل للتنفيذ" بينما الامتثال يقول
-// "مقيَّد" في نفس الشاشة.
-const AEI_COMPLIANCE_RESTRICTED_DECISIONS = new Set(['RESTRICT_ACTIVITY', 'FIELD_VERIFICATION_REQUIRED', 'ALLOW_WITH_CONTROLS']);
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "لا يوجد
+// FinalDecisionEngine مستقل فعلياً"): applyComplianceGateToAei وcompute
+// UnifiedActivityDecision كانتا نسختين مستقلتين يدوياً لدمج DVI + الامتثال
+// في قرار واحد — بمنطق أولوية مكرَّر (متى يفوز الامتثال، متى pendingConfirmation
+// يُخفَّف) قابل للتناقض بينهما (وقد تناقض فعلياً مع مولّد التنبيهات، نسخة
+// ثالثة مستقلة تماماً في alerts/generate/route.ts). كلتاهما الآن أغلفة
+// رقيقة حول decideFinal (app/utils/final-decision-engine) — المصدر الوحيد
+// المسموح له بقراءة dvi.mandatoryStop/compliance.decisionCategory معاً.
 
-// ترتيب شدة مستويات DVI (DviLevel) — يُستخدم في computeUnifiedActivityDecision
-// لمقارنة شدة DVI بشدة الامتثال بدل الثقة بنص DVI وحده.
-const DVI_LEVEL_WEIGHT: Record<string, number> = {
-  GREEN: 0,
-  YELLOW: 1,
-  ORANGE: 2,
-  RED: 3,
-  DARK_RED: 4,
-  BLACK: 5,
-};
+// يحوّل FinalDecision.operationalDecision/level الجاهزين إلى تعديل AEI —
+// يستبدل منطق applyComplianceGateToAei اليدوي القديم (AEI_COMPLIANCE_
+// CLOSED_DECISIONS/AEI_COMPLIANCE_RESTRICTED_DECISIONS) بقراءة قرار decideFinal
+// المُجمَّع فعلياً، بدل إعادة اشتقاق نفس الأولويات هنا مرة أخرى.
+function applyFinalDecisionToAei(aei: AeiEvaluationResult, decision: FinalDecision, compliance: DustComplianceResult | null): AeiEvaluationResult {
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "لا زالت المشكلة"، بعد أول
+  // إصلاح لهذا الفرع): هذا الفحص كان يأتي *بعد* شرط aei.closedByGate أدناه
+  // — فحين dvi.mandatoryStop=true (PM10 لحظي تقديري من Open-Meteo تجاوز
+  // 340 بلا جهاز حقيقي)، evaluateAei الأساسية (aei-engine/engine.ts) تضبط
+  // aei.closedByGate=true *قبل* وصول القرار لهذه الدالة أصلاً، فيُرجَع aei
+  // كما هو بالسطر التالي (return aei محكومة بـclosedByGate) قبل حتى الوصول
+  // لفحص HOLD_FOR_VERIFICATION تحته — فتبقى بطاقة AEI "مغلق" بثقة كاملة
+  // وعدّاد تنازلي فعلي، رغم أن نفس تلك القراءة (1229.3) مصدرها تقدير طقس لا
+  // قراءة جهاز حقيقية. الإصلاح: HOLD_FOR_VERIFICATION يُفحَص أولاً، قبل أي
+  // إفلات مبكر آخر — غياب الأدلة الحقيقية يُبطل حتى إغلاق DVI نفسه المبني
+  // على نفس تلك القراءة التقديرية، لا فقط قرارات الامتثال الأخف.
+  if (decision.operationalDecision === 'HOLD_FOR_VERIFICATION') {
+    return {
+      ...aei,
+      status: 'RESTRICT',
+      statusLabelAr: 'بانتظار تحقق ميداني — بيانات غير كافية',
+      color: 'ORANGE',
+      score: Math.min(aei.score, AEI_RESTRICT_CAP),
+      cappedByGate: true,
+      gateReasonAr: `⏳ ${decision.shortReasonAr}`,
+      shortReasonAr: decision.shortReasonAr,
+      recommendationAr: 'لا يوجد جهاز رصد يرسل قراءة حقيقية لهذا النشاط — تحقّق ميدانياً قبل الاعتماد على أي قرار آلي (مسموح أو موقوف).',
+      isHoldForVerification: true,
+    };
+  }
 
-// يقص AEI إلى "متوقف" (CLOSED/0) أو "مقيَّد" (RESTRICT، سقف AEI_RESTRICT_CAP)
-// حسب شدة قرار الامتثال التنظيمي، حتى لو كانت بوابة DVI الفيزيائية أخف
-// (عتبات مختلفة تماماً — مثال: DVI يوقف عند ≥30 كم/س + مواد سائبة، بينما
-// الامتثال يوقف عند >25 كم/س لأي نشاط مكشوف؛ أو DVI "ممتاز" بينما الامتثال
-// "مقيَّد" بسبب غياب حاجز غبار حول موقع هدم — لا علاقة لأحدهما بالآخر).
-// بلا هذا القص يظهر AEI متناقضاً مع قرار الامتثال المعروض بجانبه في نفس
-// البطاقة. بنفس نمط بوابة closedByGate/cappedByGate الموجودتين أصلاً في
-// evaluateAei، فقط سببهما هنا امتثال تنظيمي بدل DVI مباشرة.
-function applyComplianceGateToAei(aei: AeiEvaluationResult, compliance: DustComplianceResult | null): AeiEvaluationResult {
+  // نفس شرط الإفلات المبكر في applyComplianceGateToAei القديمة تماماً —
+  // لا قرار امتثال إطلاقاً، أو ALLOW نظيف. operationalDecision/regulatoryFinding
+  // لا يكفيان وحدهما هنا (RESTRICT_ACTIVITY/PRECAUTION كلاهما regulatoryFinding=
+  // COMPLIANT رغم حاجتهما لتعديل AEI فعلي) — decisionCategory الخام هو الفحص
+  // الصحيح لـ"هل يوجد أي شيء لنعدّله أصلاً؟". يأتي بعد فحص HOLD_FOR_VERIFICATION
+  // أعلاه عمداً (راجع تعليقه) — لا قبله.
   if (!compliance || compliance.decisionCategory === 'ALLOW') return aei;
-  if (aei.closedByGate) return aei; // بوابة DVI أوقفته أصلاً، لا داعي للتكرار
+  if (aei.closedByGate) return aei; // بوابة DVI أوقفته أصلاً (بأدلة حقيقية، إذ تجاوزنا فحص HOLD_FOR_VERIFICATION فوق)، لا داعي للتكرار
 
-  if (AEI_COMPLIANCE_CLOSED_DECISIONS.has(compliance.decisionCategory)) {
-    // pendingConfirmation (مثال: MRQ-PM10-BLACK-PENDING-104) يعني القرار
-    // موقوف احترازياً بانتظار تأكيد استمرار القراءة، لا مخالفة مؤكَّدة —
-    // لا يجوز عرضه بنفس حالة "CLOSED/إيقاف إلزامي" الدائمة (لا AeiStatus
-    // "معلَّق" منفصل موجود أصلاً، فنستخدم RESTRICT بنص مختلف بدل اختراع
-    // حالة جديدة تحتاج تعديل كل مكان يتحقق من AeiStatus).
-    if (compliance.pendingConfirmation) {
+  if (decision.operationalDecision === 'MANDATORY_STOP') {
+    return {
+      ...aei,
+      status: 'CLOSED',
+      statusLabelAr: 'بيئة العمل غير آمنة (مغلق) — إيقاف تنظيمي',
+      color: 'BLACK',
+      score: 0,
+      closedByGate: true,
+      gateReasonAr: `⛔ إيقاف إلزامي بموجب الامتثال التنظيمي: ${decision.shortReasonAr}`,
+      shortReasonAr: decision.shortReasonAr,
+      recommendationAr: 'يُمنع اعتماد تنفيذ هذا النشاط حتى استيفاء شروط الامتثال التنظيمي أو تحسّن الظروف الموجبة للإيقاف.',
+    };
+  }
+
+  if (decision.operationalDecision === 'PROTECTIVE_STOP') {
+    // pendingConfirmation=true (مثال: MRQ-PM10-BLACK-PENDING-104) يعني
+    // القرار موقوف احترازياً بانتظار تأكيد استمرار القراءة، لا مخالفة
+    // مؤكَّدة — لا AeiStatus "معلَّق" منفصل موجود أصلاً، فنستخدم RESTRICT
+    // بنص مختلف بدل اختراع حالة جديدة تحتاج تعديل كل مكان يتحقق من AeiStatus.
+    // STOP_AFFECTED_ACTIVITY مؤكَّد (pendingConfirmation=false) يُعامَل بنفس
+    // درجة الإغلاق (CLOSED) — النشاط متوقف فعلياً بقرار تنظيمي مؤكَّد.
+    if (decision.pendingConfirmation) {
       return {
         ...aei,
         status: 'RESTRICT',
@@ -869,8 +1015,8 @@ function applyComplianceGateToAei(aei: AeiEvaluationResult, compliance: DustComp
         color: 'RED',
         score: Math.min(aei.score, AEI_RESTRICT_CAP),
         cappedByGate: true,
-        gateReasonAr: `⏳ إيقاف مؤقت بانتظار التأكيد: ${compliance.shortReasonAr}`,
-        shortReasonAr: compliance.shortReasonAr,
+        gateReasonAr: `⏳ إيقاف مؤقت بانتظار التأكيد: ${decision.shortReasonAr}`,
+        shortReasonAr: decision.shortReasonAr,
         recommendationAr: 'راقب القراءة الآن — سيتحول القرار تلقائياً إلى إيقاف إلزامي إن استمر التجاوز، أو يعود آمناً إن انخفض.',
       };
     }
@@ -881,13 +1027,13 @@ function applyComplianceGateToAei(aei: AeiEvaluationResult, compliance: DustComp
       color: 'BLACK',
       score: 0,
       closedByGate: true,
-      gateReasonAr: `⛔ إيقاف إلزامي بموجب الامتثال التنظيمي: ${compliance.shortReasonAr}`,
-      shortReasonAr: compliance.shortReasonAr,
+      gateReasonAr: `⛔ إيقاف إلزامي بموجب الامتثال التنظيمي: ${decision.shortReasonAr}`,
+      shortReasonAr: decision.shortReasonAr,
       recommendationAr: 'يُمنع اعتماد تنفيذ هذا النشاط حتى استيفاء شروط الامتثال التنظيمي أو تحسّن الظروف الموجبة للإيقاف.',
     };
   }
 
-  if (AEI_COMPLIANCE_RESTRICTED_DECISIONS.has(compliance.decisionCategory) && aei.score > AEI_RESTRICT_CAP) {
+  if (decision.operationalDecision === 'RESTRICT' && aei.score > AEI_RESTRICT_CAP) {
     return {
       ...aei,
       status: 'RESTRICT',
@@ -895,55 +1041,151 @@ function applyComplianceGateToAei(aei: AeiEvaluationResult, compliance: DustComp
       color: 'RED',
       score: AEI_RESTRICT_CAP,
       cappedByGate: true,
-      gateReasonAr: `⚠️ تنبيه: تم تقييد النشاط بسبب الامتثال التنظيمي (${compliance.decisionLabelAr}): ${compliance.shortReasonAr}`,
-      // يجب استبدال shortReasonAr هنا تماماً كما في فرع الإغلاق أعلاه:
-      // النص الأصلي قادم من التقييم الفيزيائي وقد يقول "الأجواء ممتازة
-      // والظروف آمنة" بينما البطاقة تعرض "تقييد تشغيلي" — فيظهر تناقض
-      // صريح للمستخدم بين العنوان والسبب المكتوب تحته مباشرة. سبب التقييد
-      // الفعلي تنظيمي، فيجب أن يكون هو النص المعروض.
-      shortReasonAr: compliance.shortReasonAr,
+      gateReasonAr: `⚠️ تنبيه: تم تقييد النشاط بسبب الامتثال التنظيمي (${decision.decisionLabelAr}): ${decision.shortReasonAr}`,
+      shortReasonAr: decision.shortReasonAr,
       recommendationAr: 'استوفِ شروط الامتثال التنظيمي المذكورة أدناه قبل اعتماد تنفيذ هذا النشاط دون قيود.',
     };
   }
 
-  // PRECAUTION (نطاق PM10 150-250): طلب صريح من المستخدم — لا يُقيّد الدرجة/
-  // الحالة إطلاقاً (يبقى ALLOW بدرجته الكاملة)، لكن النص المعروض تحت البطاقة
-  // كان يبقى نص DVI العام ("الأجواء ممتازة والظروف آمنة") رغم أن البانر
-  // الموحد فوقها يعرض "احتراز — زيادة المراقبة" — تناقض ظاهري بين نص أخضر
-  // مطمئن ونص أصفر محترز لنفس اللحظة. نستبدل النص فقط، لا الدرجة/الحالة.
+  // PRECAUTION (نطاق PM10 150-250): طلب صريح من المستخدم (مُحدَّث) — يجب أن
+  // تعكس بطاقة AEI نفس حالة الاحتراز الصفراء المعروضة في بانر الامتثال، لا
+  // درجة/لون مستقلة قد تُظهر "قابل للتنفيذ" أخضر رغم بانر احتراز أصفر أعلاه.
+  // القرار السابق (لا تقييد إطلاقاً) عُكس صراحة: الآن نوحّد الحالة كـMONITOR
+  // الأصفر بنفس نص decisionLabelAr الظاهر في بطاقة الامتثال، دون المساس
+  // بالدرجة الرقمية نفسها (تبقى للاستخدام الداخلي فقط، الواجهة لا تعرضها).
   if (compliance.decisionCategory === 'PRECAUTION') {
     return {
       ...aei,
-      shortReasonAr: compliance.shortReasonAr,
+      status: 'MONITOR',
+      statusLabelAr: compliance.decisionLabelAr,
+      color: 'YELLOW',
+      shortReasonAr: decision.shortReasonAr,
       recommendationAr: 'زِد وتيرة المراقبة ومتابعة القراءة — لا يتطلب إجراءً تصحيحياً فورياً ما لم يستمر الارتفاع.',
     };
   }
 
+  if (decision.operationalDecision === 'MONITOR' && aei.score > AEI_RESTRICT_CAP) {
+    // ALLOW_WITH_CONTROLS/FIELD_VERIFICATION_REQUIRED (تقييد فعلي) — نفس
+    // سقف RESTRICT أعلاه.
+    return {
+      ...aei,
+      status: 'RESTRICT',
+      statusLabelAr: 'تقييد تشغيلي وضوابط إضافية — امتثال تنظيمي',
+      color: 'RED',
+      score: AEI_RESTRICT_CAP,
+      cappedByGate: true,
+      gateReasonAr: `⚠️ تنبيه: تم تقييد النشاط بسبب الامتثال التنظيمي (${decision.decisionLabelAr}): ${decision.shortReasonAr}`,
+      shortReasonAr: decision.shortReasonAr,
+      recommendationAr: 'استوفِ شروط الامتثال التنظيمي المذكورة أدناه قبل اعتماد تنفيذ هذا النشاط دون قيود.',
+    };
+  }
+
+  // كل decisionCategory غير ALLOW مغطاة بفروع صريحة أعلاه (MANDATORY_STOP/
+  // STOP_AFFECTED_ACTIVITY عبر PROTECTIVE_STOP/MANDATORY_STOP، RESTRICT_
+  // ACTIVITY، ALLOW_WITH_CONTROLS/FIELD_VERIFICATION_REQUIRED عبر MONITOR،
+  // PRECAUTION صراحة أعلاه) — لا يبقى مسار فعلي يصل هنا، فشل آمن يُرجع aei
+  // كما هو بلا تعديل.
   return aei;
+}
+
+// بديل آمن حين يغيب windowEval.worst (لا يحدث في مسار الإنتاج الفعلي —
+// dustResults من computeDustResults يحمله دائماً — لكن applyComplianceGatesToDustAei
+// دالة عامة قد تُستدعى باختبارات/مسارات مستقبلية بحمولة {activityId, aei,
+// compliance} مبسَّطة، تماماً كما كان applyComplianceGateToAei القديمة تقبل
+// compliance وحدها بلا أي DVI إطلاقاً). قيم ALLOW محايدة تماماً تضمن أن
+// decideFinal يعتمد على compliance وحدها كمصدر قرار حاسم هنا — نفس السلوك
+// الفعلي القديم بالضبط.
+const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
+  indicatorType: 'DVI',
+  dviBase: 0,
+  score: 0,
+  level: 'GREEN',
+  causeClassification: 'DUST',
+  decisionCategory: 'ALLOW',
+  decisionLabelAr: 'مسموح — تشغيل اعتيادي',
+  mandatoryStop: false,
+  overridable: true,
+  channels: {} as any,
+  multipliers: {} as any,
+  visibilityKm: null,
+  effectiveWindKmh: null,
+  visibilityConstraint: false,
+  mandatoryVisibilityStop: false,
+  respiratoryPPERequired: false,
+  dustExposureHigh: false,
+  outdoorWorkRestriction: false,
+  triggeredRules: [],
+  requiredActions: [],
+  shortReason: '',
+  topRiskDrivers: [],
+  riskReducers: [],
+  caveatsAr: [],
+  confidenceScore: 100,
+  confidenceLabel: 'عالية',
+  validUntil: new Date().toISOString(),
+};
+
+// يحوّل صفاً مخزَّناً من final_decisions إلى الحقول الأربعة الوحيدة التي
+// تقرأها applyFinalDecisionToAei فعلياً من decision (operationalDecision/
+// shortReasonAr/decisionLabelAr/pendingConfirmation) — لا حاجة لبناء
+// FinalDecision كامل هنا، فقط الحقول المُستهلَكة فعلياً.
+function storedRowToPartialFinalDecision(row: any): Pick<FinalDecision, 'operationalDecision' | 'shortReasonAr' | 'decisionLabelAr' | 'pendingConfirmation'> {
+  return {
+    operationalDecision: row.operational_decision,
+    shortReasonAr: row.short_reason_ar,
+    decisionLabelAr: row.decision_label_ar,
+    pendingConfirmation: row.pending_confirmation,
+  };
 }
 
 // يُطبَّق بعد ربط compliance بكل عنصر dustResults في route.ts — يعدّل aei
 // في مكانه (mutate) لتفادي إعادة بناء مصفوفة dustResults بالكامل هناك.
-export function applyComplianceGatesToDustAei(dustResults: any[]): void {
+//
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "القرار النهائي لا
+// يُحفظ كقرار رسمي واحد غير قابل للتعديل... البطاقة والخريطة والتنبيهات
+// تعيد حساب القرار بمعرّفات مختلفة"): كانت هذه الدالة (تغذّي بطاقة AEI في
+// صفحة المشروع) تستدعي decideFinal محلياً بمعزل تام — بمعرّف snapshotId
+// مبني من activityGroupId/activityId، مختلف عن الصف الذي كتبه evaluate/
+// route.ts فعلياً في final_decisions لنفس النشاط بنفس اللحظة تقريباً. بقية
+// المسارات (summaryFromStoredDecision في [projectId]/route.ts، dashboard/
+// global، viewer/dashboard، alerts/generate) هُوجِّرت جميعها لقراءة الصف
+// المخزَّن بدل إعادة الحساب — بطاقة AEI وحدها بقيت الاستثناء الخامس.
+//
+// finalDecisionsByGroup اختياري: عند توفره (المسار الفعلي في [projectId]/
+// route.ts بعد إضافة fetchLatestFinalDecisions قبل هذا الاستدعاء)، يُقرَأ
+// القرار المخزَّن لكل activity_group_id بدل استدعاء decideFinal محلياً.
+// عند غيابه (اختبارات هذا الملف، أو نشاط جديد لم يُقيَّم بعد عبر evaluate/
+// route.ts فيغيب صفه المخزَّن) يبقى fallback الحساب المحلي كما كان — فشل
+// آمن، لا يُسقِط تعديل AEI بأكمله.
+export function applyComplianceGatesToDustAei(dustResults: any[], finalDecisionsByGroup?: Map<string, any>): void {
   (dustResults || []).forEach((r: any) => {
-    if (r?.aei) {
-      r.aei = applyComplianceGateToAei(r.aei, r.compliance ?? null);
+    if (!r?.aei) return;
+    const storedRow = finalDecisionsByGroup?.get(r.activityGroupId);
+    let decision: Pick<FinalDecision, 'operationalDecision' | 'shortReasonAr' | 'decisionLabelAr' | 'pendingConfirmation'>;
+    if (storedRow) {
+      decision = storedRowToPartialFinalDecision(storedRow);
+    } else {
+      const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
+      const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, r.compliance ?? null, r.aei);
+      decision = decideFinal(finalInput);
     }
+    r.aei = applyFinalDecisionToAei(r.aei, decision as FinalDecision, r.compliance ?? null);
   });
 }
 
 // -----------------------------------------------------------------------
-// "القرار الموحد للنشاط" — نفس دمج DVI+الامتثال المستخدم في summaryFromDust
-// (app/api/projects/[projectId]/route.ts، البانر العلوي لصفحة تفاصيل
-// المشروع)، لكن هنا كدالة مشتركة يستهلكها أيضاً حساب حالة نقطة الخريطة
-// (dashboard/global وviewer/dashboard) حتى تطابق النقطة على الخريطة تماماً
-// قرار البانر: قرار الامتثال (MANDATORY_STOP/STOP_AFFECTED_ACTIVITY) له
-// الأولوية القصوى على توصية DVI الفيزيائي، تماماً كما في صفحة المشروع.
+// "القرار الموحد للنشاط" — غلاف رقيق حول decideFinal يحافظ على شكل
+// UnifiedActivityDecision القديم (decisionLabelAr/shortReason/level/
+// mandatoryStop/pendingConfirmation) لمستهلكيه الحاليين (summaryFromDust في
+// app/api/projects/[projectId]/route.ts، حساب حالة نقطة الخريطة في
+// dashboard/global وviewer/dashboard) بلا حاجة لتعديلهم — القرار الفعلي
+// محسوب الآن بالكامل داخل decideFinal، لا هنا.
 export interface UnifiedActivityDecision {
   decisionLabelAr: string;
   shortReason: string;
   level: string;
   mandatoryStop: boolean;
+  overridable: boolean;
   // true فقط عند STOP_AFFECTED_ACTIVITY "معلَّق" بانتظار تأكيد استمرار
   // (compliance.pendingConfirmation)، لا مخالفة مؤكَّدة. تُستخدم في الواجهة
   // (MultiIndicatorActivityBox، Dustwidgetcard) لعرض حالة مؤقتة (برتقالي/
@@ -952,95 +1194,66 @@ export interface UnifiedActivityDecision {
   pendingConfirmation: boolean;
 }
 
+// ترتيب شدة موحَّد بين FinalDecision.level (6 درجات) وAeiColor (5 درجات،
+// بلا DARK_RED) — يسمح بمقارنة مباشرة "أيهما أشد" بين المصدرين.
+const UNIFIED_LEVEL_WEIGHT: Record<string, number> = {
+  GREEN: 0,
+  YELLOW: 1,
+  ORANGE: 2,
+  RED: 3,
+  DARK_RED: 4,
+  BLACK: 5,
+};
+
 export function computeUnifiedActivityDecision(
-  dviWorst: { decisionLabelAr: string; shortReason: string; level: string; mandatoryStop: boolean },
-  compliance: DustComplianceResult | null
+  dviWorst: DviEvaluationResult,
+  compliance: DustComplianceResult | null,
+  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "تناقض بين البطاقات التي تصدر
+  // قرارات: فوق تشغيل اعتيادي وتحت مع مراقبة"): decideFinal تبني level/
+  // decisionLabelAr من dvi.level/dvi.decisionLabelAr مباشرة (لا aei إطلاقاً
+  // — aei لا تُستهلَك داخل decideFinal نفسها). لكن evaluateAei (aei-engine)
+  // تحسب safetyScore/qualityScore من dvi.score الرقمي المستمر بمعزل عن
+  // dvi.decisionCategory الثنائي — فنشاط قد يكون DVI فيه 'ALLOW' نصياً
+  // (decisionLabelAr='مسموح — تشغيل اعتيادي') بينما dvi.score>0 يكفي لخفض
+  // AEI إلى MONITOR/'قابل للتنفيذ مع مراقبة' فعلياً. العنوان الأعلى
+  // ("القرار الموحد للنشاط"، عبر summaryFromDust في route.ts) كان يعرض نص
+  // decideFinal وحده بلا اطّلاع على aei، فيظهر "مسموح" أخضر فوق بطاقة AEI
+  // "مع مراقبة" صفراء لنفس النشاط مباشرة — تناقض ظاهري صريح بين "بطاقتين
+  // تصدران قرارات" رغم أن كليهما صحيح فعلياً من منظوره الخاص (تنظيمي مقابل
+  // تشغيلي فيزيائي دقيق).
+  //
+  // الإصلاح: aei معامل ثالث اختياري — عند توفره، "الأشد يحكم" يُطبَّق بين
+  // level النهائي من decideFinal وaei.color معاً (لا decideFinal وحدها)،
+  // ونص/سبب aei يحل محل نص decideFinal إن كان aei هو الأشد فعلياً. غياب aei
+  // (استدعاءات قديمة: dashboard/global، viewer/dashboard) يبقي السلوك بلا
+  // تغيير تماماً — فشل آمن نحو الاعتماد على decideFinal وحدها كما كان.
+  aei?: AeiEvaluationResult | null
 ): UnifiedActivityDecision {
-  const complianceBlocks =
-    compliance && (compliance.decisionCategory === 'MANDATORY_STOP' || compliance.decisionCategory === 'STOP_AFFECTED_ACTIVITY');
+  const decision = decideFinal(buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null));
 
-  if (complianceBlocks) {
-    // pendingConfirmation (مثال: MRQ-PM10-BLACK-PENDING-104) يعني القرار
-    // موقوف احترازياً بانتظار تأكيد استمرار القراءة، لا مخالفة تنظيمية
-    // مؤكَّدة — عرضه بنفس عبارة "إيقاف إلزامي نظامي" القطعية (أسود) يوهم
-    // المستخدم بأن هذا قرار نهائي دائم، بينما هو مؤقت وقد يتحول تلقائياً
-    // خلال دقائق لـALLOW (لو انخفضت القراءة) أو MANDATORY_STOP (لو استمرت).
-    if (compliance!.pendingConfirmation) {
-      return {
-        decisionLabelAr: 'إيقاف مؤقت (معلَّق) — بانتظار التأكيد',
-        shortReason: compliance!.shortReasonAr || '',
-        level: 'RED',
-        mandatoryStop: false,
-        pendingConfirmation: true,
-      };
-    }
+  if (
+    aei &&
+    !decision.mandatoryStop &&
+    !decision.pendingConfirmation &&
+    UNIFIED_LEVEL_WEIGHT[aei.color] > UNIFIED_LEVEL_WEIGHT[decision.level]
+  ) {
     return {
-      decisionLabelAr: 'إيقاف إلزامي نظامي',
-      shortReason: compliance!.shortReasonAr || '',
-      level: 'BLACK',
-      mandatoryStop: true,
-      pendingConfirmation: false,
+      decisionLabelAr: aei.statusLabelAr,
+      shortReason: aei.shortReasonAr,
+      level: aei.color,
+      mandatoryStop: decision.mandatoryStop,
+      overridable: decision.overridable,
+      pendingConfirmation: decision.pendingConfirmation,
     };
   }
-
-  // قرار امتثال أقل من إيقاف لكنه ليس ALLOW نظيفاً (مثال: PM10-EARLY-
-  // WARNING-007 عند اقتراب 300 من حد المخالفة 340) هو نتيجة قاعدة تنظيمية
-  // محدَّدة فعلياً — لا يجوز أن يختفي خلف رسالة DVI العامة ("تقييد العمل:
-  // وجود فجوة في إجراءات التحكم الميدانية") لمجرد أن مستوى DVI صادف نفس
-  // درجة "تقييد" تقريباً. كان هذا يُخفي فعلياً كل قواعد الامتثال الأخف من
-  // MANDATORY_STOP/STOP_AFFECTED_ACTIVITY (RESTRICT_ACTIVITY،
-  // FIELD_VERIFICATION_REQUIRED، ALLOW_WITH_CONTROLS) خلف نص DVI دائماً.
-  if (compliance && compliance.decisionCategory !== 'ALLOW') {
-    // نفس مجموعة AEI_COMPLIANCE_RESTRICTED_DECISIONS التي تقص بطاقة AEI إلى
-    // أحمر (RESTRICT) أعلاه — لو تُرك level هنا يتبع DVI وحده (مثال: DVI
-    // "أخضر" فيزيائياً بينما الامتثال ALLOW_WITH_CONTROLS)، يظهر البانر
-    // العلوي أخضر بينما بطاقة AEI بجانبه مباشرة تظهر حمراء لنفس القرار —
-    // تناقض رصده المستخدم مباشرة على الشاشة. لا نخفض DVI لو كان هو الأشد
-    // أصلاً (مثال: DVI أسود/BLACK بينما الامتثال RESTRICT فقط)، فقط نرفع
-    // المستوى لأحمر كحد أدنى حين يكون الامتثال هو الأشد.
-    // PRECAUTION (نطاق 150-250، طلب صريح من المستخدم) أخف من ALLOW_WITH_
-    // CONTROLS ولا يُقيّد AEI إطلاقاً (غير مُدرجة في أي من المجموعتين أعلاه
-    // عمداً) — لكن يجب ألا يبقى البانر أخضر بينما نصه "احتراز"؛ حد أدنى
-    // أصفر فقط (لا أحمر، ليست بشدة ALLOW_WITH_CONTROLS).
-    const floorLevel = compliance.decisionCategory === 'PRECAUTION'
-      ? 'YELLOW'
-      : AEI_COMPLIANCE_RESTRICTED_DECISIONS.has(compliance.decisionCategory)
-        ? 'RED'
-        : null;
-    const level = floorLevel && DVI_LEVEL_WEIGHT[dviWorst.level] < DVI_LEVEL_WEIGHT[floorLevel]
-      ? floorLevel
-      : dviWorst.level;
-    return {
-      decisionLabelAr: dviWorst.mandatoryStop ? 'إيقاف إلزامي نظامي' : compliance.decisionLabelAr,
-      shortReason: compliance.shortReasonAr || dviWorst.shortReason || '',
-      level: dviWorst.mandatoryStop ? 'BLACK' : level,
-      mandatoryStop: dviWorst.mandatoryStop,
-      pendingConfirmation: false,
-    };
-  }
-
-  // محرك DVI الفيزيائي لا يعرف مفهوم "العملية المغلقة" إطلاقاً (لا حقل
-  // isEnclosedOperation في مدخلاته) — يحسب خطر نقل الرياح لنفس النشاط سواء
-  // كان مغلقاً أو مكشوفاً، فقد يُظهر YELLOW/"تشغيل مع المراقبة" بسبب رياح
-  // مرتفعة فقط، حتى لو كان النشاط مغلقاً فعلياً (لا تطاير غبار ممكن) وقرار
-  // الامتثال (الذي يعرف الإغلاق) نظيف تماماً (ALLOW). طلب صريح من المستخدم:
-  // الامتثال هو المرجع هنا — لا نعرض تنبيه "مراقبة" مصدره رياح فقط لنشاط
-  // مغلق وامتثاله نظيف. لا يُطبَّق إن كان dviWorst.mandatoryStop (خطر
-  // فيزيائي فعلي كرؤية حرجة لا علاقة له بالإغلاق إطلاقاً).
-  const enclosedAndCompliant =
-    compliance?.isEnclosedOperation === true && (!compliance || compliance.decisionCategory === 'ALLOW');
-  const suppressDviMonitoring = enclosedAndCompliant && !dviWorst.mandatoryStop;
 
   return {
-    decisionLabelAr: dviWorst.mandatoryStop
-      ? 'إيقاف إلزامي نظامي'
-      : suppressDviMonitoring
-        ? 'مسموح — تشغيل اعتيادي'
-        : dviWorst.decisionLabelAr,
-    shortReason: suppressDviMonitoring ? (compliance?.shortReasonAr || '') : (dviWorst.shortReason || ''),
-    level: suppressDviMonitoring ? 'GREEN' : dviWorst.level,
-    mandatoryStop: dviWorst.mandatoryStop,
-    pendingConfirmation: false,
+    decisionLabelAr: decision.decisionLabelAr,
+    shortReason: decision.shortReasonAr,
+    level: decision.level,
+    mandatoryStop: decision.mandatoryStop,
+    overridable: decision.overridable,
+    pendingConfirmation: decision.pendingConfirmation,
   };
 }
 
@@ -1144,6 +1357,12 @@ export async function persistDustComplianceEvaluations(
           updated_at: nowIso,
           stopped_since: stoppedSince,
           pending_resume_since: pendingResumeSince,
+          // كود القاعدة الفعلية التي بنت newDecision (راجع previousDecidingRuleCode
+          // في types.ts) — يمكّن التقييم التالي من معرفة *سبب* هذا الإيقاف
+          // بدقة، لا فئته العامة فقط (STOP_AFFECTED_ACTIVITY تُنتَج من عشرات
+          // القواعد المختلفة، لا بوابة الرياح فقط).
+          deciding_rule_code: r.result?.decidingRuleCode ?? null,
+          stop_cause: r.result?.decidingRuleMessageAr ?? null,
         };
         if (existing?.updated_at) {
           await supabaseAdmin
@@ -1159,4 +1378,99 @@ export async function persistDustComplianceEvaluations(
       }
     })
   );
+}
+
+// -----------------------------------------------------------------------
+// final_decisions — لقطة واحدة موثوقة لكل قرار decideFinal (خطأ معماري
+// مكتشَف ومُصلَح، مراجعة كود مدير — "FinalDecisionEngine ليس المصدر
+// التشغيلي الوحيد فعلياً"): decideFinal كانت تُستدعى بمعزل تام من 4 مسارات
+// (البانر عبر computeUnifiedActivityDecision، dashboard/global/route.ts،
+// viewer/dashboard/route.ts، alerts/generate/route.ts) — كل مسار يُعيد
+// بناء dvi/compliance/aei ويستدعيها بنفسه بمعرّف snapshotId مختلف تماماً،
+// بلا أي تخزين للنتيجة الفعلية ولا decisionId واحد يربط كل تلك الواجهات
+// بنفس القرار بالضبط. أربع إعادات حساب مستقلة = أربع نقاط تناقض محتملة.
+//
+// الإصلاح: نقطة كتابة واحدة هنا (تُستدعى من evaluate/route.ts فقط، بعد
+// persistDustComplianceEvaluations مباشرة) تحسب decideFinal مرة واحدة لكل
+// مجموعة نشاط وتخزّنها في final_decisions (append-only). id الصف المُدرَج
+// يصبح decisionId الموحَّد؛ المسارات الأربعة تُحوَّل (راجع استدعاءاتها) لتقرأ
+// آخر صف مخزَّن هنا بدل إعادة الحساب محلياً — قراءة واحدة بدل 4 حسابات.
+export async function persistFinalDecisions(
+  supabaseAdmin: any,
+  projectId: string,
+  dustResults: any[],
+  complianceResults: any[]
+) {
+  const complianceByActivityId = new Map<string, any>(
+    (complianceResults || []).map((r: any) => [r.activityId, r])
+  );
+
+  await Promise.all(
+    (dustResults || []).map(async (r: any) => {
+      try {
+        if (!r?.aei) return;
+        const complianceEntry = complianceByActivityId.get(r.activityId);
+        const compliance: DustComplianceResult | null = complianceEntry?.result ?? null;
+        const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
+
+        const finalInput = buildFinalDecisionInput(
+          r.activityGroupId ?? r.activityId ?? 'unknown',
+          dvi,
+          compliance,
+          r.aei
+        );
+        const decision = decideFinal(finalInput);
+
+        await supabaseAdmin.from('final_decisions').insert({
+          project_id: projectId,
+          activity_group_id: r.activityGroupId,
+          dust_profile_id: r.activityId ?? null,
+          mode: decision.mode,
+          operational_decision: decision.operationalDecision,
+          regulatory_finding: decision.regulatoryFinding,
+          mandatory_stop: decision.mandatoryStop,
+          overridable: decision.overridable,
+          short_reason_ar: decision.shortReasonAr,
+          decision_label_ar: decision.decisionLabelAr,
+          level: decision.level,
+          pending_confirmation: decision.pendingConfirmation,
+          reason_codes: decision.reasonCodes,
+          evidence_quality: decision.evidenceQuality,
+          rule_bundle_version: decision.ruleBundleVersion,
+          evaluated_at: finalInput.evaluatedAt,
+        });
+      } catch (error) {
+        console.error(`فشل حفظ القرار النهائي للنشاط ${r.activityId}:`, error);
+      }
+    })
+  );
+}
+
+// يجلب آخر قرار نهائي مخزَّن لكل activity_group_id مطلوب — القراءة
+// الموحَّدة الوحيدة التي يجب أن تستخدمها كل الواجهات (البانر، الخريطة
+// العامة، لوحة المراقب، مولّد التنبيهات) بدل إعادة استدعاء decideFinal
+// محلياً بمدخلات قد تختلف طفيفاً بين مسار وآخر. يُرجع خريطة فارغة بصمت عند
+// أي فشل استعلام (فشل آمن — المستدعي يتعامل مع الغياب كـ"لا قرار مخزَّن
+// بعد"، لا خطأً قاطعاً).
+export async function fetchLatestFinalDecisions(
+  supabaseAdmin: any,
+  activityGroupIds: string[]
+): Promise<Map<string, any>> {
+  const map = new Map<string, any>();
+  const ids = Array.from(new Set((activityGroupIds || []).filter(Boolean)));
+  if (ids.length === 0) return map;
+
+  try {
+    const { data } = await supabaseAdmin
+      .from('final_decisions')
+      .select('*')
+      .in('activity_group_id', ids)
+      .order('created_at', { ascending: false });
+    for (const row of data || []) {
+      if (!map.has(row.activity_group_id)) map.set(row.activity_group_id, row);
+    }
+  } catch {
+    // فشل الاستعلام لا يُسقط المستدعي — نفس مبدأ resolveFreshProjectDevice.
+  }
+  return map;
 }

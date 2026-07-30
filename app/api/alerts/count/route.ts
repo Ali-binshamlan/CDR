@@ -14,12 +14,12 @@ export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
 
-  const { data: profile } = await supabaseAdmin
-    .from('profiles')
+  const { data: authz } = await supabaseAdmin
+    .from('user_authorizations')
     .select('account_role')
-    .eq('id', auth.userId)
+    .eq('user_id', auth.userId)
     .maybeSingle();
-  const isViewer = profile?.account_role === 'viewer';
+  const isViewer = authz?.account_role === 'viewer';
 
   let query = supabaseAdmin
     .from('alerts')

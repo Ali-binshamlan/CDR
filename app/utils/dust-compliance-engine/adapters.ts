@@ -254,11 +254,20 @@ export function buildComplianceContext(
   // ويبقى undefined في أي مسار لا يجلبه (مثل الشبكة الساعية التوقّعية)،
   // فلا يُطبَّق أي قيد هناك تلقائياً. pending_resume_since منفصل تماماً عن
   // updated_at — راجع previousPendingResumeSince في types.ts للسبب الكامل.
-  previousDecision?: { decision: string; updated_at: string; pending_resume_since?: string | null } | null,
-  // استمرار PM10 عبر الزمن (من fetchPm10SustainedStatus في
-  // dustEvaluation.ts) — اختياري، undefined يعني "لا بيانات استمرار"
-  // فيسلك المحرك مساره الاحتياطي الآمن (معاملة القراءة كأنها لحظية فقط).
-  pm10Sustained?: { sustainedMinutesAbove340: number; sustainedMinutesAbove250: number } | null
+  previousDecision?: { decision: string; updated_at: string; pending_resume_since?: string | null; deciding_rule_code?: string | null } | null,
+  // استمرار PM10 عبر الزمن (الكائن الكامل المُرجَع من computeSustainedPm10Status
+  // في dustEvaluation.ts، لا الرقمين المُجرَّدين فقط) — اختياري، undefined
+  // يعني "لا بيانات استمرار" فيسلك المحرك مساره الاحتياطي الآمن (معاملة
+  // القراءة كأنها لحظية فقط). isConfirmedViolation340/isSuspended250For30Min
+  // محسوبتان هناك بكل الأدلة اللازمة (المصدر، حداثة القراءة) — يُمرَّران هنا
+  // كما هما، بلا إعادة اشتقاق في rulebook.ts (راجع pm10ConfirmedViolation340
+  // في types.ts للسبب الكامل).
+  pm10Sustained?: {
+    sustainedMinutesAbove340: number;
+    sustainedMinutesAbove250: number;
+    isConfirmedViolation340: boolean;
+    isSuspended250For30Min: boolean;
+  } | null
 ): DustComplianceContext {
   // القراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite — راجع
   // mergeDustReading في dust-engine/engine.ts) متوفرة فقط إن كان dviResult
@@ -309,13 +318,30 @@ export function buildComplianceContext(
     dviScore: dviResult.score,
     dviDecision: dviResult.decisionCategory,
     dviMandatoryStop: dviResult.mandatoryStop,
+    // true فقط عندما يكون سبب إيقاف DVI الإلزامي الوحيد هو تجاوز PM10≥340
+    // اللحظي (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY، راجع dust-engine/
+    // engine.ts) — بلا أي خطر فيزيائي فوري آخر (رؤية حرجة/رياح شديدة) مساهم
+    // بنفس اللحظة. تُستخدم في GATE-DVI-002 (engine.ts) لمنع قراءة PM10
+    // لحظية واحدة من التحول مباشرة لـMANDATORY_STOP تنظيمي قطعي دون نفس
+    // دليل الاستمرار (>دقيقتين) الذي يشترطه pm10ThresholdRule لعتبة
+    // PM10-VIOLATION-STOP-006 — راجع ملاحظة مراجعة خارجية: "DVI يصدر إيقافاً
+    // تنظيمياً فور قراءة واحدة".
+    dviMandatoryStopIsPm10Only: (dviResult.triggeredRules ?? []).includes(
+      'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY'
+    ),
     dviShortReason: dviResult.shortReason ?? null,
     dviConfidenceScore: dviResult.confidenceScore,
-    // ⚠️ استثناء مقصود: يبقى effectiveWindKmh (لا merged.windSpeedKmh) —
-    // ليس سرعة رياح خام بل max(سرعة، 0.85×هبة)، رقم مخاطر مشتق تعتمد عليه
-    // فعلياً قواعد بوابة الرياح (GATE-WIND-ABOVE-25-004 وغيرها). استبداله
-    // بالسرعة الخام يكسر تلك القواعد — لا تُصلح هذا السطر.
-    windSpeedKmh: dviResult.effectiveWindKmh,
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي
+    // يستخدم رقمًا مشتقًا من الهبات"): كان يُمرَّر dviResult.effectiveWindKmh
+    // هنا (max(سرعة، 0.85×هبة)، رقم مخاطر DVI الداخلي) بدل سرعة الرياح
+    // الخام — تعليق سابق هنا كان يصف هذا كـ"استثناء مقصود" ويمنع تعديله،
+    // لكن ذلك التعليق كان تحذيراً وقائياً ضد كسر القواعد أثناء إعادة هيكلة
+    // سابقة، لا قراراً تنظيمياً بأن الهبات تُحسب ضمن "سرعة الرياح" في نص
+    // الملحق أ (الذي لا يذكر الهبات إطلاقاً). راجع تعليق windSpeedKmh في
+    // types.ts للتفصيل الكامل؛ effectiveWindKmh يبقى محصوراً في DVI
+    // (dust-engine/engine.ts) فقط. windGustSafetyRule في rulebook.ts هي
+    // القاعدة الوحيدة الآن التي تقرأ windGustKmh لأي قرار تنظيمي.
+    windSpeedKmh: merged?.windSpeedKmh ?? null,
     windGustKmh: merged?.windGustKmh ?? null,
     windDirectionDeg: merged?.windDirectionDeg ?? null,
     pm10UgM3: merged?.pm10 ?? null,
@@ -333,10 +359,13 @@ export function buildComplianceContext(
     pm10Source: merged?.sources.pm10,
     sensitiveReceptors,
     previousDecisionCategory: (previousDecision?.decision as DustComplianceContext['previousDecisionCategory']) ?? null,
+    previousDecidingRuleCode: previousDecision?.deciding_rule_code ?? null,
     previousDecisionUpdatedAt: previousDecision?.updated_at ?? null,
     previousPendingResumeSince: previousDecision?.pending_resume_since ?? null,
     pm10SustainedMinutesAbove340: pm10Sustained?.sustainedMinutesAbove340,
     pm10SustainedMinutesAbove250: pm10Sustained?.sustainedMinutesAbove250,
+    pm10ConfirmedViolation340: pm10Sustained?.isConfirmedViolation340,
+    pm10Suspended250For30Min: pm10Sustained?.isSuspended250For30Min,
   };
 }
 

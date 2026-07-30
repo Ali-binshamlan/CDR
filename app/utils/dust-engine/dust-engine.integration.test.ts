@@ -106,6 +106,80 @@ describe('DVI تكامل — بوابات الغبار والجسيمات', () =
     expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "التوقف الإلزامي يمكن أن
+  // يكون قابلاً للتجاوز"): decisionCategory='STOP_DUST_GENERATING_ACTIVITIES'
+  // (بخلاف 'MANDATORY_STOP') كان يصل بـoverridable=true رغم mandatoryStop=
+  // true — تناقض منطقي يُخفي بانر "توصية إلزامية" في الواجهة (Dustwidget
+  // card.tsx) رغم أن النشاط موقوف فعلياً. أي مسار يضبط mandatoryStop=true
+  // يجب أن يصل بـoverridable=false دائماً، بصرف النظر عن decisionCategory.
+  it('PM10 ≥ 500 مع نشاط مثير للغبار → overridable=false (لا يجوز تجاوز إيقاف مثبَّت mandatoryStop=true)', () => {
+    const r = computeDviResult(
+      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      weather({ pm10: 550 })
+    );
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.overridable).toBe(false);
+  });
+
+  it('رياح ≥55 كم/س + مواد سائبة مكشوفة لنشاط مولّد للغبار → إيقاف إلزامي وoverridable=false', () => {
+    const r = computeDviResult(
+      input({ activityType: 'EXCAVATION', site: site({ looseMaterials: true }) }),
+      weather({ windSpeedKmh: 60, windGustKmh: 60, pm10: 20, visibilityM: 10000 })
+    );
+    expect(r.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.triggeredRules).toContain('DVI-WIND-LOOSE-MATERIAL-005');
+    expect(r.overridable).toBe(false);
+  });
+
+  // راجع dust-compliance-engine/engine.ts (GATE-DVI-002) وملاحظة مراجعة
+  // خارجية: "DVI يصدر إيقافاً تنظيمياً فور قراءة واحدة". هذا الوسم الفرعي
+  // يميّز "PM10 لحظي هو السبب الوحيد" (يحتاج دليل استمرار >دقيقتين قبل أي
+  // إيقاف إلزامي تنظيمي قطعي) عن "خطر فيزيائي فوري حقيقي آخر مساهم" (رؤية
+  // حرجة + رياح شديدة معاً، يبقى إيقافاً فورياً صحيحاً بلا اشتراط استمرار).
+  it('PM10>340 وحده (بلا رؤية حرجة/رياح شديدة مساهمة) → DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY أيضاً', () => {
+    const r = computeDviResult(
+      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      weather({ pm10: 350, visibilityM: 10000, windSpeedKmh: 10, windGustKmh: 15 })
+    );
+    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
+    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "حد PM10 ما زال خاطئاً"): كان
+  // pm10RuleTriggered يستخدم `>=` بدل `>` — النص التنظيمي يقول "تجاوز 340"
+  // (exceeds) صراحة، نفس عتبة pm10ThresholdRule بمحرك الامتثال (rulebook.ts:
+  // `pm10UgM3 > PM10_VIOLATION_STOP_UG_M3`). قراءة 340.000 بالضبط يجب ألا
+  // تُفعِّل هذه القاعدة الفيزيائية إطلاقاً — وإلا يتناقض محرك DVI مع محرك
+  // الامتثال على نفس القيمة بالضبط (DVI يوقف فوراً، الامتثال يعتبرها "تنبيه
+  // استباقي" فقط).
+  it('PM10=340 بالضبط (لا تجاوز فعلي) → DVI-DUST-ACTIVITY-STOP-004 لا يُفعَّل إطلاقاً', () => {
+    const r = computeDviResult(
+      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      weather({ pm10: 340, visibilityM: 10000, windSpeedKmh: 10, windGustKmh: 15 })
+    );
+    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('رؤية<1كم + حفريات + رياح>40 (بلا PM10 مرتفع) → DVI-DUST-ACTIVITY-STOP-004 بلا وسم PM10-ONLY', () => {
+    const r = computeDviResult(
+      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      weather({ pm10: 20, visibilityM: 800, windSpeedKmh: 45, windGustKmh: 45 })
+    );
+    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
+    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
+  });
+
+  it('PM10>340 معاً مع رؤية حرجة+رياح شديدة (كلا الشرطين) → بلا وسم PM10-ONLY (خطر فيزيائي حقيقي مساهم أيضاً)', () => {
+    const r = computeDviResult(
+      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      weather({ pm10: 350, visibilityM: 800, windSpeedKmh: 45, windGustKmh: 45 })
+    );
+    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
+    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
+  });
+
   // طلب صريح من المستخدم: نص RESTRICT العام ("تقييد العمل: وجود فجوة في
   // إجراءات التحكم الميدانية") لا يجوز أن يظهر كقرار "تقييد" فعلي — DVI-PM10-
   // ACTION-003 لم يعد يصعّد لـRESTRICT، يبقى عند ALLOW_WITH_MONITORING
@@ -334,4 +408,65 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
     expect(r.mandatoryVisibilityStop).toBe(true);
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
+});
+
+// =====================================================================
+// invariant: mandatoryStop=true لا يجوز أبداً أن يجتمع مع overridable=true
+// (راجع ملاحظة مراجعة خارجية: "التوقف الإلزامي يمكن أن يكون قابلاً
+// للتجاوز" — فرعان في applyMandatoryGates كانا يضبطان mandatoryStop=true
+// بقرار STOP_DUST_GENERATING_ACTIVITIES بلا ضبط overridable=false، فتصل
+// نتيجة متناقضة منطقياً لمستهلكي DviEvaluationResult). المشروع لا يحمل
+// fast-check كتبعية، فهذا مسح شامل يدوي (بدل property-based) عبر كل أنواع
+// الأنشطة × تركيبات مخاطر شديدة (رؤية حرجة، PM10 مرتفع، رياح شديدة، مواد
+// سائبة، عواصف رملية) — يغطي كل فروع applyMandatoryGates التي قد تضبط
+// mandatoryStop=true فعلياً، بلا استثناء نوع نشاط أو تركيبة خطر واحدة.
+// =====================================================================
+describe('DVI تكامل — invariant: لا يجوز أن يكون التوقف الإلزامي قابلاً للتجاوز', () => {
+  const ALL_ACTIVITY_TYPES: DustEngineInput['activityType'][] = [
+    'GENERAL_OUTDOOR_WORK',
+    'CRANE_LIFTING',
+    'WORK_AT_HEIGHT',
+    'STEEL_ERECTION',
+    'FACADE_INSTALLATION',
+    'HEAVY_EQUIPMENT_MOVEMENT',
+    'EXCAVATION',
+    'BACKFILLING',
+    'GRADING',
+    'SOIL_TRANSPORT',
+    'COMPACTION',
+    'ROAD_WORKS',
+    'CONCRETE_POURING',
+    'MATERIAL_TRANSPORT',
+  ];
+
+  const HAZARD_COMBINATIONS: {
+    label: string;
+    weatherOverrides: Partial<DustWeatherSample>;
+    siteOverrides: Partial<DustSiteInputs>;
+  }[] = [
+    { label: 'أجواء طبيعية', weatherOverrides: {}, siteOverrides: {} },
+    { label: 'رؤية حرجة جداً (<0.5كم) + عاصفة رملية', weatherOverrides: { visibilityM: 200, weatherSymbol: 'SANDSTORM' }, siteOverrides: {} },
+    { label: 'رؤية حرجة (<1كم)', weatherOverrides: { visibilityM: 700 }, siteOverrides: {} },
+    { label: 'PM10 مرتفع جداً (1800) + حفريات', weatherOverrides: { pm10: 1800 }, siteOverrides: { hasEarthworks: true } },
+    { label: 'رؤية حرجة + حفريات + رياح >40', weatherOverrides: { visibilityM: 700, windSpeedKmh: 45, windGustKmh: 45 }, siteOverrides: { hasEarthworks: true } },
+    { label: 'رياح شديدة جداً (60) + مواد سائبة', weatherOverrides: { windSpeedKmh: 60, windGustKmh: 60 }, siteOverrides: { looseMaterials: true } },
+    { label: 'كل المخاطر معاً (أسوأ سيناريو ممكن)', weatherOverrides: { visibilityM: 100, pm10: 2000, windSpeedKmh: 70, windGustKmh: 80, weatherSymbol: 'SANDSTORM' }, siteOverrides: { hasEarthworks: true, looseMaterials: true, internalDirtRoads: true } },
+  ];
+
+  for (const activityType of ALL_ACTIVITY_TYPES) {
+    for (const hazard of HAZARD_COMBINATIONS) {
+      it(`${activityType} + ${hazard.label} → !(mandatoryStop && overridable)`, () => {
+        const r = computeDviResult(
+          input({ activityType, site: site(hazard.siteOverrides) }),
+          weather(hazard.weatherOverrides)
+        );
+        expect(r.mandatoryStop && r.overridable).toBe(false);
+        // إن كان mandatoryStop=true تحديداً، overridable يجب أن يكون false
+        // بالضبط (لا مجرد falsy) — تأكيد صريح إضافي على قوة الـinvariant.
+        if (r.mandatoryStop) {
+          expect(r.overridable).toBe(false);
+        }
+      });
+    }
+  }
 });

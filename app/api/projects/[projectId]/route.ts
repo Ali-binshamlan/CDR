@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 
 // منطق تقييم الغبار/الامتثال التنظيمي/AEI المشترك — نسخة DCR من
@@ -10,10 +11,10 @@ import {
   computeDustComplianceHourly,
   computeUnitReceptors,
   applyComplianceGatesToDustAei,
-  computeUnifiedActivityDecision,
+  fetchLatestFinalDecisions,
   riyadhLocalToUtcIso,
 } from '@/app/lib/dustEvaluation';
-import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
+import { buildSensitiveReceptor, DECISION_PRIORITY } from '@/app/utils/dust-compliance-engine';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { buildProjectZoneFromRow, distanceToZoneBoundaryM, zoneToBoundaryDistanceM, zoneSearchAnchorPoints } from '@/app/utils/geo/zone';
@@ -65,21 +66,19 @@ function riskWeightFromColor(color: string | undefined | null): number {
   return 0; // GREEN أو غير معروف
 }
 
-// يفوّض لنفس دالة الدمج المستخدمة في خرائط اللوحة الحية
-// (computeUnifiedActivityDecision في dustEvaluation.ts) بدل تكرار منطق
-// "compliance يطغى على DVI" هنا محلياً — كان هذا التكرار مصدر تناقض فعلي:
-// بانر "القرار الموحد" هنا وبطاقة الخريطة الحية كانا يعتمدان نسختين
-// منفصلتين من نفس القاعدة، فأمكن أن تختلفا لو تغيّرت إحداهما دون الأخرى.
-//
-// riskWeight يُبنى الآن من unified.level حصرياً (لا mandatoryStop منفصل)،
-// لأن unified.level يميّز فعلياً بين BLACK (إيقاف مؤكَّد) وRED (معلَّق) —
-// unified.mandatoryStop وحده كان يساوي بينهما (كلاهما true بغياب تمييز).
-function summaryFromDust(result: any, compliance: any = null): { decisionLabel: string; riskWeight: number; reasonText?: string } {
-  const unified = computeUnifiedActivityDecision(result, compliance);
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود مدير — "FinalDecisionEngine ليس
+// المصدر التشغيلي الوحيد فعلياً"): كانت هذه الدالة تستدعي
+// computeUnifiedActivityDecision (تعيد حساب decideFinal محلياً) — مصدر
+// حساب مستقل عن باقي المسارات (dashboard/global، viewer/dashboard،
+// alerts/generate) التي حُوِّلت جميعها لقراءة final_decinsions المخزَّنة
+// بدل إعادة الحساب. الآن تقرأ نفس الصف المخزَّن (كتبه evaluate/route.ts)
+// بدل استدعاء decideFinal بنفسها — نفس القرار بالضبط في كل الواجهات، لا
+// نسخة خامسة محتملة التناقض.
+function summaryFromStoredDecision(storedDecision: any): { decisionLabel: string; riskWeight: number; reasonText?: string } {
   return {
-    decisionLabel: unified.decisionLabelAr,
-    riskWeight: riskWeightFromColor(unified.level),
-    reasonText: unified.shortReason || undefined,
+    decisionLabel: storedDecision.decision_label_ar,
+    riskWeight: riskWeightFromColor(storedDecision.level),
+    reasonText: storedDecision.short_reason_ar || undefined,
   };
 }
 
@@ -92,7 +91,8 @@ function buildRecentActivities(
   projectId: string,
   dustRows: any[],
   decisionsMap: Map<string, string>,
-  dustByGroup: Map<string, any>
+  dustByGroup: Map<string, any>,
+  finalDecisionsByGroup: Map<string, any>
 ): any[] {
   type Acc = {
     activityGroupId: string;
@@ -166,14 +166,21 @@ function buildRecentActivities(
     if (!acc.windowEndIso && windowEndIso) acc.windowEndIso = windowEndIso;
     if (!acc.durationMinutes && durationMinutes) acc.durationMinutes = durationMinutes;
 
-    // نتيجة المحرك الحية لهذا المؤشر (إن وُجدت) — مصدر الملخص المفضّل.
+    // نتيجة المحرك الحية لهذا المؤشر (إن وُجدت) — لا تزال مطلوبة أدناه
+    // لبناء decisionTargets (اللقطة المناخية الخام)، بمعزل تماماً عن
+    // القرار النهائي المعروض في summaryFields (يأتي الآن من finalDecisionsByGroup).
     const engineResult = dustByGroup.get(`${groupId}-${row.id}`);
 
+    // القرار النهائي المخزَّن فعلياً (كتبه evaluate/route.ts عبر
+    // persistFinalDecisions) — مصدر الملخص المفضّل، لا إعادة حساب محلية.
+    const storedDecision = finalDecisionsByGroup.get(groupId);
+
     let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string };
-    if (engineResult) {
-      summaryFields = summaryFromDust(engineResult.windowEval.worst, engineResult.compliance);
+    if (storedDecision) {
+      summaryFields = summaryFromStoredDecision(storedDecision);
     } else {
-      // لا نتيجة محرك: نرجع لآخر قرار موثّق، وإلا "بانتظار التقييم"
+      // لا قرار مخزَّن بعد (أول تقييم لم يُستدعَ evaluate عليه بعد): نرجع
+      // لآخر قرار موثّق في decision_records، وإلا "بانتظار التقييم"
       summaryFields = {
         decisionLabel: decisionStatusLabel(decisionStatus),
         riskWeight: getRiskWeight(decisionStatus),
@@ -340,9 +347,25 @@ export async function GET(
     // يدوياً، وتبقى المصدر الوحيد المُستخدم فعلياً في قواعد الامتثال
     // التنظيمي (مسافة الكسارة/الأكوام) أدناه — لا يجوز الاعتماد على بيانات
     // OSM غير موثّقة لقرار تنظيمي مُلزم.
-    const { data: sensitiveReceptorRows } = await supabaseAdmin
+    //
+    // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "فشل استعلام المستقبلات
+    // الحساسة يتحول إلى مصفوفة فارغة ثم Infinity؛ قد يظهر الموقع آمناً عند
+    // تعطل البيانات"): كان لا يوجد أي فحص لـerror هنا — فشل الاستعلام
+    // (انقطاع اتصال، مشكلة صلاحيات) كان يُعامَل بصمت كـ"لا توجد مستقبِلات
+    // حساسة مسجَّلة إطلاقاً" (نفس الحالة الشرعية لموقع نظيف فعلاً)، ومحرك
+    // الامتثال يترجم القائمة الفارغة إلى مسافة Infinity (آمنة تماماً) —
+    // فتعطّل الشبكة/القاعدة يظهر فعلياً كـ"لا مستقبِلات قريبة" بدل خطأ واضح،
+    // على عكس فلسفة fail-safe المتبعة بكل مكان آخر في هذا الملف. الآن فشل
+    // الاستعلام يوقف الطلب بخطأ 500 صريح بدل الاستمرار بأمان زائف.
+    const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
       .from('sensitive_receptors')
       .select('id, name, receptor_type, lat, lng');
+    if (sensitiveReceptorsError) {
+      return NextResponse.json(
+        { error: safeErrorResponse(sensitiveReceptorsError, 'sensitive_receptors fetch failed') },
+        { status: 500 }
+      );
+    }
     const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
 
     // قائمة "المستقبِلات القريبة" المعروضة في بطاقة الامتثال (عرض توعوي
@@ -386,6 +409,11 @@ export async function GET(
         r.distanceM !== null && r.distanceM <= NEARBY_RECEPTOR_RADIUS_M
       )
       .sort((a, b) => a.distanceM - b.distanceM);
+
+    // مُعلَنة هنا (بدل داخل الشرط أدناه) حتى يمكن قراءتها لاحقاً في هذا
+    // الملف (نقطة finalDecisionsByGroup الموحَّدة للبانر) بلا مشكلة نطاق —
+    // تبقى undefined إن كان dustResults فارغاً (الفرع أدناه لا يُنفَّذ).
+    let finalDecisionsByGroupForAei: Map<string, any> | undefined;
 
     if (dustResults.length > 0) {
       // طبقة الامتثال التنظيمي (Riyadh Dust Compliance) — تستهلك نتيجة DVI
@@ -450,16 +478,43 @@ export async function GET(
       // يقص AEI ("قابلية التنفيذ") إلى متوقف عندما يوقف الامتثال التنظيمي
       // النشاط — بلا هذا يتناقض رقم AEI (محسوب من DVI فقط بعتبات مختلفة)
       // مع قرار الامتثال الأشد المعروض بجانبه في نفس البطاقة.
-      applyComplianceGatesToDustAei(dustResults);
+      //
+      // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "القرار النهائي
+      // لا يُحفظ كقرار رسمي واحد... البطاقة والخريطة والتنبيهات تعيد حساب
+      // القرار بمعرّفات مختلفة"): كانت applyComplianceGatesToDustAei تستدعي
+      // decideFinal محلياً دائماً هنا — نُقل جلب القرار المخزَّن (fetchLatestFinalDecisions،
+      // كان يحدث لاحقاً في هذا الملف لأغراض البانر فقط) ليسبق هذا الاستدعاء
+      // ويُمرَّر إليه، فتقرأ بطاقة AEI الآن نفس القرار المخزَّن المعروض في
+      // البانر أعلاها بالضبط، لا نسخة مُعاد حسابها بمعزل بنفس اللحظة تقريباً.
+      const activityGroupIdsForFinalDecisions = Array.from(
+        new Set((dustProfiles || []).map((row: any) => row.activity_group_id || `dust-${row.id}`))
+      );
+      finalDecisionsByGroupForAei = await fetchLatestFinalDecisions(supabaseAdmin, activityGroupIdsForFinalDecisions);
+      applyComplianceGatesToDustAei(dustResults, finalDecisionsByGroupForAei);
     }
 
     // دمج صفوف الغبار المتعددة التي تشترك في activityGroupId إلى بطاقة DVI
     // واحدة لكل مجموعة — نظام إضافة نشاط واحد فقط بالجلسة، لكن نشاط واحد قد
     // يضم عدة وحدات فعلية (عدة محطات خلط/كسارات) تُنشئ عدة صفوف
     // project_dust_profiles لنفس النشاط الفيزيائي (نفس الوقت/الموقع)، فيُعاد
-    // حساب DVI/AEI للنافذة نفسها في كل صف رغم تطابقها. نأخذ نتيجة DVI/AEI
-    // من أول صف كممثّل للمجموعة (متطابقة فعلياً)، ونجمع كل نتائج الامتثال
-    // في مصفوفة واحدة بدل عرض بطاقة DVI مكررة لكل وحدة.
+    // حساب DVI/AEI للنافذة نفسها في كل صف رغم تطابقها.
+    //
+    // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "تناقض في القرارات": مبدأ "الأشد
+    // يحكم" (Final Decision Engine) يجب أن يُطبَّق على *كل* وحدات النشاط
+    // معاً، لا وحدة واحدة فقط): كان يُؤخذ rows[0] دائماً كممثّل للمجموعة —
+    // بما فيه aei/windowEval (المعروضان في عنوان/لون بطاقة ComplianceWidgetCard
+    // الرئيسي) — بصرف النظر عن قرار بقية الوحدات في نفس المجموعة. فلو وحدة
+    // ثانية (مثال: محطة خلط ثانية) قرارها أشد (MANDATORY_STOP) بينما الأولى
+    // ALLOW، كان العنوان الرئيسي يعرض "مسموح" (من rows[0] فقط) بينما قسم
+    // "أساس القرار" أسفل البطاقة (complianceList، كل الوحدات) يعرض تلك الوحدة
+    // الثانية بـ"إيقاف إلزامي" — تناقض ظاهري مباشر بين نفس البطاقة.
+    //
+    // الإصلاح: الممثّل (representative) الذي يُبنى منه aei/windowEval
+    // المعروضان يُختار الآن كأسوأ وحدة فعلياً (أعلى DECISION_PRIORITY) بدل
+    // rows[0] الثابت دائماً — نفس ترتيب الأولوية المستخدم أصلاً في
+    // pickWorstCompliance (Compliancewidgetcard.tsx)، فيتطابق العنوان الرئيسي
+    // مع أسوأ تفصيل معروض أسفله دائماً، تطبيقاً حرفياً لمبدأ "الأشد يحكم"
+    // على مستوى المجموعة كاملة لا وحدة واحدة.
     const dustResultsGrouped: any[] = (() => {
       const byGroup = new Map<string, any[]>();
       dustResults.forEach((r: any) => {
@@ -468,14 +523,18 @@ export async function GET(
         byGroup.set(r.activityGroupId, list);
       });
       return Array.from(byGroup.values()).map((rows) => {
-        const representative = rows[0];
+        const representative = rows.reduce((worst: any, current: any) => {
+          const worstPriority = DECISION_PRIORITY[worst.compliance?.decisionCategory as keyof typeof DECISION_PRIORITY] ?? -1;
+          const currentPriority = DECISION_PRIORITY[current.compliance?.decisionCategory as keyof typeof DECISION_PRIORITY] ?? -1;
+          return currentPriority > worstPriority ? current : worst;
+        }, rows[0]);
         return {
           ...representative,
           complianceList: rows.map((r) => r.compliance).filter(Boolean),
           // وحدات الكسارة/الخلاطة تُجمَّع من كل صفوف المجموعة وليس من الصف
           // الممثّل وحده: المجموعة الواحدة قد تحوي عدة وحدات (محطتا خلط
-          // مثلاً) في صفين مختلفين لنفس النشاط التنظيمي، فأخذها من rows[0]
-          // فقط كان سيُخفي وحدات المستقبِلات الخاصة ببقية الصفوف.
+          // مثلاً) في صفين مختلفين لنفس النشاط التنظيمي، فأخذها من ممثّل
+          // واحد فقط كان سيُخفي وحدات المستقبِلات الخاصة ببقية الصفوف.
           unitReceptors: rows.flatMap((r) => r.unitReceptors ?? []),
         };
       });
@@ -485,6 +544,18 @@ export async function GET(
     // نفس المفتاح المُستخدم داخل upsertGroup في buildRecentActivities.
     const dustByGroup = new Map<string, any>();
     dustResults.forEach((r: any) => dustByGroup.set(`${r.activityGroupId}-${r.activityId}`, r));
+
+    // آخر قرار نهائي مخزَّن لكل activity_group_id — راجع تعليق
+    // persistFinalDecisions/fetchLatestFinalDecisions في dustEvaluation.ts:
+    // نقطة القراءة الموحَّدة بدل إعادة حساب decideFinal محلياً هنا (كان هذا
+    // أحد المسارات الأربعة المستقلة المكتشَفة في مراجعة كود مدير —
+    // "FinalDecisionEngine ليس المصدر التشغيلي الوحيد فعلياً"). إعادة استخدام
+    // نفس الخريطة المجلوبة أعلاه لبطاقة AEI إن توفرت (dustResults.length > 0)
+    // بدل استعلام مكرر لنفس البيانات بالضبط؛ الجلب المحلي هنا يبقى fallback
+    // وحيداً لحالة dustResults فارغة (حيث لا يُنفَّذ الفرع أعلاه إطلاقاً).
+    const allActivityGroupIds = Array.from(new Set((dustProfiles || []).map((row: any) => row.activity_group_id || `dust-${row.id}`)));
+    const finalDecisionsByGroup =
+      finalDecisionsByGroupForAei ?? (await fetchLatestFinalDecisions(supabaseAdmin, allActivityGroupIds));
 
     // 5. معالجة الأنشطة الحديثة (Recent Activities) — البانر يعكس الآن قرار
     // المحرك الحي عبر الخريطة أعلاه، ويرجع لـ decision_records عند غيابه.
@@ -496,7 +567,8 @@ export async function GET(
       projectId,
       dustProfiles || [],
       latestDecisionsMap,
-      dustByGroup
+      dustByGroup,
+      finalDecisionsByGroup
     );
 
     const payload = {
@@ -517,8 +589,77 @@ export async function GET(
   }
 }
 
+// خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "PATCH المشروع يسمح
+// تقريباً بأي حقل"): كان يُنسَخ body بالكامل ({ ...body }) ويُحذَف منه ثلاثة
+// حقول فقط (id/user_id/created_at) — أي عمود آخر على جدول projects (حالة
+// اعتماد DMP، تواريخ الاعتماد، إلخ) كان قابلاً للكتابة من هذا المسار بلا أي
+// تحقق من نوعه أو حتى من كونه حقلاً معروفاً أصلاً، طالما الطالب يملك المشروع.
+// الآن allowlist صريحة عبر Zod .strict() — أي حقل غير مذكور هنا يُرفَض
+// الطلب بأكمله (لا يُهمَل صامتاً)، بدل blocklist لثلاثة حقول فقط. القائمة
+// تطابق حرفياً كل حقل يُرسِله settings/page.tsx فعلياً ضمن updatePayload
+// (المصدر الوحيد الحالي لهذا الـPATCH) — حقول مثل zone_type/zone_polygon/
+// monitoring_station_locations تُضبَط فقط عند إنشاء المشروع (app/api/
+// projects/route.ts)، لا تُعدَّل من هنا، فتبقى خارج القائمة عمداً.
+const ProjectPatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    client_name: z.string().trim().max(200).nullable(),
+    city: z.string().trim().max(200).nullable(),
+    neighborhood: z.string().trim().max(200).nullable(),
+    project_status: z.enum(['not_started', 'in_progress']),
+    project_type: z.string().trim().max(200).nullable(),
+    soil_type: z.enum(['SANDY_FINE', 'SANDY_COARSE', 'CLAY', 'MIXED']).nullable(),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    terrain_type: z.string().trim().max(100),
+    site_location_nature: z.string().trim().max(200).nullable(),
+    wind_exposure: z.string().trim().max(100),
+    start_date: z.string().trim().nullable(),
+    end_date: z.string().trim().nullable(),
+    work_days: z.string().trim().nullable(),
+    work_days_list: z.array(z.string()),
+    work_hours_start: z.string().trim().nullable(),
+    work_hours_end: z.string().trim().nullable(),
+    project_manager: z.string().trim().max(200).nullable(),
+    contact_number: z.string().trim().max(50).nullable(),
+
+    site_area_m2: z.number().nonnegative().nullable(),
+    daily_truck_movements: z.number().int().nonnegative().nullable(),
+    has_onsite_crusher: z.boolean(),
+    has_onsite_batching_plant: z.boolean(),
+    dmp_approval_status: z.enum([
+      'NOT_REQUIRED', 'NOT_STARTED', 'DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'UNKNOWN',
+    ]),
+
+    baseline_monitoring_days: z.number().int().nonnegative().nullable(),
+    monitoring_logging_interval_minutes: z.number().positive().nullable(),
+    anemometer_height_m: z.number().nonnegative().nullable(),
+    entry_exit_cameras_installed: z.boolean(),
+    camera_retention_days: z.number().int().nonnegative().nullable(),
+    sensitivity_map_prepared: z.boolean(),
+
+    data_accuracy_confirmed: z.boolean(),
+    data_accuracy_confirmed_at: z.string().trim().nullable(),
+
+    // جدول منفصل (project_shifts) — يُستخرَج ويُحذَف قبل update على projects
+    // نفسها، راجع معالجته أسفل. [] صريحة = "احذف كل الورديات"، غياب المفتاح
+    // = "لا تُغيّر الورديات إطلاقاً".
+    shifts: z
+      .array(
+        z.object({
+          name: z.string(),
+          start_time: z.string(),
+          end_time: z.string(),
+        })
+      )
+      .optional(),
+  })
+  .partial()
+  .strict();
+
 // تحديث بيانات المشروع (من صفحة الإعدادات) — يتحقق من الهوية والملكية،
-// ويمنع تعديل الحقول الحساسة (id/user_id/created_at). يشمل work_days_list.
+// ويقبل فقط الحقول المُعرَّفة صراحة في ProjectPatchSchema (allowlist)، لا أي
+// عمود آخر على جدول projects. يشمل work_days_list.
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> }
@@ -544,15 +685,45 @@ export async function PATCH(
   const isDirectOwner = project.user_id === auth.userId;
 
   const body = await request.json();
-  const updates = { ...body };
-  // حقول لا يجوز تعديلها من هذا المسار
-  delete updates.id;
-  delete updates.user_id;
-  delete updates.created_at;
+  const parsed = ProjectPatchSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'بيانات غير صالحة', details: parsed.error.issues },
+      { status: 400 }
+    );
+  }
+  const updates: Record<string, unknown> = { ...parsed.data };
+
+  // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "DMP يمكن تعيينها APPROVED
+  // من حقول يكتبها المستخدم، بلا وثيقة أو hash موافقة"): كان dmp_approval_status
+  // مقبولاً من هذا الـPATCH بأي قيمة enum بما فيها 'APPROVED'، بلا أي تحقق
+  // من هوية الفاعل — مالك المشروع نفسه يقدر يعتمد خطة إدارة الغبار (DMP)
+  // الخاصة به من قائمة منسدلة في صفحة الإعدادات، رغم أن اعتماد DMP فعلياً
+  // قرار تنظيمي يتطلب مراجعة/وثيقة من جهة مختصة، لا تصريحاً ذاتياً. بما أن
+  // النظام لا يملك بعد آلية توثيق مستندات (رفع ملف/hash موافقة)، الحل
+  // المؤقت الآمن: تعيين APPROVED يتطلب صلاحية super_admin تحديداً (نفس
+  // صلاحية admin_audit_log/requireSuperAdmin في apiAuth.ts) — مالك المشروع
+  // العادي يبقى يقدر يرى الحقل ويطلب اعتماده، لكن لا يعتمده لنفسه مباشرة.
+  if (updates.dmp_approval_status === 'APPROVED') {
+    const { data: authz } = await supabaseAdmin
+      .from('user_authorizations')
+      .select('is_super_admin')
+      .eq('user_id', auth.userId)
+      .maybeSingle();
+    if (!authz?.is_super_admin) {
+      return NextResponse.json(
+        { error: 'اعتماد خطة إدارة الغبار (DMP) يتطلب مراجعة إدارية — لا يمكن للمالك اعتمادها ذاتياً' },
+        { status: 403 }
+      );
+    }
+  }
 
   // ورديات العمل (project_shifts) جدول منفصل — لا تُمرَّر ضمن update على
-  // جدول projects (راجع supabase-project-shifts-migration.sql).
-  const shifts = Array.isArray(updates.shifts) ? updates.shifts : null;
+  // جدول projects (راجع supabase-project-shifts-migration.sql). shifts
+  // يُميَّز بـ"in" (لا Array.isArray فقط) حتى تبقى دلالة "المفتاح غائب
+  // إطلاقاً" (لا تُغيَّر الورديات) مختلفة عن shifts:[] الصريحة (احذف الكل)،
+  // نفس العقد القديم قبل هذا التصحيح.
+  const shifts = 'shifts' in parsed.data ? (parsed.data.shifts as any[]) : null;
   delete updates.shifts;
 
   const { error } = await supabaseAdmin.from('projects').update(updates).eq('id', projectId);
@@ -598,10 +769,27 @@ export async function PATCH(
   return NextResponse.json({ success: true });
 }
 
-// حذف مشروع بالكامل — يحذف صراحةً من كل جدول فرعي مرتبط بـ project_id
-// (بدل الاعتماد على ON DELETE CASCADE في قاعدة البيانات، غير مؤكَّد وجودها
-// على كل جدول) قبل حذف صف المشروع نفسه، لتفادي ترك صفوف يتيمة (project_id
-// لمشروع محذوف). DCR: لا جداول crane/heat إطلاقاً.
+// خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "سجل القرارات والتنبيهات
+// قابل للتعديل والحذف"): كان هذا المسار يحذف فعلياً alerts/decision_records/
+// dust_evaluations/dust_compliance_evaluations للمشروع قبل حذف المشروع
+// نفسه — مالك يواجه مخالفة تنظيمية موثَّقة يقدر يمحو دليلها بالكامل بضغطة
+// واحدة ("حذف المشروع"). هذه الجداول الأربعة أصبحت الآن append-only فعلياً
+// على مستوى قاعدة البيانات (triggers تمنع DELETE حتى لو نفَّذه supabaseAdmin
+// — راجع supabase-append-only-evidence-and-alert-events-migration.sql)،
+// فمحاولة حذفها هنا كانت ستفشل بخطأ قاعدة بيانات بعد تطبيق تلك الهجرة.
+//
+// الإصلاح الجذري: المشروع لا يُحذف فعلياً بعد الآن — يُؤرشف (archived_at/
+// archived_by). كل الأدلة المرتبطة (بما فيها الجداول القابلة للحذف تقنياً
+// current_dust_decisions/project_dust_profiles/project_shifts/
+// project_devices) تبقى في القاعدة كاملة، فقط المشروع يختفي من قوائم
+// المستخدم النشطة — لا يوجد GET /api/projects أصلاً (هذا الملف POST فقط
+// لإنشاء مشروع)؛ التصفية archived_at is null مطبَّقة في كل مسارات القوائم
+// الفعلية الفعلية (dashboard/projects-list، dashboard/global،
+// dashboard/schedule، dashboard/alerts-list، dashboard/reports،
+// viewer/dashboard، viewer/reports) ومسار مسح الـcron (alerts/generate،
+// alerts/generate-mine) — راجع كل ملف على حدة. لا حذف فعلي لأي صف إطلاقاً
+// — الأرشفة قابلة للتراجع مبدئياً (تصفير archived_at) لو احتاج التطبيق
+// ميزة استعادة مستقبلاً.
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> }
@@ -613,50 +801,30 @@ export async function DELETE(
 
   const { data: project } = await supabaseAdmin
     .from('projects')
-    .select('id, name, user_id')
+    .select('id, name, user_id, archived_at')
     .eq('id', projectId)
     .maybeSingle();
   if (!project) return NextResponse.json({ error: 'المشروع غير موجود' }, { status: 404 });
+  if (project.archived_at) return NextResponse.json({ error: 'المشروع مؤرشف مسبقاً' }, { status: 400 });
 
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
   const isDirectOwner = project.user_id === auth.userId;
 
-  // الجداول الفرعية أولاً (ترتيب لا يهم بينها، فكلها تُشير لـ project_id
-  // مباشرة)، ثم جدول المشروع نفسه أخيراً.
-  const childTables = [
-    'alerts',
-    'decision_records',
-    'dust_evaluations',
-    'current_dust_decisions',
-    'dust_compliance_evaluations',
-    'current_dust_compliance_decisions',
-    'project_dust_profiles',
-    'project_shifts',
-    'project_devices',
-  ];
-
-  for (const table of childTables) {
-    // بعض هذه الجداول قد لا تحتوي عمود project_id أصلاً (أو غير موجودة في
-    // بعض البيئات) — نتجاهل هذا الخطأ تحديداً (42703/42P01) ونكمل، لكن أي
-    // خطأ آخر (قيد صلاحيات، إلخ) يُوقف العملية ويُعاد للمستخدم كما هو.
-    const { error: childError } = await supabaseAdmin.from(table).delete().eq('project_id', projectId);
-    if (childError && childError.code !== '42703' && childError.code !== '42P01') {
-      return NextResponse.json({ error: safeErrorResponse(childError, `فشل حذف صفوف ${table} للمشروع ${projectId} (${childError.code})`) }, { status: 500 });
-    }
+  const { error: archiveError } = await supabaseAdmin
+    .from('projects')
+    .update({ archived_at: new Date().toISOString(), archived_by: auth.userId })
+    .eq('id', projectId);
+  if (archiveError) {
+    return NextResponse.json({ error: safeErrorResponse(archiveError, `فشل أرشفة المشروع ${projectId} (${archiveError.code})`) }, { status: 500 });
   }
 
-  const { error: projectError } = await supabaseAdmin.from('projects').delete().eq('id', projectId);
-  if (projectError) {
-    return NextResponse.json({ error: safeErrorResponse(projectError, `فشل حذف صف المشروع ${projectId} (${projectError.code})`) }, { status: 500 });
-  }
-
-  // تسجيل تدقيق: فقط عندما أدمن يحذف مشروعاً لا يملكه (راجع نفس المنطق في PATCH أعلاه)
+  // تسجيل تدقيق: فقط عندما أدمن يؤرشف مشروعاً لا يملكه (راجع نفس المنطق في PATCH أعلاه)
   if (!isDirectOwner) {
     await supabaseAdmin.from('admin_audit_log').insert({
       admin_user_id: auth.userId,
-      action: 'project_delete',
+      action: 'project_archive',
       target_project_id: projectId,
       target_project_name: project.name,
       target_owner_user_id: project.user_id,

@@ -26,6 +26,7 @@ function baseAei(overrides: Partial<AeiEvaluationResult> = {}): AeiEvaluationRes
     gateReasonAr: null,
     shortReasonAr: 'الأجواء ممتازة والظروف آمنة.',
     recommendationAr: 'استمر بالعمل، لا توجد قيود حالية.',
+    isHoldForVerification: false,
     sources: [],
     ...overrides,
   };
@@ -51,19 +52,80 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
     expect(dustResults[0].aei.status).toBe('CLOSED');
   });
 
-  it('لا يمس AEI عندما يكون قرار الامتثال ALLOW', () => {
+  it('لا يمس AEI عندما يكون قرار الامتثال ALLOW (جهاز مرتبط بقراءة حديثة)', () => {
     const dustResults = [
-      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'ALLOW', shortReasonAr: 'لا مخالفات' } },
+      {
+        activityId: '1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'ALLOW',
+          shortReasonAr: 'لا مخالفات',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
+      },
     ];
     applyComplianceGatesToDustAei(dustResults);
     expect(dustResults[0].aei.status).toBe('ALLOW');
     expect(dustResults[0].aei.score).toBe(94.6);
   });
 
-  it('لا يمس AEI عندما لا توجد نتيجة امتثال (compliance = null)', () => {
+  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "غياب نتيجة الامتثال compliance=null
+  // ينتج COMPLIANT بدل NOT_DETERMINABLE" و"evidenceQuality=PARTIAL قد ينتج
+  // ALLOW+COMPLIANT"): deriveEvidenceQuality(null) كانت تُرجع PARTIAL دائماً
+  // (لا تُصعِّد لـHOLD_FOR_VERIFICATION)، فيبقى AEI "مسموح" بثقة كاملة رغم
+  // غياب أي تقييم امتثال إطلاقاً — بالضبط ما يصفه هذا الاختبار سابقاً كسلوك
+  // "صحيح". الآن compliance=null في LIVE_OPERATIONAL (الافتراضي) ينتج
+  // UNAVAILABLE، فيُقصّ AEI فعلياً بدل تركه بلا مساس.
+  it('compliance = null في LIVE_OPERATIONAL → يُقيَّد AEI (بانتظار تحقق ميداني)، لا يبقى بلا مساس', () => {
     const dustResults = [{ activityId: '1', aei: baseAei(), compliance: null }];
     applyComplianceGatesToDustAei(dustResults);
-    expect(dustResults[0].aei.status).toBe('ALLOW');
+    expect(dustResults[0].aei.status).toBe('RESTRICT');
+    expect(dustResults[0].aei.isHoldForVerification).toBe(true);
+  });
+
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "لا زالت المشكلة"، بعد أول
+  // إصلاح): السيناريو الفعلي المُبلَّغ عنه — PM10 لحظي عالٍ جداً (تقدير طقس
+  // بلا جهاز) يجعل dvi.mandatoryStop=true فيضبط aei.closedByGate=true داخل
+  // evaluateAei الأساسية *قبل* أن يصل القرار لـapplyFinalDecisionToAei. كان
+  // شرط "if (aei.closedByGate) return aei" يُفحَص قبل HOLD_FOR_VERIFICATION،
+  // فيبقى AEI "مغلق" بثقة كاملة رغم غياب جهاز الرصد تماماً. الآن يجب أن
+  // يظهر "بانتظار تحقق ميداني" حتى في هذه الحالة تحديداً.
+  // ملاحظة تصميم: compliance.decisionCategory='MANDATORY_STOP'/'STOP_AFFECTED_
+  // ACTIVITY' *مؤكَّد* (pendingConfirmation!==true) يفوز في decideFinal حتى
+  // بلا جهاز مرتبط (confirmedAffectedStop في engine.ts يُفحَص قبل evidence
+  // Unavailable) — قرار متعمَّد: مخالفة امتثال مؤكَّدة فعلياً (مثال: قاعدة
+  // هندسية ثابتة كمسافة كسارة) لا يجوز أن يُضعفها غياب جهاز رصد PM10. هذا
+  // السيناريو (compliance يُنتج MANDATORY_STOP من قراءة PM10 تقديرية بلا
+  // جهاز) لم يعد ممكناً الحدوث فعلياً بعد منع استدعاء API كلياً لنشاط بلا
+  // جهاز (راجع buildAwaitingEvaluationWindow في dust-engine/engine.ts) —
+  // dviResult الممرَّر لـbuildComplianceContext يحمل pm10=null دائماً حينها،
+  // فلا قاعدة PM10 تُفعَّل أصلاً. يبقى الاختبار التالي كشبكة أمان دفاعية على
+  // مستوى AEI نفسه فقط، لا توثيقاً لسيناريو واقعي.
+  it('لا جهاز رصد مرتبط، وcompliance يُنتج RESTRICT_ACTIVITY (لا MANDATORY_STOP مؤكَّد) → AEI "بانتظار تحقق ميداني"', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        aei: baseAei(),
+        windowEval: {
+          worst: {
+            mandatoryStop: false,
+            decisionCategory: 'ALLOW_WITH_MONITORING',
+          },
+        },
+        compliance: {
+          decisionCategory: 'RESTRICT_ACTIVITY',
+          shortReasonAr: 'مؤشر جودة الهواء يقترب من الحد التنظيمي',
+          missingCriticalInputs: [],
+          evidence: {}, // لا جهاز مرتبط
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('RESTRICT');
+    expect(dustResults[0].aei.color).toBe('ORANGE');
+    expect(dustResults[0].aei.closedByGate).toBe(false);
+    expect(dustResults[0].aei.isHoldForVerification).toBe(true);
+    expect(dustResults[0].aei.statusLabelAr).toContain('تحقق ميداني');
   });
 
   it('لا يكرر الإغلاق إن كان AEI مغلقاً أصلاً من بوابة DVI (closedByGate=true)', () => {
@@ -90,6 +152,7 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
           decisionCategory: 'RESTRICT_ACTIVITY',
           decisionLabelAr: 'تقييد النشاط',
           shortReasonAr: 'لا توجد شبكة/حاجز غبار حول موقع الهدم',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
         },
       },
     ];
@@ -130,6 +193,7 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
           decisionCategory: 'STOP_AFFECTED_ACTIVITY',
           pendingConfirmation: true,
           shortReasonAr: 'تعليق مؤقت (معلَّق): تركيز PM10 (345) تجاوز حد المخالفة (340) — بانتظار استمرار القراءة أكثر من دقيقتين',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
         },
       },
     ];
@@ -168,21 +232,81 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
     expect(dustResults[0].aei.closedByGate).toBe(true);
   });
 
-  // PRECAUTION (نطاق PM10 150-250) — طلب صريح من المستخدم: احتراز خفيف لا
-  // يُقيّد درجة/حالة AEI إطلاقاً (بخلاف ALLOW_WITH_CONTROLS/RESTRICT_ACTIVITY
-  // وغيرها)، لكن النص المعروض يجب أن يعكس الاحتراز — بدون هذا كانت البطاقة
-  // تُظهر "الأجواء ممتازة والظروف آمنة" الأخضر المطمئن تحت بانر موحّد أصفر
-  // "احتراز — زيادة المراقبة" لنفس اللحظة، تناقض ظاهري رصده المستخدم مباشرة.
-  it('PRECAUTION لا يقيّد درجة/حالة AEI، لكن يستبدل النص بنص الاحتراز', () => {
+  // PRECAUTION (نطاق PM10 150-250) — طلب صريح من المستخدم (مُحدَّث): يجب أن
+  // تعكس حالة/لون AEI نفس الاحتراز الأصفر الظاهر في بانر الامتثال دائماً —
+  // القرار السابق (لا تقييد حالة/لون إطلاقاً) كان يُنتج تناقضاً ظاهرياً
+  // (بطاقة AEI خضراء "قابل للتنفيذ" تحت بانر أصفر "احتراز — زيادة المراقبة"
+  // لنفس اللحظة)، فعُكس صراحة: الحالة الآن MONITOR أصفر بنص decisionLabelAr
+  // نفسه الظاهر في بانر الامتثال، لا ALLOW أخضر.
+  it('PRECAUTION يُحوّل AEI إلى MONITOR أصفر بنفس نص بانر الاحتراز، لا ALLOW أخضر', () => {
     const dustResults = [
-      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'PRECAUTION', shortReasonAr: 'حالة احتراز: تركيز PM10 (200 ميكروجرام/م³) ضمن نطاق الإنذار المبكر (150–250 ميكروجرام/م³)' } },
+      {
+        activityId: '1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'PRECAUTION',
+          decisionLabelAr: 'احتراز — زيادة المراقبة',
+          shortReasonAr: 'حالة احتراز: تركيز PM10 (200 ميكروجرام/م³) ضمن نطاق الإنذار المبكر (150–250 ميكروجرام/م³)',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
+      },
     ];
     applyComplianceGatesToDustAei(dustResults);
-    expect(dustResults[0].aei.status).toBe('ALLOW');
-    expect(dustResults[0].aei.score).toBe(94.6);
-    expect(dustResults[0].aei.cappedByGate).toBeFalsy();
+    expect(dustResults[0].aei.status).toBe('MONITOR');
+    expect(dustResults[0].aei.color).toBe('YELLOW');
+    expect(dustResults[0].aei.statusLabelAr).toBe('احتراز — زيادة المراقبة');
     expect(dustResults[0].aei.shortReasonAr).toContain('احتراز');
     expect(dustResults[0].aei.shortReasonAr).not.toContain('الظروف آمنة');
+  });
+
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "التايمر موجود والقراءات
+  // موجودة، أصلح أيضاً"): كان هذا الفرع (HOLD_FOR_VERIFICATION، لا جهاز
+  // رصد مرتبط) غائباً بالكامل عن applyFinalDecisionToAei، فيسقط لقراءة
+  // compliance.decisionCategory الخام (مثلاً RESTRICT_ACTIVITY مبني على
+  // تقدير PM10 من طقس لا جهاز) فيظهر "تقييد تشغيلي" بثقة كاملة رغم أن
+  // البانر الموحَّد يعرض "بانتظار تحقق ميداني" لنفس اللحظة. RESTRICT_ACTIVITY
+  // (لا MANDATORY_STOP) مُستخدَمة هنا عمداً: MANDATORY_STOP/STOP_AFFECTED_
+  // ACTIVITY المؤكَّدان يفوزان قبل فحص evidenceUnavailable في decideFinal
+  // (راجع تعليق mandatoryStop في engine.ts) — سلوك صحيح لقواعد هندسية ثابتة
+  // (مثال: مسافة كسارة عن سكني) لا تعتمد على قراءة حية أصلاً، فلا يجوز أن
+  // يُضعفها غياب الجهاز. RESTRICT_ACTIVITY يمثّل الحالة الفعلية المتأثرة
+  // (قرار مبني على قياس متغيّر كـPM10 يحتاج مصدراً موثوقاً حياً).
+  it('لا جهاز رصد مرتبط (evidence.deviceLastReadingAt غائب) → AEI يعرض "بانتظار تحقق ميداني" لا RESTRICT العادي', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'RESTRICT_ACTIVITY',
+          shortReasonAr: 'تركيز PM10 يتجاوز حد التحذير',
+          missingCriticalInputs: [],
+          evidence: {}, // لا deviceLastReadingAt إطلاقاً — لا جهاز مرتبط
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('RESTRICT');
+    expect(dustResults[0].aei.color).toBe('ORANGE');
+    expect(dustResults[0].aei.closedByGate).toBe(false);
+    expect(dustResults[0].aei.isHoldForVerification).toBe(true);
+    expect(dustResults[0].aei.statusLabelAr).toContain('تحقق ميداني');
+  });
+
+  it('جهاز رصد مرتبط بقراءة حديثة → AEI يتبع compliance.decisionCategory طبيعياً (لا isHoldForVerification)', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'RESTRICT_ACTIVITY',
+          shortReasonAr: 'تركيز PM10 يتجاوز حد التحذير',
+          missingCriticalInputs: [],
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.isHoldForVerification).toBe(false);
   });
 
   it('يقص AEI أيضاً عند FIELD_VERIFICATION_REQUIRED (بيانات ناقصة تمنع قراراً حاسماً)', () => {
@@ -190,12 +314,110 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: { decisionCategory: 'FIELD_VERIFICATION_REQUIRED', decisionLabelAr: 'يتطلب تحقق ميداني', shortReasonAr: 'بيانات ناقصة' },
+        // evidence.deviceLastReadingAt صريحة (جهاز مرتبط بقراءة حديثة) —
+        // هذا الاختبار يفحص قص AEI بسبب FIELD_VERIFICATION_REQUIRED نفسها،
+        // لا جودة الأدلة. بلا هذا، evidence غائبة كلياً تعني "لا جهاز مرتبط
+        // أصلاً" (راجع deriveEvidenceQuality بعد طلب المستخدم "دايماً يحتاج
+        // قراءة حقيقية من الجهاز") فيسقط القرار لـHOLD_FOR_VERIFICATION بدل
+        // المسار المقصود فعلياً هنا (RESTRICT عبر floorLevel).
+        compliance: {
+          decisionCategory: 'FIELD_VERIFICATION_REQUIRED',
+          decisionLabelAr: 'يتطلب تحقق ميداني',
+          shortReasonAr: 'بيانات ناقصة',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
       },
     ];
     applyComplianceGatesToDustAei(dustResults);
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.score).toBe(59);
+  });
+});
+
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "القرار النهائي لا
+// يُحفظ كقرار رسمي واحد... البطاقة والخريطة والتنبيهات تعيد حساب القرار
+// بمعرّفات مختلفة"): applyComplianceGatesToDustAei كانت تستدعي decideFinal
+// محلياً دائماً (بمعزل عن final_decisions المخزَّنة من evaluate/route.ts) —
+// الآن تقبل finalDecisionsByGroup اختيارياً وتقرأ منه إن توفر، بدل إعادة
+// الحساب. هذه الاختبارات تثبت أن الصف المخزَّن يفوز فعلياً على الحساب
+// المحلي عند وجوده، ويبقى fallback الحساب المحلي يعمل عند غيابه.
+describe('applyComplianceGatesToDustAei — القراءة من final_decisions المخزَّنة بدل إعادة الحساب', () => {
+  // ملاحظة على واقعية السيناريو: compliance.decisionCategory هنا (المحلي)
+  // ليس ALLOW عمداً — applyFinalDecisionToAei ترجع aei بلا تعديل فوراً إن
+  // كان compliance.decisionCategory=ALLOW (سطر compliance?.decisionCategory
+  // === 'ALLOW' return aei أعلى هذا الملف)، بصرف النظر عن decision.operationalDecision
+  // القادم من أي مصدر. في الإنتاج الفعلي r.compliance وfinal_decisions
+  // المخزَّنة يُبنيان من نفس تقييم الامتثال في نفس الاستدعاء تقريباً، فلا
+  // يتناقضان على decisionCategory نفسه — الاختلاف الذي يُصلحه هذا التغيير
+  // هو نص/تصنيف decision (operationalDecision/shortReasonAr/decisionLabelAr)
+  // حين يُعاد حسابه من DVI/AEI بمعزل، لا decisionCategory نفسه.
+  it('finalDecisionsByGroup يحمل نص قرار مخزَّن مختلفاً عن الحساب المحلي (نفس decisionCategory غير ALLOW) → النص المعروض من الصف المخزَّن، لا من إعادة الحساب المحلي', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        activityGroupId: 'group-1',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'MANDATORY_STOP',
+          shortReasonAr: 'نص محلي لو أُعيد الحساب هنا',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
+      },
+    ];
+    const finalDecisionsByGroup = new Map([
+      [
+        'group-1',
+        {
+          operational_decision: 'MANDATORY_STOP',
+          short_reason_ar: 'إيقاف إلزامي مخزَّن من evaluate/route.ts',
+          decision_label_ar: 'إيقاف إلزامي نظامي',
+          pending_confirmation: false,
+        },
+      ],
+    ]);
+    applyComplianceGatesToDustAei(dustResults, finalDecisionsByGroup);
+    expect(dustResults[0].aei.status).toBe('CLOSED');
+    expect(dustResults[0].aei.score).toBe(0);
+    // النص المعروض هو نص الصف المخزَّن تحديداً، لا "نص محلي لو أُعيد الحساب
+    // هنا" — يثبت أن الدالة قرأت من finalDecisionsByGroup فعلياً، لا أعادت
+    // الحساب محلياً رغم توفر الخريطة.
+    expect(dustResults[0].aei.shortReasonAr).toBe('إيقاف إلزامي مخزَّن من evaluate/route.ts');
+  });
+
+  it('لا صف مخزَّن لهذا activityGroupId (خريطة فارغة) → fallback للحساب المحلي كالسابق تماماً', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        activityGroupId: 'group-no-stored-row',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'MANDATORY_STOP',
+          shortReasonAr: 'إيقاف محلي',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults, new Map());
+    expect(dustResults[0].aei.status).toBe('CLOSED');
+    expect(dustResults[0].aei.shortReasonAr).toBe('إيقاف محلي');
+  });
+
+  it('finalDecisionsByGroup غير مُمرَّرة إطلاقاً (undefined) → نفس سلوك الاستدعاء القديم بلا تغيير', () => {
+    const dustResults = [
+      {
+        activityId: '1',
+        activityGroupId: 'group-x',
+        aei: baseAei(),
+        compliance: {
+          decisionCategory: 'MANDATORY_STOP',
+          shortReasonAr: 'إيقاف محلي بلا خريطة',
+          evidence: { deviceLastReadingAt: new Date().toISOString() },
+        },
+      },
+    ];
+    applyComplianceGatesToDustAei(dustResults);
+    expect(dustResults[0].aei.status).toBe('CLOSED');
+    expect(dustResults[0].aei.shortReasonAr).toBe('إيقاف محلي بلا خريطة');
   });
 });
 

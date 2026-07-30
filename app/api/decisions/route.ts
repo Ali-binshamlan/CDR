@@ -62,6 +62,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ data: latest });
 }
 
+// حالات القرار المسموحة فعلياً — راجع decisionStatusLabel في
+// app/api/projects/[projectId]/route.ts لنفس القائمة.
+const ALLOWED_STATUSES = new Set(['safe', 'caution', 'restricted', 'postpone', 'stopped']);
+
 // يسجّل قراراً جديداً (اعتماد/تأجيل/تقييد/إيقاف). يدعم شكلين:
 // - { insert: {...} } صف مفرد (Dustwidgetcard.tsx)
 // - { inserts: [{...}, ...] } عدة صفوف (MultiIndicatorActivityBox.tsx)
@@ -70,12 +74,12 @@ export async function POST(request: NextRequest) {
   if ('error' in auth) return auth.error;
 
   const body = await request.json();
-  const rows = body?.inserts ?? (body?.insert ? [body.insert] : null);
-  if (!Array.isArray(rows) || rows.length === 0) {
+  const rawRows = body?.inserts ?? (body?.insert ? [body.insert] : null);
+  if (!Array.isArray(rawRows) || rawRows.length === 0) {
     return NextResponse.json({ error: 'insert أو inserts مطلوب' }, { status: 400 });
   }
 
-  const projectIds = [...new Set(rows.map((r) => r.project_id))];
+  const projectIds = [...new Set(rawRows.map((r) => r.project_id))];
   if (projectIds.some((id) => !id)) {
     return NextResponse.json({ error: 'project_id مطلوب لكل صف' }, { status: 400 });
   }
@@ -89,7 +93,7 @@ export async function POST(request: NextRequest) {
   // activity_id ينتمي فعلياً لمشروع/نشاط مختلف تماماً (حتى لو لا يملكه)،
   // فيُسجَّل قرار زائف في سجل decision_records مربوط بنشاط غير حقيقي لهذا
   // المشروع. activity_source='dust' هو الوحيد المدعوم في DCR (لا heat/crane).
-  const dustRows = rows.filter((r) => r.activity_source === 'dust' && r.activity_id);
+  const dustRows = rawRows.filter((r) => r.activity_source === 'dust' && r.activity_id);
   if (dustRows.length > 0) {
     const activityIds = [...new Set(dustRows.map((r) => r.activity_id))];
     const { data: validProfiles } = await supabaseAdmin
@@ -104,9 +108,44 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  for (const r of rawRows) {
+    if (!ALLOWED_STATUSES.has(r.status)) {
+      return NextResponse.json({ error: `status غير صالح: ${r.status}` }, { status: 400 });
+    }
+  }
+
+  // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "POST القرارات يُدرج صفوف
+  // العميل خامًا، بما فيها approved_by وcreated_at"): كان .insert(rawRows)
+  // يُدرج جسم الطلب كما وصل حرفياً — أي حقل يرسله العميل (approved_by
+  // بنص حر مزيَّف باسم شخص آخر، created_at بتاريخ مُلفَّق لتغيير ترتيب
+  // السجل التاريخي، أو حتى status خارج القيم المسموحة) يُكتب مباشرة في سجل
+  // decision_records (سجل تدقيق قانوني — من اتخذ القرار ومتى). الإصلاح:
+  // يُبنى صف جديد صريح من الحقول الموصوفة/الآمنة فقط؛ approved_by يُشتق من
+  // هوية المستخدم المصادَق عليه فعلياً (auth.userId → profiles.username)،
+  // لا نص حر يرسله العميل. created_at لا يُقبل من العميل إطلاقاً (يبقى
+  // على default now() في الجدول نفسه).
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('username, company_name')
+    .eq('id', auth.userId)
+    .maybeSingle();
+  const approvedBy = profile?.username || profile?.company_name || auth.userId;
+
+  const sanitizedRows = rawRows.map((r) => ({
+    project_id: r.project_id,
+    activity_source: r.activity_source,
+    activity_id: String(r.activity_id ?? ''),
+    status: r.status,
+    reason: typeof r.reason === 'string' ? r.reason : null,
+    required_action: typeof r.required_action === 'string' ? r.required_action : null,
+    approved_by: approvedBy,
+    approval_note: typeof r.approval_note === 'string' ? r.approval_note : null,
+    weather_snapshot: Array.isArray(r.weather_snapshot) ? r.weather_snapshot : null,
+  }));
+
   const { data, error } = await supabaseAdmin
     .from('decision_records')
-    .insert(rows)
+    .insert(sanitizedRows)
     .select();
 
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'decisions insert failed') }, { status: 400 });

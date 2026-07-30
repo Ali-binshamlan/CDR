@@ -120,6 +120,32 @@ export async function POST(request: NextRequest) {
 
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'devices/ingest update failed') }, { status: 500 });
 
+  // تسجيل القراءة الكاملة (كل الحقول الثمانية معاً، لا PM10 وحده) في السجل
+  // التاريخي العام device_readings_history — يُستخدم لرسم بياني تاريخي لكل
+  // عنصر قياس على حدة داخل بطاقة تفاصيل النشاط (طلب صريح من المستخدم:
+  // "مؤشر للقراءات حق النشاط، رسم بياني منفصل لكل عنصر"). منفصل تماماً عن
+  // pm10_readings_history أدناه (ذاك مخصَّص لحساب استمرار مخالفة PM10 تحديداً
+  // بمنطق صارم على مصدر/حداثة القراءة — لا يجوز خلط الغرضين في جدول واحد).
+  // يُسجَّل فقط لو وصل حقل قياس واحد على الأقل فعلياً في هذه الحمولة (Object.keys(updates)
+  // تحقق منه أعلاه بالفعل)، حتى لو كان حقلاً واحداً فقط (صف جزئي، بقية
+  // الأعمدة null — نفس فلسفة الكتابة الجزئية في project_devices).
+  const { error: fullHistoryError } = await supabaseAdmin.from('device_readings_history').insert({
+    project_id: auth.projectId,
+    device_id: auth.deviceId,
+    wind_speed_kmh: updates.last_wind_speed_kmh ?? null,
+    wind_gust_kmh: updates.last_wind_gust_kmh ?? null,
+    wind_direction_deg: updates.last_wind_direction_deg ?? null,
+    pm10_ug_m3: updates.last_pm10 ?? null,
+    pm25_ug_m3: updates.last_pm25 ?? null,
+    visibility_m: updates.last_visibility_m ?? null,
+    relative_humidity_percent: updates.last_relative_humidity_percent ?? null,
+    temperature_c: updates.last_temperature_c ?? null,
+    recorded_at: updates.last_reading_at,
+  });
+  if (fullHistoryError) {
+    console.error('device_readings_history insert failed:', fullHistoryError.message);
+  }
+
   // تسجيل PM10 في السجل التاريخي المنفصل (pm10_readings_history) — يُستخدم
   // لاحقاً لحساب استمرار القراءة عبر الزمن (RCRC-PM10-340-VIOLATION-011:
   // أكثر من دقيقتين، RCRC-PM10-30M-SUSPENSION-012: 30 دقيقة)، بمعزل عن
@@ -136,8 +162,15 @@ export async function POST(request: NextRequest) {
   // تكرر بسبب مشكلة أخرى مستقبلاً) بدل ابتلاعه صامتاً — لا نُسقِط الاستجابة
   // الناجحة بسببه (تحديث project_devices نجح فعلاً، وهو الأهم للمستخدم).
   if (typeof updates.last_pm10 === 'number') {
+    // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — ملاحظة #4): كان الإدراج يسجّل
+    // project_id وsource='device' فقط، بلا device_id — فتُدمَج قراءات كل
+    // أجهزة المشروع معاً بحساب الاستمرار الزمني (fetchPm10SustainedStatus)،
+    // وقد "تُثبت" قراءات جهاز A متناوبة مع جهاز B استمراراً وهمياً لنشاط
+    // مرتبط بأحدهما فقط. device_id يُشتق من هوية الجهاز نفسه (auth.deviceId
+    // المشتقة من مفتاح API، لا من حقل يرسله العميل — نفس مبدأ requireDeviceApiKey).
     const { error: historyError } = await supabaseAdmin.from('pm10_readings_history').insert({
       project_id: auth.projectId,
+      device_id: auth.deviceId,
       pm10_ug_m3: updates.last_pm10,
       source: 'device',
       recorded_at: updates.last_reading_at,
