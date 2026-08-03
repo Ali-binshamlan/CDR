@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { evaluateDustVisibilityWindow } from './engine';
+import { __clearWeatherCacheForTests } from './weather';
 import type { DustEngineInput } from './types';
 
 // =====================================================================
@@ -70,6 +71,7 @@ function mockForecastAirResponses(forecastBody: any, airBody: any) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  __clearWeatherCacheForTests();
 });
 
 describe('evaluateDustVisibilityWindow — جهاز مرتبط بقراءة قديمة جداً يبقى معتمَداً، لا فولباك لطقس', () => {

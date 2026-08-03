@@ -26,7 +26,38 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// تخزين مؤقت بالذاكرة لاستجابات Open-Meteo — مفتاحه الـURL الكامل (يشمل
+// الإحداثيات والمدى الزمني، فكل تركيبة مختلفة لها مدخل مستقل). ضروري لأن
+// دورة تقييم واحدة (evaluateProject) قد تُستدعى بشكل متكرر جداً في نافذة
+// زمنية قصيرة (polling الواجهة + cron السحب الخارجي، كلاهما مستقل)، وكل
+// استدعاء كان يطلب نفس توقع الطقس تقريباً من الصفر — استنفدنا حصة الطلبات
+// المجانية لOpen-Meteo فعلياً (429) بسبب هذا التكرار، ما عطّل حساب DVI
+// لبعض الأنشطة بالكامل. توقعات الطقس لا تتغير خلال دقائق قليلة، فتخزين
+// مؤقت قصير لا يضحّي بدقة القرار عملياً.
+//
+// نفس الخريطة تُستخدَم أيضاً كـstale fallback: إذا فشل طلب جديد فعلياً
+// (بعد كل محاولات إعادة المحاولة) ووُجد مدخل قديم منتهي الصلاحية لنفس
+// الـURL، نُرجعه بدل null. بدون هذا، أي انقطاع عابر (429 مؤقت، بطء شبكي)
+// كان يُسقط تقييم النشاط بالكامل (evaluateDustVisibilityWindow يرمي عند
+// مصفوفة فارغة) فتختفي كل تفاصيله من الواجهة فوراً، رغم وجود قرار سابق
+// صالح معروف كان يمكن الاستمرار به حتى ينجح طلب جديد.
+const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000;
+const weatherCache = new Map<string, { expiresAt: number; data: unknown }>();
+
+// للاختبارات فقط: كل حالة اختبار تستبدل fetch الـglobal بـmock مختلف
+// لنفس تركيبة الإحداثيات/التاريخ الافتراضية، فبدون تصفير هذه الخريطة بين
+// الاختبارات (afterEach) يُرجَع أول رد ناجح مخزَّن مسبقاً بدل استدعاء
+// الـmock الجديد فعلياً — يكسر عزل الاختبارات عن بعضها.
+export function __clearWeatherCacheForTests(): void {
+  weatherCache.clear();
+}
+
 async function fetchJson(url: string): Promise<unknown | null> {
+  const cached = weatherCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= FETCH_RETRY_ATTEMPTS; attempt++) {
@@ -46,6 +77,7 @@ async function fetchJson(url: string): Promise<unknown | null> {
         throw new Error(`Invalid weather response (not an object): ${url}`);
       }
 
+      weatherCache.set(url, { expiresAt: Date.now() + WEATHER_CACHE_TTL_MS, data: json });
       return json;
     } catch (error) {
       lastError = error;
@@ -55,10 +87,14 @@ async function fetchJson(url: string): Promise<unknown | null> {
     }
   }
 
-  // لا نرمي — العقد الحالي لكل مستهلكي fetchJson هو fallback إلى بيانات
-  // فارغة (null/[]) بدل استثناء غير مُعالَج، حفاظاً على سلوك التقييم
-  // القديم (كان .catch(() => null))؛ لكن الآن يُسجَّل السبب الفعلي بدل ابتلاعه صامتاً.
   console.error(`fetchJson failed after ${FETCH_RETRY_ATTEMPTS} attempts: ${url}`, lastError);
+
+  // stale fallback: أفضل من إسقاط تقييم النشاط بالكامل — راجع الشرح أعلى weatherCache.
+  if (cached) {
+    console.error(`fetchJson: استخدام نسخة قديمة (منتهية الصلاحية) كاحتياط بعد فشل الطلب: ${url}`);
+    return cached.data;
+  }
+
   return null;
 }
 

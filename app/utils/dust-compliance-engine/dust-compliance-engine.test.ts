@@ -659,32 +659,45 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  // نطاق 150-250 (احتراز): طلب صريح من المستخدم — "القراءة من 150 إلى 250
-  // (إنذار مبكر) تُفعل حالة الاحتراز لزيادة المراقبة"، أخف من تحذير 250+
-  // (ALLOW_WITH_CONTROLS) ولا يُقيّد AEI إطلاقاً (راجع applyComplianceGateToAei).
-  it('PM10=200 (بين 150 و250) → حالة احتراز (PRECAUTION) فقط، ليست تحذيراً', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 200 }));
+  // نطاق 201-250 (احتراز): طلب صريح من المستخدم (عدَّل النطاقات الأصلية
+  // 150-250) — "القراءة من 201 إلى 250 تُفعل حالة الاحتراز لزيادة المراقبة"،
+  // أخف من نطاق الضوابط 251-339 (ALLOW_WITH_CONTROLS) ولا يُقيّد AEI إطلاقاً
+  // (راجع applyComplianceGateToAei). السماح النظيف (ALLOW) يمتد حتى 200.
+  it('PM10=220 (بين 201 و250) → حالة احتراز (PRECAUTION) فقط، ليست تحذيراً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 220 }));
     expect(r.decisionCategory).toBe('PRECAUTION');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
     expect(r.canOverride).toBe(true);
   });
 
-  it('PM10=149 (دون 150) → لا قاعدة PM10 تنظيمية مفعّلة إطلاقاً', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 149 }));
+  it('PM10=200 (الحد الأعلى للسماح النظيف) → لا قاعدة PM10 تنظيمية مفعّلة إطلاقاً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 200 }));
     expect(r.triggeredRules.some((h) => h.code.startsWith('PM10-'))).toBe(false);
     expect(r.decisionCategory).toBe('ALLOW');
   });
 
-  it('PM10=150 (الحد الأدنى للاحتراز بالضبط) → يُفعَّل الاحتراز', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 150 }));
+  it('PM10=201 (الحد الأدنى للاحتراز بالضبط) → يُفعَّل الاحتراز', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 201 }));
     expect(r.decisionCategory).toBe('PRECAUTION');
   });
 
-  it('PM10=249 (أقصى نطاق الاحتراز قبل التحذير) → لا يزال احترازاً، ليس تحذيراً', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 249 }));
+  it('PM10=250 (أقصى نطاق الاحتراز قبل التحذير) → لا يزال احترازاً، ليس تحذيراً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 250 }));
     expect(r.decisionCategory).toBe('PRECAUTION');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
+  });
+
+  it('PM10=251 (الحد الأدنى لنطاق الضوابط/التحذير بالضبط) → يُفعَّل التحذير', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 251 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+  });
+
+  it('PM10=339 (أقصى نطاق الضوابط قبل حد المخالفة 340) → لا يزال ALLOW_WITH_CONTROLS', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 339 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-EARLY-WARNING-007')).toBe(true);
   });
 });
 
@@ -908,8 +921,8 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
   });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=200 (نطاق الاحتراز) → تنبيه احتراز كأي نشاط آخر (لا إعفاء)', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 200, activity: exemptBatchingActivity() }));
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=220 (نطاق الاحتراز) → تنبيه احتراز كأي نشاط آخر (لا إعفاء)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 220, activity: exemptBatchingActivity() }));
     expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(true);
     expect(r.decisionCategory).toBe('PRECAUTION');
   });
@@ -1135,6 +1148,36 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
       })
     );
     expect(r.decisionCategory).not.toBe('ALLOW');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-07: "الاستئناف غير حتمي،
+  // يستخدم Date.now() داخل محرك القرار"): كانت الدالة تستدعي Date.now()
+  // مباشرة، فتُنتج نتائج مختلفة حسب لحظة الاستدعاء الفعلية حتى مع نفس
+  // المدخلات بالضبط — يخالف التوصيف الصريح للدالة كـ"نقية بلا I/O". now
+  // معامل صريح الآن يجعل النتيجة قابلة لإعادة الإنتاج بالكامل بمعزل عن
+  // ساعة النظام الفعلية.
+  it('H-07: evaluateDustCompliance حتمية بالكامل — نفس ctx + نفس now (صريح) ينتجان نفس القرار دائماً، بصرف النظر عن ساعة النظام الفعلية', () => {
+    const fixedNow = new Date('2026-01-01T12:00:00.000Z').getTime();
+    const fiveMinutesBeforeFixedNow = new Date(fixedNow - 5 * 60000).toISOString();
+    const ctx = context({
+      windSpeedKmh: 10,
+      pm10UgM3: 20,
+      previousDecisionCategory: 'MANDATORY_STOP',
+      previousPendingResumeSince: fiveMinutesBeforeFixedNow,
+    });
+
+    const r1 = evaluateDustCompliance(ctx, fixedNow);
+    const r2 = evaluateDustCompliance(ctx, fixedNow);
+
+    expect(r1.decisionCategory).toBe(r2.decisionCategory);
+    expect(r1.resumeHoldApplied).toBe(r2.resumeHoldApplied);
+    expect(r1.evaluatedAt).toBe(r2.evaluatedAt);
+    expect(r1.validUntil).toBe(r2.validUntil);
+    // القراءة الجيدة بدأت منذ 5 دقائق فقط (أقل من RESUME_STABILITY_MINUTES=10)
+    // نسبةً إلى fixedNow — يجب أن يبقى القيد مطبَّقاً بصرف النظر عن الوقت
+    // الفعلي الحالي عند تشغيل هذا الاختبار.
+    expect(r1.resumeHoldApplied).toBe(true);
+    expect(r1.evaluatedAt).toBe(new Date(fixedNow).toISOString());
   });
 
   it('قرار سابق موقِف لكن القرار الجديد المحسوب موقِف أيضاً (لا تحسّن) → لا حاجة لقيد الاستئناف، يمر القرار الجديد كما هو', () => {
@@ -2112,6 +2155,23 @@ describe('محرك امتثال الغبار — عدم كسر بنية النت
     expect(r.rulebookVersion).toBe('RCRC-NCEC-RIYADH-DUST-2026.2');
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "ليش التايمر ينعاد إذا سويت تحديث
+  // للصفحة"): العدّاد التنازلي في Compliancewidgetcard.tsx كان يفترض لحظة
+  // "الآن" المحلية بالمتصفح كمرجع لحساب استمرار PM10 — خاطئ عند إعادة تحميل
+  // الصفحة (المكوّن يُعاد بناؤه، فتتأخر لحظة "أول عرض" عن حساب الخادم
+  // الفعلي). evaluatedAt هو المرجع الصحيح الآن — يثبت هذا الاختبار أنه
+  // موجود دائماً في كل نتيجة وقريب فعلياً من لحظة الاستدعاء (لا قيمة ثابتة/
+  // فارغة/بعيدة زمنياً).
+  it('evaluatedAt موجود في كل نتيجة ويعكس وقت الاستدعاء الفعلي (لا قيمة ثابتة/بعيدة)', () => {
+    const before = Date.now();
+    const r = evaluateDustCompliance(context());
+    const after = Date.now();
+    expect(r.evaluatedAt).toBeTruthy();
+    const evaluatedAtMs = new Date(r.evaluatedAt).getTime();
+    expect(evaluatedAtMs).toBeGreaterThanOrEqual(before);
+    expect(evaluatedAtMs).toBeLessThanOrEqual(after);
+  });
+
   it('canOverride = false عند MANDATORY_STOP', () => {
     const r = evaluateDustCompliance(context({ dviMandatoryStop: true }));
     expect(r.canOverride).toBe(false);
@@ -2461,6 +2521,18 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
     }
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-06.1: "استبعاد قواعد
+  // ALLOW_WITH_CONTROLS من requiredActions مطلقاً"): كان الفلتر يستبعد كل
+  // قاعدة بشدة ALLOW_WITH_CONTROLS بصرف النظر عن استقلال actionAr عن
+  // messageAr فعلياً — فيُخفي الإجراء التصحيحي الأهم تشغيلياً (مثال: تنبيه
+  // PM10 الاستباقي) عن قسم "الإجراءات المطلوبة".
+  it('H-06.1: قاعدة ALLOW_WITH_CONTROLS (تنبيه PM10 استباقي) → actionAr يظهر في requiredActions، لا يُستبعَد', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 320 })); // نطاق 300-339: PM10-EARLY-WARNING-007
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-EARLY-WARNING-007')).toBe(true);
+    expect(r.requiredActions.some((a) => a.includes('التثبيط المعزز'))).toBe(true);
+  });
+
   it('لا تتقاطع الإجراءات المطلوبة مع نصوص القواعد المفعّلة إطلاقاً', () => {
     const r = evaluateDustCompliance(
       context({
@@ -2486,5 +2558,42 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
     expect(
       r.restartConditions.some((c) => c.includes('الرؤية') || c.includes('حالة الجو'))
     ).toBe(true);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-06.2: "شرط انخفاض الرياح
+  // تحت 15 يُضاف حتى لقرار سببه PM10/مسافة/DMP"): كان restartConditions
+  // يضيف "انخفاض سرعة الرياح إلى ما دون 15 كم/س" بفحص windBand الحالي وحده
+  // (windBand !== 'BELOW_15')، بصرف النظر عن كون الرياح سبب الإيقاف الفعلي.
+  // نشاط موقوف بسبب مخالفة مسافة كسارة (لا علاقة له بالرياح) بينما الرياح
+  // مرتفعة صدفةً في نفس اللحظة كان يعرض شرط استئناف مضلِّل. الآن الشرط
+  // يُضاف فقط إن كانت قاعدة رياح فعلية (بوابة >25، هدم/قطع أحجار مكشوف) هي
+  // القاعدة الفائزة فعلياً.
+  it('H-06.2: إيقاف بسبب مسافة كسارة (لا رياح) + رياح مرتفعة صدفةً في نفس اللحظة → لا يُضاف شرط "انخفاض الرياح" لأنه ليس سبب الإيقاف الفعلي', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30, // مرتفعة صدفةً، لكن ليست سبب الإيقاف هنا
+        project: projectProfile({ hasOnsiteCrusher: true }),
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          isEnclosedOperation: true, // يُعفي من بوابة الرياح >25 كم/س صراحة
+          measurements: { ...activityProfile().measurements, crusherDistanceToReceptorM: 300 },
+        }),
+      })
+    );
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-500-002C')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+    expect(r.restartConditions.some((c) => c.includes('انخفاض سرعة الرياح'))).toBe(false);
+  });
+
+  it('H-06.2: إيقاف بسبب بوابة الرياح >25 فعلياً → شرط "انخفاض الرياح" يظهر كما هو متوقَّع', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({ isEnclosedOperation: false, isDustGenerating: true }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
+    expect(r.restartConditions.some((c) => c.includes('انخفاض سرعة الرياح'))).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
+import { fetchLatestFinalDecisions } from '@/app/lib/dustEvaluation';
 
 type DecisionTarget = { projectId: string; activityId: string; activitySource: string };
 
@@ -94,13 +95,17 @@ export async function POST(request: NextRequest) {
   // فيُسجَّل قرار زائف في سجل decision_records مربوط بنشاط غير حقيقي لهذا
   // المشروع. activity_source='dust' هو الوحيد المدعوم في DCR (لا heat/crane).
   const dustRows = rawRows.filter((r) => r.activity_source === 'dust' && r.activity_id);
+  const activityGroupIdByActivityId = new Map<string, string>();
   if (dustRows.length > 0) {
     const activityIds = [...new Set(dustRows.map((r) => r.activity_id))];
     const { data: validProfiles } = await supabaseAdmin
       .from('project_dust_profiles')
-      .select('id, project_id')
+      .select('id, project_id, activity_group_id')
       .in('id', activityIds);
     const projectIdByActivityId = new Map((validProfiles || []).map((p: any) => [p.id, p.project_id]));
+    for (const p of validProfiles || []) {
+      activityGroupIdByActivityId.set(p.id, p.activity_group_id || `dust-${p.id}`);
+    }
     for (const r of dustRows) {
       if (projectIdByActivityId.get(r.activity_id) !== r.project_id) {
         return NextResponse.json({ error: 'activity_id لا ينتمي لـ project_id المُرسَل' }, { status: 400 });
@@ -111,6 +116,40 @@ export async function POST(request: NextRequest) {
   for (const r of rawRows) {
     if (!ALLOWED_STATUSES.has(r.status)) {
       return NextResponse.json({ error: `status غير صالح: ${r.status}` }, { status: 400 });
+    }
+  }
+
+  // خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-08: "قرار المستخدم
+  // لا يتحقق من القرار الإلزامي"): كان هذا المسار يقبل status='safe' من أي
+  // مستخدم يملك المشروع بلا أي فحص لـfinal_decisions المخزَّنة — يعني إمكانية
+  // تسجيل "آمن" بجانب إيقاف إلزامي فعلي (mandatory_stop=true, overridable=
+  // false) دون أي منع خادمي أو رابطة تدقيق واضحة بين القرارين. الإصلاح:
+  // لكل صف dust، إن كان آخر قرار نهائي مخزَّن لنفس activity_group_id موقِفاً
+  // إلزامياً غير قابل للتجاوز، يُرفَض أي status غير 'stopped' صراحة — القرار
+  // البشري لا يمكنه تجاوز إيقاف إلزامي فعلي، تماماً كما لا يمكن ذلك في
+  // decideFinal نفسها (overridable=false هناك بالضبط).
+  //
+  // storedFinalDecisions يُعاد استخدامه أيضاً أدناه لملء final_decision_id
+  // (راجع supabase-add-decision-records-final-decision-link-migration.sql) —
+  // رابطة تدقيق صريحة بين قرار المستخدم البشري والقرار الآلي المعروض له
+  // لحظة اتخاذه، بدل الاعتماد على تطابق زمني تقريبي بين جدولين منفصلين.
+  const storedFinalDecisions = dustRows.length > 0
+    ? await fetchLatestFinalDecisions(
+        supabaseAdmin,
+        [...new Set(dustRows.map((r) => activityGroupIdByActivityId.get(r.activity_id)).filter((id): id is string => !!id))]
+      )
+    : new Map<string, any>();
+
+  for (const r of dustRows) {
+    const groupId = activityGroupIdByActivityId.get(r.activity_id);
+    const stored = groupId ? storedFinalDecisions.get(groupId) : undefined;
+    if (stored?.mandatory_stop === true && stored?.overridable === false && r.status !== 'stopped') {
+      return NextResponse.json(
+        {
+          error: `لا يمكن تسجيل قرار "${r.status}" — النشاط موقوف إلزامياً حالياً بقرار غير قابل للتجاوز (${stored.short_reason_ar || 'إيقاف إلزامي نظامي'})`,
+        },
+        { status: 409 }
+      );
     }
   }
 
@@ -131,17 +170,25 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
   const approvedBy = profile?.username || profile?.company_name || auth.userId;
 
-  const sanitizedRows = rawRows.map((r) => ({
-    project_id: r.project_id,
-    activity_source: r.activity_source,
-    activity_id: String(r.activity_id ?? ''),
-    status: r.status,
-    reason: typeof r.reason === 'string' ? r.reason : null,
-    required_action: typeof r.required_action === 'string' ? r.required_action : null,
-    approved_by: approvedBy,
-    approval_note: typeof r.approval_note === 'string' ? r.approval_note : null,
-    weather_snapshot: Array.isArray(r.weather_snapshot) ? r.weather_snapshot : null,
-  }));
+  const sanitizedRows = rawRows.map((r) => {
+    const groupId = activityGroupIdByActivityId.get(r.activity_id);
+    const stored = groupId ? storedFinalDecisions.get(groupId) : undefined;
+    return {
+      project_id: r.project_id,
+      activity_source: r.activity_source,
+      activity_id: String(r.activity_id ?? ''),
+      status: r.status,
+      reason: typeof r.reason === 'string' ? r.reason : null,
+      required_action: typeof r.required_action === 'string' ? r.required_action : null,
+      approved_by: approvedBy,
+      approval_note: typeof r.approval_note === 'string' ? r.approval_note : null,
+      weather_snapshot: Array.isArray(r.weather_snapshot) ? r.weather_snapshot : null,
+      // رابطة تدقيق صريحة بالقرار الآلي المعروض للمستخدم لحظة اتخاذ قراره —
+      // راجع تعليق C-08 أعلاه. null إن لم يوجد صف مخزَّن بعد (نشاط جديد لم
+      // يُقيَّم عبر evaluate/route.ts، أو activity_source غير dust).
+      final_decision_id: stored?.id ?? null,
+    };
+  });
 
   const { data, error } = await supabaseAdmin
     .from('decision_records')

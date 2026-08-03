@@ -1003,8 +1003,64 @@ export async function evaluateDustVisibilityWindow(
   // تعديل حاسم: تم تمرير windowStartIso كـ anchorIso لمنع تكرار بيانات التنبؤ عند اختلاف التواريخ المستقبلية
   const allSamples = await fetchDustWeatherHourly(input.latitude, input.longitude, horizonHours, windowStartIso);
 
+  // فشل جلب توقع الطقس (بعد stale-cache fallback في weather.ts) لا يجوز أن
+  // يُسقط تقييم النشاط بالكامل — خطأ مكتشَف (تجربة مستخدم سيئة جداً: كل
+  // تفاصيل النشاط تختفي فجأة من الواجهة لمجرد انقطاع عابر بخدمة خارجية).
+  // نشاط مرتبط بجهاز حي (hasDeviceLink) يواصل هنا ببناء worst من قراءة
+  // الجهاز مباشرة أدناه (لا يعتمد فعلياً على allHourlyEvaluations، راجع
+  // isActivityLiveNow أدناه) — القرار الحي يبقى صحيحاً رغم غياب شبكة
+  // التوقعات المستقبلية (hourly/bestWindowWorst/avoidWindowWorst فقط
+  // ستكون فارغة مؤقتاً). نشاط بلا جهاز، أو لم يبدأ بعد، يرجع نافذة محايدة
+  // "بانتظار تقييم" بدل استثناء يسقط النشاط كاملاً.
   if (allSamples.length === 0) {
-    throw new Error('تعذر جلب توقع الطقس الساعي لتقييم نافذة النشاط.');
+    const ACTIVITY_LIVE_MARGIN_MS = 120 * 60000;
+    if (!input.hasDeviceLink || nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS) {
+      return buildAwaitingEvaluationWindow(windowStartIso, endMs, safeDuration);
+    }
+
+    // نشاط بجهاز حي بدأ فعلاً/قارب على البدء، وفشل جلب توقع الطقس تماماً
+    // (لا نسخة قديمة أيضاً بـweather.ts) — نبني worst مباشرة من قراءة
+    // الجهاز الحية. neutralWeatherSample محايد بالكامل (كل الحقول null)؛
+    // computeDviResult/mergeDustReading يتجاهلانه فعلياً هنا لأن
+    // input.hasDeviceLink && sampleTimeIso===undefined يفرض مسار الجهاز
+    // (buildDeviceMergedReading) قبل أي لمس لحقول weather — راجع
+    // isDeviceApplicableToSample في mergeDustReading. hourly/bestWindowWorst/
+    // avoidWindowWorst تبقى فارغة مؤقتاً (لا بيانات طقس مستقبلية متاحة)، لكن
+    // القرار الحي الفعلي يبقى صحيحاً ومبنياً على PM10 الحقيقي بدل إسقاط
+    // النشاط بالكامل.
+    const neutralWeatherSample: DustWeatherSample = {
+      visibilityM: null,
+      weatherCode: null,
+      weatherSymbol: 'UNKNOWN',
+      windSpeedKmh: null,
+      windGustKmh: null,
+      windDirectionDeg: null,
+      relativeHumidityPercent: null,
+      temperatureC: null,
+      rainfallLast24hMm: null,
+      pm10: null,
+      pm25: null,
+      dustConcentration: null,
+      dataSource: 'none',
+      isForecastStale: true,
+    };
+    const liveWorst: DviHourlyEvaluation = {
+      ...computeDviResult(input, neutralWeatherSample, undefined),
+      time: windowStartIso,
+      rawWeatherSample: neutralWeatherSample,
+      mergedReading: mergeDustReading(input, neutralWeatherSample, undefined),
+    };
+    return {
+      worst: liveWorst,
+      hourly: [],
+      windowStartIso: new Date(startMs).toISOString(),
+      windowEndIso: new Date(endMs).toISOString(),
+      durationHours: safeDuration,
+      bestWindowStartIso: null,
+      bestWindowWorst: null,
+      avoidWindowStartIso: null,
+      avoidWindowWorst: null,
+    };
   }
 
   // treatAsForecast=true: هذه المصفوفة تبني hourly/bestWindowWorst/
@@ -1044,12 +1100,14 @@ export async function evaluateDustVisibilityWindow(
   // قراءة الجهاز "الآن" لا تمثّل شيئاً عن ظروف نشاط لم يبدأ بعد فعلياً (قد
   // يبدأ بعد ساعات/يوم) — عرضها حينها كقرار حاسم يعني نسب حالة موقع الآن
   // (رياح/PM10 هذه اللحظة) لنشاط سيبدأ بموقع/زمن مختلف كلياً، وهو خطأ من
-  // نفس نوع "استخدام تقدير غير ذي صلة كأنه حقيقة". الحد الفاصل: نشاط ضمن
-  // هامش 30 دقيقة من بدايته المجدولة (بدأ فعلاً، أو سيبدأ قريباً جداً) يُعامَل
-  // كـ"الآن" فيفرض قراءة الجهاز؛ نشاط أبعد من ذلك زمنياً يبقى بمنطقه
-  // التوقّعي الطبيعي (worst من pickWorstActualHour أعلاه، مبني بـtreatAsForecast
-  // عبر allHourlyEvaluations — تقدير طقس صرف، لا قراءة جهاز مقحَمة).
-  const ACTIVITY_LIVE_MARGIN_MS = 30 * 60000;
+  // نفس نوع "استخدام تقدير غير ذي صلة كأنه حقيقة". الحد الفاصل (طلب صريح
+  // لاحق: كان 30 دقيقة، أصبح ساعتان — "جهاز الرصد يتفعّل قبل ساعتين من بداية
+  // النشاط"): نشاط ضمن هامش ساعتين من بدايته المجدولة (بدأ فعلاً، أو سيبدأ
+  // قريباً) يُعامَل كـ"الآن" فيفرض قراءة الجهاز؛ نشاط أبعد من ذلك زمنياً يبقى
+  // بمنطقه التوقّعي الطبيعي (worst من pickWorstActualHour أعلاه، مبني
+  // بـtreatAsForecast عبر allHourlyEvaluations — تقدير طقس صرف، لا قراءة
+  // جهاز مقحَمة). الانتقال فوري بمجرد عبور الحد — لا منطقة رمادية/تدرّج.
+  const ACTIVITY_LIVE_MARGIN_MS = 120 * 60000;
   const isActivityLiveNow = nowMs >= startMs - ACTIVITY_LIVE_MARGIN_MS;
   if (input.hasDeviceLink && isActivityLiveNow) {
     worst = {

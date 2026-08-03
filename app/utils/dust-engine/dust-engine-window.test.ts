@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { evaluateDustVisibilityWindow } from './engine';
+import { __clearWeatherCacheForTests } from './weather';
 import type { DustEngineInput } from './types';
 
 // =====================================================================
@@ -62,6 +63,7 @@ function mockForecastAirResponses(forecastBody: any, airBody: any) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  __clearWeatherCacheForTests();
 });
 
 // ثلاث ساعات متتالية تشكّل نافذة نشاط مدتها 3 ساعات — كل قيمها مختلفة عمداً

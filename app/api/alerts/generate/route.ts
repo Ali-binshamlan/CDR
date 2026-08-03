@@ -43,24 +43,15 @@
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
 import type { DustEngineInput } from '@/app/utils/dust-engine/types';
 import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { evaluateDustCompliance, buildComplianceContext, buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
-import { resolveFreshProjectDevice, fetchPm10SustainedStatus, fetchLatestFinalDecisions, type FreshDeviceReading, type Pm10SustainedStatus } from '@/app/lib/dustEvaluation';
+import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import { resolveFreshProjectDevice, fetchPm10SustainedStatus, fetchLatestFinalDecisions, fetchLatestStoredCompliance, type FreshDeviceReading, type Pm10SustainedStatus } from '@/app/lib/dustEvaluation';
 import { safeErrorResponse } from '@/app/lib/apiError';
-
-// مقارنة آمنة زمنياً لسر الـCron — timingSafeEqual يتطلب طولاً متطابقاً
-// للمخزنين، فنقارن الطول أولاً (تسريب طفيف لطول السر، غير حسّاس عملياً
-// مقارنة بتسريب محتواه عبر توقيت المقارنة العادية !==).
-function timingSafeStringEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
 // (يُستدعى من Cron)، فيحتاج مفتاح الخدمة لتجاوز RLS والقراءة من كل
@@ -307,7 +298,14 @@ async function checkBeforeAlerts(
 // الأنشطة من الاستعلام نفسه (لا فلترة بعد الجلب) — يوفر كل العمل اللاحق
 // لكل نشاط مستبعَد، لا فقط يُخفي نتيجته.
 export async function checkDustActivities(projectIds?: string[]) {
-  let q = supabaseAdmin.from('project_dust_profiles').select('*, projects!inner(*)').is('projects.archived_at', null);
+  // archived_at (النشاط نفسه، لا المشروع فقط) — راجع تعليق الأرشفة أعلاه؛
+  // نفس المبدأ الآن على مستوى النشاط الفردي بعد أن صار DELETE /api/
+  // activities أرشفة لا حذفاً فعلياً (راجع app/api/activities/route.ts).
+  let q = supabaseAdmin
+    .from('project_dust_profiles')
+    .select('*, projects!inner(*)')
+    .is('projects.archived_at', null)
+    .is('archived_at', null);
   if (projectIds && projectIds.length > 0) q = q.in('project_id', projectIds);
   const { data: profiles } = await q;
 
@@ -418,41 +416,24 @@ export async function checkDustActivities(projectIds?: string[]) {
         ? 'أثناء التنفيذ الآن'
         : `متوقع خلال نافذة التنفيذ (الساعة ${new Date(worst.time).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })})`;
 
-      // تنبيه امتثال تنظيمي — يشغّل محرك الامتثال الفعلي (evaluateDustCompliance)
-      // بنفس منطق صفحة المشروع تماماً، لا نسخة مختصرة/مكرَّرة من القواعد. أي
-      // قاعدة موجودة في rulebook.ts/engine.ts (مسافة الكسارة، كفاءة فلتر
-      // محطة الخلط، بوابة الرياح >25، DMP، إلخ) تُفعِّل هذا التنبيه تلقائياً
-      // إن أوقفت النشاط — بلا حاجة لتحديث هذا الملف يدوياً عند إضافة قاعدة
-      // جديدة أو نشاط تنظيمي جديد لاحقاً، لأن المصدر واحد.
-      // stopped_since (لا updated_at) هنا أيضاً — نفس سبب computeDustComplianceResults
-      // في dustEvaluation.ts: updated_at يتحدّث حتى عند إعادة كتابة نفس
-      // القرار الموقِف، فيمدّد عداد الـ10 دقائق بلا قصد كل مرة يعمل فيها
-      // هذا المولّد على نفس النشاط.
-      // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "لا يوجد
-      // FinalDecisionEngine مستقل فعلياً"): compliance يُحسَب الآن قبل فحص
-      // SAFETY_BREACH (لا بعده) لأن decideFinal يحتاج dvi+compliance معاً —
-      // نُقلت الكتلة كاملة لأعلى بلا تغيير منطقها الداخلي.
-      let previousDecision: { decision: string; updated_at: string } | null = null;
-      if (profile.activity_group_id) {
-        const { data: prevRow } = await supabaseAdmin
-          .from('current_dust_compliance_decisions')
-          .select('decision, updated_at, stopped_since')
-          .eq('activity_group_id', profile.activity_group_id)
-          .maybeSingle();
-        previousDecision = prevRow
-          ? { decision: prevRow.decision, updated_at: prevRow.stopped_since ?? prevRow.updated_at }
-          : null;
-      }
-
-      // استمرار PM10 الزمني (RCRC-PM10-340-VIOLATION-011/RCRC-PM10-30M-
-      // SUSPENSION-012) — نفس منطق computeDustComplianceResults في
-      // dustEvaluation.ts: نسجّل القراءة اليدوية (onsite_pm10) إن وُجدت،
-      // ثم نجلب حالة الاستمرار قبل بناء السياق النهائي.
-      // النوع الكامل (لا مُجرَّد للرقمين فقط) — راجع تعليق pm10Sustained
-      // المطابق في dustEvaluation.ts (computeDustComplianceResults) للسبب:
-      // isConfirmedViolation340/isSuspended250For30Min يجب أن تصلا كاملتين
-      // حتى buildComplianceContext، لا رقمي دقائق مجرَّدين فقط.
-      let pm10Sustained: Pm10SustainedStatus | null = null;
+      // تنبيه امتثال تنظيمي — يُقرَأ الآن من dust_compliance_evaluations.result
+      // المخزَّن فعلياً (عبر fetchLatestStoredCompliance، كتبه evaluate/route.ts)
+      // بدل استدعاء evaluateDustCompliance محلياً هنا بمعزل — خطأ معماري
+      // مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-05: "القرار المخزَّن ليس
+      // المصدر الوحيد؛ مولّد التنبيهات يعيد حساب DVI وCompliance، ثم يمزجهما
+      // مع قرار مخزَّن أو fallback مبسَّط"): كان هذا المسار يبني complianceCtx
+      // ويستدعي evaluateDustCompliance بنفسه بمدخلات (previousDecision/
+      // pm10Sustained) قد تُجلَب بتوقيت مختلف طفيفاً عن نفس الحساب الذي نفّذه
+      // evaluate/route.ts لنفس النشاط، فقد ينتج requiredActions/shortReasonAr/
+      // decisionCategory مختلفة عمّا تعرضه فعلاً بطاقة/خريطة المشروع بنفس
+      // اللحظة تقريباً — بالضبط نفس عيب FinalDecision الذي أُصلح سابقاً
+      // (راجع تعليق finalDecision أدناه)، لكنه كان لا يزال قائماً لـcompliance
+      // نفسها. نفس مبدأ fetchLatestFinalDecisions: قراءة واحدة من اللقطة
+      // المخزَّنة بدل حساب مستقل بمعزل.
+      //
+      // القراءة اليدوية (onsite_pm10) لا تزال تُسجَّل هنا فعلياً (تأثير جانبي
+      // مطلوب بصرف النظر عن مصدر compliance المعروض) — منفصلة تماماً عن قراءة
+      // compliance المخزَّنة أدناه.
       if (profile.activity_group_id && profile.project_id) {
         const onsitePm10 = profile.onsite_pm10;
         if (typeof onsitePm10 === 'number') {
@@ -467,11 +448,39 @@ export async function checkDustActivities(projectIds?: string[]) {
             // فشل التسجيل لا يُسقط التقييم.
           }
         }
-        pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, profile.project_id, profile.activity_group_id, profile.device_id ?? null);
       }
 
-      const complianceCtx = buildComplianceContext(profile.projects, profile, worst, sensitiveReceptors, previousDecision, pm10Sustained);
-      const compliance = evaluateDustCompliance(complianceCtx);
+      // fallback إلى evaluateDustCompliance المحلي فقط إن لم يوجد بعد أي
+      // تقييم امتثال مخزَّن لهذا النشاط (أول تقييم قبل أي استدعاء GET/evaluate
+      // سابق) — فشل آمن، لا يُسقِط التنبيه بأكمله. بمجرد وجود صف evaluate/
+      // route.ts واحد، هذا الفرع لا يُستخدَم مرة أخرى لنفس النشاط.
+      const storedComplianceMap = profile.activity_group_id
+        ? await fetchLatestStoredCompliance(supabaseAdmin, [profile.activity_group_id])
+        : new Map<string, DustComplianceResult>();
+      const storedCompliance = profile.activity_group_id ? storedComplianceMap.get(profile.activity_group_id) : undefined;
+
+      let compliance: DustComplianceResult;
+      if (storedCompliance) {
+        compliance = storedCompliance;
+      } else {
+        let previousDecision: { decision: string; updated_at: string } | null = null;
+        if (profile.activity_group_id) {
+          const { data: prevRow } = await supabaseAdmin
+            .from('current_dust_compliance_decisions')
+            .select('decision, updated_at, stopped_since')
+            .eq('activity_group_id', profile.activity_group_id)
+            .maybeSingle();
+          previousDecision = prevRow
+            ? { decision: prevRow.decision, updated_at: prevRow.stopped_since ?? prevRow.updated_at }
+            : null;
+        }
+        const pm10Sustained: Pm10SustainedStatus | null =
+          profile.activity_group_id && profile.project_id
+            ? await fetchPm10SustainedStatus(supabaseAdmin, profile.project_id, profile.activity_group_id, profile.device_id ?? null)
+            : null;
+        const complianceCtx = buildComplianceContext(profile.projects, profile, worst, sensitiveReceptors, previousDecision, pm10Sustained);
+        compliance = evaluateDustCompliance(complianceCtx);
+      }
 
       // القرار النهائي الموحَّد — يُقرَأ الآن من final_decisions (كتبه
       // evaluate/route.ts، نقطة الحساب الوحيدة لـdecideFinal) بدل استدعاء

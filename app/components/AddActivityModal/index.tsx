@@ -175,9 +175,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     );
   };
 
-  // أقرب محطة رصد نشطة لنقطة معيّنة — تُستخدم لاقتراح deviceId تلقائياً
-  // عند تحديد موقع نشاط لم يختر محطة يدوياً بعد. null إن لم توجد أي محطة
-  // نشطة بموقع معروف (المستخدم يُمنع لاحقاً من الحفظ برسالة واضحة).
+  // أقرب محطة رصد نشطة لنقطة معيّنة — للعرض التوضيحي فقط في DustStep (أي
+  // محطة سترتبط تلقائياً بهذا النشاط). القيمة الملزمة الفعلية تُحسب من
+  // جديد على السيرفر (resolveNearestActiveDeviceId في app/api/dust-profiles/
+  // route.ts) وقت الحفظ — لا اختيار يدوي من المستخدم بعد الآن (طلب صريح:
+  // الربط تلقائي بالكامل حسب الإحداثيات، بلا تحكم من العميل). null إن لم
+  // توجد أي محطة نشطة بموقع معروف — النشاط يُحفظ بلا device_id ويعتمد على
+  // API الطقس (Open-Meteo) بدل الجهاز.
   const findNearestActiveDeviceId = (lat: number, lng: number): string | null => {
     let nearestId: string | null = null;
     let nearestDist = Infinity;
@@ -196,8 +200,8 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
-        // اقتراح أقرب محطة تلقائياً فقط إن لم يختر المستخدم محطة يدوياً بعد
-        // — يبقى الاختيار اليدوي دائماً أولوية على الاقتراح التلقائي.
+        // إعادة تحديد موقع النشاط تُعيد حساب أقرب محطة تلقائياً دائماً (لا
+        // اختيار يدوي يُبقي القيمة القديمة بعد الآن).
         const deviceId =
           item.deviceId === null && typeof lat === 'number' && typeof lng === 'number'
             ? findNearestActiveDeviceId(lat, lng)
@@ -205,10 +209,6 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, lat, lng, deviceId };
       })
     );
-  };
-
-  const updateRegulatoryActivityDevice = (itemId: string, deviceId: string | null) => {
-    setRegulatoryActivities((prev) => prev.map((item) => (item.id === itemId ? { ...item, deviceId } : item)));
   };
 
   const updateRegulatoryActivityTiming = (
@@ -247,17 +247,12 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // موقع النشاط العام (item.lat/lng) لأنشطة الخلاطة/الكسارة يتبع تلقائياً
   // موقع الوحدة الأولى — لا خريطة منفصلة "لموقع النشاط" مقابل "موقع
   // الوحدة" لهذين النوعين، فكلاهما نفس الشيء (راجع RegulatoryActivityItem).
-  // يقترح أقرب محطة أيضاً (نفس منطق updateRegulatoryActivityLocation)
-  // إن لم يكن deviceId قد اختير يدوياً بعد.
-  const syncItemLocationFromUnit = (
-    lat: string | number,
-    lng: string | number,
-    currentDeviceId: string | null
-  ) => {
+  // يعيد حساب أقرب محطة تلقائياً أيضاً (نفس منطق updateRegulatoryActivityLocation).
+  const syncItemLocationFromUnit = (lat: string | number, lng: string | number) => {
     const numLat = typeof lat === 'number' ? lat : Number(lat);
     const numLng = typeof lng === 'number' ? lng : Number(lng);
     if (!Number.isFinite(numLat) || !Number.isFinite(numLng)) return {};
-    const deviceId = currentDeviceId === null ? findNearestActiveDeviceId(numLat, numLng) : currentDeviceId;
+    const deviceId = findNearestActiveDeviceId(numLat, numLng);
     return { lat: numLat, lng: numLng, deviceId };
   };
 
@@ -270,8 +265,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
           index === 0 && (field === 'batchingLat' || field === 'batchingLng')
             ? syncItemLocationFromUnit(
                 field === 'batchingLat' ? value : batchingUnits[0].batchingLat,
-                field === 'batchingLng' ? value : batchingUnits[0].batchingLng,
-                item.deviceId
+                field === 'batchingLng' ? value : batchingUnits[0].batchingLng
               )
             : {};
         return { ...item, batchingUnits, ...syncLoc };
@@ -290,7 +284,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const batchingUnits = item.batchingUnits.filter((_, i) => i !== index);
         const syncLoc =
           index === 0
-            ? syncItemLocationFromUnit(batchingUnits[0].batchingLat, batchingUnits[0].batchingLng, item.deviceId)
+            ? syncItemLocationFromUnit(batchingUnits[0].batchingLat, batchingUnits[0].batchingLng)
             : {};
         return { ...item, batchingUnits, ...syncLoc };
       })
@@ -330,8 +324,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
           index === 0 && (field === 'crusherLat' || field === 'crusherLng')
             ? syncItemLocationFromUnit(
                 field === 'crusherLat' ? value : crusherUnits[0].crusherLat,
-                field === 'crusherLng' ? value : crusherUnits[0].crusherLng,
-                item.deviceId
+                field === 'crusherLng' ? value : crusherUnits[0].crusherLng
               )
             : {};
         return { ...item, crusherUnits, ...syncLoc };
@@ -350,7 +343,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const crusherUnits = item.crusherUnits.filter((_, i) => i !== index);
         const syncLoc =
           index === 0
-            ? syncItemLocationFromUnit(crusherUnits[0].crusherLat, crusherUnits[0].crusherLng, item.deviceId)
+            ? syncItemLocationFromUnit(crusherUnits[0].crusherLat, crusherUnits[0].crusherLng)
             : {};
         return { ...item, crusherUnits, ...syncLoc };
       })
@@ -811,9 +804,11 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
           site: { hasEarthworks: dustForm.hasEarthworks, internalDirtRoads: dustForm.internalDirtRoads, heavyEquipmentMovement: dustForm.heavyEquipmentMovement, looseMaterials: dustForm.looseMaterials, largeExposedArea: dustForm.largeExposedArea, drySurface: dustForm.drySurface, surfaceWet: dustForm.surfaceWet, wateringAvailable: dustForm.wateringAvailable, stockpilesCovered: dustForm.stockpilesCovered, speedLimitApplied: dustForm.speedLimitApplied, wheelWashAvailable: dustForm.wheelWashAvailable, dustScreensAvailable: dustForm.dustScreensAvailable, fieldMonitoringAvailable: dustForm.fieldMonitoringAvailable, receptorType: dustForm.receptorType, receptorDistance: dustForm.receptorDistance, receptorIsDownwind: dustForm.receptorIsDownwind, visibleDustPlumeReported: dustForm.visibleDustPlumeReported, openConcretePour: dustForm.openConcretePour },
           onsiteVisibilityM: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsitePm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsitePm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
           // معاينة ما قبل الحفظ لا تجلب قراءة الجهاز فعلياً (لا نداء شبكة
-          // إضافي هنا) — hasDeviceLink يعكس فقط اختيار المستخدم للمحطة،
-          // فتظهر المعاينة بيانات فارغة بأمانة (بدل قراءة API خاطئة) حين
-          // تُختار محطة، تماماً كما ستظهر البطاقة الفعلية بعد الحفظ.
+          // إضافي هنا) — hasDeviceLink يعكس اقتراح أقرب محطة المحسوب محلياً
+          // (findNearestActiveDeviceId)، فتظهر المعاينة بيانات فارغة بأمانة
+          // (بدل قراءة API خاطئة) حين يُتوقَّع ربط بمحطة، تماماً كما ستظهر
+          // البطاقة الفعلية بعد الحفظ (السيرفر يحسب الربط الملزم بنفس
+          // الخوارزمية — راجع resolveNearestActiveDeviceId في dust-profiles/route.ts).
           hasDeviceLink: !!item.deviceId,
         };
 
@@ -894,7 +889,6 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
                         updateRegulatoryActivityField={updateRegulatoryActivityField}
                         updateRegulatoryActivityLocation={updateRegulatoryActivityLocation}
                         projectDevices={projectDevices}
-                        updateRegulatoryActivityDevice={updateRegulatoryActivityDevice}
                         updateRegulatoryActivityTiming={updateRegulatoryActivityTiming}
                         updateRegulatoryActivityTimingMode={updateRegulatoryActivityTimingMode}
                         updateRegulatoryActivityShift={updateRegulatoryActivityShift}

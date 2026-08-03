@@ -46,6 +46,12 @@ function freshDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceRe
     last_temperature_c: 38,
     last_reading_at: new Date().toISOString(),
     last_pm10_at: new Date().toISOString(),
+    last_wind_speed_at: new Date().toISOString(),
+    last_wind_gust_at: new Date().toISOString(),
+    last_wind_direction_at: new Date().toISOString(),
+    last_visibility_at: new Date().toISOString(),
+    last_relative_humidity_at: new Date().toISOString(),
+    last_temperature_at: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -187,6 +193,12 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
       last_temperature_c: 41,
       last_reading_at: freshTime,
       last_pm10_at: null,
+      last_wind_speed_at: null,
+      last_wind_gust_at: null,
+      last_wind_direction_at: null,
+      last_visibility_at: null,
+      last_relative_humidity_at: null,
+      last_temperature_at: null,
     });
   });
 

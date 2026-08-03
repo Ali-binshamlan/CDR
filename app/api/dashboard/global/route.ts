@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
 
   if (projectIds.length > 0) {
     const [dustRes, decisionsRes] = await Promise.all([
-      supabaseAdmin.from('project_dust_profiles').select('*').in('project_id', projectIds).eq('planned_date', todayStr),
+      supabaseAdmin.from('project_dust_profiles').select('*').in('project_id', projectIds).eq('planned_date', todayStr).is('archived_at', null),
       supabaseAdmin.from('decision_records').select('*').in('project_id', projectIds).order('created_at', { ascending: false }),
     ]);
     dustData = dustRes.data || [];

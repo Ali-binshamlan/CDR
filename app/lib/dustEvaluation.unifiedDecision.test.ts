@@ -329,4 +329,34 @@ describe('computeUnifiedActivityDecision — دمج aei في العنوان ال
     expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
     expect(r.level).toBe('GREEN');
   });
+
+  // طلب مستخدم صريح (اكتشاف عبر الواجهة — بانر "القرار الموحد" استمر يعرض
+  // "بيئة العمل غير آمنة (مغلق)" أسود لنشاط PLANNING رغم أن decideFinal
+  // نفسها تُرجع نتيجة محايدة (لا إيقاف إلزامي) بشكل صحيح تماماً): aei محرك
+  // مستقل تماماً لا يعرف mode=PLANNING إطلاقاً — كان لا يزال يحسب aei.color
+  // من dvi.score الخام (مبني على قيم توقّعية مرتفعة)، فتفوز قاعدة "الأشد
+  // يحكم" أعلاه بلون AEI الأسود فوق قرار decideFinal الصحيح. startIso هنا
+  // بعيد جداً (أبعد من هامش الساعتين) فيُنتج mode=PLANNING داخلياً. dvi.
+  // decisionCategory=MANDATORY_STOP ليست ALLOW/ALLOW_WITH_MONITORING →
+  // "لا تصلح" → أصفر (لا أخضر) بتصميم decideFinal، لكن الأهم: aei.color=
+  // BLACK لا يجوز أن يستبدل هذا بلون أسود/mandatoryStop=true إطلاقاً.
+  it('mode=PLANNING (startIso بعيد) + aei.color=BLACK → aei لا يُستبدَل به إطلاقاً، لا mandatoryStop ولا لون أسود', () => {
+    const compliance = complianceWith('MANDATORY_STOP', 'إيقاف إلزامي نظامي', 'PM10 تجاوز حد المخالفة');
+    const dvi = baseDviWorst({
+      level: 'BLACK',
+      decisionCategory: 'MANDATORY_STOP',
+      decisionLabelAr: 'إيقاف إلزامي نظامي',
+      mandatoryStop: true,
+      overridable: false,
+      shortReason: 'PM10 = 2041.5',
+    });
+    const aei = baseAei({ status: 'CLOSED', statusLabelAr: 'بيئة العمل غير آمنة (مغلق)', color: 'BLACK', score: 0 });
+
+    const startIsoFarInFuture = new Date(Date.now() + 24 * 3600000).toISOString(); // بعد يوم كامل
+    const r = computeUnifiedActivityDecision(dvi, compliance, aei, startIsoFarInFuture);
+
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.level).toBe('YELLOW');
+    expect(r.decisionLabelAr).toBe('تنبيه: أجواء متوقعة غير مناسبة');
+  });
 });

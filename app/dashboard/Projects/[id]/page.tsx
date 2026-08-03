@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation';
 import { useSearchParams } from 'next/navigation';
 import { Inbox } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
+import { supabase } from '@/app/lib/supabase';
 
 import ProjectHeader from '@/app/components/dashborad/Projects/[id]/components/ProjectHeader';
 import DashboardFilters from '@/app/components/dashborad/Projects/[id]/components/DashboardFilters';
@@ -34,10 +35,15 @@ interface RecentActivityItem {
   durationMinutes?: number;
 }
 
-// كل كم دقيقة تتحدّث بيانات الصفحة تلقائياً بلا حاجة لريفريش يدوي — تطابق
-// دورة إرسال الجهاز (دقيقتان) حتى تنعكس حالة استمرار PM10 (مؤكدة/معلَّقة/
-// معلَّقة 30 دقيقة) على الواجهة بأقرب وقت ممكن لحدوثها الفعلي في القاعدة.
-const DASHBOARD_POLL_INTERVAL_MS = 2 * 60 * 1000;
+// المسار الأساسي والموثوق للتحديث اللايف: polling كل 3 ثوانٍ — بعد فصل
+// evaluate الثقيل عن هذا الـpolling (راجع skipEvaluate في fetchDashboardData)
+// أصبح كل تكرار GET خفيفاً (قراءة قرار محفوظ فقط، بلا إعادة حساب)، لكن
+// فاصل نصف ثانية تبيّن أنه عدواني جداً بالتطوير المحلي (Next dev غير
+// محسَّن للأداء) ويضغط السيرفر بما يكفي لتعليق طلبات أخرى (مثل مودال سجل
+// القراءات). 3 ثوانٍ توازن جيد بين سرعة محسوسة وحمل معقول. اشتراك Supabase
+// Realtime أدناه (final_decisions) تحسين إضافي فقط — إن نجح يُحدّث فوراً
+// بلا انتظار الفاصل، وإن فشل فهذا الـpolling يبقى المسار المضمون.
+const DASHBOARD_POLL_INTERVAL_MS = 3 * 1000;
 
 export default function ProjectDetailsPage({
   params,
@@ -71,11 +77,18 @@ export default function ProjectDetailsPage({
   // انتهاء مهلته (onCountdownElapsed) — لو نفّذنا GET فوراً بالتوازي مع
   // POST، قد يصل GET ويقرأ القرار القديم من القاعدة قبل أن يُنهي POST إعادة
   // الحساب/الكتابة فعلياً (لا ترتيب مضمون بين طلبين متوازيين)، فتظهر
-  // الواجهة "لم تتحدث" رغم انتهاء الوقت فعلاً، وتنتظر لحد دورة polling
-  // التالية (قد تصل دقيقتين) حتى تلتقط القرار الجديد بالصدفة. انتظار POST
-  // أولاً هنا يضمن أن GET التالي يقرأ القرار المُعاد حسابه فعلياً، لا نسخة
-  // سابقة له.
-  const fetchDashboardData = async (silent = false, waitForEvaluate = false) => {
+  // الواجهة "لم تتحدث" رغم انتهاء الوقت فعلاً، وتنتظر لحد اشتراك Realtime/
+  // دورة polling الاحتياطية التالية (راجع DASHBOARD_POLL_INTERVAL_MS أعلاه)
+  // حتى تلتقط القرار الجديد بالصدفة. انتظار POST أولاً هنا يضمن أن GET
+  // التالي يقرأ القرار المُعاد حسابه فعلياً، لا نسخة سابقة له.
+  // skipEvaluate=true: لا يستدعي POST /evaluate إطلاقاً — قراءة بحتة لآخر
+  // قرار محفوظ فقط. يُستخدم بالـpolling السريع المتكرر (DASHBOARD_POLL_
+  // INTERVAL_MS) لأن evaluate استدعاء ثقيل فعلياً (يعيد حساب DVI+Compliance+
+  // FinalDecision ويكتب 5 جداول عبر RPC لكل نشاط) — تكراره كل ثانيتين كان
+  // يضغط السيرفر بلا داعٍ، بما أن الـcron الخارجي (كل دقيقة) هو من يكتب
+  // القرارات الجديدة أصلاً؛ الـpolling السريع هنا مسؤوليته الوحيدة عرض
+  // آخر ما كُتب، لا إعادة حسابه.
+  const fetchDashboardData = async (silent = false, waitForEvaluate = false, skipEvaluate = false) => {
     try {
       if (!silent) setLoading(true);
 
@@ -87,8 +100,8 @@ export default function ProjectDetailsPage({
       // يُحدّث "استمرار" القراءة تلقائياً بلا أي إعادة ضبط للمؤقتات (سجل
       // إضافة فقط، لا حذف/تعديل، فكل استدعاء يُمدّد السلسلة الحالية بدل
       // تصفيرها).
-      const evaluatePromise = apiClient.post(`/projects/${id}/evaluate`).catch(() => {});
-      if (waitForEvaluate) await evaluatePromise;
+      const evaluatePromise = skipEvaluate ? null : apiClient.post(`/projects/${id}/evaluate`).catch(() => {});
+      if (waitForEvaluate && evaluatePromise) await evaluatePromise;
 
       // apiClient (axios) يرفق تلقائياً Authorization: Bearer <session token>
       // — المسار أصبح يتطلب مصادقة وتحقق ملكية فعلياً (راجع GET في
@@ -100,7 +113,7 @@ export default function ProjectDetailsPage({
 
       // غير waitForEvaluate: fire-and-forget عمداً كما كان — فشل الكتابة لا
       // يجوز أن يمنع عرض البيانات المقروءة أصلاً بنجاح.
-      if (!waitForEvaluate) evaluatePromise.catch(() => {});
+      if (!waitForEvaluate) evaluatePromise?.catch(() => {});
     } catch (err: any) {
       if (silent) return; // فشل التحديث الخلفي الصامت لا يُظهر شاشة خطأ فوق بيانات معروضة بنجاح
       if (err?.response?.status === 404) { notFound(); return; }
@@ -117,7 +130,7 @@ export default function ProjectDetailsPage({
     fetchDashboardData();
 
     const intervalId = window.setInterval(() => {
-      if (!cancelled) fetchDashboardData(true);
+      if (!cancelled) fetchDashboardData(true, false, true);
     }, DASHBOARD_POLL_INTERVAL_MS);
 
     return () => {
@@ -126,10 +139,73 @@ export default function ProjectDetailsPage({
     };
   }, [id]);
 
+  // تحديث لايف فوري: اشتراك Supabase Realtime على final_decisions (نفس
+  // نمط اشتراك alerts في Sidebar.tsx) — يستدعي fetchDashboardData(true)
+  // لحظة كتابة أي قرار نهائي جديد لهذا المشروع تحديداً (INSERT فقط، الجدول
+  // append-only أصلاً فلا UPDATE/DELETE ممكنة)، بدل انتظار دورة الـpolling
+  // البطيئة أعلاه. يتطلب policy SELECT صريحة على final_decisions لصالح
+  // authenticated (راجع supabase/migrations/202608020002_final_decisions_
+  // realtime_policy.sql) — بدونها الاشتراك يبقى صامتاً بلا أي حدث يصل
+  // إطلاقاً (RLS تُطبَّق على Realtime تماماً كأي SELECT عادي).
+  //
+  // setAuth(access_token) قبل الاشتراك ضروري وليس اختيارياً: اتصال
+  // WebSocket الخاص بـRealtime منفصل تماماً عن apiClient (axios) الذي يرفق
+  // Authorization Bearer لطلبات REST فقط — بدون setAuth هنا، القناة تُفتح
+  // بلا هوية مصادَق عليها إطلاقاً، فسياسة "to authenticated" لا تنطبق عليها
+  // أبداً، ويفشل الاشتراك صامتاً بلا أي خطأ ظاهر (لا حدث INSERT يصل مطلقاً
+  // مهما كُتب بالجدول). هذا بالضبط كان يمنع تحديث هذه البطاقة تلقائياً.
+  //
+  // onAuthStateChange('TOKEN_REFRESHED'/'SIGNED_IN') ضروري أيضاً: توكن
+  // supabase.auth.getSession() المستخدَم عند فتح القناة يصلح لساعة واحدة
+  // فقط (مدة صلاحية JWT الافتراضية) — بعدها supabase-js يجدّد الجلسة
+  // تلقائياً بالخلفية لطلبات apiClient (axios) العادية، لكن القناة المفتوحة
+  // مسبقاً بـrealtime.setAuth(token) القديم لا تتجدد تلقائياً معها؛ تبقى
+  // مصادَقة بتوكن منتهي الصلاحية، فتُرفض الأحداث الجديدة صامتاً رغم بقاء
+  // حالة القناة نفسها SUBSCRIBED ظاهرياً. الاستماع هنا يُعيد setAuth بكل
+  // تجديد فعلي للجلسة، بدل الاعتماد على قراءة واحدة عند التحميل.
+  useEffect(() => {
+    if (!id) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
+
+    const openChannel = () => {
+      if (channel) return;
+      channel = supabase
+        .channel(`final-decisions-${id}`)
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'final_decisions', filter: `project_id=eq.${id}` },
+          () => fetchDashboardData(true)
+        )
+        .subscribe();
+    };
+
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token || cancelled) return;
+      await supabase.realtime.setAuth(token);
+      if (cancelled) return;
+      openChannel();
+    })();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!session?.access_token) return;
+      await supabase.realtime.setAuth(session.access_token);
+    });
+
+    return () => {
+      cancelled = true;
+      authListener.subscription.unsubscribe();
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [id]);
+
   // يُستدعى من ComplianceWidgetCard بالضبط في لحظة انتهاء عدّاد PM10 (تأكيد
   // مخالفة أو تعليق 30 دقيقة) لأي نشاط ظاهر — يطلب إعادة تقييم فورية بدل
-  // انتظار دورة polling الدورية التالية (قد تصل دقيقتين كاملتين تأخير لو
-  // صادف انتهاء العدّاد مباشرة بعد آخر تحديث). قد تنتهي عدة عدّادات في نفس
+  // انتظار دورة polling الاحتياطية التالية (راجع DASHBOARD_POLL_INTERVAL_MS
+  // أعلاه، قد تصل عدة دقائق تأخير لو صادف انتهاء العدّاد مباشرة بعد آخر
+  // تحديث). قد تنتهي عدة عدّادات في نفس
   // اللحظة تقريباً (عدة أنشطة/بطاقات) — debounce بسيط (500ms عبر useRef، لا
   // إعادة render) يدمجها في طلب واحد بدل عدة طلبات متزامنة لنفس البيانات.
   const debounceTimeoutRef = useRef<number | null>(null);

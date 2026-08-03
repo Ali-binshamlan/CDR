@@ -11,6 +11,7 @@ import {
   computeDustComplianceHourly,
   computeUnitReceptors,
   applyComplianceGatesToDustAei,
+  computeUnifiedActivityDecision,
   fetchLatestFinalDecisions,
   riyadhLocalToUtcIso,
 } from '@/app/lib/dustEvaluation';
@@ -71,9 +72,34 @@ function riskWeightFromColor(color: string | undefined | null): number {
 // computeUnifiedActivityDecision (تعيد حساب decideFinal محلياً) — مصدر
 // حساب مستقل عن باقي المسارات (dashboard/global، viewer/dashboard،
 // alerts/generate) التي حُوِّلت جميعها لقراءة final_decinsions المخزَّنة
-// بدل إعادة الحساب. الآن تقرأ نفس الصف المخزَّن (كتبه evaluate/route.ts)
-// بدل استدعاء decideFinal بنفسها — نفس القرار بالضبط في كل الواجهات، لا
-// نسخة خامسة محتملة التناقض.
+// بدل إعادة الحساب. حُوِّلت حينها لقراءة نفس الصف المخزَّن بدل استدعاء
+// decideFinal بنفسها.
+//
+// خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "فوق مسموح اعتيادي وتحت مع مراقبة"،
+// نفس التناقض الظاهري القديم لكن بسبب مختلف تماماً هذه المرة): fetchDashboardData
+// في الواجهة (app/dashboard/Projects/[id]/page.tsx) يستدعي POST /evaluate
+// (يكتب final_decisions) بالتوازي مع GET هذا (لا قبله) في كل تحديث دوري
+// عادي — فيقرأ GET صف final_decisions من آخر استدعاء evaluate سابق (قد يسبق
+// وصول قراءة الجهاز الجديدة)، بينما بطاقة AEI (عبر applyComplianceGatesToDustAei
+// بنفس هذا الملف) تُحسب مباشرة من dustResults الحية داخل نفس طلب GET. صف
+// مخزَّن قديم + حساب حي جديد لنفس اللحظة = بانر يعرض "مسموح" بينما AEI يعرض
+// "مع مراقبة" لنفس النشاط. الإصلاح: البانر يقرأ الآن من نفس الحساب الحي
+// (computeUnifiedActivityDecision على engineResult الحاضر في هذا الطلب،
+// مع دمج aei تماماً كما تفعل الدالة نفسها) بدل الصف المخزَّن، فيعكسان دائماً
+// نفس اللحظة بالضبط. الصف المخزَّن يبقى fallback فقط حين لا توجد نتيجة محرك
+// حية لهذا النشاط في هذا الطلب (نادر: نشاط فشل حسابه هذه الدورة تحديداً).
+function summaryFromLiveDecision(engineResult: any): { decisionLabel: string; riskWeight: number; reasonText?: string } {
+  const dviWorst = engineResult.windowEval.worst;
+  // startIso ضروري لحساب mode الصحيح (PLANNING لنشاط مستقبلي بعيد) — راجع
+  // تعليق computeUnifiedActivityDecision في dustEvaluation.ts للسبب الكامل.
+  const decision = computeUnifiedActivityDecision(dviWorst, engineResult.compliance ?? null, engineResult.aei ?? null, engineResult.startIso);
+  return {
+    decisionLabel: decision.decisionLabelAr,
+    riskWeight: riskWeightFromColor(decision.level),
+    reasonText: decision.shortReason || undefined,
+  };
+}
+
 function summaryFromStoredDecision(storedDecision: any): { decisionLabel: string; riskWeight: number; reasonText?: string } {
   return {
     decisionLabel: storedDecision.decision_label_ar,
@@ -166,21 +192,25 @@ function buildRecentActivities(
     if (!acc.windowEndIso && windowEndIso) acc.windowEndIso = windowEndIso;
     if (!acc.durationMinutes && durationMinutes) acc.durationMinutes = durationMinutes;
 
-    // نتيجة المحرك الحية لهذا المؤشر (إن وُجدت) — لا تزال مطلوبة أدناه
-    // لبناء decisionTargets (اللقطة المناخية الخام)، بمعزل تماماً عن
-    // القرار النهائي المعروض في summaryFields (يأتي الآن من finalDecisionsByGroup).
+    // نتيجة المحرك الحية لهذا المؤشر (إن وُجدت) — المصدر المفضّل الآن لكل
+    // من summaryFields وdecisionTargets معاً (راجع تعليق summaryFromLiveDecision
+    // أعلاه للسبب: يضمن أن البانر وبطاقة AEI يعكسان نفس لحظة الحساب بالضبط،
+    // لا صفاً مخزَّناً قد يسبق قراءة الجهاز الحالية).
     const engineResult = dustByGroup.get(`${groupId}-${row.id}`);
 
-    // القرار النهائي المخزَّن فعلياً (كتبه evaluate/route.ts عبر
-    // persistFinalDecisions) — مصدر الملخص المفضّل، لا إعادة حساب محلية.
+    // القرار النهائي المخزَّن (كتبه evaluate/route.ts) يبقى fallback فقط
+    // حين لا توجد نتيجة محرك حية لهذا النشاط في هذا الطلب تحديداً.
     const storedDecision = finalDecisionsByGroup.get(groupId);
 
     let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string };
-    if (storedDecision) {
+    if (engineResult) {
+      summaryFields = summaryFromLiveDecision(engineResult);
+    } else if (storedDecision) {
       summaryFields = summaryFromStoredDecision(storedDecision);
     } else {
-      // لا قرار مخزَّن بعد (أول تقييم لم يُستدعَ evaluate عليه بعد): نرجع
-      // لآخر قرار موثّق في decision_records، وإلا "بانتظار التقييم"
+      // لا نتيجة محرك حية ولا قرار مخزَّن (أول تقييم لم يُستدعَ evaluate
+      // عليه بعد): نرجع لآخر قرار موثّق في decision_records، وإلا "بانتظار
+      // التقييم"
       summaryFields = {
         decisionLabel: decisionStatusLabel(decisionStatus),
         riskWeight: getRiskWeight(decisionStatus),
@@ -305,7 +335,10 @@ export async function GET(
       { data: projectShifts },
       { data: projectDevices },
     ] = await Promise.all([
-      supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).order('id', { ascending: false }),
+      // archived_at is null — نشاط مؤرشَف (راجع DELETE في app/api/activities/
+      // route.ts) لا يجب أن يظهر في لوحة المشروع النشطة بعد أرشفته، رغم بقاء
+      // صفه وأدلته التاريخية محفوظة دائماً في قاعدة البيانات.
+      supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).is('archived_at', null).order('id', { ascending: false }),
       supabaseAdmin.from('decision_records').select('activity_id, activity_source, status').eq('project_id', projectId).order('created_at', { ascending: false }),
       supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
       supabaseAdmin.from('project_devices').select('is_active').eq('project_id', projectId),

@@ -5,6 +5,19 @@ import type { NextConfig } from "next";
 // وُجدت ثغرة XSS مستقبلاً. القيم مبنية على الموارد الخارجية الفعلية
 // المستخدمة فعلياً في الكود (بلاطات OpenStreetMap لخرائط Leaflet، أيقونات
 // unpkg.com، ونطاق Supabase الديناميكي *.supabase.co لجلسة/بيانات المستخدم).
+// خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "CSP يسمح بـunsafe-inline
+// وunsafe-eval"): 'unsafe-eval' يسمح بتنفيذ أي كود JS ديناميكي (eval/
+// new Function) حتى لو وُجدت ثغرة XSS مستقبلاً — أخطر بكثير من
+// 'unsafe-inline' على style-src. 'unsafe-eval' مطلوب فعلياً فقط في وضع
+// dev (React Fast Refresh/webpack HMR يعتمدان عليه)، ولا حاجة له في بناء
+// الإنتاج (لا استخدام لـeval()/new Function في هذا الكود، وLeaflet/Recharts
+// لا تحتاجانه بالإنتاج). style-src 'unsafe-inline' يبقى مطلوباً في كل
+// بيئة (React/Leaflet يكتبان style="" مباشرة على DOM على نطاق واسع في
+// المشروع) — إزالته يتطلب نظام nonce كامل عبر middleware، خطر تعطيل أعلى
+// بكثير من فائدته الأمنية الإضافية مقارنة بإزالة unsafe-eval، فيبقى خارج
+// نطاق هذا الإصلاح.
+const isProd = process.env.NODE_ENV === 'production';
+
 const securityHeaders = [
   // يمنع تضمين الموقع داخل iframe من موقع آخر (Clickjacking) — لا iframe
   // مستخدَم في هذا التطبيق نفسه، فلا كسر متوقع.
@@ -17,12 +30,21 @@ const securityHeaders = [
     key: 'Content-Security-Policy',
     value: [
       "default-src 'self'",
-      // 'unsafe-inline'/'unsafe-eval' مطلوبان لـ Next.js dev/hydration —
-      // تشديدها لاحقاً يتطلب nonce-based CSP، خارج نطاق هذا الإصلاح
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      isProd ? "script-src 'self' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://unpkg.com",
-      "connect-src 'self' https://*.supabase.co https://api.open-meteo.com https://air-quality-api.open-meteo.com",
+      // nominatim.openstreetmap.org: خدمة reverse geocoding — تحويل إحداثيات
+      // منطقة المشروع المرسومة إلى اسم مدينة/حي تلقائياً (handleZoneChange
+      // في app/dashboard/Projects/create/page.tsx). كانت مفقودة من القائمة
+      // (خطأ سابق غير مكتشف لأن الفشل يُبتلع بـtoast لطيف — لكن الميزة
+      // الفعلية معطَّلة بالكامل بلا هذا الدومين، يفشل الطلب على مستوى CSP
+      // قبل الوصول للشبكة أصلاً).
+      // wss://*.supabase.co: اتصال WebSocket الخاص بـSupabase Realtime
+      // (اشتراكات postgres_changes في page.tsx وSidebar.tsx) — CSP يفرّق
+      // بين scheme الـhttps والـwss رغم نفس الدومين؛ "https://*.supabase.co"
+      // وحده لا يغطي wss إطلاقاً، فكان المتصفح يحظر اتصال الـRealtime على
+      // مستوى CSP قبل وصوله للشبكة أصلاً (فشل صامت، لا علاقة له بـRLS/auth).
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.open-meteo.com https://air-quality-api.open-meteo.com https://nominatim.openstreetmap.org",
       "font-src 'self' data:",
       "frame-ancestors 'none'",
       "base-uri 'self'",

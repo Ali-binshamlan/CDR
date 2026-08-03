@@ -188,20 +188,45 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
 
     fetchAlertsCount();
 
-    const channel = supabase
-      .channel('sidebar-alerts-count')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'alerts' },
-        () => {
-          fetchAlertsCount();
-        }
-      )
-      .subscribe();
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    // setAuth(access_token) ضروري قبل الاشتراك: اتصال WebSocket الخاص
+    // بـRealtime منفصل عن apiClient (axios)، فبدونه تُفتح القناة بلا هوية
+    // مصادَق عليها وتفشل صامتاً إن كانت policy الجدول تشترط "to authenticated".
+    //
+    // onAuthStateChange ضروري أيضاً: توكن getSession() صالح لساعة واحدة
+    // فقط؛ بعدها القناة المفتوحة مسبقاً تبقى مصادَقة بتوكن منتهي الصلاحية
+    // (لا تتجدد تلقائياً مع تجديد axios للتوكن)، فتُرفض الأحداث صامتاً رغم
+    // بقاء القناة SUBSCRIBED ظاهرياً — راجع نفس الشرح المفصّل في
+    // app/dashboard/Projects/[id]/page.tsx.
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token || !isMounted) return;
+      await supabase.realtime.setAuth(token);
+      if (!isMounted) return;
+
+      channel = supabase
+        .channel('sidebar-alerts-count')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'alerts' },
+          () => {
+            fetchAlertsCount();
+          }
+        )
+        .subscribe();
+    })();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!session?.access_token) return;
+      await supabase.realtime.setAuth(session.access_token);
+    });
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      authListener.subscription.unsubscribe();
+      if (channel) supabase.removeChannel(channel);
     };
   }, []);
 

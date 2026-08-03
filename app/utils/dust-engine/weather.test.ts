@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchDustWeatherHourly, fetchDustWeather } from './weather';
+import { fetchDustWeatherHourly, fetchDustWeather, __clearWeatherCacheForTests } from './weather';
 
 // =====================================================================
 // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي): forecast (weather) وair-quality
@@ -22,6 +22,7 @@ function mockFetchResponses(forecastBody: any, airBody: any) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  __clearWeatherCacheForTests();
 });
 
 describe('fetchDustWeatherHourly — دمج forecast وair-quality بمطابقة الوقت', () => {

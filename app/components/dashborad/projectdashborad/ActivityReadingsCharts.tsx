@@ -45,7 +45,8 @@ const ELEMENTS: {
   { key: 'temperatureC', titleAr: 'درجة الحرارة', unit: '°م', color: '#EF4444' },
 ];
 
-const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+// دقيقة واحدة (طلب صريح: تحديث لايف كل دقيقة بدل دقيقتين بكل نظام الواجهة).
+const REFRESH_INTERVAL_MS = 60 * 1000;
 const DEFAULT_HOURS = 6;
 
 function formatTimeAr(iso: string): string {
@@ -189,7 +190,7 @@ export default function ActivityReadingsCharts({
       <div className="flex items-center gap-2 mb-3">
         <LineChartIcon className="w-4 h-4 text-[#3995FF]" />
         <h3 className="text-[12px] font-black text-[#061B40]">مؤشر القراءات لهذا النشاط</h3>
-        <span className="text-[10px] font-bold text-slate-400">— آخر {DEFAULT_HOURS} ساعات، يتحدّث تلقائياً كل دقيقتين</span>
+        <span className="text-[10px] font-bold text-slate-400">— آخر {DEFAULT_HOURS} ساعات، يتحدّث تلقائياً كل دقيقة</span>
       </div>
 
       {loading && (

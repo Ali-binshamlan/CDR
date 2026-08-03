@@ -49,8 +49,15 @@ export async function POST(
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
   if (!name) return NextResponse.json({ error: 'اسم الجهاز مطلوب' }, { status: 400 });
 
-  const lat = typeof body?.lat === 'number' ? body.lat : null;
-  const lng = typeof body?.lng === 'number' ? body.lng : null;
+  // إحداثيات الجهاز إجبارية (طلب صريح: الربط التلقائي بأقرب جهاز عند إنشاء
+  // نشاط — resolveNearestActiveDeviceId في dust-profiles/route.ts — يحتاج
+  // موقعاً فعلياً لكل جهاز، وإلا يبقى مستبعداً من الحساب صامتاً). لا نقبل
+  // بعد الآن قيمة غير رقمية تتحول لـnull بصمت.
+  const lat = typeof body?.lat === 'number' ? body.lat : NaN;
+  const lng = typeof body?.lng === 'number' ? body.lng : NaN;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return NextResponse.json({ error: 'إحداثيات الجهاز (خط العرض وخط الطول) مطلوبة وبمدى صالح' }, { status: 400 });
+  }
 
   // المفتاح الخام يُنشأ هنا فقط ويُعاد مرة واحدة في هذه الاستجابة — لا
   // يُخزَّن أبداً، فقط هاشه (نفس أسلوب GitHub/Stripe لعرض مفاتيح API).

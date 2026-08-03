@@ -69,11 +69,15 @@ describe('computeSustainedPm10Status', () => {
   });
 
   it('قراءات ≥340 مستمرة لأكثر من دقيقتين → مخالفة مؤكدة', () => {
+    // source='device' صراحة (لا افتراضي) — منذ إصلاح H-03.1 (مراجعة كود
+    // خبير خارجي: "مصدر مجهول يتحول إلى device")، قراءة بلا source مسجَّل
+    // تُعامَل كأضعف ثقة ('open-meteo') لا كأقواها، فتبقى معلَّقة أبداً
+    // مهما طال الاستمرار الظاهري — يجب تمرير المصدر الحقيقي صراحة ليتأكد.
     const readings = readingsBackFromNow(NOW, [
-      { minutesAgo: 3, pm10: 350 },
-      { minutesAgo: 2, pm10: 345 },
-      { minutesAgo: 1, pm10: 355 },
-      { minutesAgo: 0, pm10: 342 },
+      { minutesAgo: 3, pm10: 350, source: 'device' },
+      { minutesAgo: 2, pm10: 345, source: 'device' },
+      { minutesAgo: 1, pm10: 355, source: 'device' },
+      { minutesAgo: 0, pm10: 342, source: 'device' },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
     expect(r.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
@@ -153,9 +157,10 @@ describe('computeSustainedPm10Status', () => {
   });
 
   it('استمرار ≥250 لمدة 30 دقيقة متواصلة بالضبط (قراءات كل دقيقتين) → تعليق مفعَّل', () => {
+    // source='device' صراحة — راجع تعليق H-03.1 في الاختبار السابق.
     const readings = readingsBackFromNow(
       NOW,
-      Array.from({ length: 16 }, (_, i) => ({ minutesAgo: 30 - i * 2, pm10: 255 }))
+      Array.from({ length: 16 }, (_, i) => ({ minutesAgo: 30 - i * 2, pm10: 255, source: 'device' as const }))
     );
     const r = computeSustainedPm10Status(readings, NOW);
     expect(r.isSuspended250For30Min).toBe(true);
@@ -245,6 +250,71 @@ describe('computeSustainedPm10Status', () => {
     const rOrdered = computeSustainedPm10Status(orderedNewestFirst, NOW);
     const rShuffled = computeSustainedPm10Status(shuffled, NOW);
     expect(rShuffled.isConfirmedViolation340).toBe(rOrdered.isConfirmedViolation340);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-03.3: "قراءة =340 تُحتسب
+  // ضمن سلسلة >340"): streakMinutesAbove(340) كانت تقطع السلسلة بشرط
+  // `< threshold` فقط — قراءة تساوي 340 بالضبط لم تكن "أقل من" العتبة، فتُسهم
+  // في الاستمرار المُحتسَب رغم أنها لا تمثّل تجاوزاً فعلياً (isAbove340Now
+  // يشترط > 340 صراحة). الآن تُقطَع السلسلة عند 340 بالضبط تماماً كأي قراءة
+  // أقل منها.
+  it('H-03.3: قراءة =340 بالضبط تقطع سلسلة الاستمرار (لا تُحتسب ضمنها)', () => {
+    const readings = readingsBackFromNow(NOW, [
+      { minutesAgo: 5, pm10: 340, source: 'device' }, // =340 بالضبط — يجب أن تقطع السلسلة هنا
+      { minutesAgo: 3, pm10: 345, source: 'device' },
+      { minutesAgo: 1, pm10: 350, source: 'device' },
+      { minutesAgo: 0, pm10: 342, source: 'device' },
+    ]);
+    const r = computeSustainedPm10Status(readings, NOW);
+    // الاستمرار يُقاس فقط بين القراءات الثلاث الأخيرة (>340 فعلياً: منذ
+    // 3 دقائق حتى الآن)، لا ممتداً إلى القراءة الأقدم (منذ 5 دقائق، =340
+    // بالضبط) — يجب أن يكون 3 دقائق بالضبط، لا 5.
+    expect(r.sustainedMinutesAbove340).toBe(3);
+  });
+
+  it('H-03.3: كل القراءات =340 بالضبط (لا تتجاوز) → لا استمرار مؤكَّد إطلاقاً', () => {
+    const readings = readingsBackFromNow(NOW, [
+      { minutesAgo: 5, pm10: 340, source: 'device' },
+      { minutesAgo: 3, pm10: 340, source: 'device' },
+      { minutesAgo: 0, pm10: 340, source: 'device' },
+    ]);
+    const r = computeSustainedPm10Status(readings, NOW);
+    expect(r.sustainedMinutesAbove340).toBe(0);
+    expect(r.isConfirmedViolation340).toBe(false);
+    // isAbove340Now يشترط >340 صراحة — 340 بالضبط ليست تجاوزاً، فلا حتى معلَّقة.
+    expect(r.isPendingViolation340).toBe(false);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-03.1: "مصدر مجهول يتحول
+  // إلى device"): كان source ?? 'device' يمنح قراءة بلا مصدر مسجَّل أعلى
+  // درجة ثقة ممكنة. الآن تُعامَل كأضعف ثقة ('open-meteo')، فتبقى معلَّقة
+  // دائماً، أبداً مؤكَّدة، حتى لو استمرت لفترة طويلة وكانت حديثة جداً.
+  it('H-03.1: قراءات بلا source مسجَّل إطلاقاً (undefined) → لا تصل أبداً لحالة مؤكَّدة رغم الاستمرار والحداثة', () => {
+    const readings = readingsBackFromNow(NOW, [
+      { minutesAgo: 3, pm10: 350 }, // source غائب تماماً
+      { minutesAgo: 1, pm10: 345 },
+      { minutesAgo: 0, pm10: 342 },
+    ]);
+    const r = computeSustainedPm10Status(readings, NOW);
+    expect(r.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
+    expect(r.isConfirmedViolation340).toBe(false);
+    expect(r.isPendingViolation340).toBe(true);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-03.2: "قراءة بوقت مستقبلي
+  // لا تُرفض"): latestReadingAgeMinutes سالبة (recordedAt مستقبلي، مثال:
+  // ساعة جهاز غير متزامنة) كانت تحقق `<= 4` دائماً فتُعامَل كحديثة جداً. الآن
+  // عمر سالب يُبطل الحداثة صراحة.
+  it('H-03.2: قراءة بوقت مستقبلي (recordedAt بعد "الآن") لا تُعامَل كحديثة — تمنع التأكيد رغم استمرار ظاهري', () => {
+    const futureIso = new Date(NOW + 5 * 60000).toISOString(); // 5 دقائق بالمستقبل
+    const readings = [
+      { pm10UgM3: 350, recordedAt: futureIso, source: 'device' as const },
+      { pm10UgM3: 345, recordedAt: new Date(NOW - 1 * 60000).toISOString(), source: 'device' as const },
+      { pm10UgM3: 342, recordedAt: new Date(NOW - 3 * 60000).toISOString(), source: 'device' as const },
+    ];
+    const r = computeSustainedPm10Status(readings, NOW);
+    expect(r.isConfirmedViolation340).toBe(false);
+    expect(r.isPendingViolation340).toBe(true);
   });
 });
 

@@ -57,28 +57,25 @@ export async function PATCH(request: NextRequest) {
   return NextResponse.json({ success: true });
 }
 
-// حذف نشاط غبار واحد (صف project_dust_profiles) —
+// أرشفة نشاط غبار واحد (صف project_dust_profiles) —
 // يُستدعى من MultiIndicatorActivityBox.tsx (handleDelete)، جسم الطلب:
 // { targets: [{ projectId, activityId, source: 'dust' }, ...] } — دايماً
 // عنصر واحد فعلياً (مؤشر الغبار وحده في DCR)، لكن الشكل مصفوفة لمرونة
 // مستقبلية (توافقاً مع UnifiedDecisionTarget[] في MultiIndicatorActivityBox).
 //
-// خطأ مكتشَف ومُصلَح: بعد تطبيق append-only على جداول الأدلة (dust_evaluations/
-// dust_compliance_evaluations/alerts/decision_records — راجع
-// supabase-append-only-evidence-and-alert-events-migration.sql)، كان هذا
-// المسار لا يزال يحاول حذف صفوف من تلك الجداول الأربعة صراحةً — فشل كل
-// حذف نشاط بخطأ 500 (trigger forbid_evidence_mutation يرفض DELETE حتى من
-// service_role). لم يُعدَّل هذا المسار في حينها لأن التركيز كان على DELETE
-// /api/projects/[projectId] فقط، ونُسي هذا المسار المنفصل (حذف نشاط فردي
-// لا مشروع كامل).
+// خطأ مكتشَف ومُصلَح سابقاً: بعد تطبيق append-only على جداول الأدلة
+// (dust_evaluations/dust_compliance_evaluations/alerts/decision_records)،
+// كان هذا المسار يحاول حذف صفوف منها صراحة فيفشل بخطأ 500 — تم التوقف عن
+// ذلك، تبقى محفوظة دون حذف كما هي.
 //
-// الإصلاح: التوقف نهائياً عن حذف جداول الأدلة الأربعة — تبقى محفوظة
-// كاملة حتى بعد حذف النشاط، غير مربوطة بنشاط مرئي بعد الآن لكن قابلة
-// للتدقيق دائماً (نفس مبدأ أرشفة المشروع، بلا حاجة لعمود archived_at على
-// project_dust_profiles نفسه لأنه ليس جدول أدلة — حذفه الفعلي آمن).
-// current_dust_decisions/current_dust_compliance_decisions ليسا جدولي
-// أدلة (مجرد "آخر قرار حالي" مرجعي يُعاد بناؤه من دورة التقييم القادمة)،
-// فحذفهما يبقى كما هو.
+// خطأ ثانٍ مكتشَف ومُصلَح (مراجعة تصحيح خارجية — "الأرشفة بدل الحذف"):
+// حذف project_dust_profiles نفسه فعلياً (delete()) كان يُصفّر dust_profile_id
+// على dust_evaluations/dust_compliance_evaluations المرتبطة به (on delete
+// set null) — الأدلة التاريخية تبقى موجودة لكن تفقد رابطها المرئي بأي
+// نشاط أنتجها، فيصعب التدقيق لاحقاً على "أي نشاط كان هذا القرار؟". الإصلاح:
+// UPDATE archived_at بدل DELETE — الصف يبقى موجوداً وقابلاً للربط دائماً،
+// فقط مستبعَد من دورات التقييم الحية الجديدة (راجع archived_at is null في
+// app/lib/evaluateProject.ts وapp/api/alerts/generate/route.ts).
 export async function DELETE(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -106,13 +103,18 @@ export async function DELETE(request: NextRequest) {
       .select('id, activity_group_id')
       .eq('id', activityId)
       .eq('project_id', projectId)
+      .is('archived_at', null)
       .maybeSingle();
     if (!profileRow) {
-      return NextResponse.json({ error: 'النشاط غير موجود أو تم حذفه مسبقاً' }, { status: 404 });
+      return NextResponse.json({ error: 'النشاط غير موجود أو تمت أرشفته مسبقاً' }, { status: 404 });
     }
 
     const groupId = profileRow.activity_group_id || `dust-${activityId}`;
 
+    // current_dust_decisions/current_dust_compliance_decisions ليسا جدولي
+    // أدلة (مجرد "آخر قرار حالي" مرجعي يُعاد بناؤه من دورة التقييم القادمة
+    // لأي نشاط غير مؤرشَف) — حذفهما يبقى صحيحاً؛ نشاط مؤرشَف لا يجب أن يظهر
+    // في أي "قرار حالي" بعد الآن.
     const { error: currentDecisionsError } = await supabaseAdmin
       .from('current_dust_decisions')
       .delete()
@@ -129,20 +131,12 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: safeErrorResponse(currentComplianceError, `فشل حذف current_dust_compliance_decisions للنشاط ${activityId}`) }, { status: 500 });
     }
 
-    // dust_evaluations/dust_compliance_evaluations/decision_records أصبحت
-    // append-only (trigger forbid_evidence_mutation يرفض أي DELETE عليها،
-    // راجع supabase-append-only-evidence-and-alert-events-migration.sql)،
-    // وalerts يبقى محفوظاً كأثر تدقيق أيضاً — فلا نحذف من أي منها هنا بعد
-    // الآن. dust_evaluations/dust_compliance_evaluations.dust_profile_id لها
-    // on delete set null (راجع supabase-fix-evidence-cascade-delete-migration.sql)
-    // فتُفصَل تلقائياً عن النشاط المحذوف دون أي حذف صريح مطلوب من هذا المسار.
-
-    const { error: profileError } = await supabaseAdmin
+    const { error: archiveError } = await supabaseAdmin
       .from('project_dust_profiles')
-      .delete()
+      .update({ archived_at: new Date().toISOString(), archived_by: auth.userId })
       .eq('id', activityId);
-    if (profileError) {
-      return NextResponse.json({ error: safeErrorResponse(profileError, `فشل حذف صف project_dust_profiles ${activityId}`) }, { status: 500 });
+    if (archiveError) {
+      return NextResponse.json({ error: safeErrorResponse(archiveError, `فشل أرشفة صف project_dust_profiles ${activityId}`) }, { status: 500 });
     }
   }
 

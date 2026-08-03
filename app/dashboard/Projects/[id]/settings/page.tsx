@@ -4,10 +4,11 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'react-hot-toast';
-import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar } from 'lucide-react';
+import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar, Wifi } from 'lucide-react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { isValidPhoneNumber, parsePhoneNumberFromString } from 'libphonenumber-js';
+import ConnectProviderModal from './ConnectProviderModal';
 
 // أيام الأسبوع بمعرّفات ثابتة تطابق getDay() (0=الأحد ... 6=السبت)
 const WEEK_DAYS: { id: string; label: string }[] = [
@@ -93,10 +94,25 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
   }
   const [devices, setDevices] = useState<ProjectDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(true);
+
+  // حالة ربط مصدر بيانات خارجي (provider_connections) لكل جهاز — خريطة
+  // deviceId → معلومات الربط (أو undefined إن لم يُربط بعد). تُملأ بعد
+  // fetchDevices (جهاز بجهاز، عدد الأجهزة صغير عادة فلا داعي لمسار مُجمَّع).
+  interface ProviderConnectionInfo {
+    provider: string;
+    vendorStationName: string | null;
+    lastPullAt: string | null;
+    lastPullSuccess: boolean | null;
+    lastPullError: string | null;
+  }
+  const [connections, setConnections] = useState<Record<string, ProviderConnectionInfo>>({});
+  const [connectModalDeviceId, setConnectModalDeviceId] = useState<string | null>(null);
+
   const [newDeviceName, setNewDeviceName] = useState('');
-  // إحداثيات موقع الجهاز الفعلي — اختيارية (يمكن تسجيل جهاز بلا موقع محدد
-  // فيُستخدم كقراءة عامة للمشروع)، نص خام (لا رقم) حتى يقبل حقل فارغ أثناء
-  // الكتابة.
+  // إحداثيات موقع الجهاز الفعلي — إجبارية (طلب صريح: الربط التلقائي بأقرب
+  // جهاز عند إنشاء نشاط يحتاج موقعاً فعلياً لكل جهاز، وإلا يُستبعد صامتاً من
+  // الحساب — راجع resolveNearestActiveDeviceId في dust-profiles/route.ts)،
+  // نص خام (لا رقم) حتى يقبل حقل فارغ أثناء الكتابة.
   const [newDeviceLat, setNewDeviceLat] = useState('');
   const [newDeviceLng, setNewDeviceLng] = useState('');
   const [addingDevice, setAddingDevice] = useState(false);
@@ -108,7 +124,28 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     setDevicesLoading(true);
     try {
       const { data } = await apiClient.get(`/projects/${projectId}/devices`);
-      setDevices(data?.devices || []);
+      const list: ProjectDevice[] = data?.devices || [];
+      setDevices(list);
+
+      // جلب حالة ربط مصدر بيانات خارجي لكل جهاز — فشل جهاز واحد لا يوقف
+      // عرض البقية (Promise.allSettled بدل Promise.all).
+      const results = await Promise.allSettled(
+        list.map((d) => apiClient.get(`/projects/${projectId}/devices/${d.id}/provider-connection`))
+      );
+      const next: Record<string, ProviderConnectionInfo> = {};
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled' && r.value.data?.connection) {
+          const c = r.value.data.connection;
+          next[list[i].id] = {
+            provider: c.provider,
+            vendorStationName: c.vendor_station_name,
+            lastPullAt: c.last_pull_at,
+            lastPullSuccess: c.last_pull_success,
+            lastPullError: c.last_pull_error,
+          };
+        }
+      });
+      setConnections(next);
     } catch (error) {
       console.error('فشل جلب أجهزة الرصد:', error);
     } finally {
@@ -127,19 +164,16 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       toast.error('اسم الجهاز مطلوب');
       return;
     }
-    // إحداثيات اختيارية — إن أُدخل أحد الحقلين وجب الآخر (نقطة واحدة كاملة
-    // أو لا شيء)، وإلا يُرسَل null/null فيُستخدم الجهاز كقراءة عامة للمشروع
-    // بلا موقع محدد (بلا فرق في التقييم — الأولوية جهاز>يدوي>طقس لا تعتمد
-    // حالياً على موقع الجهاز مقابل موقع النشاط).
+    // إحداثيات إجبارية — لا يُسمح بحفظ جهاز بلا موقع فعلي (طلب صريح).
     const latTrim = newDeviceLat.trim();
     const lngTrim = newDeviceLng.trim();
-    if ((latTrim && !lngTrim) || (!latTrim && lngTrim)) {
-      toast.error('أدخل خط العرض والطول معاً، أو اتركهما فارغين.');
+    if (!latTrim || !lngTrim) {
+      toast.error('إحداثيات الجهاز (خط العرض وخط الطول) مطلوبة.');
       return;
     }
-    const lat = latTrim ? Number(latTrim) : null;
-    const lng = lngTrim ? Number(lngTrim) : null;
-    if ((lat !== null && !Number.isFinite(lat)) || (lng !== null && !Number.isFinite(lng))) {
+    const lat = Number(latTrim);
+    const lng = Number(lngTrim);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       toast.error('إحداثيات غير صالحة.');
       return;
     }
@@ -1030,7 +1064,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                 />
               </div>
               <div>
-                <label className={labelClass}>خط العرض (اختياري)</label>
+                <label className={labelClass}>خط العرض</label>
                 <input
                   type="number"
                   step="0.000001"
@@ -1041,7 +1075,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                 />
               </div>
               <div>
-                <label className={labelClass}>خط الطول (اختياري)</label>
+                <label className={labelClass}>خط الطول</label>
                 <input
                   type="number"
                   step="0.000001"
@@ -1061,7 +1095,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               </button>
             </div>
             <p className="text-[10px] font-bold text-[#061B40]/40 mb-4">
-              حدّد موقع الجهاز الفعلي إن عرفته (نفس إحداثيات موقع المشروع تقريباً)، أو اتركهما فارغين لتسجيل جهاز عام للمشروع بلا موقع محدد.
+              حدّد موقع الجهاز الفعلي (نفس إحداثيات موقع المشروع تقريباً) — مطلوب دائماً حتى يُربط الجهاز تلقائياً بأقرب نشاط عند إنشائه.
             </p>
 
             {devicesLoading ? (
@@ -1089,6 +1123,18 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                         ) : (
                           <div className="text-[10px] font-bold text-[#061B40]/30">بلا موقع محدد</div>
                         )}
+                        {connections[device.id] && (
+                          <div className="mt-1 flex items-center gap-1 text-[10px] font-bold">
+                            <Wifi className="w-3 h-3 text-[#3995FF]" />
+                            <span className="text-[#3995FF]">
+                              {connections[device.id].provider === 'mock' ? 'محطة تجريبية' : connections[device.id].provider}
+                              {connections[device.id].vendorStationName ? ` — ${connections[device.id].vendorStationName}` : ''}
+                            </span>
+                            {connections[device.id].lastPullError && (
+                              <span className="text-red-500">⚠ {connections[device.id].lastPullError}</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="text-[11px] font-bold">
                         <span className={stale ? 'text-amber-600' : 'text-emerald-600'}>
@@ -1102,6 +1148,13 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                         {device.last_pm25 != null && <div>PM2.5: {device.last_pm25}</div>}
                       </div>
                       <div className="flex gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setConnectModalDeviceId(device.id)}
+                          className="text-[11px] font-bold text-[#3995FF] hover:underline px-2 py-1"
+                        >
+                          ربط مصدر بيانات
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleToggleDevice(device)}
@@ -1123,6 +1176,16 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               </div>
             )}
           </div>
+
+          {connectModalDeviceId && (
+            <ConnectProviderModal
+              projectId={projectId}
+              deviceId={connectModalDeviceId}
+              deviceName={devices.find((d) => d.id === connectModalDeviceId)?.name || ''}
+              onClose={() => setConnectModalDeviceId(null)}
+              onConnected={fetchDevices}
+            />
+          )}
             {/* إقرار المستخدم بصحة البيانات وتحمّل المسؤولية الكاملة عنها —
                 إلزامي، يمنع الحفظ حتى يُفعَّل (راجع validateBasicFields)،
                 نفس create/page.tsx تماماً. */}

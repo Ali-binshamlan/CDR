@@ -71,6 +71,18 @@ export interface FreshDeviceReading {
   // الأخير يتحدّث عند أي push جزئي حتى بلا PM10 (راجع last_pm10_at في
   // project_devices migration). null إن لم تُرسِل المحطة PM10 قط.
   last_pm10_at: string | null;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-05: "حداثة القياسات
+  // مشتركة جزئياً"): نفس مبدأ last_pm10_at بالضبط، مطبَّق على بقية الحقول —
+  // راجع supabase-add-device-per-field-timestamps-migration.sql. للعرض فقط
+  // (تحذير قِدم لكل حقل على حدة في الواجهة)، لا تدخل في أي قرار/عتبة ضمن
+  // المحرك — راجع تعليق devicePm10LastReadingAt في dust-engine/types.ts
+  // للتفصيل الكامل حول الفرق بين "للعرض فقط" و"يدخل في قرار".
+  last_wind_speed_at: string | null;
+  last_wind_gust_at: string | null;
+  last_wind_direction_at: string | null;
+  last_visibility_at: string | null;
+  last_relative_humidity_at: string | null;
+  last_temperature_at: string | null;
 }
 
 export function buildDustInput(row: any, project: any, freshDevice?: FreshDeviceReading | null): DustEngineInput {
@@ -165,7 +177,7 @@ export async function resolveFreshProjectDevice(
 ): Promise<FreshDeviceReading | null> {
   let query = supabaseAdmin
     .from('project_devices')
-    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at')
+    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at, last_wind_speed_at, last_wind_gust_at, last_wind_direction_at, last_visibility_at, last_relative_humidity_at, last_temperature_at')
     .eq('project_id', projectId)
     .eq('is_active', true)
     .not('last_reading_at', 'is', null);
@@ -188,6 +200,12 @@ export async function resolveFreshProjectDevice(
     last_relative_humidity_percent: data.last_relative_humidity_percent ?? null,
     last_temperature_c: data.last_temperature_c ?? null,
     last_pm10_at: data.last_pm10_at ?? null,
+    last_wind_speed_at: data.last_wind_speed_at ?? null,
+    last_wind_gust_at: data.last_wind_gust_at ?? null,
+    last_wind_direction_at: data.last_wind_direction_at ?? null,
+    last_visibility_at: data.last_visibility_at ?? null,
+    last_relative_humidity_at: data.last_relative_humidity_at ?? null,
+    last_temperature_at: data.last_temperature_at ?? null,
     last_reading_at: data.last_reading_at,
   };
 }
@@ -263,13 +281,32 @@ export function computeSustainedPm10Status(
     };
   }
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-03.1: "مصدر مجهول يتحول
+  // إلى device"): كان `source ?? 'device'` يفترض أن أي قراءة بلا حقل source
+  // مسجَّل (صفوف قديمة قبل إضافة العمود، أو بيانات تالفة) هي من جهاز رصد
+  // حقيقي — أعلى درجة ثقة ممكنة، رغم أن الغياب الفعلي لا يثبت شيئاً عن
+  // المصدر الحقيقي. هذا يخالف مباشرة الفلسفة الصارمة المطبَّقة في كل مكان
+  // آخر بهذا الملف (لا قرار حي واثق بلا دليل جهاز حقيقي مُثبَت صراحة).
+  // الإصلاح: مصدر مجهول يُعامَل كأضعف درجة ثقة ممكنة ('open-meteo' — تقدير
+  // غير موثوق)، لا كأقواها — فيبقى isCurrentSourceDevice=false تلقائياً،
+  // مما يُبقي أي قراءة كهذه "معلَّقة" (isPendingViolation340) فقط، أبداً
+  // "مؤكَّدة"، تماماً كما لو وصلت فعلاً من توقّع طقس. الكتّاب الثلاثة
+  // الفعليون لهذا الجدول (ingest/route.ts، alerts/generate/route.ts،
+  // dustEvaluation.ts نفسها) يمرّرون source صراحة دائماً — هذا المسار لا
+  // يُطبَّق إلا على صفوف تاريخية/تالفة فعلياً.
   const sorted = [...readings].sort(
     (a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime()
   );
   const currentReadingUgM3 = sorted[0].pm10UgM3;
-  const currentSource = sorted[0].source ?? 'device';
+  const currentSource = sorted[0].source ?? 'open-meteo';
   const latestReadingAgeMinutes = (now - new Date(sorted[0].recordedAt).getTime()) / 60000;
-  const isLatestReadingFresh = latestReadingAgeMinutes <= PM10_LAST_READING_FRESHNESS_MINUTES;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-03.2: "قراءة بوقت مستقبلي
+  // لا تُرفض"): latestReadingAgeMinutes سالبة (recordedAt في المستقبل، مثال:
+  // ساعة جهاز غير متزامنة) كانت تمر بصمت — أي رقم سالب يحقق `<= 4` دائماً،
+  // فتُعامَل القراءة كـ"حديثة جداً" رغم أنها بيانات فاسدة منطقياً (لا يمكن
+  // لقراءة أن تصل قبل وقوعها). الإصلاح: عمر سالب (قراءة مستقبلية) يُبطل
+  // الحداثة صراحة بدل قبولها كأفضل حالة ممكنة.
+  const isLatestReadingFresh = latestReadingAgeMinutes >= 0 && latestReadingAgeMinutes <= PM10_LAST_READING_FRESHNESS_MINUTES;
   const isCurrentSourceDevice = currentSource === 'device';
 
   // خطأ مكتشَف ومُصلَح: كانت الحلقة تمتد عبر قراءات مختلطة المصدر بلا فحص
@@ -294,14 +331,28 @@ export function computeSustainedPm10Status(
   // عينة والآن. حداثة "الآن" نفسه (هل توقف الجهاز مؤخراً؟) تبقى مسؤولية
   // isLatestReadingFresh المنفصلة أدناه — فصل واضح بين "هل الاستمرار مُثبَت
   // فعلياً بين عينتين" و"هل آخر عينة لا تزال حية الآن"، بلا خلط الاثنين.
-  function streakMinutesAbove(threshold: number): number {
-    if (sorted[0].pm10UgM3 < threshold) return 0;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-03.3: "قراءة =340 تُحتسب
+  // ضمن سلسلة >340"): كانت هذه الدالة تقطع السلسلة بشرط موحَّد (`< threshold`)
+  // لكل العتبات — صحيح لعتبة 250 (النص التنظيمي "≥250" فعلاً، راجع
+  // PM10_WARNING_UG_M3 في rulebook.ts)، لكن خاطئ لعتبة 340 التي يشترط
+  // النص التنظيمي فيها تجاوزاً صريحاً "أكثر من 340" (>340 لا >=340، نفس
+  // عتبة pm10ThresholdRule وisAbove340Now أدناه بالضبط). فقراءة تساوي 340
+  // بالضبط كانت لا تُقطَع بها السلسلة (لأنها ليست "أقل من" العتبة)، فتُسهم
+  // في sustainedMinutesAbove340 رغم أنها لا تمثّل تجاوزاً فعلياً حسب نفس
+  // التعريف التنظيمي المستخدَم لتأكيد المخالفة (isAbove340Now). الإصلاح:
+  // strict (افتراضي true) يجعل شرط القطع `<= threshold` بدل `< threshold`
+  // — أي قراءة تساوي العتبة بالضبط تُعامَل كأنها لم تتجاوزها، فتقطع السلسلة
+  // تماماً كأي قراءة أقل منها. يُمرَّر false صراحة فقط لعتبة 250 (حيث
+  // المساواة تُحتسب ضمن النطاق فعلاً حسب النص التنظيمي).
+  function streakMinutesAbove(threshold: number, strict: boolean = true): number {
+    const isBelow = (value: number) => (strict ? value <= threshold : value < threshold);
+    if (isBelow(sorted[0].pm10UgM3)) return 0;
     let streakStartMs = new Date(sorted[0].recordedAt).getTime();
     const streakEndMs = streakStartMs;
     let sampleCount = 0;
     for (let i = 0; i < sorted.length; i++) {
-      if (sorted[i].pm10UgM3 < threshold) break;
-      if ((sorted[i].source ?? 'device') !== currentSource) break;
+      if (isBelow(sorted[i].pm10UgM3)) break;
+      if ((sorted[i].source ?? 'open-meteo') !== currentSource) break;
       const currentMs = new Date(sorted[i].recordedAt).getTime();
       if (i > 0) {
         const prevMs = new Date(sorted[i - 1].recordedAt).getTime();
@@ -317,8 +368,8 @@ export function computeSustainedPm10Status(
     return (streakEndMs - streakStartMs) / 60000;
   }
 
-  const sustainedMinutesAbove340 = streakMinutesAbove(PM10_SUSTAINED_VIOLATION_THRESHOLD);
-  const sustainedMinutesAbove250 = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD);
+  const sustainedMinutesAbove340 = streakMinutesAbove(PM10_SUSTAINED_VIOLATION_THRESHOLD, true);
+  const sustainedMinutesAbove250 = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD, false);
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "حد PM10 ما زال خاطئاً"): كان
   // isAbove340Now يستخدم `>=` بينما النص التنظيمي يقول "تجاوز 340"
@@ -422,7 +473,7 @@ async function resolveProjectDeviceMap(
   const map = new Map<string, FreshDeviceReading | null>();
   const { data } = await supabaseAdmin
     .from('project_devices')
-    .select('id, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at')
+    .select('id, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at, last_wind_speed_at, last_wind_gust_at, last_wind_direction_at, last_visibility_at, last_relative_humidity_at, last_temperature_at')
     .eq('project_id', projectId)
     .eq('is_active', true);
 
@@ -439,6 +490,12 @@ async function resolveProjectDeviceMap(
       last_temperature_c: d.last_temperature_c ?? null,
       last_reading_at: d.last_reading_at,
       last_pm10_at: d.last_pm10_at ?? null,
+      last_wind_speed_at: d.last_wind_speed_at ?? null,
+      last_wind_gust_at: d.last_wind_gust_at ?? null,
+      last_wind_direction_at: d.last_wind_direction_at ?? null,
+      last_visibility_at: d.last_visibility_at ?? null,
+      last_relative_humidity_at: d.last_relative_humidity_at ?? null,
+      last_temperature_at: d.last_temperature_at ?? null,
     });
   }
   return map;
@@ -520,6 +577,15 @@ export async function computeDustResults(dustRows: any[], project: any, supabase
           windowEval: annotatedWindowEval,
           aei,
           hourlyForecasts: annotatedWorkDayHourly,
+          // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-06: "توقّع مستقبلي
+          // قد يُحفظ بصفة LIVE"): startIso لازم في persistFinalDecisions
+          // لتحديد mode الصحيح (LIVE_OPERATIONAL أو PLANNING) عند الحفظ —
+          // نفس هامش ACTIVITY_LIVE_MARGIN_MS (30 دقيقة) المستخدَم داخل
+          // dust-engine/engine.ts لتحديد isActivityLiveNow، لكن لم يكن هذا
+          // الحقل مُصدَّراً هنا سابقاً فاعتمد persistFinalDecisions على
+          // الافتراضي الدائم LIVE_OPERATIONAL بصرف النظر عن توقيت النشاط
+          // الفعلي.
+          startIso,
         };
       } catch (error) {
         console.error(`فشل تقييم الغبار للنشاط ${row.id}:`, error);
@@ -549,12 +615,26 @@ export function shouldSkipPersist(
   return minutesSinceLast < MIN_MINUTES_BETWEEN_UNCHANGED_EVALUATIONS;
 }
 
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-04: "حفظ القرار غير
+// ذري... تبتلع الدالة الخطأ لكل نشاط ويمكن أن يعيد المسار نجاحًا"): كانت
+// كل دالة persist* هنا تبتلع أي خطأ كتابة بصمت (console.error فقط) وتعيد
+// undefined دائماً — فلا يملك evaluate/route.ts أي وسيلة لمعرفة أن نشاطاً
+// معيناً فشل حفظه فعلياً، ويُرجِع 200 "success" حتى لو فشلت كل الكتابات.
+// بلا معاملة قاعدة بيانات حقيقية عبر 3 جداول منفصلة (dust_evaluations،
+// dust_compliance_evaluations، final_decisions — يتطلب RPC/PL-pgSQL كامل)،
+// الإصلاح هنا هو "نقطة فشل متسقة" بدل الذرية الكاملة: كل دالة تُرجِع الآن
+// قائمة activityId التي فشل حفظها فعلياً (بدل ابتلاع الخطأ بصمت)،
+// والمسار (route.ts) يستخدم هذه القوائم لـ(1) رفض الأنشطة التي فشلت في
+// مرحلة سابقة من مراحل الحفظ اللاحقة (لا معنى لحفظ FinalDecision لنشاط فشل
+// حفظ DVI/compliance له أصلاً)، و(2) إرجاع 207/500 صريح يعكس الفشل الجزئي
+// بدل "success" كاذب. راجع تعليق evaluate/route.ts للتفاصيل الكاملة.
 export async function persistDustEvaluations(
   supabaseAdmin: any,
   projectId: string,
   dustResults: any[],
   triggeredBy: string
-) {
+): Promise<string[]> {
+  const failedActivityIds: string[] = [];
   await Promise.all(
     dustResults.map(async (r) => {
       try {
@@ -571,7 +651,7 @@ export async function persistDustEvaluations(
 
         if (shouldSkipPersist(existing?.decision, existing?.updated_at, newDecision)) return;
 
-        const { data: inserted } = await supabaseAdmin
+        const { data: inserted, error: insertError } = await supabaseAdmin
           .from('dust_evaluations')
           .insert({
             project_id: projectId,
@@ -584,7 +664,11 @@ export async function persistDustEvaluations(
           .single();
 
         const evaluationId = (inserted as any)?.id;
-        if (!evaluationId) return;
+        if (!evaluationId) {
+          failedActivityIds.push(r.activityId);
+          if (insertError) console.error(`فشل حفظ تقييم الغبار للنشاط ${r.activityId}:`, insertError);
+          return;
+        }
 
         // كتابة محميّة من التزامن (compare-and-swap): كان upsert أعمى يستبدل
         // الصف بلا شرط، فطلبان متزامنان لنفس النشاط (مثال: التحديث الدوري كل
@@ -615,10 +699,12 @@ export async function persistDustEvaluations(
           await supabaseAdmin.from('current_dust_decisions').insert(decisionRow);
         }
       } catch (error) {
+        failedActivityIds.push(r.activityId);
         console.error(`فشل حفظ تقييم الغبار للنشاط ${r.activityId}:`, error);
       }
     })
   );
+  return failedActivityIds;
 }
 
 // -----------------------------------------------------------------------
@@ -775,7 +861,19 @@ export async function computeDustComplianceResults(
         const dviResult = r.windowEval?.worst;
         if (!row || !dviResult) return null;
 
-        const previousDecision = previousDecisionsByGroup.get(r.activityGroupId) ?? null;
+        // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
+        // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts)
+        // لا يجوز أن تُطبَّق عليه قاعدة RESUME-STABILITY-HOLD (استقرار 10
+        // دقائق قبل الاستئناف بعد إيقاف سابق) — تلك القاعدة مصمَّمة لقراءات
+        // متتابعة زمنياً حقيقية، لا نقطة توقّع مستقبلية واحدة. previousDecision
+        // = null هنا يمنع تطبيقها ضمنياً (راجع تعليق previousDecision في
+        // buildComplianceContext: غيابه يعني "لا قيد" لا خطأً) — بلا حاجة
+        // لتعديل محرك الامتثال نفسه. سيناريو نادر لكن ممكن: نشاط عُدِّل موعده
+        // ليصبح PLANNING بعد أن كان LIVE_OPERATIONAL وموقوفاً فعلياً؛ تجاهل
+        // ذلك القرار السابق هنا صحيح لأن التقييم الحالي لا يمثّل استمراراً
+        // فعلياً لتلك الحالة أصلاً (توقّع منفصل تماماً، لا مصدره جهاز).
+        const mode = determineFinalDecisionMode(r.startIso);
+        const previousDecision = mode === 'PLANNING' ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
@@ -862,7 +960,10 @@ export async function computeDustComplianceResults(
         }
 
         const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained);
-        const result = evaluateDustCompliance(ctx);
+        // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
+        // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
+        // تصلح" (راجع buildPlanningForecastResult في engine.ts).
+        const result = evaluateDustCompliance(ctx, Date.now(), mode === 'PLANNING');
         return {
           activityGroupId: r.activityGroupId,
           activityId: r.activityId,
@@ -919,7 +1020,10 @@ export function computeDustComplianceHourly(
 
       const hourlyCompliance = hourly.map((hour) => {
         const ctx = buildComplianceContext(project, row, hour, sensitiveReceptors);
-        const result = evaluateDustCompliance(ctx);
+        // isPlanning=true: كل ساعة هنا توقّع طقس بحت (شبكة hourly كاملة) —
+        // نفس السبب بالضبط الذي يمنع STOP/تعليق إلزامي على PLANNING أعلاه
+        // بـcomputeDustComplianceResults، راجع buildPlanningForecastResult.
+        const result = evaluateDustCompliance(ctx, Date.now(), true);
         const rawAei = evaluateAei(hour, r.activityType);
         // mode='PLANNING' — نفس ساعة توقّع بلا استمرار PM10/استقرار استئناف
         // (لم تُمرَّر previousDecision/pm10Sustained لـbuildComplianceContext
@@ -1227,11 +1331,37 @@ export function computeUnifiedActivityDecision(
   // ونص/سبب aei يحل محل نص decideFinal إن كان aei هو الأشد فعلياً. غياب aei
   // (استدعاءات قديمة: dashboard/global، viewer/dashboard) يبقي السلوك بلا
   // تغيير تماماً — فشل آمن نحو الاعتماد على decideFinal وحدها كما كان.
-  aei?: AeiEvaluationResult | null
+  aei?: AeiEvaluationResult | null,
+  // خطأ مكتشَف ومُصلَح (طلب مستخدم — "نشاط سيبدأ بعد 10 ساعات يظهر له
+  // 'تعذّر اعتماد قرار واثق: بيانات قديمة'، رغم أن هذا متوقّع تماماً لنشاط
+  // مستقبلي بعيد"): buildFinalDecisionInput كانت تُستدعى هنا بلا mode
+  // إطلاقاً، فتثبت دائماً على الافتراضي LIVE_OPERATIONAL بصرف النظر عن توقيت
+  // النشاط الفعلي — بعكس evaluateProject/persistFinalDecisions اللذين
+  // يحسبان mode الصحيح عبر determineFinalDecisionMode(startIso) قبل الحفظ.
+  // النتيجة: القرار *المخزَّن* بقاعدة البيانات صحيح (PLANNING)، لكن بانر
+  // "القرار الموحد" بالواجهة (summaryFromLiveDecision في route.ts، يعيد
+  // الحساب حياً بدل القراءة من المخزَّن) كان يفرض evidenceUnavailable خطأً
+  // لأي نشاط مستقبلي له جهاز مرتبط. startIso اختياري هنا: تمريره يحسب mode
+  // الصحيح عبر نفس determineFinalDecisionMode المستخدَمة بمسار الحفظ؛ غيابه
+  // (استدعاءات قديمة لا تملك توقيت النشاط) يبقي LIVE_OPERATIONAL كافتراضي
+  // آمن كما كان — بلا كسر توافقي.
+  startIso?: string | null
 ): UnifiedActivityDecision {
-  const decision = decideFinal(buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null));
+  const mode = determineFinalDecisionMode(startIso);
+  const decision = decideFinal(buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null, mode));
 
+  // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — نشاط PLANNING استمر يظهر "بيئة
+  // العمل غير آمنة (مغلق)" أسود رغم أن decideFinal يُرجع ALLOW/GREEN محايداً
+  // بشكل صحيح تماماً لـmode=PLANNING): محرك AEI مستقل تماماً عن decideFinal
+  // ولا يعرف مفهوم PLANNING إطلاقاً — لا يزال يحسب aei.color من dvi.score
+  // الخام (مبني على قيم توقّعية قد تكون مرتفعة/غير واقعية)، فتفوز قاعدة
+  // "الأشد يحكم" أدناه بلون AEI الأسود فوق قرار decideFinal الأخضر الصحيح.
+  // نفس فلسفة الفرع المبكر في decideFinal بالضبط: توقّع مستقبلي بعيد لا
+  // يستحق أي تصعيد فيزيائي/تشغيلي حي، بصرف النظر عن مصدره (DVI، امتثال، أو
+  // AEI هنا). تعطيل هذا الدمج بالكامل لـPLANNING أبسط وأضمن من تعديل محرك
+  // AEI نفسه (محرك ثالث مستقل بمنطقه الخاص).
   if (
+    mode !== 'PLANNING' &&
     aei &&
     !decision.mandatoryStop &&
     !decision.pendingConfirmation &&
@@ -1303,7 +1433,8 @@ export async function persistDustComplianceEvaluations(
   projectId: string,
   complianceResults: any[],
   triggeredBy: string
-) {
+): Promise<string[]> {
+  const failedActivityIds: string[] = [];
   await Promise.all(
     (complianceResults || []).map(async (r) => {
       try {
@@ -1324,7 +1455,7 @@ export async function persistDustComplianceEvaluations(
         const pendingResumeChanged = (existing?.pending_resume_since ?? null) !== pendingResumeSince;
         if (!pendingResumeChanged && shouldSkipPersist(existing?.decision, existing?.updated_at, newDecision)) return;
 
-        const { data: inserted } = await supabaseAdmin
+        const { data: inserted, error: insertError } = await supabaseAdmin
           .from('dust_compliance_evaluations')
           .insert({
             project_id: projectId,
@@ -1338,7 +1469,11 @@ export async function persistDustComplianceEvaluations(
           .single();
 
         const evaluationId = (inserted as any)?.id;
-        if (!evaluationId) return;
+        if (!evaluationId) {
+          failedActivityIds.push(r.activityId);
+          if (insertError) console.error(`فشل حفظ تقييم امتثال الغبار للنشاط ${r.activityId}:`, insertError);
+          return;
+        }
 
         const stoppedSince = computeStoppedSince(existing?.decision, existing?.stopped_since, newDecision);
 
@@ -1374,10 +1509,12 @@ export async function persistDustComplianceEvaluations(
           await supabaseAdmin.from('current_dust_compliance_decisions').insert(complianceRow);
         }
       } catch (error) {
+        failedActivityIds.push(r.activityId);
         console.error(`فشل حفظ تقييم امتثال الغبار للنشاط ${r.activityId}:`, error);
       }
     })
   );
+  return failedActivityIds;
 }
 
 // -----------------------------------------------------------------------
@@ -1395,33 +1532,70 @@ export async function persistDustComplianceEvaluations(
 // مجموعة نشاط وتخزّنها في final_decisions (append-only). id الصف المُدرَج
 // يصبح decisionId الموحَّد؛ المسارات الأربعة تُحوَّل (راجع استدعاءاتها) لتقرأ
 // آخر صف مخزَّن هنا بدل إعادة الحساب محلياً — قراءة واحدة بدل 4 حسابات.
+// خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-06: "توقّع مستقبلي قد
+// يُحفظ بصفة LIVE"): buildFinalDecisionInput (عبر persistFinalDecisions
+// أدناه) كانت تُستدعى دائماً بوضعها الافتراضي LIVE_OPERATIONAL، بصرف النظر
+// عن كون windowEval.worst يمثّل قراءة جهاز حية فعلاً أم توقّع طقس مستقبلي
+// (نشاط يبدأ بعد أكثر من ساعتين — راجع ACTIVITY_LIVE_MARGIN_MS/
+// isActivityLiveNow في dust-engine/engine.ts، نفس الهامش بالضبط يُطبَّق
+// هنا؛ كان 30 دقيقة، أصبح ساعتان بطلب صريح — "جهاز الرصد يتفعّل قبل ساعتين
+// من بداية النشاط"). حفظ توقّع مستقبلي بصفة LIVE_OPERATIONAL في
+// final_decisions يعني تسجيله كقرار تشغيلي حي رسمي رغم أنه لم يحدث بعد،
+// ويُقرَأ لاحقاً (بانر/خريطة/تنبيهات) وكأنه القرار الفعلي الحالي.
+//
+// دالة نقية مستقلة (تقبل nowMs صراحة، لا Date.now() ضمنياً — نفس مبدأ H-07
+// في dust-compliance-engine/engine.ts) لتبقى قابلة للاختبار بمعزل عن أي
+// اتصال قاعدة بيانات.
+export function determineFinalDecisionMode(
+  startIso: string | null | undefined,
+  nowMs: number = Date.now()
+): 'LIVE_OPERATIONAL' | 'PLANNING' {
+  const ACTIVITY_LIVE_MARGIN_MS = 120 * 60000;
+  const startMs = startIso ? new Date(startIso).getTime() : NaN;
+  return !Number.isNaN(startMs) && nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS ? 'PLANNING' : 'LIVE_OPERATIONAL';
+}
+
 export async function persistFinalDecisions(
   supabaseAdmin: any,
   projectId: string,
   dustResults: any[],
-  complianceResults: any[]
-) {
+  complianceResults: any[],
+  // activityId التي فشل حفظ DVI و/أو compliance الخاص بها في مرحلة سابقة
+  // (persistDustEvaluations/persistDustComplianceEvaluations) — نقطة الفشل
+  // المتسقة C-04: لا معنى لحفظ FinalDecision لنشاط فشلت مرحلته السابقة
+  // فعلياً، فهذا كان سيُنتج قراراً نهائياً "ناجحاً" مبنياً فوق دليل لم
+  // يُحفظ أصلاً (dvi/compliance غير موجودين في سجل التدقيق رغم أن
+  // final_decisions يشير ضمنياً إلى وجودهما). راجع تعليق evaluate/route.ts.
+  skipActivityIds: Set<string> = new Set()
+): Promise<string[]> {
   const complianceByActivityId = new Map<string, any>(
     (complianceResults || []).map((r: any) => [r.activityId, r])
   );
+  const failedActivityIds: string[] = [];
 
   await Promise.all(
     (dustResults || []).map(async (r: any) => {
       try {
         if (!r?.aei) return;
+        if (skipActivityIds.has(r.activityId)) {
+          failedActivityIds.push(r.activityId);
+          return;
+        }
         const complianceEntry = complianceByActivityId.get(r.activityId);
         const compliance: DustComplianceResult | null = complianceEntry?.result ?? null;
         const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
+        const mode = determineFinalDecisionMode(r.startIso);
 
         const finalInput = buildFinalDecisionInput(
           r.activityGroupId ?? r.activityId ?? 'unknown',
           dvi,
           compliance,
-          r.aei
+          r.aei,
+          mode
         );
         const decision = decideFinal(finalInput);
 
-        await supabaseAdmin.from('final_decisions').insert({
+        const { error: insertError } = await supabaseAdmin.from('final_decisions').insert({
           project_id: projectId,
           activity_group_id: r.activityGroupId,
           dust_profile_id: r.activityId ?? null,
@@ -1439,11 +1613,182 @@ export async function persistFinalDecisions(
           rule_bundle_version: decision.ruleBundleVersion,
           evaluated_at: finalInput.evaluatedAt,
         });
+        if (insertError) {
+          failedActivityIds.push(r.activityId);
+          console.error(`فشل حفظ القرار النهائي للنشاط ${r.activityId}:`, insertError);
+        }
       } catch (error) {
+        failedActivityIds.push(r.activityId);
         console.error(`فشل حفظ القرار النهائي للنشاط ${r.activityId}:`, error);
       }
     })
   );
+  return failedActivityIds;
+}
+
+// =========================================================================
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-04: "حفظ القرار غير
+// ذري"): persistDustEvaluations/persistDustComplianceEvaluations/
+// persistFinalDecisions أعلاه تبقى معرَّفة ومصدَّرة كما هي (تُستخدم في
+// اختبارات موجودة ومسارات أخرى)، لكن evaluate/route.ts يستخدم الآن هذه
+// الدالة البديلة حصراً: تحسب بالضبط نفس ما كانت تحسبه الدوال الثلاث (نفس
+// shouldSkipPersist/computeStoppedSince/computePendingResumeSince/
+// decideFinal بلا أي تغيير في المنطق)، لكن تجمع نتيجة الحساب لكل نشاط في
+// استدعاء واحد لدالة SQL persist_activity_decision_atomic (راجع
+// 202607290007_atomic_decision_persist.sql) تكتب الجداول الثلاثة معاً ضمن
+// معاملة PostgreSQL واحدة — فشل أي مرحلة يُرجع كل الكتابات الخمس لنفس
+// النشاط لحالتها قبل الاستدعاء (لا "DVI محفوظ بلا FinalceDecision مقابل").
+export interface ActivityDecisionPersistResult {
+  activityId: string;
+  dviPersisted: boolean;
+  compliancePersisted: boolean;
+  finalDecisionPersisted: boolean;
+  failed: boolean;
+  // true فقط إذا كان الفشل تعارض CAS قابل لإعادة المحاولة (كود 40001 —
+  // current_dust_decisions/current_dust_compliance_decisions تغيّرا منذ
+  // قراءتهما في هذه الدورة)، لتمييزه عن فشل حقيقي (شبكة، قيد، إلخ) يحتاج
+  // تدخلاً بدل إعادة محاولة بسيطة في الدورة التالية.
+  conflict: boolean;
+}
+
+export async function persistActivityDecisionsAtomic(
+  supabaseAdmin: any,
+  projectId: string,
+  dustResults: any[],
+  complianceResults: any[],
+  dviTriggeredBy: string,
+  complianceTriggeredBy: string
+): Promise<ActivityDecisionPersistResult[]> {
+  const complianceByActivityId = new Map<string, any>(
+    (complianceResults || []).map((r: any) => [r.activityId, r])
+  );
+
+  const results = await Promise.all(
+    (dustResults || []).map(async (r: any): Promise<ActivityDecisionPersistResult> => {
+      const base = { activityId: r.activityId, dviPersisted: false, compliancePersisted: false, finalDecisionPersisted: false, failed: false, conflict: false };
+      try {
+        // ------------------------------------------------------------
+        // 1) DVI — نفس منطق shouldSkipPersist في persistDustEvaluations
+        // ------------------------------------------------------------
+        const worst = r.windowEval?.worst;
+        let dviPayload: { result: any; expectedUpdatedAt: string | null } | null = null;
+        if (worst) {
+          const newDviDecision = worst.decisionCategory ?? 'UNKNOWN';
+          const { data: existingDvi } = await supabaseAdmin
+            .from('current_dust_decisions')
+            .select('decision, updated_at')
+            .eq('activity_group_id', r.activityGroupId)
+            .maybeSingle();
+          const skipDvi = shouldSkipPersist(existingDvi?.decision, existingDvi?.updated_at, newDviDecision);
+          if (!skipDvi) {
+            dviPayload = { result: worst, expectedUpdatedAt: existingDvi?.updated_at ?? null };
+          }
+        }
+
+        // ------------------------------------------------------------
+        // 2) Compliance — نفس منطق persistDustComplianceEvaluations
+        //    (pendingResumeChanged يمنع التخطي حتى لو بقي newDecision نفسه)
+        // ------------------------------------------------------------
+        const complianceEntry = complianceByActivityId.get(r.activityId);
+        let compliancePayload:
+          | { result: any; expectedUpdatedAt: string | null; stoppedSince: string | null; pendingResumeSince: string | null }
+          | null = null;
+        if (complianceEntry) {
+          const newComplianceDecision = complianceEntry.result?.decisionCategory ?? 'UNKNOWN';
+          const resumeHoldApplied = Boolean(complianceEntry.result?.resumeHoldApplied);
+          const { data: existingCompliance } = await supabaseAdmin
+            .from('current_dust_compliance_decisions')
+            .select('decision, updated_at, stopped_since, pending_resume_since')
+            .eq('activity_group_id', r.activityGroupId)
+            .maybeSingle();
+
+          const pendingResumeSince = computePendingResumeSince(existingCompliance?.pending_resume_since, resumeHoldApplied);
+          const pendingResumeChanged = (existingCompliance?.pending_resume_since ?? null) !== pendingResumeSince;
+          const skipCompliance =
+            !pendingResumeChanged && shouldSkipPersist(existingCompliance?.decision, existingCompliance?.updated_at, newComplianceDecision);
+
+          if (!skipCompliance) {
+            const stoppedSince = computeStoppedSince(existingCompliance?.decision, existingCompliance?.stopped_since, newComplianceDecision);
+            compliancePayload = {
+              result: complianceEntry.result,
+              expectedUpdatedAt: existingCompliance?.updated_at ?? null,
+              stoppedSince,
+              pendingResumeSince,
+            };
+          }
+        }
+
+        // ------------------------------------------------------------
+        // 3) FinalDecision — نفس منطق persistFinalDecisions، يُحسب فقط إن
+        //    وُجد AEI (نفس شرط `if (!r?.aei) return;` الأصلي)
+        // ------------------------------------------------------------
+        let finalDecisionPayload: { decision: FinalDecision; evaluatedAt: string } | null = null;
+        if (r?.aei) {
+          const compliance: DustComplianceResult | null = complianceEntry?.result ?? null;
+          const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
+          const mode = determineFinalDecisionMode(r.startIso);
+          const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, compliance, r.aei, mode);
+          const decision = decideFinal(finalInput);
+          finalDecisionPayload = { decision, evaluatedAt: finalInput.evaluatedAt };
+        }
+
+        if (!dviPayload && !compliancePayload && !finalDecisionPayload) return base;
+
+        const { data, error } = await supabaseAdmin.rpc('persist_activity_decision_atomic', {
+          p_project_id: projectId,
+          p_activity_group_id: r.activityGroupId,
+          p_activity_id: r.activityId,
+
+          p_dvi_result: dviPayload?.result ?? null,
+          p_dvi_triggered_by: dviTriggeredBy,
+          p_dvi_expected_updated_at: dviPayload?.expectedUpdatedAt ?? null,
+
+          p_compliance_result: compliancePayload?.result ?? null,
+          p_compliance_rulebook_version: compliancePayload?.result?.rulebookVersion ?? null,
+          p_compliance_triggered_by: complianceTriggeredBy,
+          p_compliance_expected_updated_at: compliancePayload?.expectedUpdatedAt ?? null,
+          p_compliance_dust_profile_id: complianceEntry?.dustProfileId ?? null,
+          p_compliance_stopped_since: compliancePayload?.stoppedSince ?? null,
+          p_compliance_pending_resume_since: compliancePayload?.pendingResumeSince ?? null,
+
+          p_final_decision: finalDecisionPayload?.decision ?? null,
+          p_final_evaluated_at: finalDecisionPayload?.evaluatedAt ?? null,
+        });
+
+        if (error || !data?.[0]) {
+          // كود 40001 (serialization_failure) يصل حصراً من فحص CAS داخل
+          // persist_activity_decision_atomic عندما يتغيّر current_dust_decisions/
+          // current_dust_compliance_decisions بين قراءته في هذه الدورة وكتابته —
+          // تعارض تزامن طبيعي متوقّع الحدوث، تحله دورة التقييم التالية بقراءة
+          // الحالة من جديد تلقائياً، وليس فشلاً حقيقياً (شبكة/قيد/إلخ) يستحق
+          // نفس درجة الخطورة في السجلات.
+          const isCasConflict = error?.code === '40001';
+          if (!isCasConflict) {
+            console.error(
+              `فشل حفظ سلسلة القرار الذرية للنشاط ${r.activityId}:`,
+              error ? JSON.stringify(error, null, 2) : 'RPC رجعت بلا صفوف (data فارغة)'
+            );
+          }
+          return { ...base, failed: true, conflict: isCasConflict };
+        }
+
+        const row = data[0];
+        return {
+          activityId: r.activityId,
+          dviPersisted: Boolean(row.dvi_persisted),
+          compliancePersisted: Boolean(row.compliance_persisted),
+          finalDecisionPersisted: Boolean(row.final_decision_persisted),
+          failed: false,
+          conflict: false,
+        };
+      } catch (error) {
+        console.error(`فشل حفظ سلسلة القرار الذرية للنشاط ${r.activityId}:`, error);
+        return { ...base, failed: true };
+      }
+    })
+  );
+
+  return results;
 }
 
 // يجلب آخر قرار نهائي مخزَّن لكل activity_group_id مطلوب — القراءة
@@ -1471,6 +1816,60 @@ export async function fetchLatestFinalDecisions(
     }
   } catch {
     // فشل الاستعلام لا يُسقط المستدعي — نفس مبدأ resolveFreshProjectDevice.
+  }
+  return map;
+}
+
+// يجلب آخر DustComplianceResult كامل مخزَّن فعلياً (dust_compliance_evaluations.result،
+// عبر current_dust_compliance_decisions.latest_evaluation_id) لكل
+// activity_group_id مطلوب — خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير
+// خارجي — C-05: "القرار المخزَّن ليس المصدر الوحيد؛ مولّد التنبيهات يعيد
+// حساب DVI وCompliance"): alerts/generate/route.ts كان يستدعي
+// evaluateDustCompliance محلياً بمعزل تام عن evaluate/route.ts (نقطة الكتابة
+// الوحيدة الفعلية)، فقد ينتج requiredActions/shortReasonAr/decisionCategory
+// من لقطة بيانات مختلفة عمّا يُعرض فعلياً في بطاقة/خريطة المشروع لنفس
+// النشاط بنفس اللحظة تقريباً (نفس مبدأ fetchLatestFinalDecisions أعلاه، لكن
+// لحقول compliance الكاملة التي لا يخزّنها final_decisions نفسه، مثل
+// requiredActions/triggeredRules).
+//
+// current_dust_compliance_decisions هو "current pointer" الفعلي (مفتاحه
+// الأساسي activity_group_id، صف واحد لكل نشاط) — أسرع من ترتيب
+// dust_compliance_evaluations بالكامل بـcreated_at، ونفس الصف الذي يقرأه
+// resolveResumeState/computeDustComplianceResults كـ"القرار السابق". يُرجع
+// خريطة فارغة بصمت عند أي فشل استعلام (فشل آمن — المستدعي يتعامل مع الغياب
+// كـ"لا قرار مخزَّن بعد"، لا خطأً قاطعاً — نفس مبدأ fetchLatestFinalDecisions).
+export async function fetchLatestStoredCompliance(
+  supabaseAdmin: any,
+  activityGroupIds: string[]
+): Promise<Map<string, DustComplianceResult>> {
+  const map = new Map<string, DustComplianceResult>();
+  const ids = Array.from(new Set((activityGroupIds || []).filter(Boolean)));
+  if (ids.length === 0) return map;
+
+  try {
+    const { data: currentRows } = await supabaseAdmin
+      .from('current_dust_compliance_decisions')
+      .select('activity_group_id, latest_evaluation_id')
+      .in('activity_group_id', ids);
+    const evaluationIds = Array.from(
+      new Set((currentRows || []).map((r: any) => r.latest_evaluation_id).filter(Boolean))
+    );
+    if (evaluationIds.length === 0) return map;
+
+    const { data: evalRows } = await supabaseAdmin
+      .from('dust_compliance_evaluations')
+      .select('id, result')
+      .in('id', evaluationIds);
+    const resultById = new Map<string, DustComplianceResult>(
+      (evalRows || []).map((r: any) => [r.id, r.result as DustComplianceResult])
+    );
+
+    for (const row of currentRows || []) {
+      const result = resultById.get(row.latest_evaluation_id);
+      if (result) map.set(row.activity_group_id, result);
+    }
+  } catch {
+    // فشل الاستعلام لا يُسقط المستدعي — نفس مبدأ fetchLatestFinalDecisions.
   }
   return map;
 }

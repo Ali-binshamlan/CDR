@@ -58,9 +58,30 @@ export async function PATCH(
     .single();
 
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device update failed') }, { status: 500 });
+
+  // خطأ مكتشَف ومُصلَح: تعطيل جهاز (is_active=false) كان يترك أي
+  // provider_connections مرتبط به is_active=true — فيستمر /api/cron/
+  // provider-pull بمحاولة سحبه كل دورة، تفشل دائماً بخطأ RPC "device not
+  // found, revoked, or project mismatch" (persist_activity_decision_atomic/
+  // atomic_device_ingest تتحقق من project_devices.is_active صراحة). تعطيل
+  // الاتصال تلقائياً هنا يوقف هذه المحاولات الفاشلة المستمرة بلا داعٍ.
+  if (updates.is_active === false) {
+    await supabaseAdmin
+      .from('provider_connections')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('device_id', deviceId);
+  }
+
   return NextResponse.json({ device: data });
 }
 
+// خطأ مكتشَف ومُصلَح (مراجعة تصحيح خارجية — "الأرشفة بدل الحذف"): كان هذا
+// المسار يحذف صف project_devices فعلياً. device_readings_history/
+// pm10_readings_history المرتبطة به append-only (trigger forbid_evidence_
+// mutation) فتُحذف بواسطة on delete cascade على device_id — سلسلة أدلة
+// تاريخية كاملة تُمحى نهائياً بحذف جهاز واحد. الإصلاح: إلغاء (نفس منطق
+// PATCH أعلاه: is_active=false + revoked_at) بدل DELETE — القراءات
+// التاريخية تبقى محفوظة ومرتبطة بجهازها الأصلي دائماً.
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string; deviceId: string }> }
@@ -75,8 +96,18 @@ export async function DELETE(
   const device = await loadOwnedDevice(projectId, deviceId);
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
-  const { error } = await supabaseAdmin.from('project_devices').delete().eq('id', deviceId);
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device delete failed') }, { status: 500 });
+  const { error } = await supabaseAdmin
+    .from('project_devices')
+    .update({ is_active: false, revoked_at: new Date().toISOString() })
+    .eq('id', deviceId);
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device revoke failed') }, { status: 500 });
+
+  // راجع نفس التعليق في PATCH أعلاه — يمنع محاولات سحب فاشلة مستمرة
+  // لجهاز أُلغي.
+  await supabaseAdmin
+    .from('provider_connections')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('device_id', deviceId);
 
   return NextResponse.json({ success: true });
 }

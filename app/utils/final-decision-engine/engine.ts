@@ -59,6 +59,44 @@ function complianceFloorLevel(decisionCategory: string): FinalDecision['level'] 
 export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<FinalDecision> {
   const { dvi, compliance, mode, evidenceQuality } = input;
 
+  // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
+  // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts) لا
+  // يجوز أن يُصدر أي قرار إلزامي حقيقي (mandatoryStop=true/غير قابل للتجاوز)
+  // مهما بلغت قيم DVI الفيزيائي أو الامتثال المحسوبة من قيم توقّعية (قد
+  // تكون مرتفعة/غير واقعية من نموذج طقس عام). فرع مبكر كامل بدل رقع متفرقة
+  // وسط منطق LIVE_OPERATIONAL المعقّد أدناه (dvi.mandatoryStop، compliance.
+  // decisionCategory، evidenceUnavailable... كلها مصادر مستقلة كان يمكن
+  // لأي منها إفلات إيقاف إلزامي رغم isPlanning في evaluateDustCompliance).
+  //
+  // لكن (طلب مستخدم صريح إضافي — "كيف مسموح وأخضر ومكتوب لا تصلح؟"): اللون/
+  // العنوان يجب أن يعكسا فعلياً جودة التوقّع، لا يبقيان أخضر/"مسموح" ثابتَين
+  // دائماً بينما النص وحده يحذّر — هذا تناقض بصري مباشر. إذن: تصلح → أخضر/
+  // "مسموح"، لا تصلح → أصفر/"تنبيه: أجواء متوقعة غير مناسبة"؛ في كلتا
+  // الحالتين mandatoryStop=false/overridable=true دائماً (لا إيقاف إلزامي
+  // فعلي على توقّع، مهما كان اللون).
+  if (mode === 'PLANNING') {
+    const isFavorable = dvi.decisionCategory === 'ALLOW' || dvi.decisionCategory === 'ALLOW_WITH_MONITORING';
+    const result: FinalDecision = {
+      snapshotId: input.snapshotId,
+      mode,
+      operationalDecision: isFavorable ? 'ALLOW' : 'MONITOR',
+      regulatoryFinding: 'COMPLIANT',
+      mandatoryStop: false,
+      overridable: true,
+      shortReasonAr: isFavorable
+        ? 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة تصلح للنشاط. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.'
+        : 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة لا تصلح للنشاط، يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.',
+      decisionLabelAr: isFavorable ? 'مسموح — تشغيل اعتيادي' : 'تنبيه: أجواء متوقعة غير مناسبة',
+      level: isFavorable ? 'GREEN' : 'YELLOW',
+      pendingConfirmation: false,
+      reasonCodes: Object.freeze([]),
+      evidenceQuality,
+      ruleBundleVersion: input.ruleBundleVersion,
+    };
+    assertDecisionInvariant(result);
+    return Object.freeze(result);
+  }
+
   const complianceMandatory = compliance?.decisionCategory === 'MANDATORY_STOP';
   const complianceStopAffected = compliance?.decisionCategory === 'STOP_AFFECTED_ACTIVITY';
   const complianceBlocks = complianceMandatory || complianceStopAffected;
@@ -327,13 +365,47 @@ const FINAL_RANK: Record<OperationalDecision, number> = {
   MANDATORY_STOP: 5,
 };
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-08: "لا Candidate Engine أو
+// حسم تعادل ثابت"): كانت pickWorstDecision تحسم التعادل (operationalDecision
+// متطابق بين صفين) بإبقاء العنصر الأول الوارد (worst الابتدائي = rows[0]،
+// reduce يستبدل فقط بشرط `>` صارم لا `>=`) — أي أن ترتيب الصفوف الوارد من
+// الاستعلام (غير مضمون البتة، نفس العلة التي أُصلحت في dashboard/global/
+// viewer/dashboard سابقاً) يحدد "أيهما يمثّل المشروع" عند تعادل الشدة
+// التشغيلية، بلا معيار حسم واضح. الإصلاح: عند تعادل operationalDecision،
+// تُقارَن level (اللون — أشد لوناً يفوز)، ثم mandatoryStop (true يفوز على
+// false)، ثم !pendingConfirmation (مؤكَّد يفوز على معلَّق)، وأخيراً
+// shortReasonAr/decisionLabelAr (ترتيب معجمي ثابت) كحسم أخير مضمون بصرف
+// النظر عن أي بيانات — فلا يبقى أي تعادل يعتمد على ترتيب الاستعلام. تقتصر
+// المعايير على الحقول الموجودة فعلياً في كل مستهلكي هذه الدالة (dashboard/
+// global، viewer/dashboard يبنيان finalDecision جزئياً من صف final_decisions
+// المخزَّن، بلا evidenceQuality/evaluatedAt/snapshotId) — لا افتراض حقول
+// قد تكون undefined فعلياً عند الاستدعاء الحقيقي.
+function compareDecisionSeverity(a: FinalDecision, b: FinalDecision): number {
+  const rankDiff = FINAL_RANK[a.operationalDecision] - FINAL_RANK[b.operationalDecision];
+  if (rankDiff !== 0) return rankDiff;
+
+  const levelDiff = LEVEL_WEIGHT[a.level] - LEVEL_WEIGHT[b.level];
+  if (levelDiff !== 0) return levelDiff;
+
+  const mandatoryStopDiff = Number(a.mandatoryStop) - Number(b.mandatoryStop);
+  if (mandatoryStopDiff !== 0) return mandatoryStopDiff;
+
+  const confirmedDiff = Number(!a.pendingConfirmation) - Number(!b.pendingConfirmation);
+  if (confirmedDiff !== 0) return confirmedDiff;
+
+  // حسم أخير مضمون بصرف النظر عن أي بيانات — ترتيب معجمي ثابت، لا يعتمد
+  // على ترتيب الاستعلام إطلاقاً. shortReasonAr/decisionLabelAr موجودان
+  // دائماً (نصان غير فارغين) على عكس أي معرّف اختياري.
+  const aKey = `${a.shortReasonAr}|${a.decisionLabelAr}`;
+  const bKey = `${b.shortReasonAr}|${b.decisionLabelAr}`;
+  return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+}
+
 export function pickWorstDecision<T extends { finalDecision: FinalDecision }>(rows: readonly T[]): T {
   if (rows.length === 0) {
     throw new Error('pickWorstDecision: cannot select from an empty list');
   }
   return rows.reduce((worst, current) =>
-    FINAL_RANK[current.finalDecision.operationalDecision] > FINAL_RANK[worst.finalDecision.operationalDecision]
-      ? current
-      : worst
+    compareDecisionSeverity(current.finalDecision, worst.finalDecision) > 0 ? current : worst
   );
 }

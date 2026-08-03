@@ -68,6 +68,78 @@ function shortReasonFor(
   return decidingRule?.messageAr ?? DECISION_LABEL_AR[decision];
 }
 
+// نتيجة امتثال مبسَّطة لنشاط PLANNING (توقّع طقس، لم يبدأ بعد — راجع
+// isPlanning في evaluateDustCompliance أعلاه) — decisionCategory=ALLOW
+// دائماً (لا إيقاف/تعليق إلزامي على تقدير مستقبلي)، وshortReasonAr وحده
+// يوضّح للمستخدم هل الأجواء المتوقعة تصلح للنشاط أم لا، حسب dviDecision
+// الجاهز فعلاً (ALLOW/ALLOW_WITH_MONITORING = تصلح، أي فئة أخرى = لا تصلح).
+const DVI_FORECAST_FAVORABLE: ReadonlySet<string> = new Set(['ALLOW', 'ALLOW_WITH_MONITORING']);
+
+function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): DustComplianceResult {
+  const { riskClass, reasonAr: riskClassReasonAr } = classifyProject(ctx.project);
+  const windBand = classifyWind(ctx.windSpeedKmh);
+  const isFavorable = DVI_FORECAST_FAVORABLE.has(ctx.dviDecision);
+  const shortReasonAr = isFavorable
+    ? 'الأجواء المتوقعة تصلح للنشاط — تقييم مبني على توقّعات الطقس، لا قراءة جهاز حية بعد.'
+    : 'الأجواء المتوقعة لا تصلح للنشاط — يُرجى مراجعة توقعات الساعات القادمة قبل البدء الفعلي (لا إيقاف إلزامي، تقييم توقّعي فقط).';
+
+  return {
+    engineType: 'RIYADH_DUST_COMPLIANCE',
+    engineVersion: ENGINE_VERSION,
+    rulebookVersion: RULEBOOK_VERSION,
+
+    regulatoryActivity: ctx.activity.regulatoryActivity,
+    regulatoryActivityLabelAr:
+      REGULATORY_ACTIVITY_LABEL_AR[ctx.activity.regulatoryActivity] ?? REGULATORY_ACTIVITY_LABEL_AR.OTHER,
+
+    riskClass,
+    riskClassReasonAr,
+    windBand,
+    isEnclosedOperation: ctx.activity.isEnclosedOperation,
+
+    decisionCategory: 'ALLOW',
+    decisionLabelAr: DECISION_LABEL_AR.ALLOW,
+    mandatoryStop: false,
+    canOverride: true,
+    pendingConfirmation: false,
+    resumeHoldApplied: false,
+    decidingRuleCode: null,
+    decidingRuleMessageAr: null,
+    shortReasonAr,
+
+    pm10SustainedMinutesAbove340: undefined,
+    pm10SustainedMinutesAbove250: undefined,
+    evaluatedAt: new Date(now).toISOString(),
+
+    triggeredRules: [],
+    requiredActions: [],
+    restartConditions: [],
+    missingCriticalInputs: [],
+    monitoringObligations: [],
+
+    confidenceScore: ctx.dviConfidenceScore,
+    confidenceLabelAr: confidenceLabelAr(ctx.dviConfidenceScore),
+    validUntil: new Date(now + 60 * 60 * 1000).toISOString(),
+
+    evidence: {
+      dviScore: ctx.dviScore,
+      dviDecision: ctx.dviDecision,
+      dviMandatoryStop: ctx.dviMandatoryStop,
+      windSpeedKmh: ctx.windSpeedKmh,
+      windGustKmh: ctx.windGustKmh,
+      windDirectionDeg: ctx.windDirectionDeg,
+      pm10UgM3: ctx.pm10UgM3,
+      pm25UgM3: ctx.pm25UgM3,
+      relativeHumidityPercent: ctx.relativeHumidityPercent,
+      temperatureC: ctx.temperatureC,
+      visibilityM: ctx.visibilityM,
+      deviceLastReadingAt: ctx.deviceLastReadingAt,
+      devicePm10LastReadingAt: ctx.devicePm10LastReadingAt,
+    },
+    caveatsAr: ctx.dviCaveatsAr ?? [],
+  };
+}
+
 function buildMonitoringObligations(
   ctx: DustComplianceContext,
   riskClass: DustRiskClass
@@ -188,7 +260,32 @@ function confidenceLabelAr(score: number): string {
   return 'يحتاج تحقق ميداني';
 }
 
-export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplianceResult {
+// خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-07: "الاستئناف غير حتمي،
+// يستخدم Date.now() داخل محرك القرار"): كانت الدالة تستدعي Date.now()
+// مباشرة داخلها رغم توصيفها الصريح أعلى الملف كـ"دالة نقية بلا I/O" — نفس
+// المدخلات (ctx) قد تُنتج قرارات مختلفة حسب لحظة الاستدعاء الفعلية، بلا
+// إمكانية لإعادة الحساب لاختبار/تدقيق تاريخي بمعزل عن الوقت الحقيقي. now
+// معامل اختياري ثانٍ (افتراضي Date.now()، نفس نمط computeSustainedPm10Status
+// في dustEvaluation.ts بالضبط) — الاستدعاءات الحية بلا تغيير (لا تمرره
+// فتحصل على السلوك الحالي)، والاختبارات/إعادة الحساب التاريخي يمكنها الآن
+// تثبيت لحظة محددة صراحة.
+export function evaluateDustCompliance(
+  ctx: DustComplianceContext,
+  now: number = Date.now(),
+  // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد — راجع
+  // ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts) لا يجوز أن يُصدر أي
+  // قرار امتثال إلزامي (MANDATORY_STOP/STOP_AFFECTED_ACTIVITY/"معلَّق بانتظار
+  // تأكيد") مهما بلغت قيم التوقّع (قد تكون مرتفعة/غير واقعية من نموذج طقس
+  // عام). بدلاً من كل قواعد rulebook.ts (رياح>25، PM10>340، مسافة الكسارة،
+  // إلخ)، تُرجَع نتيجة محايدة (decisionCategory=ALLOW دائماً) بنص توضيحي
+  // فقط يعكس جودة الطقس المتوقّع (عبر dviDecision) — "تصلح" أو "لا تصلح"
+  // للنشاط، بلا أي إجراء إلزامي فعلي. راجع الفرع أسفل هذا التوقيع مباشرة.
+  isPlanning: boolean = false
+): DustComplianceResult {
+  if (isPlanning) {
+    return buildPlanningForecastResult(ctx, now);
+  }
+
   const { riskClass, reasonAr: riskClassReasonAr } = classifyProject(ctx.project);
   const windBand = classifyWind(ctx.windSpeedKmh);
 
@@ -442,7 +539,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   let resumeHoldApplied = false;
   if (previousWasStopped && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
     const minutesSinceGoodReadingBegan = ctx.previousPendingResumeSince
-      ? (Date.now() - new Date(ctx.previousPendingResumeSince).getTime()) / 60000
+      ? (now - new Date(ctx.previousPendingResumeSince).getTime()) / 60000
       : 0; // لا استقرار مسجَّل بعد = بداية الاستقرار الآن (فشل آمن نحو المنع)
     if (minutesSinceGoodReadingBegan < RESUME_STABILITY_MINUTES) {
       resumeHoldApplied = true;
@@ -534,14 +631,52 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
   // messageAr (وصف المخالفة) — وإلا ظهرت نفس الجملة حرفياً مرتين في البطاقة:
   // مرة تحت "القواعد المفعّلة" ومرة تحت "الإجراءات المطلوبة"، فيظن المستخدم
   // أن النظام يكرر كلامه بلا فائدة.
-  const requiredActions = Array.from(
-    new Set(displayedRuleHits.filter((r) => r.severity !== 'ALLOW_WITH_CONTROLS').map((r) => r.actionAr))
-  );
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-06.1: "استبعاد قواعد
+  // ALLOW_WITH_CONTROLS من requiredActions مطلقاً"): كان الفلتر يستبعد كل
+  // قاعدة بشدة ALLOW_WITH_CONTROLS (مثال: PM10-EARLY-WARNING-007، PM10-
+  // WARNING-008، GATE-WIND-15-25-ENHANCED-005) بصرف النظر عن كون actionAr
+  // مكرراً لـmessageAr أم لا — لكن كل قواعد ALLOW_WITH_CONTROLS فعلياً تحمل
+  // actionAr مستقلاً تماماً عن messageAr (راجع rulebook.ts)، فلا تكرار
+  // إطلاقاً يبرر الاستبعاد. هذا كان يُخفي بالضبط الإجراء التصحيحي الأهم
+  // تشغيلياً (مثال: "فعّل التثبيط المعزز فوراً" عند اقتراب PM10 من حد
+  // المخالفة) عن قسم "الإجراءات المطلوبة" في البطاقة. الإصلاح: لا استبعاد
+  // بناءً على severity — الفلتر الوحيد المتبقي هو إزالة التكرار الفعلي
+  // (Set على actionAr نفسه).
+  const requiredActions = Array.from(new Set(displayedRuleHits.map((r) => r.actionAr)));
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-06.2: "شرط انخفاض الرياح
+  // تحت 15 يُضاف حتى لقرار سببه PM10/مسافة/DMP"): كان شرط "انخفاض الرياح"
+  // يُضاف فقط بفحص windBand الحالي (سطر محذوف: windBand !== 'BELOW_15')،
+  // بصرف النظر تماماً عن كون الرياح هي سبب الإيقاف الفعلي أصلاً — نشاط
+  // موقوف بسبب مخالفة مسافة كسارة (مثلاً) بينما الرياح مرتفعة صدفةً في نفس
+  // اللحظة كان يعرض "انخفاض الرياح" كشرط استئناف مضلِّل، رغم أن انخفاضها لن
+  // يغيّر القرار شيئاً (المخالفة الفعلية مستقلة تماماً عن الرياح). الإصلاح:
+  // الشرط يُضاف الآن فقط إن كانت إحدى القواعد الفائزة فعلياً (topHits) قاعدة
+  // رياح حقيقية (بوابة >25، هدم/قطع أحجار مكشوف عند رياح≥15) — يعكس السبب
+  // الحقيقي للإيقاف، لا حالة الرياح اللحظية بمعزل عنه.
+  //
+  // خطأ ثانٍ مكتشَف ومُصلَح (مراجعة تصحيح خارجية — "نص استئناف الرياح
+  // موحَّد خطأً"): كانت كل قواعد الرياح الأربع تُدفَع لمجموعة واحدة تنتج
+  // نص "أقل من 15 كم/س" بلا تمييز — بما فيها بوابة الرياح العامة
+  // (GATE-WIND-ABOVE-25-004) التي رسالتها الفعلية (messageAr أعلاه)
+  // وشرط استئنافها المخصَّص (GATE-WIND-ABOVE-25-RESUME-HOLD) يشترطان
+  // صراحة "دون 25" لا "دون 15" — تناقض مباشر بين القاعدتين المعروضتين
+  // لنفس الإيقاف. الإصلاح: مجموعتان منفصلتان بعتبتين مختلفتين؛ إن اجتمعتا
+  // معاً (حالة نظرية: هدم مكشوف + رياح فوق 25 في نفس اللحظة)، يفوز الحد
+  // الأشد (دون 15) — أي نشاط يحتاج انخفاضاً أكبر يحتاج بداهة الانخفاض
+  // الأصغر أيضاً، فذكر الحد الأشد وحده كافٍ ولا يُضلِّل.
+  const GENERAL_WIND_STOP_RULE_CODES = new Set(['GATE-WIND-ABOVE-25-004', 'GATE-WIND-ABOVE-25-RESUME-HOLD']);
+  const ACTIVITY_WIND_15_STOP_RULE_CODES = new Set(['DEMO-WIND-STOP-001', 'STONECUT-WIND-STOP-003']);
+  const requiresWindBelow15 = topHits.some((hit) => ACTIVITY_WIND_15_STOP_RULE_CODES.has(hit.code));
+  const requiresWindBelow25 = topHits.some((hit) => GENERAL_WIND_STOP_RULE_CODES.has(hit.code));
 
   const restartConditions: string[] = [];
   if (mandatoryStop || decisionCategory === 'STOP_AFFECTED_ACTIVITY') {
-    if (windBand !== 'BELOW_15') {
+    if (requiresWindBelow15) {
       restartConditions.push('انخفاض سرعة الرياح إلى ما دون 15 كم/س');
+    } else if (requiresWindBelow25) {
+      restartConditions.push('انخفاض سرعة الرياح إلى ما دون 25 كم/س');
     }
     if (dmpExplicitlyBlocksActivity) {
       restartConditions.push('اعتماد خطة إدارة الغبار (DMP) رسمياً من الجهة المختصة');
@@ -586,6 +721,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
     pm10SustainedMinutesAbove340: ctx.pm10SustainedMinutesAbove340,
     pm10SustainedMinutesAbove250: ctx.pm10SustainedMinutesAbove250,
+    evaluatedAt: new Date(now).toISOString(),
 
     triggeredRules: displayedRuleHits,
     requiredActions,
@@ -597,7 +733,7 @@ export function evaluateDustCompliance(ctx: DustComplianceContext): DustComplian
 
     confidenceScore,
     confidenceLabelAr: confidenceLabelAr(confidenceScore),
-    validUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    validUntil: new Date(now + 60 * 60 * 1000).toISOString(),
 
     evidence: {
       dviScore: ctx.dviScore,

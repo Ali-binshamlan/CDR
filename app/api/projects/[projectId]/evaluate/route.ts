@@ -1,15 +1,7 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
-import {
-  computeDustResults,
-  computeDustComplianceResults,
-  persistDustEvaluations,
-  persistDustComplianceEvaluations,
-  persistFinalDecisions,
-} from '@/app/lib/dustEvaluation';
-import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
+import { evaluateProject } from '@/app/lib/evaluateProject';
 
 // يكتب تقييمات غبار/امتثال جديدة لمشروع (dust_evaluations، current_dust_decisions،
 // dust_compliance_evaluations، current_dust_compliance_decisions — بما فيها
@@ -25,10 +17,10 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 // عميل قد تكون مزوَّرة وتُكتب مباشرة كقرار امتثال تنظيمي حقيقي. ازدواج
 // الحساب بين GET وPOST مقبول مقابل هذا الضمان.
 //
-// idempotent فعلياً: persistDustEvaluations/persistDustComplianceEvaluations
-// تطبّقان shouldSkipPersist (نافذة 5 دقائق لقرار غير متغيّر، راجع
-// app/lib/dustEvaluation.ts) — استدعاءات متكررة لنفس الحالة لا تُنتج صفوفاً
-// مكررة، بلا حاجة لآلية idempotency-key إضافية هنا.
+// idempotent فعلياً: persistActivityDecisionsAtomic تطبّق shouldSkipPersist
+// (نافذة 5 دقائق لقرار غير متغيّر، راجع app/lib/dustEvaluation.ts) —
+// استدعاءات متكررة لنفس الحالة لا تُنتج صفوفاً مكررة، بلا حاجة لآلية
+// idempotency-key إضافية هنا.
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> }
@@ -43,66 +35,43 @@ export async function POST(
     const owns = await verifyProjectOwnership(projectId, auth.userId);
     if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
-    const { data: project } = await supabaseAdmin
-      .from('projects')
-      .select('*')
-      .eq('id', projectId)
-      .maybeSingle();
-    if (!project) {
-      return NextResponse.json({ error: 'المشروع غير موجود' }, { status: 404 });
+    const result = await evaluateProject(projectId);
+
+    if (!result.success && result.error === 'المشروع غير موجود') {
+      return NextResponse.json({ error: result.error }, { status: 404 });
     }
-
-    const [{ data: dustProfiles }, { data: projectShifts }] = await Promise.all([
-      supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId),
-      supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
-    ]);
-    // buildDustInput (dustEvaluation.ts) يقرأ project.shifts — نفس الاسم
-    // المُرفَق في GET، مطلوب هنا لتطابق حساب ساعات العمل.
-    project.shifts = projectShifts || [];
-
-    const dustResults = await computeDustResults(dustProfiles || [], project, supabaseAdmin);
-    if (dustResults.length === 0) {
-      return NextResponse.json({ success: true, persisted: 0 });
-    }
-
-    await persistDustEvaluations(supabaseAdmin, projectId, dustResults, 'user_refresh');
-
-    // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "فشل استعلام المستقبلات
-    // الحساسة يتحول إلى مصفوفة فارغة ثم Infinity؛ قد يظهر الموقع آمناً عند
-    // تعطل البيانات"): هذا المسار هو نقطة الكتابة الفعلية لقرارات الامتثال
-    // (dust_compliance_evaluations/final_decisions) — فشل صامت هنا يعني
-    // تسجيل قرار "آمن" (مسافة Infinity) في سجل تدقيق دائم لموقع قد يكون
-    // فعلياً قريباً جداً من مستقبِل حساس. يوقف التقييم بالكامل الآن بدل
-    // المتابعة بأمان زائف.
-    const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
-      .from('sensitive_receptors')
-      .select('id, name, receptor_type, lat, lng');
-    if (sensitiveReceptorsError) {
+    // تعارض CAS بحت (كل الفشل من نوع conflict، بلا أي failedActivityIds
+    // حقيقية معه): 409 يخبر المستدعي أن إعادة المحاولة (لا الاستسلام أو
+    // تنبيه المستخدم بخطأ) هي الاستجابة الصحيحة — القرار المخزَّن تغيّر
+    // فعلاً من طلب آخر متزامن، وسيُعاد حسابه بشكل صحيح في دورة تالية.
+    if (!result.success && result.conflictActivityIds?.length && !result.failedActivityIds?.length) {
       return NextResponse.json(
-        { error: safeErrorResponse(sensitiveReceptorsError, 'sensitive_receptors fetch failed') },
-        { status: 500 }
+        {
+          success: false,
+          persisted: result.persisted,
+          conflictActivityIds: result.conflictActivityIds,
+          error: result.error + ' — أعد الطلب',
+        },
+        { status: 409 }
       );
     }
-    const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
-
-    const dustComplianceResults = await computeDustComplianceResults(
-      dustProfiles || [],
-      project,
-      dustResults,
-      sensitiveReceptors,
-      supabaseAdmin,
-      true // مسار الكتابة الصريح الوحيد — يُسجِّل عينة PM10 جديدة في السجل التاريخي.
-    );
-    if (dustComplianceResults.length > 0) {
-      await persistDustComplianceEvaluations(supabaseAdmin, projectId, dustComplianceResults, 'user_refresh');
+    if (!result.success && result.failedActivityIds?.length) {
+      return NextResponse.json(
+        {
+          success: false,
+          persisted: result.persisted,
+          failedActivityIds: result.failedActivityIds,
+          conflictActivityIds: result.conflictActivityIds,
+          error: result.error + ' — راجع failedActivityIds',
+        },
+        { status: 207 }
+      );
+    }
+    if (!result.success) {
+      return NextResponse.json({ error: safeErrorResponse(new Error(result.error), 'project evaluate/persist failed') }, { status: 500 });
     }
 
-    // نقطة الكتابة الوحيدة لـfinal_decisions — راجع تعليق persistFinalDecisions
-    // في dustEvaluation.ts: يحسم القرار النهائي (decideFinal) مرة واحدة هنا
-    // فقط، بدل إعادة حسابه بمعزل في كل مسار عرض (البانر/الخريطة/التنبيهات).
-    await persistFinalDecisions(supabaseAdmin, projectId, dustResults, dustComplianceResults);
-
-    return NextResponse.json({ success: true, persisted: dustResults.length });
+    return NextResponse.json({ success: true, persisted: result.persisted });
   } catch (error) {
     return NextResponse.json({ error: safeErrorResponse(error, 'project evaluate/persist failed') }, { status: 500 });
   }

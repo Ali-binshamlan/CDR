@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { displayActivityLabel } from '@/app/lib/activityLabels';
+import { riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 
 // أقصى مدى زمني نقبله عبر hours= — نفس سقف pm10-history/route.ts.
 const MAX_HOURS = 24 * 14; // أسبوعان
@@ -49,22 +50,38 @@ export async function GET(
     // لها في هذا الجدول أصلاً (لا فائدة من تضمينها).
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from('project_dust_profiles')
-      .select('id, activity_group_id, device_id, activity_type, regulatory_activity')
+      .select('id, activity_group_id, device_id, activity_type, regulatory_activity, planned_date, planned_time, duration_hours')
       .eq('project_id', projectId)
       .not('device_id', 'is', null);
     if (profilesError) {
       return NextResponse.json({ error: safeErrorResponse(profilesError, 'device-readings-history profiles fetch failed') }, { status: 500 });
     }
 
+    // خطأ مكتشَف ومُصلَح (نفس الجهاز يُستخدَم لأكثر من نشاط متتالٍ فيرث
+    // النشاط الجديد قراءات النشاط القديم كاملة): windowStartMs/windowEndMs
+    // يحصران قراءات الجهاز المضمومة لكل نشاط ضمن نافذته الفعلية فقط (من
+    // planned_date/planned_time وحتى planned_start+duration_hours، أو الآن
+    // إن كان لا يزال جارياً) — بنفس startIso المستخدَم في computeDustResults
+    // (dustEvaluation.ts) لحساب DVI لهذا النشاط بالضبط.
     const groups = new Map<
       string,
-      { activityGroupId: string; label: string; deviceIds: Set<string> }
+      { activityGroupId: string; label: string; deviceIds: Set<string>; windowStartMs: number | null; windowEndMs: number }
     >();
     for (const row of profiles || []) {
       const groupId = row.activity_group_id || `dust-${row.id}`;
       let g = groups.get(groupId);
       if (!g) {
-        g = { activityGroupId: groupId, label: displayActivityLabel(row), deviceIds: new Set() };
+        const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
+        const startMs = startIso ? new Date(startIso).getTime() : null;
+        const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
+        const endMs = startMs !== null ? startMs + durationHours * 3600000 : Date.now();
+        g = {
+          activityGroupId: groupId,
+          label: displayActivityLabel(row),
+          deviceIds: new Set(),
+          windowStartMs: startMs,
+          windowEndMs: Math.max(endMs, Date.now()),
+        };
         groups.set(groupId, g);
       }
       if (row.device_id) g.deviceIds.add(row.device_id);
@@ -105,6 +122,14 @@ export async function GET(
       .map((g) => {
         const points = Array.from(g.deviceIds)
           .flatMap((deviceId) => readingsByDevice.get(deviceId) ?? [])
+          // قراءة الجهاز تُضم لهذا النشاط فقط إن وقعت ضمن نافذته الفعلية —
+          // راجع تعليق windowStartMs أعلاه لمنع نشاط جديد من وراثة قراءات
+          // نشاط قديم انتهى على نفس الجهاز.
+          .filter((p) => {
+            const recordedMs = new Date(p.time).getTime();
+            if (g.windowStartMs !== null && recordedMs < g.windowStartMs) return false;
+            return recordedMs <= g.windowEndMs;
+          })
           .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
         return {
           activityGroupId: g.activityGroupId,

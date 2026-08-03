@@ -25,7 +25,6 @@ interface DustStepProps {
   updateRegulatoryActivityField: (itemId: string, field: keyof RegulatoryActivityFields, value: any) => void;
   updateRegulatoryActivityLocation: (itemId: string, lat: number | null, lng: number | null) => void;
   projectDevices: ProjectDeviceLite[];
-  updateRegulatoryActivityDevice: (itemId: string, deviceId: string | null) => void;
   updateRegulatoryActivityTiming: (itemId: string, field: 'startDate' | 'endDate' | 'customStartTime' | 'customEndTime', value: string) => void;
   updateRegulatoryActivityTimingMode: (itemId: string, timingMode: 'shift' | 'custom') => void;
   updateRegulatoryActivityShift: (itemId: string, shiftId: string | null) => void;
@@ -137,7 +136,7 @@ export function DustStep({
   dustForm, updateDustField, dustLoading, onSubmit,
   regulatoryActivities, expandedActivityIds, toggleRegulatoryActivityExpanded, removeRegulatoryActivity,
   updateRegulatoryActivityField, updateRegulatoryActivityLocation, updateRegulatoryActivityTiming, updateRegulatoryActivityTimingMode, updateRegulatoryActivityShift,
-  projectDevices, updateRegulatoryActivityDevice,
+  projectDevices,
   updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
   updateIdleSurfaceUnit, addIdleSurfaceUnit, removeIdleSurfaceUnit,
   updateCrusherUnit, addCrusherUnit, removeCrusherUnit,
@@ -691,37 +690,36 @@ export function DustStep({
                       )}
 
                       {/* محطة الرصد التي ستؤخذ منها قراءات هذا النشاط تحديداً —
-                          اختيارية: من لا يختار محطة يأخذ النشاط قراءاته من
-                          API الطقس (Open-Meteo) بدل الجهاز تلقائياً، بنفس
-                          أولوية جهاز > API > يدوي المعتادة (راجع
-                          resolveFreshProjectDevice في app/lib/dustEvaluation.ts).
-                          تُقترح أقرب محطة نشطة تلقائياً عند تحديد موقع
-                          النشاط (updateRegulatoryActivityLocation)، وتبقى
-                          قابلة للتغيير أو الإلغاء يدوياً هنا. */}
+                          ترتبط تلقائياً بأقرب محطة نشطة لموقع النشاط حسب
+                          الإحداثيات (لا اختيار يدوي، طلب صريح من المستخدم) —
+                          الحساب الملزم الفعلي يتم على السيرفر عند الحفظ
+                          (resolveNearestActiveDeviceId في app/api/dust-profiles/
+                          route.ts)، وهذا العرض توضيحي فقط لنفس النتيجة
+                          المتوقعة (item.deviceId يُحسَب محلياً بنفس الخوارزمية
+                          عند تحديد الموقع، راجع findNearestActiveDeviceId في
+                          index.tsx). لا محطة نشطة قريبة → النشاط يعتمد على
+                          API الطقس (Open-Meteo) بدل الجهاز تلقائياً. */}
                       {projectDevices.length > 0 && (
                         <div>
-                          <label className={labelClass}>محطة الرصد (مصدر القراءات) — اختياري</label>
-                          <select
-                            value={item.deviceId ?? ''}
-                            onChange={(e) => updateRegulatoryActivityDevice(item.id, e.target.value || null)}
-                            className={getInputClass(false)}
-                          >
-                            <option value="">بلا محطة — استخدم API الطقس</option>
-                            {projectDevices.map((d) => {
-                              const distanceLabel =
-                                typeof item.lat === 'number' &&
-                                typeof item.lng === 'number' &&
-                                typeof d.lat === 'number' &&
-                                typeof d.lng === 'number'
-                                  ? ` — ${Math.round(haversineDistanceM({ lat: item.lat, lng: item.lng }, { lat: d.lat, lng: d.lng }))} م`
-                                  : '';
-                              return (
-                                <option key={d.id} value={d.id} disabled={!d.is_active}>
-                                  {d.name}{!d.is_active ? ' (معطّلة)' : ''}{distanceLabel}
-                                </option>
-                              );
-                            })}
-                          </select>
+                          <label className={labelClass}>محطة الرصد (مصدر القراءات)</label>
+                          {(() => {
+                            const linkedDevice = projectDevices.find((d) => d.id === item.deviceId);
+                            const distanceLabel =
+                              linkedDevice &&
+                              typeof item.lat === 'number' &&
+                              typeof item.lng === 'number' &&
+                              typeof linkedDevice.lat === 'number' &&
+                              typeof linkedDevice.lng === 'number'
+                                ? ` — ${Math.round(haversineDistanceM({ lat: item.lat, lng: item.lng }, { lat: linkedDevice.lat, lng: linkedDevice.lng }))} م`
+                                : '';
+                            return (
+                              <p className={`${getInputClass(false)} !bg-slate-50 text-slate-600`}>
+                                {linkedDevice
+                                  ? `${linkedDevice.name}${distanceLabel} (أقرب محطة نشطة — ترتبط تلقائياً)`
+                                  : 'لا توجد محطة نشطة قريبة — سيعتمد النشاط على API الطقس (Open-Meteo)'}
+                              </p>
+                            );
+                          })()}
                         </div>
                       )}
 

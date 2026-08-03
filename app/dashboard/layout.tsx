@@ -9,9 +9,10 @@ import Sidebar from '../components/dashborad/Sidebar';
 // كل كم دقيقة نعيد فحص التنبيهات (BEFORE_2H/1H/START تعتمد على الوقت
 // المتبقي للنشاط، الذي يتغيّر باستمرار — توليد لمرة واحدة عند الدخول لا
 // يكفي لالتقاطها في وقتها الصحيح إن بقي المستخدم بنفس الجلسة لفترة طويلة).
-// دقيقتان (لا 5) لتطابق دورة إرسال الجهاز الفعلية بعد إصلاح خوارزمية
-// استمرار PM10 — راجع computeSustainedPm10Status في dustEvaluation.ts.
-const ALERTS_POLL_INTERVAL_MS = 2 * 60 * 1000;
+// دقيقة واحدة (طلب صريح: تحديث لايف كل دقيقة بدل دقيقتين بكل نظام الواجهة) —
+// لا علاقة لهذا الفاصل بـPM10_VIOLATION_CONFIRM_MINUTES (قاعدة تنظيمية
+// ثابتة في dustEvaluation.ts، لم تتغيّر ولا يجوز تغييرها هنا).
+const ALERTS_POLL_INTERVAL_MS = 60 * 1000;
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();

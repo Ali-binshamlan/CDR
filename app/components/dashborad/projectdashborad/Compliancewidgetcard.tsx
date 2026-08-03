@@ -241,17 +241,29 @@ const DEVICE_READING_STALENESS_MINUTES = 20;
 const PM10_VIOLATION_CONFIRM_MINUTES = 2;
 const PM10_SUSPENSION_MINUTES = 30;
 
+// نفس PM10_LAST_READING_FRESHNESS_MINUTES في app/lib/dustEvaluation.ts —
+// العتبة التي يستخدمها الخادم فعلياً ليقرر isLatestReadingFresh (شرط لازم
+// لتأكيد المخالفة، راجع isConfirmedViolation340 هناك). مكرَّرة عمداً هنا
+// بنفس القيمة (لا استيراد مباشر بين واجهة/خادم، نفس اتفاقية DEVICE_READING_
+// STALENESS_MINUTES أعلاه) لتمييز حالة "الجهاز توقف عن الإرسال فعلياً" عن
+// حالة "لا تزال القراءة حديثة والاستمرار قيد التراكم الطبيعي" — بلا هذا
+// التمييز، عدّاد "متبقٍ حتى التأكيد" يستمر بالعد التنازلي بثقة كاملة حتى لو
+// توقف الجهاز عن الإرسال منذ دقائق، موحياً بأن التأكيد لا يزال يتقدم فعلياً
+// بينما هو متجمّد فعلياً بانتظار قراءة جديدة لن تصل.
+const PM10_LAST_READING_FRESHNESS_MINUTES = 4;
+
 // عدّاد تنازلي حي لمصداقية القرار — يوضّح للمستخدم "متبقٍ كذا" بدل انتظار
 // التقييم التالي بصمت ليعرف النتيجة. sustainedMinutes هو لقطة (snapshot) من
-// آخر تقييم خادمي (كل دقيقتين، راجع DASHBOARD_POLL_INTERVAL_MS في صفحة
+// آخر تقييم خادمي — يصل فورياً عبر Realtime عند كل قرار جديد، مع polling
+// احتياطي كل 10 دقائق كشبكة أمان (راجع DASHBOARD_POLL_INTERVAL_MS في صفحة
 // تفاصيل المشروع)؛ نُضيف لها محلياً الزمن المنقضي فعلياً منذ لحظة تلك
 // اللقطة (asOfMs) حتى يبقى العدّاد دقيقاً بين تحديثين، لا يقفز أو يتجمّد.
 //
 // onElapsed (اختياري): يُستدعى مرة واحدة بالضبط في لحظة وصول العدّاد للصفر
 // فعلياً — عبر setTimeout مجدوَل بدقة على المدة المتبقية الحقيقية، لا عبر
 // انتظار دورة polling التالية. هذا هو ما يجعل تحديث القرار "فور انتهاء
-// الوقت" بدل تأخير عشوائي قد يصل دقيقتين كاملتين لو صادف انتهاء العدّاد
-// مباشرة بعد آخر دورة تحديث.
+// الوقت" بدل تأخير عشوائي قد يصل عدة دقائق لو صادف انتهاء العدّاد مباشرة
+// بعد آخر دورة تحديث.
 function useCountdownRemainingSeconds(
   sustainedMinutes: number | undefined,
   targetMinutes: number,
@@ -286,13 +298,6 @@ function useCountdownRemainingSeconds(
   const sustainedSecondsNow = sustainedMinutes * 60 + elapsedSinceSnapshotSec;
   const remainingSec = targetMinutes * 60 - sustainedSecondsNow;
   return Math.max(0, Math.round(remainingSec));
-}
-
-function formatCountdownAr(totalSeconds: number): string {
-  const mins = Math.floor(totalSeconds / 60);
-  const secs = totalSeconds % 60;
-  if (mins === 0) return `${secs} ثانية`;
-  return `${mins}:${String(secs).padStart(2, '0')} دقيقة`;
 }
 
 // نفس منطق formatRelativeAr المستخدم في MultiIndicatorActivityBox.tsx —
@@ -454,14 +459,23 @@ export default function ComplianceWidgetCard({
   );
   const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
 
-  // لحظة استلام لقطة sustainedMinutes الحالية — يجب أن تتحدّث مع كل تحديث
-  // فعلي للبيانات من الأب (كل دقيقتين عبر polling)، لا أن تبقى ثابتة من أول
-  // عرض للمكوّن، وإلا يُحسب "الزمن المنقضي منذ اللقطة" بمرجع قديم خاطئ بعد
-  // أول تحديث. نستخدم useMemo مربوطاً بقيمتَي sustainedMinutes أنفسهما
-  // (لا مصفوفة تبعيات فارغة) حتى يُعاد ضبط المرجع بالضبط عند وصول لقطة جديدة.
+  // لحظة حساب الخادم الفعلية لـsustainedMinutes أعلاه — لا Date.now() محلي.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "ليش التايمر ينعاد إذا سويت تحديث
+  // للصفحة"): كانت هذه اللحظة تُشتق من useMemo(() => Date.now(), ...) —
+  // أي "وقت أول عرض للمكوّن في المتصفح"، لا وقت حساب الخادم الفعلي. أثناء
+  // التحديث الدوري (polling) الفارق ضئيل فيمر بلا ملاحظة، لكن عند إعادة
+  // تحميل الصفحة يدوياً (المكوّن يُعاد بناؤه بالكامل، فوقت "أول عرض" يصبح
+  // وقت اكتمال تحميل الصفحة في المتصفح — قد يتأخر ثوانٍ عن حساب الخادم
+  // الفعلي)، يظهر العدّاد وكأنه أعاد ضبط نفسه رغم أن الاستمرار الفعلي على
+  // الخادم لم ينقطع. worst.evaluatedAt (من dust-compliance-engine/engine.ts)
+  // هو المرجع الصحيح دائماً — نفس اللحظة بصرف النظر عن توقيت عرضه بالمتصفح.
   const sustained340 = worst?.pm10SustainedMinutesAbove340;
   const sustained250 = worst?.pm10SustainedMinutesAbove250;
-  const snapshotAtMs = useMemo(() => Date.now(), [sustained340, sustained250]);
+  const snapshotAtMs = useMemo(
+    () => (worst?.evaluatedAt ? new Date(worst.evaluatedAt).getTime() : Date.now()),
+    [worst?.evaluatedAt]
+  );
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
   // للمرجع"): كان pm10RulesExempt (محطة خلط بصوامع مغلقة + فلتر ≥99%) يُخفي
@@ -482,12 +496,36 @@ export default function ComplianceWidgetCard({
   // الوحيدة هنا، لا إعادة اشتقاق شرط "هل يوجد جهاز؟" محلياً في هذا المكوّن.
   const isAwaitingVerification = aei?.isHoldForVerification === true;
 
+  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "هل هذا منطقي؟" حول تعليق الجهاز
+  // لدقائق قليلة أثناء pendingConfirmation): بين لحظة توقف الجهاز عن
+  // الإرسال ولحظة تصنيف evidenceQuality=STALE فعلياً (20 دقيقة، راجع
+  // DEVICE_READING_STALENESS_MINUTES/isAwaitingVerification أعلاه)، توجد
+  // فجوة (4-20 دقيقة) يبقى فيها pendingConfirmation=true من الخادم (آخر
+  // قراءة معروفة لا تزال ضمن نافذة "حديثة" حسب isLatestReadingFresh هناك)
+  // لكن بلا أي قراءة جديدة تصل فعلياً — العدّاد كان يستمر بالعد التنازلي
+  // بثقة كاملة موحياً بأن التأكيد "يتقدم" رغم أن الجهاز متوقف فعلياً ولن
+  // تصل قراءة جديدة تثبت الاستمرار. isDeviceStalledDuringPending يميّز هذه
+  // الحالة تحديداً: قراءة PM10 الأخيرة أقدم من عتبة الحداثة نفسها التي
+  // يعتمدها الخادم (PM10_LAST_READING_FRESHNESS_MINUTES) لكن لم تصل بعد لحد
+  // STALE الكامل — نطاق ضيق لكنه حقيقي.
+  const devicePm10LastReadingAt = worst?.evidence?.devicePm10LastReadingAt;
+  const isDeviceStalledDuringPending =
+    !isEnded &&
+    !isAwaitingVerification &&
+    worst?.pendingConfirmation === true &&
+    devicePm10LastReadingAt !== undefined &&
+    devicePm10LastReadingAt !== null &&
+    (Date.now() - new Date(devicePm10LastReadingAt).getTime()) / 60000 > PM10_LAST_READING_FRESHNESS_MINUTES;
+
   // عدّاد "متبقٍ حتى تتأكد المخالفة" — يظهر فقط أثناء pendingConfirmation
-  // (القراءة ≥340 لكن لم تستمر بعد دقيقتين). onElapsed يطلب إعادة تقييم
-  // فورية من الخادم بالضبط عند انتهاء المهلة (لا انتظار دورة polling
-  // التالية)، فينعكس القرار الفعلي (مؤكَّد أو ALLOW) في أقرب وقت ممكن.
+  // (القراءة ≥340 لكن لم تستمر بعد دقيقتين) وطالما لا يزال الجهاز يرسل
+  // قراءات حديثة فعلياً (لا isDeviceStalledDuringPending). onElapsed يطلب
+  // إعادة تقييم فورية من الخادم بالضبط عند انتهاء المهلة (لا انتظار دورة
+  // polling التالية)، فينعكس القرار الفعلي (مؤكَّد أو ALLOW) في أقرب وقت ممكن.
   const confirmRemainingSec = useCountdownRemainingSeconds(
-    !isEnded && !isAwaitingVerification && worst?.pendingConfirmation ? sustained340 : undefined,
+    !isEnded && !isAwaitingVerification && !isDeviceStalledDuringPending && worst?.pendingConfirmation
+      ? sustained340
+      : undefined,
     PM10_VIOLATION_CONFIRM_MINUTES,
     snapshotAtMs,
     onCountdownElapsed
@@ -496,8 +534,17 @@ export default function ComplianceWidgetCard({
   // عدّاد "متبقٍ حتى تعليق النشاط" — يظهر عندما تكون القراءة ≥250 مستمرة
   // (استمرار فعلي مسجَّل) لكن لم تصل بعد 30 دقيقة، والقرار الحالي ليس
   // إيقافاً/تعليقاً مؤكَّداً أصلاً (لا فائدة من عدّاد لحالة موقوفة بالفعل).
-  const alreadyStopped =
-    worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
+  //
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-01: "Rulebook ما
+  // زال يصدر القرار"): كان الفحص يعتمد حصراً على worst.decisionCategory
+  // الخام (نتيجة Rulebook الوسيطة) بدل القرار النهائي المُجمَّع (FinalDecision،
+  // عبر aei.closedByGate الذي يعكس FinalDecision.mandatoryStop فعلياً —
+  // راجع applyFinalDecisionToAei في dustEvaluation.ts). aei "مضمون توفره
+  // عملياً" هنا (نفس افتراض aeiStyle أعلاه)، فيبقى fallback على
+  // worst?.decisionCategory فقط لحالة نظرية غير متوقعة (aei غائب).
+  const alreadyStopped = aei
+    ? aei.closedByGate
+    : worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
   const showSuspensionCountdown =
     !isEnded &&
     !isAwaitingVerification &&
@@ -605,27 +652,40 @@ export default function ComplianceWidgetCard({
             </div>
           </div>
 
-          {/* عدّاد "متبقٍ حتى..." — لمصداقية القرار: يوضّح للمستخدم أن الحالة
-              مؤقتة وستتحدّث تلقائياً عند انقضاء الزمن، بدل قرار يبدو ثابتاً
-              بلا تفسير لتوقيته. لا يظهر إلا عند وجود بيانات استمرار فعلية
-              (worst.pm10SustainedMinutesAbove340/250 !== undefined). */}
-          {confirmRemainingSec !== null && (
-            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
-              <Timer className="w-4 h-4 text-red-600 shrink-0" />
-              <span className="text-[11px] font-bold text-red-700">
-                {confirmRemainingSec > 0
-                  ? <>متبقٍ <span dir="ltr">{formatCountdownAr(confirmRemainingSec)}</span> حتى تتأكد المخالفة (إن استمر التجاوز)</>
-                  : 'انتهت مهلة التأكيد — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+          {/* خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "اخفي التايمر لان
+              المستخدم اذا سوا تحديث للصفحه راح ينعاد من اول"): العدّاد
+              التنازلي كان يعتمد على asOfMs (لحظة مرجعية) وsustainedMinutes
+              (لقطة من الخادم) معاً لحساب "المتبقي" محلياً في المتصفح — حتى
+              بعد ربط asOfMs بـworst.evaluatedAt (وقت حساب الخادم الفعلي)،
+              ظل عرض عدّاد دقيق بالثانية عرضة لأي تفاوت توقيت بين لحظة تحديث
+              الصفحة ولحظة حساب الخادم، فيظهر للمستخدم وكأن الوقت "أعيد من
+              الأول" بينما الاستمرار الفعلي مستمر بلا انقطاع خلفياً. الحل:
+              استبدال العدّاد الدقيق بنص ثابت لا يعتمد على أي حساب توقيت
+              محلي — يخبر المستخدم أن هناك مراقبة استمرار جارية دون الإدعاء
+              برقم دقائق/ثوانٍ متبقية قد يتناقض ظاهرياً مع نفسه بين تحديثين.
+              القرار الفعلي (معلَّق/مؤكَّد) يبقى محسوباً بدقة كاملة في الخادم
+              كما هو، هذا يمس نص العرض فقط. */}
+          {isDeviceStalledDuringPending && (
+            <div className="flex items-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-orange-600 shrink-0" />
+              <span className="text-[11px] font-bold text-orange-700">
+                الجهاز لم يرسل قراءة جديدة منذ فترة — تأكيد المخالفة متوقف مؤقتاً بانتظار وصول قراءة حديثة
               </span>
             </div>
           )}
-          {confirmRemainingSec === null && suspensionRemainingSec !== null && (
+          {!isDeviceStalledDuringPending && worst?.pendingConfirmation && (
+            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-red-600 shrink-0" />
+              <span className="text-[11px] font-bold text-red-700">
+                جارٍ التحقق من استمرار التجاوز — سيتأكد القرار تلقائياً (إيقاف إلزامي أو عودة آمنة) إن استمر التجاوز
+              </span>
+            </div>
+          )}
+          {!worst?.pendingConfirmation && showSuspensionCountdown && (
             <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-amber-600 shrink-0" />
               <span className="text-[11px] font-bold text-amber-700">
-                {suspensionRemainingSec > 0
-                  ? <>متبقٍ <span dir="ltr">{formatCountdownAr(suspensionRemainingSec)}</span> حتى تعليق النشاط (إن استمرت القراءة ≥250)</>
-                  : 'انتهت مهلة الـ30 دقيقة — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+                جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز
               </span>
             </div>
           )}
@@ -832,26 +892,31 @@ export default function ComplianceWidgetCard({
                 <ActivityReadingsCharts projectId={projectId} activityGroupId={activityGroupId} />
               </div>
 
-              {/* نفس عدّاد "متبقٍ حتى..." المعروض في البطاقة المطوية، مكرَّر
-                  هنا لأن المستخدم قد يفتح التفاصيل الكاملة مباشرة بلا مرور
-                  بالبطاقة المصغّرة. */}
-              {confirmRemainingSec !== null && (
-                <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
-                  <Timer className="w-5 h-5 text-red-600 shrink-0" />
-                  <span className="text-[13px] font-bold text-red-700">
-                    {confirmRemainingSec > 0
-                      ? <>متبقٍ <span dir="ltr">{formatCountdownAr(confirmRemainingSec)}</span> حتى تتأكد المخالفة (إن استمر التجاوز)</>
-                      : 'انتهت مهلة التأكيد — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+              {/* نفس نص "جارٍ التحقق..." الثابت المعروض في البطاقة المطوية
+                  (راجع تعليقه هناك — استُبدل العدّاد الدقيق بنص ثابت بطلب
+                  صريح من المستخدم)، مكرَّر هنا لأن المستخدم قد يفتح التفاصيل
+                  الكاملة مباشرة بلا مرور بالبطاقة المصغّرة. */}
+              {isDeviceStalledDuringPending && (
+                <div className="flex items-center gap-2 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3">
+                  <Timer className="w-5 h-5 text-orange-600 shrink-0" />
+                  <span className="text-[13px] font-bold text-orange-700">
+                    الجهاز لم يرسل قراءة جديدة منذ فترة — تأكيد المخالفة متوقف مؤقتاً بانتظار وصول قراءة حديثة
                   </span>
                 </div>
               )}
-              {confirmRemainingSec === null && suspensionRemainingSec !== null && (
+              {!isDeviceStalledDuringPending && worst?.pendingConfirmation && (
+                <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                  <Timer className="w-5 h-5 text-red-600 shrink-0" />
+                  <span className="text-[13px] font-bold text-red-700">
+                    جارٍ التحقق من استمرار التجاوز — سيتأكد القرار تلقائياً (إيقاف إلزامي أو عودة آمنة) إن استمر التجاوز
+                  </span>
+                </div>
+              )}
+              {!worst?.pendingConfirmation && showSuspensionCountdown && (
                 <div className="flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
                   <Timer className="w-5 h-5 text-amber-600 shrink-0" />
                   <span className="text-[13px] font-bold text-amber-700">
-                    {suspensionRemainingSec > 0
-                      ? <>متبقٍ <span dir="ltr">{formatCountdownAr(suspensionRemainingSec)}</span> حتى تعليق النشاط (إن استمرت القراءة ≥250)</>
-                      : 'انتهت مهلة الـ30 دقيقة — سيتحدّث القرار تلقائياً خلال دقيقتين'}
+                    جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز
                   </span>
                 </div>
               )}

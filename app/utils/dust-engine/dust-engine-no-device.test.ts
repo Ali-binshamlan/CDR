@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { evaluateDustVisibilityWindow } from './engine';
+import { __clearWeatherCacheForTests } from './weather';
 import type { DustEngineInput } from './types';
 
 // =====================================================================
@@ -53,6 +54,7 @@ function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  __clearWeatherCacheForTests();
 });
 
 describe('evaluateDustVisibilityWindow — لا استدعاء API إطلاقاً لنشاط بلا جهاز رصد', () => {

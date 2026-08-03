@@ -13,15 +13,15 @@ import { apiClient } from '@/app/lib/apiClient';
 // (PM10_PRECAUTION_UG_M3/PM10_WARNING_UG_M3/PM10_EARLY_WARNING_UG_M3/
 // PM10_VIOLATION_STOP_UG_M3) — مكرَّرة عمداً هنا فقط لرسم خطوط مرجعية على
 // الرسم البياني، بلا أي تأثير على القرار الفعلي (المحسوب حصراً بالخادم).
-const PM10_PRECAUTION_UG_M3 = 150;
-const PM10_WARNING_UG_M3 = 250;
-const PM10_EARLY_WARNING_UG_M3 = 300;
+const PM10_PRECAUTION_UG_M3 = 201;
+const PM10_WARNING_UG_M3 = 251;
+const PM10_EARLY_WARNING_UG_M3 = 301;
 const PM10_VIOLATION_STOP_UG_M3 = 340;
 
-// دورة التحديث التلقائي — تطابق دورة إرسال الجهاز التصميمية (دقيقتان)
-// ودورة polling صفحة تفاصيل المشروع، حتى يبقى الرسم البياني حياً بلا
-// حاجة لريفريش يدوي أثناء بقاء المستخدم بالصفحة.
-const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+// دورة التحديث التلقائي — دقيقة واحدة (طلب صريح: تحديث لايف كل دقيقة بدل
+// دقيقتين بكل نظام الواجهة)، حتى يبقى الرسم البياني حياً بلا حاجة لريفريش
+// يدوي أثناء بقاء المستخدم بالصفحة.
+const REFRESH_INTERVAL_MS = 60 * 1000;
 
 // نطاقات زمنية جاهزة للاختيار — 6 ساعات افتراضياً (كافية لمتابعة نوبة عمل
 // واحدة)، مع خيار يوم/3 أيام/أسبوع للمراجعة الرجعية.
@@ -145,7 +145,7 @@ export default function ProjectReadingsPage({
               <Gauge className="w-6 h-6 text-[#3995FF]" /> سجل قراءات PM10 لكل نشاط
             </h1>
             <p className="text-sm font-bold text-slate-500">
-              كل نقطة تمثّل قراءة فعلية مسجَّلة — يتحدّث تلقائياً كل دقيقتين
+              كل نقطة تمثّل قراءة فعلية مسجَّلة — يتحدّث تلقائياً كل دقيقة
             </p>
           </div>
           <Link
@@ -256,9 +256,9 @@ export default function ProjectReadingsPage({
 
                       {/* خطوط مرجعية للعتبات التنظيمية — إعلامية بحتة، لا تُغيّر
                           أي بيانات، فقط توضّح أين تقع القراءات نسبةً للحدود. */}
-                      <ReferenceLine y={PM10_PRECAUTION_UG_M3} stroke="#EAB308" strokeDasharray="4 4" label={{ value: 'احتراز 150', position: 'insideTopLeft', fontSize: 10, fill: '#CA8A04' }} />
-                      <ReferenceLine y={PM10_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: 'تحذير 250', position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
-                      <ReferenceLine y={PM10_EARLY_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: 'استباقي 300', position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
+                      <ReferenceLine y={PM10_PRECAUTION_UG_M3} stroke="#EAB308" strokeDasharray="4 4" label={{ value: 'احتراز 201', position: 'insideTopLeft', fontSize: 10, fill: '#CA8A04' }} />
+                      <ReferenceLine y={PM10_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: 'تحذير 251', position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
+                      <ReferenceLine y={PM10_EARLY_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: 'استباقي 301', position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
                       <ReferenceLine y={PM10_VIOLATION_STOP_UG_M3} stroke="#EF4444" strokeDasharray="4 4" label={{ value: 'مخالفة 340', position: 'insideTopLeft', fontSize: 10, fill: '#DC2626' }} />
 
                       {activities.map((a, idx) => (

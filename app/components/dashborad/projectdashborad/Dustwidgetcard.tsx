@@ -262,21 +262,20 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
 
   // قد يحمل النشاط الواحد أكثر من صف امتثال عند تعدد وحداته الفعلية (عدة
   // محطات خلط/كسارات ضمن نفس النشاط) — كل عنصر في complianceList له قرار
-  // امتثال مستقل تماماً عن DVI أعلاه. اعتماد التنفيذ يُمنع إن أوقف أي واحد
-  // منها النشاط (إيقاف إلزامي أو إيقاف النشاط المتأثر)، بصرف النظر عن البقية.
+  // امتثال مستقل تماماً عن DVI أعلاه. يُستخدم complianceEntries هنا فقط
+  // للعرض التفصيلي لكل وحدة على حدة (لا قرار موحَّد لكل وحدة في FinalDecision).
   const complianceEntries = (complianceList ?? []).filter(Boolean);
-  const complianceBlocksApproval = complianceEntries.some(
-    (c) => c.decisionCategory === 'MANDATORY_STOP' || c.decisionCategory === 'STOP_AFFECTED_ACTIVITY'
-  );
 
-  // لون/حالة البطاقة يجب أن يعكسا الإيقاف الأشد بين المحركين معاً، لا DVI
-  // وحده — وإلا يمكن أن تظهر هذه البطاقة "مسموح" (أخضر) بينما الامتثال
-  // التنظيمي يوقف النشاط فعلياً (مثال: كسارة قريبة من سكني، لا علاقة له
-  // بحالة الجو). effectiveMandatoryStop/effectiveDecisionLabelAr يُستخدمان
-  // في كل مكان بالبطاقة بدل result.mandatoryStop/result.decisionLabelAr
-  // الخام مباشرة، بنفس مبدأ AEI في ComplianceWidgetCard (compliance يطغى).
-  const effectiveMandatoryStop = result.mandatoryStop || complianceBlocksApproval;
-  const effectiveDecisionLabelAr = complianceBlocksApproval ? 'إيقاف إلزامي نظامي' : result.decisionLabelAr;
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-01: "Rulebook ما
+  // زال يصدر القرار"): كان complianceBlocksApproval يعيد اشتقاق "هل الامتثال
+  // يوقف النشاط؟" يدوياً هنا من decisionCategory الخام (نتيجة Rulebook
+  // الوسيطة) — نسخة ثالثة موازية لنفس منطق decideFinal.mandatoryStop، بعد أن
+  // أُصلح هذا النمط بالضبط في كل مكان آخر (البانر، بطاقة AEI، مولّد
+  // التنبيهات) إلا هنا. aei.closedByGate يعكس FinalDecision.mandatoryStop
+  // فعلياً (عبر applyFinalDecisionToAei في dustEvaluation.ts)، وaei إلزامي
+  // (غير اختياري) في هذه البطاقة، فلا حاجة لأي fallback يدوي.
+  const effectiveMandatoryStop = aei.closedByGate;
+  const effectiveDecisionLabelAr = effectiveMandatoryStop ? 'إيقاف إلزامي نظامي' : result.decisionLabelAr;
   const style = getDecisionStyle(result.decisionCategory, effectiveMandatoryStop);
   const aeiStyle = getAeiStyle(aei.color);
   
@@ -473,7 +472,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
             لو كانت توصية مرقاب (DVI) الفيزيائية أدناه تبدو آمنة، لتفادي أي
             انطباع بالتناقض بين البطاقتين (المعيارين مختلفان: DVI فيزيائي
             عام، والامتثال قواعد تنظيمية أشد لأنشطة محددة). */}
-        {complianceBlocksApproval && (
+        {effectiveMandatoryStop && (
           <div className="bg-slate-900 text-white text-[10px] font-black px-4 py-1.5 flex items-center gap-2">
             <Scale className="w-3.5 h-3.5" />
             الامتثال التنظيمي يوقف هذا النشاط — القرار الملزم رغم أي توصية أخرى أدناه
@@ -697,7 +696,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                       <ShieldAlert className="w-3.5 h-3.5" /> توصية إلزاميّة — يرجى الالتزام
                     </div>
                   )}
-                  {complianceBlocksApproval && (
+                  {effectiveMandatoryStop && (
                     <div className="bg-slate-900 text-white p-2 rounded-lg text-[11px] font-bold mt-2 text-center flex items-center justify-center gap-1.5">
                       <Scale className="w-3.5 h-3.5" /> هذه توصية فيزيائية عامة فقط — الامتثال التنظيمي أدناه أشد ويوقف النشاط فعلياً
                     </div>
@@ -715,7 +714,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                       result.triggeredRules.map((rule, idx) => (
                         <li key={idx} className="font-medium">{DUST_RULES_TRANSLATIONS[rule] || rule}</li>
                       ))
-                    ) : complianceBlocksApproval ? (
+                    ) : effectiveMandatoryStop ? (
                       <li className="font-medium text-slate-800">
                         لا توجد قواعد DVI فيزيائية مفعّلة — لكن النشاط موقوف فعلياً بسبب قواعد الامتثال التنظيمي أدناه (انظر قسم "الامتثال التنظيمي").
                       </li>
@@ -732,7 +731,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                   <ul className="list-disc list-inside space-y-2 text-[13px] text-slate-600 leading-relaxed">
                     {result.requiredActions.length > 0 ? (
                       result.requiredActions.map((action, idx) => <li key={idx} className="font-medium">{action}</li>)
-                    ) : complianceBlocksApproval ? (
+                    ) : effectiveMandatoryStop ? (
                       <li className="font-medium text-slate-800">راجع قسم "الامتثال التنظيمي" أدناه لشروط الاستئناف المطلوبة لرفع الإيقاف.</li>
                     ) : (
                       <li>لا توجد توصيات إضافية مطلوبة</li>
@@ -990,7 +989,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                     </div>
 
                     <div className="flex gap-2 w-full md:w-auto">
-                      {!result.mandatoryStop && !complianceBlocksApproval && (
+                      {!effectiveMandatoryStop && (
                         <button
                           disabled={isSaving}
                           onClick={() => saveDecision('safe')}
@@ -999,7 +998,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                           <CheckCircle2 className="w-4 h-4" /> اعتماد التنفيذ
                         </button>
                       )}
-                      {!result.mandatoryStop && !complianceBlocksApproval && (
+                      {!effectiveMandatoryStop && (
                         <button
                           disabled={isSaving}
                           onClick={() => saveDecision('caution')}

@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { displayActivityLabel } from '@/app/lib/activityLabels';
+import { riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 
 // أقصى مدى زمني نقبله عبر hours= — سقف بسيط يمنع طلباً يطلب سنوات من
 // السجل التاريخي دفعة واحدة (لا فائدة عملية، وحمل غير ضروري على القاعدة).
@@ -38,26 +39,43 @@ export async function GET(
     // مفيداً للمراجعة، والفلترة الزمنية لعرض الرسم تبقى مسؤولية hours= أعلاه.
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from('project_dust_profiles')
-      .select('id, activity_group_id, activity_type, regulatory_activity, device_id')
+      .select('id, activity_group_id, activity_type, regulatory_activity, device_id, planned_date, planned_time, duration_hours')
       .eq('project_id', projectId);
     if (profilesError) {
       return NextResponse.json({ error: safeErrorResponse(profilesError, 'pm10-history profiles fetch failed') }, { status: 500 });
     }
 
+    // خطأ مكتشَف ومُصلَح (نفس الجهاز يُستخدَم لأكثر من نشاط متتالٍ فيرث
+    // النشاط الجديد قراءات النشاط القديم كاملة): windowStartMs/windowEndMs
+    // يحصران قراءات الجهاز المدموجة لكل نشاط ضمن نافذته الفعلية فقط (من
+    // planned_date/planned_time وحتى planned_start+duration_hours، أو الآن
+    // إن كان لا يزال جارياً) — بنفس startIso المستخدَم في computeDustResults
+    // (dustEvaluation.ts) لحساب DVI لهذا النشاط بالضبط، فلا تعارض بين وقت
+    // "بداية النشاط" هنا وهناك.
+    //
     // مجموعة activity_group_id فريدة لكل نشاط حقيقي — نفس fallback المستخدم
     // في DELETE /api/activities (activity_group_id || `dust-${id}`), حتى
     // تتطابق مفاتيح التجميع مع ما يُسجَّل فعلياً في pm10_readings_history.
     const groups = new Map<
       string,
-      { activityGroupId: string; label: string; hasDeviceLink: boolean }
+      { activityGroupId: string; label: string; hasDeviceLink: boolean; windowStartMs: number | null; windowEndMs: number }
     >();
     for (const row of profiles || []) {
       const groupId = row.activity_group_id || `dust-${row.id}`;
       if (groups.has(groupId)) continue;
+      const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
+      const startMs = startIso ? new Date(startIso).getTime() : null;
+      const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
+      const endMs = startMs !== null ? startMs + durationHours * 3600000 : Date.now();
       groups.set(groupId, {
         activityGroupId: groupId,
         label: displayActivityLabel(row),
         hasDeviceLink: !!row.device_id,
+        windowStartMs: startMs,
+        // نشاط لا يزال جارياً (لم تنتهِ نافذته المخططة بعد) يقبل قراءات حتى
+        // الآن، لا حتى نهايته النظرية فقط — يبقى الرسم البياني حياً أثناء
+        // التنفيذ الفعلي بدل التوقف عند حد المدة المخطَّطة.
+        windowEndMs: Math.max(endMs, Date.now()),
       });
     }
 
@@ -90,6 +108,12 @@ export async function GET(
         if (!g.hasDeviceLink) continue;
         const arr = series.get(g.activityGroupId)!;
         for (const row of deviceReadings) {
+          const recordedMs = new Date(row.recorded_at).getTime();
+          // قراءة الجهاز تُضم لهذا النشاط فقط إن وقعت ضمن نافذته الفعلية
+          // (من بدايته المخططة وحتى نهايته/الآن) — راجع تعليق windowStartMs
+          // أعلاه لمنع نشاط جديد من وراثة قراءات نشاط قديم على نفس الجهاز.
+          if (g.windowStartMs !== null && recordedMs < g.windowStartMs) continue;
+          if (recordedMs > g.windowEndMs) continue;
           arr.push({ time: row.recorded_at, pm10: Number(row.pm10_ug_m3), source: row.source });
         }
         arr.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());

@@ -1,8 +1,9 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireDeviceApiKey } from '@/app/lib/apiAuth';
-import { safeErrorResponse } from '@/app/lib/apiError';
 import { checkRateLimit } from '@/app/lib/rateLimit';
+import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
+import { evaluateProject } from '@/app/lib/evaluateProject';
+import type { NormalizedReading } from '@/app/lib/providers/types';
 
 // حد معدّل الإرسال لكل جهاز — دورة الإرسال التصميمية دقيقتان، فـ30 طلباً
 // في الدقيقة هامش واسع جداً (يستوعب إعادة المحاولة والاختبار اليدوي عبر
@@ -16,10 +17,10 @@ const INGEST_WINDOW_MS = 60_000;
 // في الجسم؛ الهوية تُشتق من المفتاح حصراً (نفس مبدأ requireUserId)، فلا
 // يقدر جهاز أن "يدّعي" هوية جهاز آخر بإرسال معرّف مختلف.
 //
-// أسماء/وحدات الحقول مطابقة لـ DustWeatherSample (app/utils/dust-engine/
-// types.ts) لتفادي أي تحويل لاحقاً في مسار المحرك. كل حقل قياس اختياري
-// فردياً — جهاز قد يملك مستشعراً واحداً فقط (رياح فقط، أو PM فقط). الكتابة
-// جزئية: الحقول الغائبة من الحمولة تبقى بقيمتها المخزَّنة سابقاً، لا تُصفَّر.
+// منطق الكتابة الفعلي (تحقق القيم، تحديث project_devices، تسجيل
+// device_readings_history/pm10_readings_history) مُستخرَج إلى
+// app/lib/deviceReadingWriter.ts — مشترك مع مسار السحب الدوري
+// (app/api/cron/provider-pull/route.ts) لمحطات pull الخارجية.
 const MEASUREMENT_FIELDS = [
   'windSpeedKmh',
   'windGustKmh',
@@ -30,40 +31,6 @@ const MEASUREMENT_FIELDS = [
   'relativeHumidityPercent',
   'temperatureC',
 ] as const;
-
-const COLUMN_BY_FIELD: Record<(typeof MEASUREMENT_FIELDS)[number], string> = {
-  windSpeedKmh: 'last_wind_speed_kmh',
-  windGustKmh: 'last_wind_gust_kmh',
-  windDirectionDeg: 'last_wind_direction_deg',
-  pm10: 'last_pm10',
-  pm25: 'last_pm25',
-  visibilityM: 'last_visibility_m',
-  relativeHumidityPercent: 'last_relative_humidity_percent',
-  temperatureC: 'last_temperature_c',
-};
-
-function validateValue(field: (typeof MEASUREMENT_FIELDS)[number], value: unknown): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return `${field} يجب أن يكون رقماً`;
-  if (field === 'windDirectionDeg') {
-    if (value < 0 || value > 360) return 'windDirectionDeg يجب أن يكون بين 0 و360';
-    return null;
-  }
-  // نطاق رطوبة نسبية فيزيائي صارم (0-100%) — أي قيمة خارجه خطأ جهاز واضح،
-  // بنفس منطق windDirectionDeg أعلاه.
-  if (field === 'relativeHumidityPercent') {
-    if (value < 0 || value > 100) return 'relativeHumidityPercent يجب أن يكون بين 0 و100';
-    return null;
-  }
-  // نطاق حرارة معقول لمستشعر ميداني بموقع إنشاءات بالرياض: -20 إلى 70°م —
-  // يغطي أي ظرف واقعي محلياً + هامش أخطاء جهاز، بلا رفض قراءات صيف شديدة
-  // الحرارة حقيقية.
-  if (field === 'temperatureC') {
-    if (value < -20 || value > 70) return 'temperatureC يجب أن يكون بين -20 و70';
-    return null;
-  }
-  if (value < 0) return `${field} لا يمكن أن يكون سالباً`;
-  return null;
-}
 
 export async function POST(request: NextRequest) {
   const auth = await requireDeviceApiKey(request);
@@ -83,102 +50,93 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'جسم الطلب يجب أن يكون JSON صالحاً' }, { status: 400 });
   }
 
-  const updates: Record<string, unknown> = {};
+  // عقد حدث الجهاز (خطأ معماري مكتشَف ومُصلَح — مراجعة كود خبير خارجي —
+  // C-03: "عقد أحداث الجهاز غير منفذ"): eventId/sequence/observedAt جميعها
+  // اختيارية (أجهزة/سكربتات قديمة لا ترسلها بعد تستمر بالعمل بلا كسر
+  // توافقي)، لكن عند وجودها تُتحقَّق وتُستخدَم فعلياً بدل تجاهلها. راجع
+  // supabase/migrations/202607290005_device_event_contract.sql للأعمدة/القيد.
+  const rawEventId = (body as Record<string, unknown>).eventId;
+  if (rawEventId !== undefined && rawEventId !== null && typeof rawEventId !== 'string') {
+    return NextResponse.json({ error: 'eventId يجب أن يكون نصاً' }, { status: 400 });
+  }
+  const eventId = typeof rawEventId === 'string' && rawEventId.trim() ? rawEventId.trim() : null;
 
+  const rawSequence = (body as Record<string, unknown>).sequence;
+  if (rawSequence !== undefined && rawSequence !== null && (typeof rawSequence !== 'number' || !Number.isFinite(rawSequence))) {
+    return NextResponse.json({ error: 'sequence يجب أن يكون رقماً' }, { status: 400 });
+  }
+  const sequence = typeof rawSequence === 'number' ? rawSequence : null;
+
+  // observedAt: وقت رصد القراءة الفعلي من الجهاز نفسه، مستقل عن وقت وصول
+  // الخادم (receivedAt أدناه) — بلا هذا، جهاز يعيد إرسال حمولة قديمة محفوظة
+  // محلياً (بعد انقطاع اتصال) يُختم بوقت الآن، فيبدو وكأن القراءة القديمة
+  // "حديثة" فعلاً في حساب استمرار PM10 (computeSustainedPm10Status). نفس
+  // فحصي H-03.2 (رفض المستقبل) المطبَّقين على recordedAt في dustEvaluation.ts:
+  // قراءة بوقت مستقبلي أو أقدم من نافذة الاستمرار الزمنية القصوى (40 دقيقة،
+  // PM10_SUSPENSION_MINUTES+10) تُرفض صراحة بدل قبولها كدليل صالح.
+  const rawObservedAt = (body as Record<string, unknown>).observedAt;
+  let observedAtIso: string | null = null;
+  if (rawObservedAt !== undefined && rawObservedAt !== null) {
+    if (typeof rawObservedAt !== 'string') {
+      return NextResponse.json({ error: 'observedAt يجب أن يكون نصاً بصيغة ISO' }, { status: 400 });
+    }
+    const observedMs = new Date(rawObservedAt).getTime();
+    if (Number.isNaN(observedMs)) {
+      return NextResponse.json({ error: 'observedAt ليس تاريخاً صالحاً' }, { status: 400 });
+    }
+    const nowMs = Date.now();
+    const CLOCK_SKEW_TOLERANCE_MS = 2 * 60_000;
+    if (observedMs > nowMs + CLOCK_SKEW_TOLERANCE_MS) {
+      return NextResponse.json({ error: 'observedAt في المستقبل — تحقق من ساعة الجهاز' }, { status: 400 });
+    }
+    const MAX_OBSERVED_AGE_MS = 40 * 60_000;
+    if (observedMs < nowMs - MAX_OBSERVED_AGE_MS) {
+      return NextResponse.json({ error: 'observedAt قديم جداً — القراءة مرفوضة كدليل حالي' }, { status: 400 });
+    }
+    observedAtIso = new Date(observedMs).toISOString();
+  }
+
+  const reading: Partial<NormalizedReading> = {};
+  if (observedAtIso) reading.observedAtIso = observedAtIso;
   for (const field of MEASUREMENT_FIELDS) {
     const value = (body as Record<string, unknown>)[field];
     if (value === undefined || value === null) continue;
-    const validationError = validateValue(field, value);
-    if (validationError) {
-      return NextResponse.json({ error: validationError }, { status: 400 });
-    }
-    updates[COLUMN_BY_FIELD[field]] = value;
+    (reading as Record<string, unknown>)[field] = value;
   }
 
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json(
-      { error: 'يجب إرسال قيمة واحدة على الأقل من: ' + MEASUREMENT_FIELDS.join('، ') },
-      { status: 400 }
-    );
-  }
-
-  const receivedAt = new Date().toISOString();
-  updates.last_reading_at = receivedAt;
-  // خطأ مكتشَف ومُصلَح: last_reading_at وحده لا يكفي لمعرفة "متى آخر قراءة
-  // PM10 فعلية" — عمود مشترك لكل الحقول، فتحديث جزئي (حرارة فقط مثلاً) كان
-  // يجعل last_reading_at "حديثاً" رغم أن last_pm10 لم يتغيّر منذ زمن طويل،
-  // فيختفي تحذير قِدم PM10 زوراً. last_pm10_at يُحدَّث فقط عند وجود pm10
-  // فعلياً في هذه الحمولة تحديداً.
-  if (typeof updates.last_pm10 === 'number') {
-    updates.last_pm10_at = receivedAt;
-  }
-
-  const { error } = await supabaseAdmin
-    .from('project_devices')
-    .update(updates)
-    .eq('id', auth.deviceId);
-
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'devices/ingest update failed') }, { status: 500 });
-
-  // تسجيل القراءة الكاملة (كل الحقول الثمانية معاً، لا PM10 وحده) في السجل
-  // التاريخي العام device_readings_history — يُستخدم لرسم بياني تاريخي لكل
-  // عنصر قياس على حدة داخل بطاقة تفاصيل النشاط (طلب صريح من المستخدم:
-  // "مؤشر للقراءات حق النشاط، رسم بياني منفصل لكل عنصر"). منفصل تماماً عن
-  // pm10_readings_history أدناه (ذاك مخصَّص لحساب استمرار مخالفة PM10 تحديداً
-  // بمنطق صارم على مصدر/حداثة القراءة — لا يجوز خلط الغرضين في جدول واحد).
-  // يُسجَّل فقط لو وصل حقل قياس واحد على الأقل فعلياً في هذه الحمولة (Object.keys(updates)
-  // تحقق منه أعلاه بالفعل)، حتى لو كان حقلاً واحداً فقط (صف جزئي، بقية
-  // الأعمدة null — نفس فلسفة الكتابة الجزئية في project_devices).
-  const { error: fullHistoryError } = await supabaseAdmin.from('device_readings_history').insert({
-    project_id: auth.projectId,
-    device_id: auth.deviceId,
-    wind_speed_kmh: updates.last_wind_speed_kmh ?? null,
-    wind_gust_kmh: updates.last_wind_gust_kmh ?? null,
-    wind_direction_deg: updates.last_wind_direction_deg ?? null,
-    pm10_ug_m3: updates.last_pm10 ?? null,
-    pm25_ug_m3: updates.last_pm25 ?? null,
-    visibility_m: updates.last_visibility_m ?? null,
-    relative_humidity_percent: updates.last_relative_humidity_percent ?? null,
-    temperature_c: updates.last_temperature_c ?? null,
-    recorded_at: updates.last_reading_at,
+  const result = await writeDeviceReading({
+    deviceId: auth.deviceId,
+    projectId: auth.projectId,
+    reading,
+    externalEventId: eventId,
+    sequence,
   });
-  if (fullHistoryError) {
-    console.error('device_readings_history insert failed:', fullHistoryError.message);
+
+  if (!result.success) {
+    return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+  if (result.duplicate) {
+    return NextResponse.json({ success: true, duplicate: true, receivedAt: new Date().toISOString() });
   }
 
-  // تسجيل PM10 في السجل التاريخي المنفصل (pm10_readings_history) — يُستخدم
-  // لاحقاً لحساب استمرار القراءة عبر الزمن (RCRC-PM10-340-VIOLATION-011:
-  // أكثر من دقيقتين، RCRC-PM10-30M-SUSPENSION-012: 30 دقيقة)، بمعزل عن
-  // توقيت تقييمات dust_compliance_evaluations المتقطّع. project_id فقط
-  // (لا activity_group_id) لأن الجهاز مرتبط بالمشروع ككل، لا نشاط محدد —
-  // راجع computeSustainedPm10 في app/lib/dustEvaluation.ts.
-  //
-  // خطأ مكتشَف ومُصلَح: كان عمود activity_group_id لا يزال not null بقاعدة
-  // البيانات (راجع supabase-fix-pm10-history-nullable-activity-group-
-  // migration.sql) رغم أن هذا الإدراج يمرّره null دائماً عمداً — فكان كل
-  // إدراج قراءة جهاز يفشل بصمت منذ البداية (بلا فحص error هنا)، فلا تصل
-  // أي قراءة جهاز لهذا الجدول إطلاقاً مهما استمر التجاوز، ولا يمكن لأي
-  // قراءة جهاز الوصول لحالة "مخالفة مؤكدة" أبداً. الآن نسجّل الخطأ (لو
-  // تكرر بسبب مشكلة أخرى مستقبلاً) بدل ابتلاعه صامتاً — لا نُسقِط الاستجابة
-  // الناجحة بسببه (تحديث project_devices نجح فعلاً، وهو الأهم للمستخدم).
-  if (typeof updates.last_pm10 === 'number') {
-    // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — ملاحظة #4): كان الإدراج يسجّل
-    // project_id وsource='device' فقط، بلا device_id — فتُدمَج قراءات كل
-    // أجهزة المشروع معاً بحساب الاستمرار الزمني (fetchPm10SustainedStatus)،
-    // وقد "تُثبت" قراءات جهاز A متناوبة مع جهاز B استمراراً وهمياً لنشاط
-    // مرتبط بأحدهما فقط. device_id يُشتق من هوية الجهاز نفسه (auth.deviceId
-    // المشتقة من مفتاح API، لا من حقل يرسله العميل — نفس مبدأ requireDeviceApiKey).
-    const { error: historyError } = await supabaseAdmin.from('pm10_readings_history').insert({
-      project_id: auth.projectId,
-      device_id: auth.deviceId,
-      pm10_ug_m3: updates.last_pm10,
-      source: 'device',
-      recorded_at: updates.last_reading_at,
-    });
-    if (historyError) {
-      console.error('pm10_readings_history insert failed:', historyError.message);
-    }
+  // خطأ مكتشَف (مراجعة تصحيح خارجية — "القرار الحي يعتمد على متصفح مفتوح"):
+  // مسار push هذا لم يكن يُطلق إعادة تقييم للمشروع بعد كتابة قراءة جديدة
+  // بنجاح إطلاقاً — فقط app/api/cron/provider-pull/route.ts (مصادر pull)
+  // كان يستدعي evaluateProject. جهاز يدفع بياناته مباشرة عبر هذا المسار
+  // كان قراره التشغيلي (DVI/Compliance/FinalDecision) لا يتحدّث إلا عند
+  // فتح المستخدم للوحة المشروع يدوياً. يُنتظَر هنا (لا fire-and-forget) —
+  // دالة serverless على Vercel قد تُنهى فور إرجاع الاستجابة، فوعد معلَّق
+  // بلا await ليس مضموناً أن يكتمل. فشل إعادة التقييم لا يُسقِط نجاح
+  // الكتابة نفسها (القراءة محفوظة فعلاً بغض النظر) — يُسجَّل فقط، نفس مبدأ
+  // معالجة الفشل الجزئي في provider-pull/route.ts.
+  const evalResult = await evaluateProject(auth.projectId).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`ingest: evaluateProject failed for project ${auth.projectId}:`, message);
+    return { success: false as const, persisted: 0, error: message };
+  });
+  if (!evalResult.success) {
+    console.error(`ingest: evaluateProject unsuccessful for project ${auth.projectId}:`, evalResult.error);
   }
 
-  return NextResponse.json({ success: true, receivedAt: updates.last_reading_at });
+  return NextResponse.json({ success: true, receivedAt: new Date().toISOString() });
 }

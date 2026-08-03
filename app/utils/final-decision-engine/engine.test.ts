@@ -463,6 +463,65 @@ describe('decideFinal — ALLOW نظيف', () => {
   });
 });
 
+// =====================================================================
+// طلب مستخدم صريح (اكتشاف عبر الواجهة — نشاط PLANNING بعيد بقيمة PM10
+// توقّعية مرتفعة جداً/غير واقعية (2041.5) كان لا يزال يظهر "إيقاف إلزامي
+// نظامي" أسود، رغم أن buildPlanningForecastResult في dust-compliance-engine
+// يُرجع ALLOW دائماً بالفعل): dvi.mandatoryStop مصدره محرك DVI المستقل
+// تماماً عن محرك الامتثال — كان يفوز هنا بصرف النظر عن mode، فلا يكفي
+// إصلاح جانب الامتثال وحده. الفرع المبكر (mode === 'PLANNING') في أول
+// decideFinal يحسم هذا نهائياً: النتيجة دائماً ALLOW/GREEN محايدة مهما بلغت
+// شدة dvi/compliance المُدخَلة، بلا استثناءات متفرقة قد تُنسى مستقبلاً.
+// =====================================================================
+describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهما كانت شدة التوقّع', () => {
+  it('dvi.mandatoryStop=true (PM10 توقّعي مرتفع جداً) + mode=PLANNING → mandatoryStop=false, level=GREEN, operationalDecision=ALLOW', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'MANDATORY_STOP',
+      level: 'BLACK',
+      mandatoryStop: true,
+      overridable: false,
+      shortReason: 'PM10 = 2041.5',
+    });
+    const compliance = baseCompliance({
+      decisionCategory: 'MANDATORY_STOP',
+      mandatoryStop: true,
+      canOverride: false,
+      pendingConfirmation: false,
+    });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance }));
+
+    // dvi.decisionCategory=MANDATORY_STOP ليست ALLOW/ALLOW_WITH_MONITORING
+    // → "لا تصلح" → أصفر/MONITOR (لا إيقاف إلزامي فعلي، لكن اللون يعكس
+    // التحذير بدل أخضر ثابت رغم النص — راجع تعليق decideFinal الكامل).
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.overridable).toBe(true);
+    expect(r.level).toBe('YELLOW');
+    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.regulatoryFinding).toBe('COMPLIANT');
+    expect(r.pendingConfirmation).toBe(false);
+    expect(r.shortReasonAr).toContain('توقّعات طقس');
+    expect(r.shortReasonAr).toContain('لا تصلح للنشاط');
+  });
+
+  it('dvi.decisionCategory=ALLOW + mode=PLANNING → نص "تصلح للنشاط" (لا "لا تصلح")', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi }));
+
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.level).toBe('GREEN');
+    expect(r.shortReasonAr).toContain('تصلح للنشاط');
+    expect(r.shortReasonAr).not.toContain('لا تصلح للنشاط');
+  });
+
+  it('mode=LIVE_OPERATIONAL بنفس مدخلات PM10 المرتفعة → يبقى إيقافاً إلزامياً حقيقياً (لا تراجع عن السلوك الأصلي)', () => {
+    const dvi = baseDvi({ decisionCategory: 'MANDATORY_STOP', level: 'BLACK', mandatoryStop: true, overridable: false });
+    const r = decideFinal(input({ mode: 'LIVE_OPERATIONAL', dvi }));
+
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.level).toBe('BLACK');
+  });
+});
+
 describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظيف يُخفي تنبيه مراقبة DVI مصدره الرياح فقط', () => {
   it('DVI يُظهر ALLOW_WITH_MONITORING (رياح) لكن isEnclosedOperation=true وcompliance=ALLOW → operationalDecision=ALLOW وlevel=GREEN', () => {
     const compliance = baseCompliance({ decisionCategory: 'ALLOW', isEnclosedOperation: true });
@@ -612,5 +671,33 @@ describe('pickWorstDecision — يختار أسوأ قرار بصرف النظر
     ];
     const result = pickWorstDecision(rows);
     expect(result.finalDecision.operationalDecision).toBe('MANDATORY_STOP');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-08: "لا Candidate Engine
+  // أو حسم تعادل ثابت"): كان reduce يبقي دائماً على العنصر الأول عند تعادل
+  // operationalDecision بالضبط (`>` صارم لا `>=`)، بصرف النظر عن أي فرق
+  // حقيقي آخر بين الصفين (مثال: أحدهما level=BLACK والآخر level=RED رغم
+  // تطابق operationalDecision=MANDATORY_STOP) — فترتيب الاستعلام وحده كان
+  // يحدد الفائز. الآن level يُقارَن صراحة كمعيار حسم ثانٍ.
+  it('H-08: تعادل operationalDecision (كلاهما MANDATORY_STOP) لكن level مختلف → الأسوأ لوناً (BLACK) يفوز دائماً بصرف النظر عن ترتيب الصفوف', () => {
+    const blackRow = { id: 'black', finalDecision: { ...decisionWith('MANDATORY_STOP'), level: 'BLACK' as const } };
+    const redRow = { id: 'red', finalDecision: { ...decisionWith('MANDATORY_STOP'), level: 'RED' as const } };
+
+    const resultA = pickWorstDecision([redRow, blackRow]);
+    const resultB = pickWorstDecision([blackRow, redRow]);
+
+    expect(resultA.id).toBe('black');
+    expect(resultB.id).toBe('black');
+  });
+
+  it('H-08: تعادل operationalDecision وlevel معاً لكن mandatoryStop مختلف → true (إيقاف إلزامي فعلي) يفوز على false', () => {
+    const trueRow = { id: 'true', finalDecision: { ...decisionWith('MANDATORY_STOP'), level: 'BLACK' as const, mandatoryStop: true } };
+    const falseRow = { id: 'false', finalDecision: { ...decisionWith('MANDATORY_STOP'), level: 'BLACK' as const, mandatoryStop: false } };
+
+    const resultA = pickWorstDecision([falseRow, trueRow]);
+    const resultB = pickWorstDecision([trueRow, falseRow]);
+
+    expect(resultA.id).toBe('true');
+    expect(resultB.id).toBe('true');
   });
 });

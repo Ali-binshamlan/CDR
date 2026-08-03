@@ -386,6 +386,19 @@ export interface DustComplianceResult {
   pm10SustainedMinutesAbove340?: number;
   pm10SustainedMinutesAbove250?: number;
 
+  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "ليش التايمر ينعاد إذا سويت تحديث
+  // للصفحة"): العدّاد التنازلي في Compliancewidgetcard.tsx كان يفترض أن
+  // pm10SustainedMinutesAbove340/250 أعلاه "طازجة تماماً" لحظة عرضها في
+  // المتصفح (snapshotAtMs = Date.now() محلي وقت أول render) — صحيح تقريباً
+  // أثناء التحديث الدوري (polling كل دقيقتين، فارق زمني ضئيل بين حساب
+  // الخادم وعرض المتصفح)، لكن خاطئ عند إعادة تحميل الصفحة يدوياً (المكوّن
+  // يُعاد بناؤه من الصفر، فلحظة "أول عرض" تصبح وقت اكتمال تحميل الصفحة، لا
+  // وقت حساب الخادم الفعلي الذي قد يسبقه بثوانٍ). evaluatedAt هو وقت حساب
+  // الخادم الفعلي لهذا التقييم كاملاً (بما فيه الرقمين أعلاه) — الواجهة
+  // تستخدمه كمرجع asOfMs بدل Date.now() المحلي، فيبقى العدّاد دقيقاً بصرف
+  // النظر عن توقيت إعادة عرضه في المتصفح.
+  evaluatedAt: string;
+
   triggeredRules: DustRuleHit[];
   requiredActions: string[];
   restartConditions: string[];
