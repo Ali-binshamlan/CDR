@@ -6,6 +6,19 @@ import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
 import { evaluateProject } from '@/app/lib/evaluateProject';
 import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
 
+// نتيجة list_active_provider_connections (RPC، 202608040032) — راجع
+// تعليق الاستدعاء أدناه لسبب استخدام RPC بدل .select() مباشر.
+interface ActiveProviderConnectionRow {
+  id: string;
+  device_id: string;
+  project_id: string;
+  provider: string;
+  credentials_ciphertext: string | null;
+  credentials_key_version: number | null;
+  vendor_station_id: string;
+  provider_instance_id: string | null;
+}
+
 // مسار سحب دوري (pull) لكل محطات provider_connections النشطة عبر كل
 // المشاريع — بديل عن دفع (push) الجهاز لبياناته عبر /api/devices/ingest،
 // لمحطات شركات خارجية جاهزة لا يمكن تعديل إعداداتها لترسل لنظامنا مباشرة.
@@ -47,14 +60,23 @@ export async function GET(request: Request) {
   // على أن PostgREST يعرف علاقتي الـFK وقت الاستعلام — فشل هذا الاعتماد
   // فعلياً بصرف النظر عن صحة الـFK في قاعدة البيانات، فأرجع الاستعلام بأكمله
   // خطأً "Could not find a relationship" رغم أن provider_connections/
-  // provider_instances/projects كلها صحيحة تماماً. الإصلاح: 3 استعلامات
-  // منفصلة (بلا أي select متداخل) + دمج يدوي في الذاكرة — لا يعتمد على
-  // معرفة PostgREST بأي علاقة FK إطلاقاً، فيعمل بصرف النظر عن حالة الـcache.
-  const { data: rawConnections, error: fetchError } = await supabaseAdmin
-    .from('provider_connections')
-    .select('id, device_id, project_id, provider, credentials_ciphertext, credentials_key_version, vendor_station_id, provider_instance_id')
-    .eq('is_active', true)
-    .not('vendor_station_id', 'is', null);
+  // provider_instances/projects كلها صحيحة تماماً.
+  //
+  // خطأ تشغيلي إضافي مكتشَف ومُصلَح (إنتاج فعلي — نفس الجلسة): حتى بعد
+  // إزالة الـjoins، استعلام .select() مسطَّح بلا أي join كان لا يزال يفشل
+  // بخطأ "column provider_connections.credentials_ciphertext does not
+  // exist" رغم تأكيد ثلاثي (information_schema.columns، pg_constraint،
+  // information_schema.column_privileges) أن العمود موجود فعلياً وصلاحياته
+  // لـservice_role كاملة — PostgREST نفسه عالق في حالة schema cache غير
+  // متسقة مع قاعدة البيانات الحقيقية، منفصلة عن أي فحص SQL مباشر (الذي يمر
+  // عبر اتصال مختلف تماماً، لا عبر PostgREST). list_active_provider_
+  // connections (RPC، 202608040032) يتجاوز هذا كلياً — استدعاء RPC يُنفَّذ
+  // داخل قاعدة البيانات مباشرة (execute function)، لا عبر آلية "قراءة قائمة
+  // أعمدة الجدول عبر PostgREST" المتأثرة بالخلل.
+  const { data: rawConnections, error: fetchError } = await supabaseAdmin.rpc('list_active_provider_connections') as {
+    data: ActiveProviderConnectionRow[] | null;
+    error: { message: string } | null;
+  };
 
   if (fetchError) {
     return NextResponse.json({ ok: false, error: fetchError.message }, { status: 500 });
