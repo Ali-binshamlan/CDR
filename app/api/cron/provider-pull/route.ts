@@ -35,25 +35,60 @@ export async function GET(request: Request) {
   // علاقة له بأرشفة المشروع نفسه (projects.archived_at) — أرشفة مشروع لا
   // تُعطِّل اتصالاته تلقائياً، فكانت هذه الحلقة تسحب من محطة خارجية حقيقية
   // وتُعيد تقييم مشروع مؤرشف بالكامل في كل دورة (كل دقيقتين) بلا داعٍ.
-  // projects!inner(archived_at) + .is('projects.archived_at', null) يستبعد
-  // هذه الاتصالات من الاستعلام مباشرة (نفس نمط dashboard/global/route.ts)،
-  // بدل فحص لاحق بعد السحب الفعلي من المزوّد.
   // provider_instance_id + provider_instances(origin, is_approved, is_active)
-  // مُضمَّن هنا (القسم 15.1) — origin يُحل من السجل المعتمد وقت كل سحب، لا
+  // مُستخدَم هنا (القسم 15.1) — origin يُحل من السجل المعتمد وقت كل سحب، لا
   // من عمود ثابت بـprovider_connections، بحيث لو أُلغي اعتماد/تفعيل منصة
   // لاحقاً (مسؤول النظام) يتوقف السحب فوراً بلا حاجة لتعديل كل اتصال يستخدمها.
-  const { data: connections, error: fetchError } = await supabaseAdmin
+  //
+  // خطأ تشغيلي مكتشَف ومُصلَح (إنتاج فعلي — PostgREST schema cache لا يرى
+  // FK صحيحاً وموثَّقاً بالكامل في قاعدة البيانات نفسها، حتى بعد عدة محاولات
+  // NOTIFY pgrst/إعادة تحميل): كان هذا يستخدم select متداخل واحد
+  // (`projects!inner(archived_at)` + `provider_instances(...)`) يعتمد كلياً
+  // على أن PostgREST يعرف علاقتي الـFK وقت الاستعلام — فشل هذا الاعتماد
+  // فعلياً بصرف النظر عن صحة الـFK في قاعدة البيانات، فأرجع الاستعلام بأكمله
+  // خطأً "Could not find a relationship" رغم أن provider_connections/
+  // provider_instances/projects كلها صحيحة تماماً. الإصلاح: 3 استعلامات
+  // منفصلة (بلا أي select متداخل) + دمج يدوي في الذاكرة — لا يعتمد على
+  // معرفة PostgREST بأي علاقة FK إطلاقاً، فيعمل بصرف النظر عن حالة الـcache.
+  const { data: rawConnections, error: fetchError } = await supabaseAdmin
     .from('provider_connections')
-    .select(
-      'id, device_id, project_id, provider, credentials_ciphertext, credentials_key_version, vendor_station_id, provider_instance_id, projects!inner(archived_at), provider_instances(origin, is_approved, is_active)'
-    )
+    .select('id, device_id, project_id, provider, credentials_ciphertext, credentials_key_version, vendor_station_id, provider_instance_id')
     .eq('is_active', true)
-    .not('vendor_station_id', 'is', null)
-    .is('projects.archived_at', null);
+    .not('vendor_station_id', 'is', null);
 
   if (fetchError) {
     return NextResponse.json({ ok: false, error: fetchError.message }, { status: 500 });
   }
+
+  const candidateConnections = rawConnections || [];
+  const projectIdsToCheck = [...new Set(candidateConnections.map((c) => c.project_id))];
+  const providerInstanceIdsToCheck = [...new Set(candidateConnections.map((c) => c.provider_instance_id).filter((id): id is string => id !== null))];
+
+  const [{ data: projectRows, error: projectsError }, { data: instanceRows, error: instancesError }] = await Promise.all([
+    projectIdsToCheck.length > 0
+      ? supabaseAdmin.from('projects').select('id, archived_at').in('id', projectIdsToCheck)
+      : Promise.resolve({ data: [] as { id: string; archived_at: string | null }[], error: null }),
+    providerInstanceIdsToCheck.length > 0
+      ? supabaseAdmin.from('provider_instances').select('id, origin, is_approved, is_active').in('id', providerInstanceIdsToCheck)
+      : Promise.resolve({ data: [] as { id: string; origin: string; is_approved: boolean; is_active: boolean }[], error: null }),
+  ]);
+
+  if (projectsError) {
+    return NextResponse.json({ ok: false, error: projectsError.message }, { status: 500 });
+  }
+  if (instancesError) {
+    return NextResponse.json({ ok: false, error: instancesError.message }, { status: 500 });
+  }
+
+  const archivedProjectIds = new Set((projectRows || []).filter((p) => p.archived_at !== null).map((p) => p.id));
+  const instancesById = new Map((instanceRows || []).map((i) => [i.id, i]));
+
+  const connections = candidateConnections
+    .filter((c) => !archivedProjectIds.has(c.project_id))
+    .map((c) => ({
+      ...c,
+      provider_instances: c.provider_instance_id ? instancesById.get(c.provider_instance_id) ?? null : null,
+    }));
 
   const results: Array<{ connectionId: string; provider: string; ok: boolean; error?: string }> = [];
   // مشاريع تلقّت قراءة جديدة فعلياً بنجاح خلال هذه الدورة — يُعاد تقييمها
@@ -78,11 +113,11 @@ export async function GET(request: Request) {
       // خطأ أمني مكتشَف ومُصلَح (القسم 15.1): إن كان الـConnector يتطلب
       // provider_instance ولم يعد السجل معتمداً/نشطاً (أُلغي بعد ربط
       // الاتصال)، يُرفَض السحب فوراً بدل استخدام origin قديم مخزَّن أو
-      // فارغ.
+      // فارغ. provider_instances هنا كائن مفرد دائماً (لا مصفوفة) — مبنية
+      // يدوياً أعلاه عبر instancesById.get، لا عبر PostgREST embed.
       let origin = '';
       if (connector.requiresProviderInstance) {
-        const rawInstance = (conn as { provider_instances?: { origin: string; is_approved: boolean; is_active: boolean } | { origin: string; is_approved: boolean; is_active: boolean }[] | null }).provider_instances;
-        const instance = Array.isArray(rawInstance) ? rawInstance[0] : rawInstance;
+        const instance = conn.provider_instances;
         if (!instance || !instance.is_approved || !instance.is_active) {
           results.push({ connectionId: conn.id, provider: conn.provider, ok: false, error: 'المنصة المرتبطة لم تعد معتمدة/نشطة' });
           await supabaseAdmin
