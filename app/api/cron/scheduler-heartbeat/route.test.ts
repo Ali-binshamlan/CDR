@@ -73,10 +73,11 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     expect(res.status).toBe(401);
   });
 
-  it('ok=true عندما كل الأنظمة الفرعية سليمة', async () => {
+  it('ok=true عندما كل الأنظمة الفرعية سليمة، status=200', async () => {
     const { GET } = await import('./route');
     const res = await GET(makeRequest());
     const body = await res.json();
+    expect(res.status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.alert).toBe(false);
     expect(body.scheduler.alert).toBe(false);
@@ -84,31 +85,37 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     expect(body.alert_outbox.alert).toBe(false);
   });
 
-  it('ينذر عندما يغيب Heartbeat أكثر من 3 دقائق', async () => {
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — ربط بمراقبة UptimeRobot
+  // خارجية فعلية): status يجب أن يكون 503 (لا 200) عند alert=true حتى تلتقط
+  // أدوات المراقبة القياسية العطل فعلياً وترسل التنبيه — راجع تعليق route.ts.
+  it('ينذر عندما يغيب Heartbeat أكثر من 3 دقائق، status=503', async () => {
     tableResults.scheduler_heartbeat = {
       data: { last_heartbeat_at: new Date(Date.now() - 10 * 60_000).toISOString(), last_successful_project_evaluation_at: null },
     };
     const { GET } = await import('./route');
     const res = await GET(makeRequest());
     const body = await res.json();
+    expect(res.status).toBe(503);
     expect(body.scheduler.alert).toBe(true);
     expect(body.ok).toBe(false);
   });
 
-  it('ينذر عندما توجد اتصالات provider فاشلة', async () => {
+  it('ينذر عندما توجد اتصالات provider فاشلة، status=503', async () => {
     tableResults.provider_connections = { count: 2 };
     const { GET } = await import('./route');
     const res = await GET(makeRequest());
     const body = await res.json();
+    expect(res.status).toBe(503);
     expect(body.provider_pull.alert).toBe(true);
     expect(body.ok).toBe(false);
   });
 
-  it('ينذر عندما توجد صفوف outbox ميتة (DEAD)', async () => {
+  it('ينذر عندما توجد صفوف outbox ميتة (DEAD)، status=503', async () => {
     tableResults.decision_alert_outbox = { count: 1, data: null };
     const { GET } = await import('./route');
     const res = await GET(makeRequest());
     const body = await res.json();
+    expect(res.status).toBe(503);
     expect(body.alert_outbox.alert).toBe(true);
     expect(body.ok).toBe(false);
   });

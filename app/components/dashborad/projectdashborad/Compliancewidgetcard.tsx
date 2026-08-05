@@ -497,9 +497,9 @@ export default function ComplianceWidgetCard({
 
   // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "هل هذا منطقي؟" حول تعليق الجهاز
   // لدقائق قليلة أثناء pendingConfirmation): بين لحظة توقف الجهاز عن
-  // الإرسال ولحظة تصنيف evidenceQuality=STALE فعلياً (20 دقيقة، راجع
+  // الإرسال ولحظة تصنيف evidenceQuality=STALE فعلياً (10 دقائق، راجع
   // DEVICE_READING_STALENESS_MINUTES/isAwaitingVerification أعلاه)، توجد
-  // فجوة (4-20 دقيقة) يبقى فيها pendingConfirmation=true من الخادم (آخر
+  // فجوة (4-10 دقائق) يبقى فيها pendingConfirmation=true من الخادم (آخر
   // قراءة معروفة لا تزال ضمن نافذة "حديثة" حسب isLatestReadingFresh هناك)
   // لكن بلا أي قراءة جديدة تصل فعلياً — العدّاد كان يستمر بالعد التنازلي
   // بثقة كاملة موحياً بأن التأكيد "يتقدم" رغم أن الجهاز متوقف فعلياً ولن

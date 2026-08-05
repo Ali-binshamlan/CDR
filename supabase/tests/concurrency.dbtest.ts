@@ -305,6 +305,125 @@ describe('Outbox — نية تنبيه واحدة فقط لكل قرار (unique
     expect(outboxRows![0]).toMatchObject({ kind: 'SAFETY_BREACH', action: 'OPEN' });
   });
 
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي، القسم 2
+  // "تثبيت مسار Outbox/Retry": "تشغيل سيناريو فشل متعمد لمعرفة أن الرسالة
+  // تُعاد مع استرجاع صحيح"): قيد CHECK الأصلي على decision_alert_outbox.status
+  // (202608040012) لم يكن يسمح بـ'RETRY' إطلاقاً، فكان أي استدعاء فعلي لـ
+  // fail_alert_outbox_row بفشل غير نهائي يرمي خطأ PostgreSQL حقيقياً (انتهاك
+  // قيد CHECK) بدل تسجيل RETRY بنجاح — لم يكشفه أي اختبار سابق لأن
+  // alert-outbox-worker/route.test.ts ينمّه supabaseAdmin.rpc بالكامل (لا
+  // يشغّل القيد الفعلي على قاعدة بيانات حقيقية). هذا الاختبار يستدعي
+  // fail_alert_outbox_row فعلياً (لا mock) على صف Outbox حقيقي، بمحاكاة فشل
+  // متعمد، ويثبت: (أ) الصف يعود RETRY لا يُرفَض بخطأ CHECK (202608040034)،
+  // (ب) attempts يتزايد وavailable_at يتأخر (Backoff)، (ج) claim_alert_outbox_
+  // batch يستطيع استرجاع نفس الصف لاحقاً بعد مرور available_at (لا يبقى عالقاً).
+  it('فشل متعمد عبر fail_alert_outbox_row: الصف يعود RETRY (لا خطأ CHECK)، وattempts يتزايد، ويُستَرجَع لاحقاً عبر claim', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    const { error: persistError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: null,
+      p_compliance_rulebook_version: null,
+      p_compliance_triggered_by: null,
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecision('MANDATORY_STOP'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(persistError).toBeNull();
+
+    const { data: outboxRow } = await admin
+      .from('decision_alert_outbox')
+      .select('id, attempts')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+    expect(outboxRow!.attempts).toBe(0);
+
+    // فشل متعمد أول: attempts=0 < p_max_attempts الافتراضي (5) → RETRY، لا DEAD.
+    const { error: failError } = await admin.rpc('fail_alert_outbox_row', {
+      p_row_id: outboxRow!.id,
+      p_error: 'فشل متعمد لاختبار مسار الإعادة',
+    });
+    // هذا هو صلب الإصلاح: بلا 202608040034 كان هذا السطر يفشل بانتهاك قيد
+    // CHECK (decision_alert_outbox_status_check) بدل إرجاع null.
+    expect(failError).toBeNull();
+
+    const { data: afterFail } = await admin
+      .from('decision_alert_outbox')
+      .select('status, attempts, available_at, last_error, locked_by, locked_until')
+      .eq('id', outboxRow!.id)
+      .single();
+    expect(afterFail!.status).toBe('RETRY');
+    expect(afterFail!.attempts).toBe(1);
+    expect(afterFail!.last_error).toBe('فشل متعمد لاختبار مسار الإعادة');
+    expect(afterFail!.locked_by).toBeNull();
+    expect(afterFail!.locked_until).toBeNull();
+    // Backoff أسّي: available_at يجب أن يكون بالمستقبل (power(2,0)*5 = 5 ثوانٍ).
+    expect(new Date(afterFail!.available_at).getTime()).toBeGreaterThan(Date.now());
+
+    // استرجاع صحيح: claim_alert_outbox_batch لا يستعيد الصف فوراً (لم يحن
+    // available_at بعد) — يثبت أن RETRY فعلاً يُحترَم كحالة "مؤجَّلة"، لا
+    // "جاهزة فوراً" رغم كونها ضمن union_ids.
+    const { data: tooSoonClaim } = await admin.rpc('claim_alert_outbox_batch', {
+      p_worker_id: randomUUID(),
+      p_batch_size: 50,
+      p_lease_seconds: 60,
+    });
+    expect((tooSoonClaim ?? []).some((r: { id: string }) => r.id === outboxRow!.id)).toBe(false);
+
+    // بعد مرور available_at فعلياً (Backoff قصير جداً هنا — 5 ثوانٍ كحد
+    // أدنى)، الصف يجب أن يُسترجَع بنجاح — لا يبقى عالقاً RETRY للأبد.
+    await admin
+      .from('decision_alert_outbox')
+      .update({ available_at: new Date(Date.now() - 1000).toISOString() })
+      .eq('id', outboxRow!.id);
+
+    const workerId = randomUUID();
+    const { data: claimed, error: claimError } = await admin.rpc('claim_alert_outbox_batch', {
+      p_worker_id: workerId,
+      p_batch_size: 50,
+      p_lease_seconds: 60,
+    });
+    expect(claimError).toBeNull();
+    expect((claimed ?? []).some((r: { id: string }) => r.id === outboxRow!.id)).toBe(true);
+
+    const { data: afterClaim } = await admin
+      .from('decision_alert_outbox')
+      .select('status, locked_by')
+      .eq('id', outboxRow!.id)
+      .single();
+    expect(afterClaim!.status).toBe('RUNNING');
+    expect(afterClaim!.locked_by).toBe(workerId);
+
+    // فشل نهائي: نرفع attempts يدوياً لحافة p_max_attempts، ثم فشل واحد أخير
+    // يجب أن يُنتِج DEAD لا RETRY — يثبت أن القيد المُصلَح يسمح بكلا القيمتين
+    // معاً (RETRY وDEAD)، لا RETRY فقط.
+    await admin.from('decision_alert_outbox').update({ attempts: 5 }).eq('id', outboxRow!.id);
+    const { error: finalFailError } = await admin.rpc('fail_alert_outbox_row', {
+      p_row_id: outboxRow!.id,
+      p_error: 'فشل نهائي بعد استنفاد المحاولات',
+      p_max_attempts: 5,
+    });
+    expect(finalFailError).toBeNull();
+
+    const { data: afterFinalFail } = await admin
+      .from('decision_alert_outbox')
+      .select('status')
+      .eq('id', outboxRow!.id)
+      .single();
+    expect(afterFinalFail!.status).toBe('DEAD');
+  });
+
   // القسم 20 (Definition of Done، بند 7) من "دليل الإصلاح الجذري لمنظومة
   // مرقاب" — "القرار والتنبيه يحملان final_decision_id/evaluation_run_id/
   // input_snapshot_hash نفسها". final_decision_id كان مضموناً مسبقاً (FK

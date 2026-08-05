@@ -119,6 +119,13 @@ export async function GET(request: Request) {
 
   const alert = schedulerAlert || providerAlert || outboxAlert;
 
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — ربط هذا الـendpoint بمراقبة
+  // خارجية فعلية UptimeRobot): كان يُرجع status 200 دائماً حتى مع alert=true
+  // (فقط الحقل الداخلي يتغيّر) — أدوات المراقبة القياسية (UptimeRobot
+  // Keyword/HTTP monitor) تكتشف فقط رمز HTTP فاشل، لا تقرأ حقول JSON
+  // داخلية. الآن يُرجع 503 صراحةً عند alert=true فيُسجَّله UptimeRobot
+  // كـ"Down" ويرسل التنبيه الفعلي (بريد/تطبيق) — لا تغيير على منطق الكشف
+  // نفسه (schedulerAlert/providerAlert/outboxAlert)، فقط رمز الاستجابة.
   return NextResponse.json({
     ok: !alert,
     alert,
@@ -151,5 +158,5 @@ export async function GET(request: Request) {
     jobs_dead: jobsDead ?? 0,
     evaluation_lag_seconds: evaluationLagSeconds,
     last_successful_project_evaluation_at: heartbeat?.last_successful_project_evaluation_at ?? null,
-  });
+  }, { status: alert ? 503 : 200 });
 }

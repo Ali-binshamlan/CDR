@@ -22,6 +22,12 @@
 --
 -- الإصلاح: نفس نمط claim_alert_outbox_batch بالضبط — union مع فرع ثانٍ
 -- يفحص status='RUNNING' and lease_until < clock_timestamp() مباشرة.
+--
+-- خطأ SQL إضافي مكتشَف ومُصلَح (إنتاج فعلي): PostgreSQL يرفض FOR UPDATE
+-- مباشرة بعد UNION/UNION ALL ("FOR UPDATE is not allowed with UNION/
+-- INTERSECT/EXCEPT"). union_ids يجمع المرشَّحين بلا أي قفل أولاً، ثم
+-- candidates تطبّق for update skip locked على استعلام عادي (id in (...))
+-- فوق تلك النتيجة — لا union مباشر تحت for update.
 -- =====================================================================
 
 create or replace function public.claim_evaluation_jobs(
@@ -34,7 +40,7 @@ language sql
 security invoker
 set search_path = pg_catalog, public
 as $$
-  with candidates as (
+  with union_ids as (
     select id
     from public.project_evaluation_jobs
     where status in ('PENDING', 'RETRY')
@@ -49,6 +55,11 @@ as $$
     where status = 'RUNNING'
       and lease_until is not null
       and lease_until < clock_timestamp()
+  ),
+  candidates as (
+    select id
+    from public.project_evaluation_jobs
+    where id in (select id from union_ids)
     order by id
     for update skip locked
     limit greatest(1, p_batch_size)

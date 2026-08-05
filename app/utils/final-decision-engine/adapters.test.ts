@@ -150,7 +150,7 @@ describe('buildFinalDecisionInput/deriveEvidenceQuality — لا قرار حي �
     expect(finalInput.evidenceQuality).toBe('STALE');
   });
 
-  it('جهاز مرتبط بقراءة قديمة جداً (أقدم من 20 دقيقة) → evidenceQuality=STALE', () => {
+  it('جهاز مرتبط بقراءة قديمة جداً (أقدم من 10 دقائق) → evidenceQuality=STALE', () => {
     const staleTime = new Date(Date.now() - 45 * 60000).toISOString();
     const compliance = baseCompliance({
       evidence: { ...baseCompliance().evidence, deviceLastReadingAt: staleTime },

@@ -509,7 +509,7 @@ function baseRequiredActions(decision: DviDecisionCategory): string[] {
 //
 // راجع app/utils/rule-bundles/field-freshness.ts (LIVE_FIELD_FRESHNESS_MS)
 // للتوثيق المركزي الكامل لهذه القيمة ولماذا تختلف عمداً عن عتبة اتصال
-// الجهاز العامة (20 دقيقة، DEVICE_CONNECTION_FRESHNESS_MS).
+// الجهاز العامة (10 دقائق، DEVICE_CONNECTION_FRESHNESS_MS).
 const FIELD_FRESHNESS_MS = LIVE_FIELD_FRESHNESS_MS;
 
 function freshOrNull<T>(value: T | null | undefined, observedAtIso: string | null | undefined, nowMs: number): T | null {

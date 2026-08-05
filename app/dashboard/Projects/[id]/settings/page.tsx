@@ -1054,7 +1054,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
             <p className="text-[11px] font-bold text-[#061B40]/50 mb-3">
               كل جهاز يحصل على مفتاح خاص لإرسال قراءات لحظية (سرعة/اتجاه الرياح، PM10، PM2.5، الرؤية) عبر
               <code dir="ltr" className="mx-1 px-1.5 py-0.5 bg-[#F4F7FB] rounded text-[10px]">POST /api/devices/ingest</code>
-              — تحل هذه القراءات محل بيانات الطقس التقديرية طالما كانت حديثة (خلال آخر 20 دقيقة).
+              — تحل هذه القراءات محل بيانات الطقس التقديرية طالما كانت حديثة (خلال آخر 10 دقائق).
               {' '}
               <Link href="/api-docs/devices" target="_blank" className="text-[#3995FF] hover:underline font-black">
                 توثيق ربط الأجهزة (لمورّد المحطة) ←

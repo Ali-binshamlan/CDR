@@ -444,7 +444,7 @@ const PM10_READING_GAP_TOLERANCE_MINUTES = ACTIVE_RULE_BUNDLE.pm10.evidence.maxC
 // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — البند 3: "تصنيف حداثة مركزي لكل
 // Metric"): مُنقول الآن من app/utils/rule-bundles/field-freshness.ts
 // (LIVE_FIELD_FRESHNESS_MS) — نفس القيمة (4 دقائق) بالضبط، لا تغيير سلوكي.
-// عمداً لا يُستخدَم DEVICE_READING_FRESHNESS_MINUTES (20 دقيقة، مصدَّر أدناه
+// عمداً لا يُستخدَم DEVICE_READING_FRESHNESS_MINUTES (10 دقائق، مصدَّر أدناه
 // لغرض مختلف تماماً — عرض قِدم اتصال المحطة، لا حسم استمرار مخالفة PM10) —
 // راجع تعليق field-freshness.ts الكامل لسبب الفصل المتعمَّد بين القيمتين.
 const PM10_LAST_READING_FRESHNESS_MINUTES = LIVE_FIELD_FRESHNESS_MS / 60_000;

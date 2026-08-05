@@ -5,6 +5,7 @@ import { getConnector } from '@/app/lib/providers/registry';
 import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
 import { evaluateProject } from '@/app/lib/evaluateProject';
 import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
+import type { NormalizedReading } from '@/app/lib/providers/types';
 
 // نتيجة list_active_provider_connections (RPC، 202608040032) — راجع
 // تعليق الاستدعاء أدناه لسبب استخدام RPC بدل .select() مباشر.
@@ -17,6 +18,7 @@ interface ActiveProviderConnectionRow {
   credentials_key_version: number | null;
   vendor_station_id: string;
   provider_instance_id: string | null;
+  last_pull_at: string | null;
 }
 
 // مسار سحب دوري (pull) لكل محطات provider_connections النشطة عبر كل
@@ -161,9 +163,34 @@ export async function GET(request: Request) {
         deviceId: conn.device_id,
         provider: conn.provider,
       });
-      const reading = await connector.fetchLatestReading(origin, credentials, conn.vendor_station_id as string);
-      if (!reading) {
-        // لا قراءة جديدة متاحة — ليس خطأً، فقط لا شيء لكتابته الآن.
+
+      // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي: "العينة كل
+      // دقيقتين لا تكفي؛ يمكن النقل كل دقيقتين فقط إذا احتوت الإرسالية على
+      // جميع عينات الدقيقة بطوابعها المستقلة"): fetchLatestReading وحدها
+      // (نقطة واحدة فقط) لا تكفي لإثبات استمرار PM10 حين تكون دورة السحب
+      // (~دقيقتان) أبطأ من فجوة الاستمرارية المسموحة (90 ثانية). نستخدم
+      // fetchReadingsSince (إن دعمها الـConnector) لجلب كل العينات منذ آخر
+      // سحب فعلي لهذا الاتصال (last_pull_at)، مكتوبة كلها لاحقاً بطوابعها
+      // المستقلة — لا سقوط أي عينة وسطى بين دورتَي سحب. حد أقصى للنافذة
+      // (10 دقائق) يمنع محاولة سحب كمية ضخمة بعد توقف طويل (المحطة نفسها،
+      // لا Vercel/cron، تُطبِّق أي حدود احتفاظ إضافية على البيانات القديمة).
+      const MAX_LOOKBACK_MS = 10 * 60_000;
+      const sinceMs = conn.last_pull_at
+        ? Math.max(new Date(conn.last_pull_at).getTime(), Date.now() - MAX_LOOKBACK_MS)
+        : Date.now() - MAX_LOOKBACK_MS;
+
+      let readings: NormalizedReading[];
+      if (connector.fetchReadingsSince) {
+        readings = await connector.fetchReadingsSince(origin, credentials, conn.vendor_station_id as string, sinceMs);
+      } else {
+        // Connector لا يدعم fetchReadingsSince (مثال: mockConnector) — فشل
+        // آمن نحو السلوك السابق: قراءة واحدة فقط لكل دورة.
+        const single = await connector.fetchLatestReading(origin, credentials, conn.vendor_station_id as string);
+        readings = single ? [single] : [];
+      }
+
+      if (readings.length === 0) {
+        // لا قراءات جديدة متاحة — ليس خطأً، فقط لا شيء لكتابته الآن.
         results.push({ connectionId: conn.id, provider: conn.provider, ok: true });
         await supabaseAdmin
           .from('provider_connections')
@@ -172,26 +199,40 @@ export async function GET(request: Request) {
         continue;
       }
 
-      // idempotency key لمصادر pull — يمنع كتابة مكررة لو رجعت نفس القراءة
-      // من استدعاءين متتاليين للـcron (المحطة قد لا تحدّث قراءتها كل دقيقتين
-      // بالضرورة). راجع deviceReadingWriter.ts لمعالجة التكرار الفعلية.
-      const externalEventId = reading.observedAtIso
-        ? `${conn.provider}:${conn.vendor_station_id}:${reading.observedAtIso}`
-        : null;
+      // تسلسلي عمداً (لا Promise.all) — نفس مبدأ حلقة الاتصالات الخارجية
+      // أعلاه؛ يحافظ أيضاً على ترتيب last_*_at الصحيح في project_devices
+      // (كل كتابة يجب أن تسبق التالية بترتيب observedAt تصاعدي).
+      let anyWriteFailed = false;
+      let lastError: string | undefined;
+      for (const reading of readings) {
+        // idempotency key لمصادر pull — يمنع كتابة مكررة لو رجعت نفس القراءة
+        // من استدعاءين متتاليين للـcron. راجع deviceReadingWriter.ts لمعالجة
+        // التكرار الفعلية.
+        const externalEventId = reading.observedAtIso
+          ? `${conn.provider}:${conn.vendor_station_id}:${reading.observedAtIso}`
+          : null;
 
-      const writeResult = await writeDeviceReading({
-        deviceId: conn.device_id,
-        projectId: conn.project_id,
-        reading,
-        externalEventId,
-      });
+        const writeResult = await writeDeviceReading({
+          deviceId: conn.device_id,
+          projectId: conn.project_id,
+          reading,
+          externalEventId,
+        });
+
+        if (!writeResult.success) {
+          anyWriteFailed = true;
+          lastError = writeResult.error;
+        } else {
+          affectedProjectIds.add(conn.project_id);
+        }
+      }
 
       await supabaseAdmin
         .from('provider_connections')
         .update({
           last_pull_at: new Date().toISOString(),
-          last_pull_success: writeResult.success,
-          last_pull_error: writeResult.success ? null : writeResult.error,
+          last_pull_success: !anyWriteFailed,
+          last_pull_error: anyWriteFailed ? lastError ?? 'فشل كتابة إحدى القراءات' : null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', conn.id);
@@ -199,10 +240,9 @@ export async function GET(request: Request) {
       results.push({
         connectionId: conn.id,
         provider: conn.provider,
-        ok: writeResult.success,
-        error: writeResult.success ? undefined : writeResult.error,
+        ok: !anyWriteFailed,
+        error: anyWriteFailed ? lastError : undefined,
       });
-      if (writeResult.success) affectedProjectIds.add(conn.project_id);
     } catch (err) {
       // فشل اتصال واحد لا يوقف الباقي — نفس مبدأ الحلقات المشابهة في
       // dustEvaluation.ts (resolveFreshProjectDevice) وalerts/generate.

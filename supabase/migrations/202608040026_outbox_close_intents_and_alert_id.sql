@@ -57,7 +57,12 @@ language sql
 security invoker
 set search_path = pg_catalog, public
 as $$
-  with candidates as (
+  -- خطأ SQL مكتشَف ومُصلَح (إنتاج فعلي — PostgreSQL يرفض FOR UPDATE مباشرة
+  -- بعد UNION/UNION ALL: "FOR UPDATE is not allowed with UNION/INTERSECT/
+  -- EXCEPT"): union_ids يجمع المرشَّحين بلا أي قفل، ثم candidates تطبّق
+  -- for update skip locked على نتيجة الاتحاد ذاتها (مسموح لأنها استعلام
+  -- عادي على subquery واحد، لا union مباشر تحت for update).
+  with union_ids as (
     select id
     from public.decision_alert_outbox
     where status in ('PENDING', 'RETRY')
@@ -68,6 +73,11 @@ as $$
     where status = 'RUNNING'
       and locked_until is not null
       and locked_until < clock_timestamp()
+  ),
+  candidates as (
+    select id
+    from public.decision_alert_outbox
+    where id in (select id from union_ids)
     order by id
     for update skip locked
     limit greatest(1, p_batch_size)

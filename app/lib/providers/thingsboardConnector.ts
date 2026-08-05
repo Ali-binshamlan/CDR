@@ -220,4 +220,99 @@ export const thingsboardConnector: ProviderConnector = {
     reading.observedAtIso = new Date(latestTs as number).toISOString();
     return reading as NormalizedReading;
   },
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي: "العينة كل
+  // دقيقتين لا تكفي؛ يمكن النقل كل دقيقتين فقط إذا احتوت الإرسالية على جميع
+  // عينات الدقيقة بطوابعها المستقلة"): fetchLatestReading أعلاه تطلب أحدث
+  // نقطة واحدة فقط لكل مفتاح (limit=1 ضمنياً عبر values/timeseries بلا
+  // startTs/endTs) — بفارق دورة سحب أبطأ من فجوة الاستمرارية المسموحة (90
+  // ثانية)، عينة واحدة كل دقيقتين لا تستطيع أبداً إثبات استمرار PM10.
+  // fetchReadingsSince تستخدم endpoint history/timeseries (بـstartTs/endTs)
+  // بدل values/timeseries — يُرجع ThingsBoard كل النقاط المسجَّلة فعلياً
+  // خلال tha النافذة الزمنية، لا نقطة واحدة فقط. كل نقطة زمنية مختلفة عبر
+  // كل المفاتيح تُجمَّع في NormalizedReading مستقل بطابعها الخاص (تقريب
+  // الطوابع لأقرب ثانية لتجميع نقاط قريبة من مفاتيح مختلفة كأنها "نفس
+  // اللحظة" — نفس مبدأ observedAtIso المشترك سابقاً، لكن هنا للتجميع فقط،
+  // لا لتحديد وقت الحفظ الفعلي، الذي يبقى محسوباً من fields المستقلة).
+  async fetchReadingsSince(
+    origin: string,
+    credentials: ProviderCredentials,
+    vendorStationId: string,
+    sinceMs: number
+  ): Promise<NormalizedReading[]> {
+    if (!UUID_PATTERN.test(vendorStationId)) {
+      throw new Error('vendorStationId غير صالح — يجب أن يكون UUID');
+    }
+
+    const creds = credentials as ThingsboardCredentials;
+    const token = await login(origin, creds);
+    const baseUrl = normalizeOrigin(origin);
+    const keyMap = resolveKeyMap(creds);
+    const tbKeys = Object.keys(keyMap).join(',');
+
+    const endTs = Date.now();
+    // حد أقصى لعدد النقاط المطلوبة لكل مفتاح — دفاع ضد إرسالية كثيفة غير
+    // متوقَّعة (نفس فلسفة MAX_POINTS في fetchLatestReading أعلاه).
+    const MAX_POINTS_PER_KEY = 200;
+
+    const response = await safeFetch(
+      `${baseUrl}/api/plugins/telemetry/DEVICE/${encodeURIComponent(vendorStationId)}/values/timeseries` +
+        `?keys=${encodeURIComponent(tbKeys)}&startTs=${sinceMs}&endTs=${endTs}&limit=${MAX_POINTS_PER_KEY}&orderBy=ASC`,
+      {
+        headers: { 'X-Authorization': `Bearer ${token}` },
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      }
+    );
+    if (!response.ok) throw new Error(`فشل جلب القراءات (HTTP ${response.status})`);
+
+    const data = (await readJsonWithLimit(response)) as Record<string, { ts: number; value: string }[]>;
+    if (!data || Object.keys(data).length === 0) return [];
+
+    // تجميع كل النقاط (عبر كل المفاتيح) بحسب طابعها الزمني — نقاط بفارق
+    // أقل من ثانية واحدة تُعامَل كأنها "نفس اللحظة" (نفس دقة ThingsBoard
+    // الافتراضية لدفعات القراءة)، تفادياً لتشظّي كل حقل إلى قراءة منفصلة
+    // تماماً حين ترسل المحطة كل الحقول معاً في نفس اللحظة عملياً.
+    const byTimestampSecond = new Map<number, Partial<Record<keyof NormalizedReading, { value: number; ts: number }>>>();
+    let pointsProcessed = 0;
+    const MAX_TOTAL_POINTS = 1000;
+
+    for (const [tbKey, points] of Object.entries(data)) {
+      const field = keyMap[tbKey];
+      if (!field || !Array.isArray(points)) continue;
+      for (const point of points) {
+        if (pointsProcessed >= MAX_TOTAL_POINTS) break;
+        pointsProcessed++;
+        if (!point || typeof point.value === 'undefined') continue;
+        const numValue = Number(point.value);
+        if (!Number.isFinite(numValue)) continue;
+        const ts = Number(point.ts);
+        if (!Number.isFinite(ts)) continue;
+        const bucketKey = Math.floor(ts / 1000);
+        const bucket = byTimestampSecond.get(bucketKey) ?? {};
+        bucket[field] = { value: numValue, ts };
+        byTimestampSecond.set(bucketKey, bucket);
+      }
+    }
+
+    const readings: NormalizedReading[] = [];
+    for (const bucket of byTimestampSecond.values()) {
+      const reading: Partial<NormalizedReading> = {};
+      const fields: Partial<Record<string, NormalizedMetricPoint>> = {};
+      let latestTs: number | null = null;
+      for (const [field, point] of Object.entries(bucket) as [keyof NormalizedReading, { value: number; ts: number }][]) {
+        (reading as Record<string, number>)[field] = point.value;
+        fields[field] = { value: point.value, observedAtIso: new Date(point.ts).toISOString() };
+        if (latestTs === null || point.ts > latestTs) latestTs = point.ts;
+      }
+      if (Object.keys(fields).length === 0 || latestTs === null) continue;
+      reading.fields = fields as NormalizedReading['fields'];
+      reading.observedAtIso = new Date(latestTs).toISOString();
+      readings.push(reading as NormalizedReading);
+    }
+
+    // ترتيب زمني تصاعدي — provider-pull يكتبها بهذا الترتيب (الأقدم أولاً)
+    // حتى تتراكم last_*_at بشكل صحيح (كل كتابة أحدث من التي قبلها).
+    readings.sort((a, b) => new Date(a.observedAtIso as string).getTime() - new Date(b.observedAtIso as string).getTime());
+    return readings;
+  },
 };

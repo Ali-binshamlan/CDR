@@ -102,4 +102,27 @@ export interface ProviderConnector {
     credentials: ProviderCredentials,
     vendorStationId: string
   ): Promise<NormalizedReading | null>;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي: "العينة كل
+  // دقيقتين لا تكفي — الصفحة 82 من المرجع التنظيمي تشترط بيانات PM10 لمدة
+  // دقيقة وفترة تسجيل لا تتجاوز دقيقة. مع فجوة استمرارية 90 ثانية، عينة
+  // واحدة كل دقيقتين لن تؤكد المخالفة أبداً؛ يمكن النقل كل دقيقتين فقط إذا
+  // احتوت الإرسالية على جميع عينات الدقيقة بطوابعها المستقلة"):
+  // fetchLatestReading وحدها (نقطة واحدة فقط لكل مقياس، آخر قيمة) لا تكفي
+  // لإثبات استمرار PM10 حين تكون دورة السحب (provider-pull، كل ~دقيقتين)
+  // أبطأ من فجوة الاستمرارية المسموحة (90 ثانية، ACTIVE_RULE_BUNDLE.pm10.
+  // evidence.maxContinuityGapMs) — عينتان بفارق دقيقتين بالضبط تفشلان
+  // دائماً في إثبات استمرار رياضياً (120 ثانية > 90 ثانية المسموحة).
+  // fetchReadingsSince تجلب *كل* العينات التي أرسلتها المحطة منذ sinceMs
+  // (لا آخر عينة فقط)، كل منها بطابعها الزمني المستقل — provider-pull
+  // يكتبها جميعاً (كل واحدة صف مستقل في pm10_readings_history)، فيملأ
+  // الفجوة الزمنية بين دورتَي سحب متتاليتين بعينات فعلية من المحطة، لا
+  // بعينة واحدة تُنسَب زوراً لدورة كاملة مدتها دقيقتان. اختياري: Connector
+  // لا يدعمها (mockConnector مثلاً) يترك undefined — provider-pull يسقط
+  // حينها إلى fetchLatestReading وحدها (سلوك سابق، بلا كسر).
+  fetchReadingsSince?(
+    origin: string,
+    credentials: ProviderCredentials,
+    vendorStationId: string,
+    sinceMs: number
+  ): Promise<NormalizedReading[]>;
 }

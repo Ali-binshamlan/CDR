@@ -182,3 +182,106 @@ describe('thingsboardConnector.fetchLatestReading — حد الحجم وContent-
     vi.resetModules();
   });
 });
+
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي: "العينة كل
+// دقيقتين لا تكفي — الصفحة 82 من المرجع التنظيمي تشترط بيانات PM10 لمدة
+// دقيقة وفترة تسجيل لا تتجاوز دقيقة. مع فجوة استمرارية 90 ثانية، فإن عينة
+// واحدة كل دقيقتين لن تؤكد المخالفة أبداً؛ يمكن النقل كل دقيقتين فقط إذا
+// احتوت الإرسالية على جميع عينات الدقيقة بطوابعها المستقلة"): fetchLatestReading
+// وحدها (نقطة واحدة فقط) لا تكفي رياضياً حين دورة السحب (~دقيقتان) أبطأ من
+// فجوة الاستمرارية المسموحة (90 ثانية، ACTIVE_RULE_BUNDLE.pm10.evidence.
+// maxContinuityGapMs). fetchReadingsSince تجلب كل العينات منذ لحظة محدَّدة.
+describe('thingsboardConnector.fetchReadingsSince — كل العينات منذ آخر سحب، لا نقطة واحدة فقط', () => {
+  beforeEach(() => {
+    // القسم السابق (حد الحجم/Content-Type) ينتهي بـvi.resetModules() —
+    // يُسقِط تسجيل vi.mock('./safeUrl', ...) العلوي لكل import() لاحق في
+    // نفس الملف. إعادة تسجيله صراحةً هنا يضمن عزل هذا القسم عن ذلك التأثير
+    // الجانبي بصرف النظر عن ترتيب تشغيل الاختبارات.
+    vi.resetModules();
+    vi.doMock('./safeUrl', () => ({
+      safeFetch: async (url: string, init?: RequestInit & { timeoutMs?: number }) => {
+        fetchCalls.push({ url, init });
+        if (url.includes('/api/auth/login')) {
+          return jsonResponse({ token: 'test-jwt-token' });
+        }
+        if (url.includes('/values/timeseries')) {
+          return jsonResponse(timeseriesBody);
+        }
+        throw new Error(`unexpected URL in test: ${url}`);
+      },
+    }));
+    fetchCalls.length = 0;
+    timeseriesBody = {};
+  });
+
+  it('يطلب startTs/endTs في الرابط (لا values/timeseries بلا نطاق زمني)', async () => {
+    const { thingsboardConnector } = await import('./thingsboardConnector');
+    const sinceMs = Date.now() - 120_000;
+    timeseriesBody = { pm10: [{ ts: sinceMs + 30_000, value: 350 }] };
+
+    await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs);
+
+    const dataCall = fetchCalls.find((c) => c.url.includes('/values/timeseries'));
+    expect(dataCall).toBeDefined();
+    expect(dataCall!.url).toContain(`startTs=${sinceMs}`);
+    expect(dataCall!.url).toContain('orderBy=ASC');
+  });
+
+  it('ثلاث عينات PM10 خلال الدقيقتين الماضيتين (بفارق 45 ثانية بينها) → تُرجَع 3 قراءات مستقلة، لا قراءة واحدة فقط', async () => {
+    const { thingsboardConnector } = await import('./thingsboardConnector');
+    const now = Date.now();
+    const ts1 = now - 90_000;
+    const ts2 = now - 45_000;
+    const ts3 = now;
+    timeseriesBody = {
+      pm10: [
+        { ts: ts1, value: 345 },
+        { ts: ts2, value: 350 },
+        { ts: ts3, value: 355 },
+      ],
+    };
+
+    const readings = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000);
+
+    expect(readings).toHaveLength(3);
+    expect(readings[0].pm10).toBe(345);
+    expect(readings[1].pm10).toBe(350);
+    expect(readings[2].pm10).toBe(355);
+    // ترتيب تصاعدي (الأقدم أولاً) — يضمن تحديث last_*_at بشكل صحيح تراكمياً.
+    expect(new Date(readings[0].observedAtIso as string).getTime()).toBeLessThan(
+      new Date(readings[2].observedAtIso as string).getTime()
+    );
+  });
+
+  it('نقاط PM10 وحرارة بنفس الثانية تقريباً → تُجمَّع في قراءة واحدة (نفس اللحظة)، لا قراءتين منفصلتين', async () => {
+    const { thingsboardConnector } = await import('./thingsboardConnector');
+    const now = Date.now();
+    const sameSecond = Math.floor(now / 1000) * 1000;
+    timeseriesBody = {
+      pm10: [{ ts: sameSecond, value: 300 }],
+      temperature: [{ ts: sameSecond + 200, value: 35 }], // نفس الثانية (بعد التقريب لأقرب ثانية)
+    };
+
+    const readings = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000);
+
+    expect(readings).toHaveLength(1);
+    expect(readings[0].pm10).toBe(300);
+    expect(readings[0].temperatureC).toBe(35);
+  });
+
+  it('لا نقاط ضمن النافذة الزمنية → مصفوفة فارغة (لا null، بخلاف fetchLatestReading)', async () => {
+    const { thingsboardConnector } = await import('./thingsboardConnector');
+    timeseriesBody = {};
+
+    const readings = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, Date.now() - 120_000);
+
+    expect(readings).toEqual([]);
+  });
+
+  it('vendorStationId غير UUID → يُرفَض قبل أي طلب شبكة', async () => {
+    const { thingsboardConnector } = await import('./thingsboardConnector');
+    await expect(
+      thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, 'not-a-uuid', Date.now() - 120_000)
+    ).rejects.toThrow(/UUID/);
+  });
+});
