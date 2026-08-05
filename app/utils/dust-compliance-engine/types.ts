@@ -456,6 +456,15 @@ export interface DustComplianceResult {
 export interface DustComplianceContext {
   project: DustProjectComplianceProfile;
   activity: DustActivityComplianceProfile;
+  // القسم 18.6 من "دليل الإصلاح الجذري لمنظومة مرقاب" — القسم "Forecast
+  // قديم: التخطيط يظهر نتيجة Stale". true فقط عندما فشل/انقطع استدعاء
+  // Open-Meteo فعلياً (راجع isForecastStale في weather.ts) لعينة الطقس
+  // المستخدَمة لبناء هذا السياق. لا معنى له في مسار LIVE_OPERATIONAL
+  // (القرار الحي مبني من الجهاز مباشرة، بلا استدعاء طقس أصلاً — راجع
+  // evaluateLiveOperationalDecision)؛ يُستهلَك حصرياً في buildPlanningForecastResult
+  // أدناه (engine.ts) لعرض تحذير "توقّع مبني على بيانات قديمة" بدل عرض
+  // "الأجواء تصلح/لا تصلح" بثقة كاملة على تقدير طقس غير موثوق أصلاً.
+  isForecastStale: boolean;
   dviScore: number;
   dviDecision: DviDecisionCategory;
   dviMandatoryStop: boolean;
@@ -466,6 +475,16 @@ export interface DustComplianceContext {
   // false توافقياً) حتى لا تنكسر استدعاءات context() القديمة في الاختبارات
   // التي تبني dviMandatoryStop:true يدوياً بلا هذا الحقل.
   dviMandatoryStopIsPm10Only?: boolean;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "فقد الرؤية قد يؤدي إلى ALLOW أو
+  // يسمح باستكمال نافذة الاستئناف من إيقاف سابق"): من
+  // DviEvaluationResult.visibilityDataMissing — true فقط عندما يوجد جهاز
+  // مرتبط فعلياً لكن قراءة الرؤية غائبة/غير طازجة، فلا تُفعَّل بوابتا الرؤية
+  // في dust-engine (DVI-VISIBILITY-MANDATORY-STOP-001/RED-002) بصمت كأن
+  // الرؤية ممتازة. تُستخدم أدناه لإضافة "الرؤية غير متوفرة" إلى
+  // missingCriticalInputs (يمنع ALLOW واثقاً) ولمنع resumeHoldApplied من
+  // معاملة هذا الغياب كتحسّن فعلي يُنهي إيقافاً سابقاً. اختياري (undefined =
+  // false توافقياً) لنفس سبب dviMandatoryStopIsPm10Only أعلاه.
+  dviVisibilityDataMissing?: boolean;
   // السبب النصي المحدَّد لتوقف DVI (مثال: "PM10 = 1806.8")، من
   // DviEvaluationResult.shortReason — يُستخدم في رسالة GATE-DVI-002 بدل نص
   // عام لا يذكر الرقم/السبب الفعلي. اختياري: null/undefined يبقيان الرسالة

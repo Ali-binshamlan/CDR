@@ -2,8 +2,11 @@
 
 import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import type { AxiosError } from 'axios';
 import { ChevronDown, Wind, CheckCircle2, AlertTriangle, XCircle, Clock3, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
+import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
+import { useNow } from '@/app/lib/useNow';
 
 // DCR: مؤشر واحد فقط (dust) — لا حرارة ولا رافعات إطلاقاً. النوع يبقى
 // اتحاداً (بدل ثابت 'dust' وحده) للتوافق البنيوي مع بقية الملف (summaries[]
@@ -42,7 +45,7 @@ function overallBannerStyle(weight: number, mandatoryStop: boolean) {
   return { bg: 'bg-emerald-50', text: 'text-emerald-800', border: 'border-emerald-200', soft: 'border-emerald-200/60', dot: 'bg-emerald-500' };
 }
 
-function kindIcon(kind: IndicatorSummary['kind']) {
+function kindIcon(_kind: IndicatorSummary['kind']) {
   return <Wind className="w-3.5 h-3.5" />;
 }
 
@@ -81,10 +84,15 @@ export default function MultiIndicatorActivityBox({
   defaultOpen = false,
   decisionTargets = [],
   mandatoryStop = false,
-  isFutureActivity = false,
+  // isFutureActivity: يُستقبَل (page.tsx يمرره فعلياً) بلا استخدام داخلي
+  // حالياً هنا — إبقاؤه في التوقيع للتوافق مع الاستدعاء الحالي بلا تغيير
+  // واجهة المكوّن، بادئة _ لتفادي تحذير المتغير غير المستخدَم.
+  isFutureActivity: _isFutureActivity = false,
   windowStartIso,
   windowEndIso,
   durationMinutes,
+  workHoursStart = null,
+  workHoursEnd = null,
   onDeleted,
   onEdited,
 }: {
@@ -101,6 +109,13 @@ export default function MultiIndicatorActivityBox({
   windowEndIso?: string;
   /** مدة النشاط بالدقائق، تُستخدم إن لم تُشتق المدة من الفارق بين البداية والنهاية */
   durationMinutes?: number;
+  /** أوقات دوام المشروع الرسمية (project.work_hours_start/end من GET
+   * /api/projects/[id]) — تُستخدم لعرض توضيحي وتحقق فوري في نموذج التعديل
+   * قبل إرسال الطلب للسيرفر (الذي يتحقق أيضاً بنفس المنطق، راجع
+   * app/lib/shiftValidation.ts). null/undefined = لا قيد (مشروع لم يحدّد
+   * أوقات دوام بعد). */
+  workHoursStart?: string | null;
+  workHoursEnd?: string | null;
   /** يُستدعى بعد نجاح الحذف فعلياً من قاعدة البيانات، ليقوم الأب بإزالة هذا النشاط من القائمة المعروضة */
   onDeleted?: () => void;
   /** يُستدعى بعد نجاح تعديل الزمن، ليُحدّث الأب بيانات الصفحة (نفس دور onDeleted) */
@@ -152,6 +167,14 @@ export default function MultiIndicatorActivityBox({
       return;
     }
 
+    // تحقق فوري بالواجهة قبل الإرسال — نفس منطق shiftValidation.ts المطبَّق
+    // أيضاً بالسيرفر (PATCH /api/activities) كخط دفاع حقيقي. لا قيد إن لم
+    // يحدّد المشروع أوقات دوام رسمية بعد (workHoursStart/End فارغتان).
+    if (!isActivityTimeWithinWorkHours(workHoursStart, workHoursEnd, editStartTime, durationHours)) {
+      alert(`وقت النشاط اليومي يجب أن يقع ضمن أوقات دوام المشروع (${(workHoursStart || '').slice(0, 5)} – ${(workHoursEnd || '').slice(0, 5)}).`);
+      return;
+    }
+
     setIsSavingEdit(true);
     try {
       // تحقق الملكية والتحديث الفعلي مسؤولية PATCH /api/activities على
@@ -168,9 +191,10 @@ export default function MultiIndicatorActivityBox({
       setIsEditing(false);
       onEdited?.();
       router.refresh();
-    } catch (error: any) {
+    } catch (error) {
       console.error('خطأ أثناء تعديل زمن النشاط:', error);
-      alert(error?.response?.data?.error || 'حدث خطأ أثناء تعديل زمن النشاط.');
+      const err = error as AxiosError<{ error?: string }>;
+      alert(err?.response?.data?.error || 'حدث خطأ أثناء تعديل زمن النشاط.');
     } finally {
       setIsSavingEdit(false);
     }
@@ -187,11 +211,13 @@ export default function MultiIndicatorActivityBox({
 
   // معلومات النشاط العامة (توقيت وحالة) — تُحسب مرة واحدة هنا بدلاً من تكرارها داخل كل بطاقة مؤشر
   const hasSchedule = Boolean(windowStartIso && windowEndIso);
+  // "الآن" كقيمة حالة متحدّثة دورياً (لا Date.now() مباشر أثناء useMemo) —
+  // يكفي تحديث كل دقيقة لحالة "قادم/جارٍ/انتهى" أدناه.
+  const nowTs = useNow(60000);
   const scheduleInfo = useMemo(() => {
     if (!hasSchedule) return null;
     const start = new Date(windowStartIso as string);
     const end = new Date(windowEndIso as string);
-    const nowTs = Date.now();
     const startTs = start.getTime();
     const endTs = end.getTime();
     const status: 'upcoming' | 'ongoing' | 'past' = nowTs < startTs ? 'upcoming' : nowTs <= endTs ? 'ongoing' : 'past';
@@ -235,7 +261,7 @@ export default function MultiIndicatorActivityBox({
       statusColor,
       status,
     };
-  }, [hasSchedule, windowStartIso, windowEndIso, durationMinutes, mandatoryStop]);
+  }, [hasSchedule, windowStartIso, windowEndIso, durationMinutes, mandatoryStop, nowTs]);
 
   const handleDelete = async () => {
     if (decisionTargets.length === 0) return;
@@ -333,6 +359,11 @@ export default function MultiIndicatorActivityBox({
         {isEditing && (
           <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50/50 p-4 space-y-3">
             <p className="text-[12px] font-black text-[#061B40]">تعديل زمن النشاط</p>
+            {workHoursStart && workHoursEnd && (
+              <p className="text-[11px] font-bold text-slate-500">
+                أوقات دوام المشروع: {workHoursStart.slice(0, 5)}–{workHoursEnd.slice(0, 5)} — يجب أن يقع النشاط بالكامل ضمنها.
+              </p>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 block mb-1">التاريخ</label>

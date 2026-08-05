@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     .is('archived_at', null);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/alerts-list projects fetch failed') }, { status: 500 });
 
-  const projectIds = (dbProjects || []).map((p: any) => p.id);
+  const projectIds = (dbProjects || []).map((p: { id: string }) => p.id);
   if (projectIds.length === 0) {
     return NextResponse.json({ projects: dbProjects || [], alerts: [], activityLabels: {} });
   }
@@ -30,15 +30,21 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false });
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/alerts-list alerts fetch failed') }, { status: 500 });
 
-  const dustIds = [...new Set((dbAlerts || []).filter((a: any) => a.activity_source === 'dust').map((a: any) => a.activity_id))];
+  const dustIds = [
+    ...new Set(
+      (dbAlerts || [])
+        .filter((a: { activity_source: string }) => a.activity_source === 'dust')
+        .map((a: { activity_id: string }) => a.activity_id)
+    ),
+  ];
 
   // activityLabels: مفتاح "source:id" → بيانات خام كافية لبناء التسمية في
   // الواجهة (translateActivityType نفسها منطق عرض، تبقى في الواجهة)
-  const activityLabels: Record<string, any> = {};
+  const activityLabels: Record<string, { activity_type: string | null; regulatory_activity: string | null }> = {};
 
   if (dustIds.length > 0) {
     const { data } = await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', dustIds);
-    (data || []).forEach((d: any) => { activityLabels[`dust:${d.id}`] = { activity_type: d.activity_type, regulatory_activity: d.regulatory_activity }; });
+    (data || []).forEach((d: { id: string; activity_type: string | null; regulatory_activity: string | null }) => { activityLabels[`dust:${d.id}`] = { activity_type: d.activity_type, regulatory_activity: d.regulatory_activity }; });
   }
 
   return NextResponse.json({ projects: dbProjects || [], alerts: dbAlerts || [], activityLabels });

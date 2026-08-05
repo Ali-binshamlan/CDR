@@ -1,6 +1,25 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { safeErrorResponse } from '@/app/lib/apiError';
+import { checkRateLimit } from '@/app/lib/rateLimit';
+
+// نفس مبدأ حد معدّل الدخول (app/api/auth/login/route.ts) — يمنع إنشاء
+// عدد كبير من الحسابات الوهمية آلياً من IP واحد (كل حساب يُدرج صفاً في
+// profiles و user_authorizations ويستهلك حصة Supabase Auth).
+const REGISTER_MAX_ATTEMPTS_PER_WINDOW = 5;
+const REGISTER_WINDOW_MS = 10 * 60_000;
+
+// القيم المسموحة لحقل profiles.role (تصنيف عرض فقط — لا صلة بـ
+// is_super_admin/account_role المعزولين في user_authorizations). أي قيمة
+// خارج هذه القائمة تُرفض بدل إدراجها كما هي من جسم الطلب.
+const ALLOWED_ROLES = ['owner', 'manager', 'contractor', 'engineer', 'other'] as const;
+type AllowedRole = typeof ALLOWED_ROLES[number];
+
+function normalizeRole(role: unknown): AllowedRole {
+  return (ALLOWED_ROLES as readonly string[]).includes(role as string)
+    ? (role as AllowedRole)
+    : 'other';
+}
 
 // عميل service_role مخصص لعمليات التسجيل — لا يعتمد على عميل anon
 // (app/lib/supabase) الذي يخضع لـ RLS ولجلسة المستخدم. بدونه: (1) إدراج
@@ -16,6 +35,14 @@ const supabaseAdmin = createClient(
 
 export async function POST(request: Request) {
   try {
+    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+    if (!checkRateLimit(`register:${ip}`, REGISTER_MAX_ATTEMPTS_PER_WINDOW, REGISTER_WINDOW_MS)) {
+      return NextResponse.json(
+        { error: 'محاولات كثيرة جداً، الرجاء الانتظار قليلاً قبل إعادة المحاولة' },
+        { status: 429 }
+      );
+    }
+
     // 1. استقبال البيانات الفعلية القادمة من الواجهة المرفقة (page.tsx)
     const {
       email,
@@ -23,8 +50,9 @@ export async function POST(request: Request) {
       companyName,
       username,
       phoneNumber,
-      role
+      role: rawRole
     } = await request.json();
+    const role = normalizeRole(rawRole);
 
     // التحقق من وجود الحقول الأساسية
     if (!email || !password || !username) {
@@ -118,7 +146,7 @@ export async function POST(request: Request) {
       { status: 201 }
     );
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Registration API Error:', error);
     return NextResponse.json(
       { error: 'حدث خطأ داخلي في السيرفر أثناء المعالجة' },

@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { apiClient } from '@/app/lib/apiClient';
+import { useNow } from '@/app/lib/useNow';
 import {
   X, ArrowUpRight, Gauge,
   Clock, AlertTriangle, Printer,
@@ -11,6 +12,7 @@ import {
 import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
 import { ACTIVITY_LABEL_AR } from '@/app/utils/dust-engine/tables';
+import { DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import ActivityReadingsCharts from './ActivityReadingsCharts';
 
 /** قرار امتثال ساعة واحدة ضمن ساعات دوام اليوم — نفس نمط DviHourlyEvaluation
@@ -230,9 +232,10 @@ function buildAdvisoryTips(visibilityM: number | null, temperatureC: number | nu
 }
 
 // عتبة حداثة قراءة الجهاز — نفس DEVICE_READING_FRESHNESS_MINUTES في
-// app/lib/dustEvaluation.ts (لا استيراد مباشر بين مكوّن واجهة ومكتبة
-// خادمية، القيمة مكرَّرة عمداً بنفس القيمة الثابتة).
-const DEVICE_READING_STALENESS_MINUTES = 20;
+// app/lib/dustEvaluation.ts. مصدرها الآن app/utils/rule-bundles/
+// field-freshness.ts (DEVICE_CONNECTION_FRESHNESS_MS، وحدة ثوابت صرفة بلا
+// أي استيراد خادمي — آمنة للاستيراد المباشر هنا).
+const DEVICE_READING_STALENESS_MINUTES = DEVICE_CONNECTION_FRESHNESS_MS / 60_000;
 
 // نفس عتبات المدة في app/utils/dust-compliance-engine/rulebook.ts
 // (PM10_VIOLATION_CONFIRM_MINUTES / PM10_SUSPENSION_MINUTES) — مكرَّرة عمداً
@@ -270,18 +273,14 @@ function useCountdownRemainingSeconds(
   asOfMs: number,
   onElapsed?: () => void
 ): number | null {
-  const [, forceTick] = useState(0);
+  // نبضة كل ثانية للعرض — نفس نبضة setInterval السابقة، الآن عبر useNow
+  // (قيمة حالة، لا Date.now() مباشر أثناء الـrender).
+  const now = useNow(1000);
 
-  useEffect(() => {
-    if (sustainedMinutes === undefined) return;
-    const id = window.setInterval(() => forceTick((n) => n + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [sustainedMinutes]);
-
-  // جدولة استدعاء دقيق للحظة الصفر — منفصل عن مؤقّت الثانية أعلاه (ذاك فقط
-  // لإعادة رسم النص المعروض). يُعاد الجدولة كلما تغيّرت لقطة البيانات
-  // (sustainedMinutes/asOfMs جديدين بعد كل تحديث من الخادم)، وتُلغى المهلة
-  // القديمة تلقائياً عبر cleanup — فلا تراكم لعدة مؤقّتات لنفس النشاط.
+  // جدولة استدعاء دقيق للحظة الصفر — منفصل عن نبضة العرض أعلاه. يُعاد
+  // الجدولة كلما تغيّرت لقطة البيانات (sustainedMinutes/asOfMs جديدين بعد
+  // كل تحديث من الخادم)، وتُلغى المهلة القديمة تلقائياً عبر cleanup — فلا
+  // تراكم لعدة مؤقّتات لنفس النشاط.
   useEffect(() => {
     if (sustainedMinutes === undefined || !onElapsed) return;
     const elapsedSinceSnapshotSec = Math.max(0, (Date.now() - asOfMs) / 1000);
@@ -294,7 +293,7 @@ function useCountdownRemainingSeconds(
   }, [sustainedMinutes, targetMinutes, asOfMs]);
 
   if (sustainedMinutes === undefined) return null;
-  const elapsedSinceSnapshotSec = Math.max(0, (Date.now() - asOfMs) / 1000);
+  const elapsedSinceSnapshotSec = Math.max(0, (now - asOfMs) / 1000);
   const sustainedSecondsNow = sustainedMinutes * 60 + elapsedSinceSnapshotSec;
   const remainingSec = targetMinutes * 60 - sustainedSecondsNow;
   return Math.max(0, Math.round(remainingSec));
@@ -425,7 +424,10 @@ export default function ComplianceWidgetCard({
   onCountdownElapsed,
 }: ComplianceWidgetCardProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [activeAlert, setActiveAlert] = useState<any>(null);
+  const [activeAlert, setActiveAlert] = useState<Record<string, unknown> | null>(null);
+  // "الآن" يتحدّث كل دقيقة — يكفي لحالات "منتهٍ؟"/"جهاز متوقف؟" أدناه (ليست
+  // عدّاداً تنازلياً بدقة الثانية كـuseCountdownRemainingSeconds أعلاه).
+  const now = useNow(60000);
 
   const complianceEntries = (complianceList ?? []).filter(Boolean);
   const worst = pickWorstCompliance(complianceEntries);
@@ -434,7 +436,7 @@ export default function ComplianceWidgetCard({
   // اللحظة لنشاط منتهٍ منذ دقائق/ساعات. نفس مفهوم scheduleInfo.status==='past'
   // في MultiIndicatorActivityBox (البطاقة الأم)، محسوب محلياً هنا لأن هذا
   // المكوّن لا يستقبل ذلك الكائن جاهزاً.
-  const isEnded = Boolean(windowEndIso && new Date(windowEndIso).getTime() < Date.now());
+  const isEnded = Boolean(windowEndIso && new Date(windowEndIso).getTime() < now);
   // مؤشر AEI هو القرار الموحّد المعروض فعلياً في كل أنحاء البطاقة (العنوان،
   // اللون، البطاقة المطوية، شبكة الساعات) — قرار الامتثال (worst) يبقى
   // مصدر البيانات الداعمة (القواعد/الإجراءات/الأدلة) فقط، وليس عنواناً
@@ -472,10 +474,7 @@ export default function ComplianceWidgetCard({
   // هو المرجع الصحيح دائماً — نفس اللحظة بصرف النظر عن توقيت عرضه بالمتصفح.
   const sustained340 = worst?.pm10SustainedMinutesAbove340;
   const sustained250 = worst?.pm10SustainedMinutesAbove250;
-  const snapshotAtMs = useMemo(
-    () => (worst?.evaluatedAt ? new Date(worst.evaluatedAt).getTime() : Date.now()),
-    [worst?.evaluatedAt]
-  );
+  const snapshotAtMs = worst?.evaluatedAt ? new Date(worst.evaluatedAt).getTime() : now;
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
   // للمرجع"): كان pm10RulesExempt (محطة خلط بصوامع مغلقة + فلتر ≥99%) يُخفي
@@ -515,14 +514,16 @@ export default function ComplianceWidgetCard({
     worst?.pendingConfirmation === true &&
     devicePm10LastReadingAt !== undefined &&
     devicePm10LastReadingAt !== null &&
-    (Date.now() - new Date(devicePm10LastReadingAt).getTime()) / 60000 > PM10_LAST_READING_FRESHNESS_MINUTES;
+    (now - new Date(devicePm10LastReadingAt).getTime()) / 60000 > PM10_LAST_READING_FRESHNESS_MINUTES;
 
   // عدّاد "متبقٍ حتى تتأكد المخالفة" — يظهر فقط أثناء pendingConfirmation
   // (القراءة ≥340 لكن لم تستمر بعد دقيقتين) وطالما لا يزال الجهاز يرسل
   // قراءات حديثة فعلياً (لا isDeviceStalledDuringPending). onElapsed يطلب
   // إعادة تقييم فورية من الخادم بالضبط عند انتهاء المهلة (لا انتظار دورة
   // polling التالية)، فينعكس القرار الفعلي (مؤكَّد أو ALLOW) في أقرب وقت ممكن.
-  const confirmRemainingSec = useCountdownRemainingSeconds(
+  // القيمة المُرجَعة (ثوانٍ متبقية) غير مُستخدَمة للعرض هنا — الاستدعاء
+  // ضروري فقط لأثره الجانبي (onCountdownElapsed عند انتهاء المهلة).
+  useCountdownRemainingSeconds(
     !isEnded && !isAwaitingVerification && !isDeviceStalledDuringPending && worst?.pendingConfirmation
       ? sustained340
       : undefined,
@@ -554,7 +555,8 @@ export default function ComplianceWidgetCard({
     worst.evidence.pm10UgM3 >= 250 &&
     sustained250 !== undefined &&
     sustained250 < PM10_SUSPENSION_MINUTES;
-  const suspensionRemainingSec = useCountdownRemainingSeconds(
+  // نفس مبدأ الاستدعاء أعلاه — القيمة المُرجَعة غير مُستخدَمة للعرض هنا.
+  useCountdownRemainingSeconds(
     showSuspensionCountdown ? sustained250 : undefined,
     PM10_SUSPENSION_MINUTES,
     snapshotAtMs,

@@ -3,9 +3,19 @@
 import { Calendar, Clock, MapPin, Sparkles } from 'lucide-react';
 import { getInputClass, labelClass, LOCATION_OPTIONS } from './constants';
 
+// شكل الحقول التي تعرضها/تعدّلها هذه الشاشة تحديداً — راجع اسم كل حقل عند
+// نقاط استخدامه أدناه (تاريخ/وقت النشاط، خيار اقتراح وقت أفضل، ونوع الموقع).
+export interface TimeLocationFormFields {
+  plannedDate: string;
+  startTime: string;
+  endTime: string;
+  suggestBetterTime: boolean;
+  locationType: string;
+}
+
 interface TimeLocationStepProps {
-  form: any;
-  updateField: (field: string, value: any) => void;
+  form: TimeLocationFormFields;
+  updateField: <K extends keyof TimeLocationFormFields>(field: K, value: TimeLocationFormFields[K]) => void;
   onNext: () => void;
   onBack: () => void;
 }

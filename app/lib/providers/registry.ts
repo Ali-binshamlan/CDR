@@ -10,7 +10,18 @@ const registry = new Map<string, ProviderConnector>([
   [thingsboardConnector.id, thingsboardConnector],
 ]);
 
+// خطأ أمني مكتشَف — مراجعة كود خبير خارجي: "mockConnector متاح في سجل
+// المزوّدين الإنتاجي ويولّد قراءات عشوائية تُحفظ كبيانات جهاز حقيقية".
+// mockConnector.fetchLatestReading يُنتج pm10/رياح عشوائية (راجع mockConnector.ts)
+// تُكتَب فعلياً في device_readings_history وتدخل حساب قرار DVI/الامتثال
+// الحقيقي — بلا هذا الحاجز، أي طلب API مباشر (بتجاوز الواجهة) بـ
+// provider: 'mock' في الإنتاج يقدر يُغرق نشاطاً حقيقياً بقراءات وهمية.
+function isMockProviderAllowed(): boolean {
+  return process.env.NODE_ENV !== 'production';
+}
+
 export function getConnector(providerId: string): ProviderConnector | null {
+  if (providerId === mockConnector.id && !isMockProviderAllowed()) return null;
   return registry.get(providerId) ?? null;
 }
 
@@ -18,10 +29,14 @@ export function listAvailableProviders(): Array<{
   id: string;
   displayName: string;
   credentialFields?: ProviderConnector['credentialFields'];
+  requiresProviderInstance?: boolean;
 }> {
-  return Array.from(registry.values()).map((c) => ({
-    id: c.id,
-    displayName: c.displayName,
-    credentialFields: c.credentialFields,
-  }));
+  return Array.from(registry.values())
+    .filter((c) => c.id !== mockConnector.id || isMockProviderAllowed())
+    .map((c) => ({
+      id: c.id,
+      displayName: c.displayName,
+      credentialFields: c.credentialFields,
+      requiresProviderInstance: c.requiresProviderInstance,
+    }));
 }

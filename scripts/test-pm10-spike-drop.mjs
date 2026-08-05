@@ -40,8 +40,13 @@ const baseUrl = process.env.DCR_BASE_URL ?? 'http://localhost:3000';
 const SPIKE_PM10 = 350; // >340 بوضوح، يتجاوز حد المخالفة صراحة
 const DROP_PM10 = 100; // نظيف تماماً (<150، لا احتراز حتى)
 
+let _sequenceCounter = 0;
 function buildPayload(pm10) {
+  _sequenceCounter += 1;
   return {
+    eventId: `sim-${Date.now()}-${_sequenceCounter}`,
+    sequence: _sequenceCounter,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: 10,
     windGustKmh: 15,
     windDirectionDeg: 180,

@@ -55,8 +55,13 @@ const STEPS = [
 // يبقى SAFETY_BREACH عالقاً من رياح/رؤية قديمة سيئة من محاكاة سابقة (الكتابة
 // جزئية، الحقول الغائبة تبقى بقيمتها المخزَّنة سابقاً — راجع تعليق
 // MEASUREMENT_FIELDS في app/api/devices/ingest/route.ts).
+let _sequenceCounter = 0;
 function buildPayload(pm10) {
+  _sequenceCounter += 1;
   return {
+    eventId: `sim-${Date.now()}-${_sequenceCounter}`,
+    sequence: _sequenceCounter,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: 10,
     windGustKmh: 15,
     windDirectionDeg: 180,

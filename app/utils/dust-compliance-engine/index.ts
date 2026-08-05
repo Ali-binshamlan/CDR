@@ -6,7 +6,7 @@
 // =============================================================
 
 export * from './types';
-export { RULEBOOK_VERSION, classifyProject, classifyWind, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT, DECISION_PRIORITY } from './rulebook';
+export { RULEBOOK_VERSION, classifyProject, classifyWind, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT, PM10_WARNING_UG_M3, DECISION_PRIORITY } from './rulebook';
 export {
   buildComplianceContext,
   buildProjectComplianceProfile,

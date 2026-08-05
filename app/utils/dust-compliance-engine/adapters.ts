@@ -25,7 +25,7 @@ function toNullableBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
-export function buildProjectComplianceProfile(project: any): DustProjectComplianceProfile {
+export function buildProjectComplianceProfile(project: Record<string, unknown> | null | undefined): DustProjectComplianceProfile {
   return {
     siteAreaM2: toNullableNumber(project?.site_area_m2),
     dailyTruckMovements: toNullableNumber(project?.daily_truck_movements),
@@ -33,8 +33,8 @@ export function buildProjectComplianceProfile(project: any): DustProjectComplian
     hasOnsiteBatchingPlant: toNullableBoolean(project?.has_onsite_batching_plant),
 
     dmpApprovalStatus: (project?.dmp_approval_status as DmpApprovalStatus) ?? 'UNKNOWN',
-    dmpSubmittedAt: project?.dmp_submitted_at ?? null,
-    dmpApprovedAt: project?.dmp_approved_at ?? null,
+    dmpSubmittedAt: (project?.dmp_submitted_at as string | null) ?? null,
+    dmpApprovedAt: (project?.dmp_approved_at as string | null) ?? null,
 
     baselineMonitoringDays: toNullableNumber(project?.baseline_monitoring_days),
     monitoringStationCount: toNullableNumber(project?.monitoring_station_count),
@@ -49,7 +49,7 @@ export function buildProjectComplianceProfile(project: any): DustProjectComplian
 }
 
 export function buildActivityComplianceProfile(
-  row: any,
+  row: Record<string, unknown> | null | undefined,
   sensitiveReceptors: SensitiveReceptor[] = [],
   // اتجاه الرياح الفعلي المُدمَج (بعد أولوية جهاز > طقس > onsite — نفس
   // الاتجاه المعروض فعلياً للمستخدم في evidence.windDirectionDeg، لا عينة
@@ -61,7 +61,7 @@ export function buildActivityComplianceProfile(
   windDirectionDeg: number | null = null,
   trueNorthAlignmentDocumented: boolean | null = null
 ): DustActivityComplianceProfile {
-  const regulatoryActivity: RegulatoryDustActivity = row?.regulatory_activity ?? 'OTHER';
+  const regulatoryActivity: RegulatoryDustActivity = (row?.regulatory_activity as RegulatoryDustActivity) ?? 'OTHER';
 
   const crusherLat = toNullableNumber(row?.crusher_lat);
   const crusherLng = toNullableNumber(row?.crusher_lng);
@@ -78,11 +78,11 @@ export function buildActivityComplianceProfile(
   const batchingNearest = nearestReceptorDistancesM(batchingLat, batchingLng, sensitiveReceptors);
 
   return {
-    activityGroupId: row?.activity_group_id ?? `dust-${row?.id}`,
+    activityGroupId: (row?.activity_group_id as string | undefined) ?? `dust-${row?.id}`,
     regulatoryActivity,
-    isDustGenerating: row?.is_dust_generating ?? true,
+    isDustGenerating: (row?.is_dust_generating as boolean | undefined) ?? true,
     isEnclosedOperation: toNullableBoolean(row?.is_enclosed_operation) ?? false,
-    isActiveOrPlanned: row?.is_active_or_planned ?? true,
+    isActiveOrPlanned: (row?.is_active_or_planned as boolean | undefined) ?? true,
     controls: {
       dustSuppressionSystemOperational: toNullableBoolean(row?.dust_suppression_system_operational),
       continuousMisting: toNullableBoolean(row?.continuous_misting),
@@ -105,8 +105,8 @@ export function buildActivityComplianceProfile(
       surfaceWatered: toNullableBoolean(row?.surface_watered),
 
       truckRoutesDesignated: toNullableBoolean(row?.truck_routes_designated),
-      pathCoverMaterial: row?.path_cover_material ?? null,
-      waterSprayMethod: row?.water_spray_method ?? null,
+      pathCoverMaterial: (row?.path_cover_material as DustActivityComplianceProfile['controls']['pathCoverMaterial']) ?? null,
+      waterSprayMethod: (row?.water_spray_method as DustActivityComplianceProfile['controls']['waterSprayMethod']) ?? null,
       soilCompactedAfterExcavation: toNullableBoolean(row?.soil_compacted_after_excavation),
       stabilizerUsedDuringPause: toNullableBoolean(row?.stabilizer_used_during_pause),
       pauseDurationOver5Days: toNullableBoolean(row?.pause_duration_over_5_days),
@@ -114,13 +114,13 @@ export function buildActivityComplianceProfile(
       workAreaPhased: toNullableBoolean(row?.work_area_phased),
 
       unpavedRoadsWateredDaily: toNullableBoolean(row?.unpaved_roads_watered_daily),
-      dustControlMethod: row?.dust_control_method ?? null,
+      dustControlMethod: (row?.dust_control_method as DustActivityComplianceProfile['controls']['dustControlMethod']) ?? null,
       speedLimitSignsPosted: toNullableBoolean(row?.speed_limit_signs_posted),
       containersCoveredBeforeMoving: toNullableBoolean(row?.containers_covered_before_moving),
       containersInspectedBeforeDeparture: toNullableBoolean(row?.containers_inspected_before_departure),
       loadHeightExceedsContainerLimit: toNullableBoolean(row?.load_height_exceeds_container_limit),
       adjacentRoadsSweptMechanically: toNullableBoolean(row?.adjacent_roads_swept_mechanically),
-      sweepFrequencyBand: row?.sweep_frequency_band ?? null,
+      sweepFrequencyBand: (row?.sweep_frequency_band as DustActivityComplianceProfile['controls']['sweepFrequencyBand']) ?? null,
       wheelWashAtExit: toNullableBoolean(row?.wheel_wash_at_exit),
       wheelWashMaintainedRegularly: toNullableBoolean(row?.wheel_wash_maintained_regularly),
       washWaterRecycled: toNullableBoolean(row?.wash_water_recycled),
@@ -131,11 +131,11 @@ export function buildActivityComplianceProfile(
       waterUsedRoutinelyForCleaning: toNullableBoolean(row?.water_used_routinely_for_cleaning),
 
       accessRoadPaved: toNullableBoolean(row?.access_road_paved),
-      tireCleaningMethod: row?.tire_cleaning_method ?? null,
+      tireCleaningMethod: (row?.tire_cleaning_method as DustActivityComplianceProfile['controls']['tireCleaningMethod']) ?? null,
       sandTrapPresent: toNullableBoolean(row?.sand_trap_present),
       oilSeparatorPresent: toNullableBoolean(row?.oil_separator_present),
       washCycleDurationAdequate: toNullableBoolean(row?.wash_cycle_duration_adequate),
-      wheelWashOperationMethod: row?.wheel_wash_operation_method ?? null,
+      wheelWashOperationMethod: (row?.wheel_wash_operation_method as DustActivityComplianceProfile['controls']['wheelWashOperationMethod']) ?? null,
       washWaterReused: toNullableBoolean(row?.wash_water_reused),
       antiSlipMeshPresent: toNullableBoolean(row?.anti_slip_mesh_present),
       immersionZoneLengthAdequate: toNullableBoolean(row?.immersion_zone_length_adequate),
@@ -143,7 +143,7 @@ export function buildActivityComplianceProfile(
       truckPathCleanedWithin15Min: toNullableBoolean(row?.truck_path_cleaned_within_15_min),
 
       exposedAreaCurrentlyIdle: toNullableBoolean(row?.exposed_area_currently_idle),
-      stabilizationMethod: row?.stabilization_method ?? null,
+      stabilizationMethod: (row?.stabilization_method as DustActivityComplianceProfile['controls']['stabilizationMethod']) ?? null,
       stockpileAreaExists: toNullableBoolean(row?.stockpile_area_exists),
       suppressantUsedAtStockpileArea: toNullableBoolean(row?.suppressant_used_at_stockpile_area),
       windBarriersNearStockpiles: toNullableBoolean(row?.wind_barriers_near_stockpiles),
@@ -167,14 +167,14 @@ export function buildActivityComplianceProfile(
       suppressionSystemCheckedDaily: toNullableBoolean(row?.suppression_system_checked_daily),
       manualDrySweepingBanned: toNullableBoolean(row?.manual_dry_sweeping_banned),
       compressedAirBanned: toNullableBoolean(row?.compressed_air_banned),
-      siteCleaningMethod: row?.site_cleaning_method ?? null,
+      siteCleaningMethod: (row?.site_cleaning_method as DustActivityComplianceProfile['controls']['siteCleaningMethod']) ?? null,
       wasteHumidityMaintainedDuringTransport: toNullableBoolean(row?.waste_humidity_maintained_during_transport),
       wasteLoadsCovered: toNullableBoolean(row?.waste_loads_covered),
 
-      sprayCannonRangeBand: row?.spray_cannon_range_band ?? null,
+      sprayCannonRangeBand: (row?.spray_cannon_range_band as DustActivityComplianceProfile['controls']['sprayCannonRangeBand']) ?? null,
       crushersCoveredDemolition: toNullableBoolean(row?.crushers_covered_demolition),
       loadingPointsHaveSprinklers: toNullableBoolean(row?.loading_points_have_sprinklers),
-      demolitionCuttingMethod: row?.demolition_cutting_method ?? null,
+      demolitionCuttingMethod: (row?.demolition_cutting_method as DustActivityComplianceProfile['controls']['demolitionCuttingMethod']) ?? null,
       sandblastingUsed: toNullableBoolean(row?.sandblasting_used),
       sandblastingInEnclosedBox: toNullableBoolean(row?.sandblasting_in_enclosed_box),
 
@@ -244,8 +244,8 @@ export function buildActivityComplianceProfile(
 // يحمل rawWeatherSample) — النوع هنا DviEvaluationResult|DviHourlyEvaluation
 // لقبول كليهما (اختبارات الوحدة تبني DviEvaluationResult مباشرة بلا عينة خام).
 export function buildComplianceContext(
-  project: any,
-  activityRow: any,
+  project: Record<string, unknown> | null | undefined,
+  activityRow: Record<string, unknown> | null | undefined,
   dviResult: DviEvaluationResult | DviHourlyEvaluation,
   sensitiveReceptors: SensitiveReceptor[] = [],
   // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
@@ -291,6 +291,13 @@ export function buildComplianceContext(
   // MRQ-RECEPTOR-DOWNWIND-120 بصمت. استخدام merged?.windDirectionDeg هنا
   // يضمن اتساق الاتجاه المستخدَم في الحساب مع الاتجاه المعروض للمستخدم دائماً.
   const merged = (dviResult as Partial<DviHourlyEvaluation>).mergedReading;
+  // القسم 18.6 من "دليل الإصلاح الجذري لمنظومة مرقاب" — "Forecast قديم:
+  // التخطيط يظهر نتيجة Stale": rawWeatherSample.isForecastStale (weather.ts،
+  // يُضبَط true عند فشل/انقطاع Open-Meteo، راجع fetchJson) لم يكن يصل محرك
+  // الامتثال إطلاقاً من قبل — DustComplianceContext لم يحمل هذا الحقل. لا
+  // معنى له إلا لمسار PLANNING (Live مبني من الجهاز مباشرة، بلا rawWeatherSample
+  // ذات صلة أصلاً — راجع evaluateLiveOperationalDecision).
+  const isForecastStale = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample?.isForecastStale === true;
   const mergedWindDirectionDeg = toNullableNumber(merged?.windDirectionDeg);
   const trueNorthAlignmentDocumented = toNullableBoolean(project?.true_north_alignment_documented);
 
@@ -315,20 +322,21 @@ export function buildComplianceContext(
       mergedWindDirectionDeg,
       trueNorthAlignmentDocumented
     ),
+    isForecastStale,
     dviScore: dviResult.score,
     dviDecision: dviResult.decisionCategory,
     dviMandatoryStop: dviResult.mandatoryStop,
     // true فقط عندما يكون سبب إيقاف DVI الإلزامي الوحيد هو تجاوز PM10≥340
-    // اللحظي (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY، راجع dust-engine/
-    // engine.ts) — بلا أي خطر فيزيائي فوري آخر (رؤية حرجة/رياح شديدة) مساهم
-    // بنفس اللحظة. تُستخدم في GATE-DVI-002 (engine.ts) لمنع قراءة PM10
+    // اللحظي — بلا أي خطر فيزيائي فوري آخر (رؤية حرجة/رياح شديدة) مساهم بنفس
+    // اللحظة. يُقرأ الآن من stopBasis/confirmationState (حقول Typed، القسم
+    // 4.4 من "دليل الإصلاح الجذري") بدل مطابقة نص كود قاعدة يدوياً — نفس
+    // الدلالة بالضبط. تُستخدم في GATE-DVI-002 (engine.ts) لمنع قراءة PM10
     // لحظية واحدة من التحول مباشرة لـMANDATORY_STOP تنظيمي قطعي دون نفس
     // دليل الاستمرار (>دقيقتين) الذي يشترطه pm10ThresholdRule لعتبة
-    // PM10-VIOLATION-STOP-006 — راجع ملاحظة مراجعة خارجية: "DVI يصدر إيقافاً
-    // تنظيمياً فور قراءة واحدة".
-    dviMandatoryStopIsPm10Only: (dviResult.triggeredRules ?? []).includes(
-      'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY'
-    ),
+    // PM10-VIOLATION-STOP-006.
+    dviMandatoryStopIsPm10Only: dviResult.stopBasis === 'PM10' && dviResult.confirmationState === 'PENDING',
+    // راجع تعليق dviVisibilityDataMissing الكامل في types.ts.
+    dviVisibilityDataMissing: dviResult.visibilityDataMissing === true,
     dviShortReason: dviResult.shortReason ?? null,
     dviConfidenceScore: dviResult.confidenceScore,
     // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي
@@ -369,10 +377,10 @@ export function buildComplianceContext(
   };
 }
 
-export function buildSensitiveReceptor(row: any): SensitiveReceptor {
+export function buildSensitiveReceptor(row: Record<string, unknown> | null | undefined): SensitiveReceptor {
   return {
-    id: row?.id,
-    name: row?.name ?? '',
+    id: String(row?.id ?? ''),
+    name: (row?.name as string | undefined) ?? '',
     receptorType: (row?.receptor_type as SensitiveReceptorType) ?? 'OTHER',
     lat: Number(row?.lat),
     lng: Number(row?.lng),

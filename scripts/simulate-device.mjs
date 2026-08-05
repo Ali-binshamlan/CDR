@@ -33,7 +33,12 @@ async function sendReading(n) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ pm10 }),
+    body: JSON.stringify({
+      pm10,
+      eventId: `sim-${Date.now()}-${n}`,
+      sequence: n,
+      observedAt: new Date().toISOString(),
+    }),
   });
   const body = await res.json().catch(() => ({}));
   const time = new Date().toLocaleTimeString('ar-SA');

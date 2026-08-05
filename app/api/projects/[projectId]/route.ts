@@ -13,9 +13,14 @@ import {
   applyComplianceGatesToDustAei,
   computeUnifiedActivityDecision,
   fetchLatestFinalDecisions,
+  activityDecisionKey,
   riyadhLocalToUtcIso,
+  type DustActivityRow,
+  type DustResultItem,
+  type StoredFinalDecisionRow,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor, DECISION_PRIORITY } from '@/app/utils/dust-compliance-engine';
+import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { buildProjectZoneFromRow, distanceToZoneBoundaryM, zoneToBoundaryDistanceM, zoneSearchAnchorPoints } from '@/app/utils/geo/zone';
@@ -88,7 +93,7 @@ function riskWeightFromColor(color: string | undefined | null): number {
 // مع دمج aei تماماً كما تفعل الدالة نفسها) بدل الصف المخزَّن، فيعكسان دائماً
 // نفس اللحظة بالضبط. الصف المخزَّن يبقى fallback فقط حين لا توجد نتيجة محرك
 // حية لهذا النشاط في هذا الطلب (نادر: نشاط فشل حسابه هذه الدورة تحديداً).
-function summaryFromLiveDecision(engineResult: any): { decisionLabel: string; riskWeight: number; reasonText?: string } {
+function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel: string; riskWeight: number; reasonText?: string } {
   const dviWorst = engineResult.windowEval.worst;
   // startIso ضروري لحساب mode الصحيح (PLANNING لنشاط مستقبلي بعيد) — راجع
   // تعليق computeUnifiedActivityDecision في dustEvaluation.ts للسبب الكامل.
@@ -100,7 +105,7 @@ function summaryFromLiveDecision(engineResult: any): { decisionLabel: string; ri
   };
 }
 
-function summaryFromStoredDecision(storedDecision: any): { decisionLabel: string; riskWeight: number; reasonText?: string } {
+function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { decisionLabel: string; riskWeight: number; reasonText?: string } {
   return {
     decisionLabel: storedDecision.decision_label_ar,
     riskWeight: riskWeightFromColor(storedDecision.level),
@@ -113,13 +118,35 @@ function summaryFromStoredDecision(storedDecision: any): { decisionLabel: string
 //
 // الملخص العلوي (البانر) يعكس الآن قرار المحرك الحي مباشرةً عبر خريطة
 // dustByGroup، فإن لم تتوفر نتيجة محرك نرجع لآخر قرار موثّق في decision_records.
+interface DecisionTarget {
+  projectId: string;
+  activityId: string;
+  source: 'dust';
+  reason: string;
+  requiredAction: string;
+  weatherSnapshot: { label: string; value: string }[];
+}
+
+interface RecentActivityItem {
+  activityGroupId: string;
+  activityTitle: string;
+  kinds: Array<'dust'>;
+  summaries: { kind: 'dust'; label: string; decisionLabel: string; riskWeight: number; reasonText?: string }[];
+  decisionTargets: DecisionTarget[];
+  mandatoryStop: boolean;
+  isFutureActivity: boolean;
+  windowStartIso?: string;
+  windowEndIso?: string;
+  durationMinutes?: number;
+}
+
 function buildRecentActivities(
   projectId: string,
-  dustRows: any[],
+  dustRows: DustActivityRow[],
   decisionsMap: Map<string, string>,
-  dustByGroup: Map<string, any>,
-  finalDecisionsByGroup: Map<string, any>
-): any[] {
+  dustByGroup: Map<string, DustResultItem>,
+  finalDecisionsByGroup: Map<string, StoredFinalDecisionRow>
+): RecentActivityItem[] {
   type Acc = {
     activityGroupId: string;
     activityTitle: string;
@@ -130,7 +157,7 @@ function buildRecentActivities(
     regulatoryTitles: string[];
     kinds: Array<'dust'>;
     summaries: IndicatorSummaryLike[];
-    decisionTargets: any[];
+    decisionTargets: DecisionTarget[];
     latestCreatedAt: string;
     windowStartIso?: string;
     windowEndIso?: string;
@@ -148,7 +175,7 @@ function buildRecentActivities(
 
   function upsertGroup(
     kind: 'dust',
-    row: any,
+    row: DustActivityRow,
     windowStartIso: string | undefined,
     windowEndIso: string | undefined,
     durationMinutes: number | undefined
@@ -167,7 +194,7 @@ function buildRecentActivities(
         kinds: [],
         summaries: [],
         decisionTargets: [],
-        latestCreatedAt: row.created_at,
+        latestCreatedAt: row.created_at ?? new Date(0).toISOString(),
         windowStartIso,
         windowEndIso,
         durationMinutes,
@@ -199,8 +226,10 @@ function buildRecentActivities(
     const engineResult = dustByGroup.get(`${groupId}-${row.id}`);
 
     // القرار النهائي المخزَّن (كتبه evaluate/route.ts) يبقى fallback فقط
-    // حين لا توجد نتيجة محرك حية لهذا النشاط في هذا الطلب تحديداً.
-    const storedDecision = finalDecisionsByGroup.get(groupId);
+    // حين لا توجد نتيجة محرك حية لهذا النشاط في هذا الطلب تحديداً. المفتاح
+    // مركّب (projectId, groupId) — راجع تعليق fetchLatestFinalDecisions في
+    // dustEvaluation.ts للسبب (عزل المشاريع، القسم 12.2).
+    const storedDecision = finalDecisionsByGroup.get(activityDecisionKey(projectId, groupId));
 
     let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string };
     if (engineResult) {
@@ -357,30 +386,59 @@ export async function GET(
     // بنفس نمط project.shifts أعلاه، ويصل تلقائياً لكل مستهلكي project —
     // buildProjectComplianceProfile (adapters.ts) يقرأ نفس الاسم دون أي
     // تعديل على توقيعه.
-    project.monitoring_station_count = (projectDevices || []).filter((d: any) => d.is_active).length;
+    project.monitoring_station_count = (projectDevices || []).filter((d: { is_active: boolean }) => d.is_active).length;
 
     // 3. بناء خريطة القرارات
     const latestDecisionsMap = new Map<string, string>();
-    (recentDecisions || []).forEach((d: any) => {
+    (recentDecisions || []).forEach((d: { activity_source: string; activity_id: string; status: string }) => {
       const key = `${d.activity_source}-${d.activity_id}`;
       if (!latestDecisionsMap.has(key)) {
         latestDecisionsMap.set(key, d.status);
       }
     });
 
+    // خطأ أداء مكتشَف: computeDustResults (DVI/طقس، قد يستدعي Open-Meteo لكل
+    // نشاط)، استعلام sensitive_receptors، واكتشاف مستقبِلات OSM عبر
+    // Overpass API كانت الثلاثة تُنفَّذ بالتسلسل (await منفصل لكل واحدة)
+    // رغم أنها مستقلة تماماً عن بعضها (لا واحدة تحتاج نتيجة الأخرى) —
+    // Promise.all هنا يقلّص الزمن الكلي لأطول عملية منفردة بدل مجموعها،
+    // بلا أي تغيير في المنطق أو الترتيب النهائي.
+    //
     // 4. حساب النتائج الحية لمحرك الغبار لكل نشاط. المحرك يجلب طقسه بنفسه
     // داخلياً حسب موقعه ووقت النشاط المخطط، ثم يُدمج مع AEI. النتائج تُربط
     // بـ activityGroupId حتى تعرضها page.tsx كأبناء داخل بطاقة النشاط
     // الموحّدة، وتُغذّي أيضًا ملخص البانر العلوي بقرار المحرك الحي قبل أي
     // توثيق يدوي.
-    const dustResults = await computeDustResults(dustProfiles || [], project, supabaseAdmin);
-
+    //
     // مستقبِلات حساسة (مدارس/مستشفيات/سكني) — عامة على مستوى النظام، لا
     // تُفلتَر حسب project_id. مصدرها جدول sensitive_receptors المُدار
     // يدوياً، وتبقى المصدر الوحيد المُستخدم فعلياً في قواعد الامتثال
     // التنظيمي (مسافة الكسارة/الأكوام) أدناه — لا يجوز الاعتماد على بيانات
     // OSM غير موثّقة لقرار تنظيمي مُلزم.
     //
+    // قائمة "المستقبِلات القريبة" المعروضة في بطاقة الامتثال (عرض توعوي
+    // فقط، لا تُغذّي أي قاعدة امتثال) — تُكتشف تلقائياً عبر Overpass API
+    // (OpenStreetMap) بدل الاعتماد على جدول sensitive_receptors الذي قد
+    // يبقى فارغاً بلا إدخال يدوي. المسافة تُحسب من كل مستقبِل إلى أقرب
+    // نقطة على حدود منطقة المشروع الفعلية (مضلع/دائرة مرسومة عبر KML)،
+    // وليس إلى مركزها. البحث ينطلق من عدة نقاط على حدود المشروع الفعلية
+    // (رؤوس المضلع، أو نقاط موزَّعة على محيط الدائرة) بدل استعلام واحد من
+    // مركز تمثيلي بنصف قطر موسَّع — نفس مبدأ حساب موقع الكسارة/الهدم من
+    // موقعها الفعلي، لا من مركز المشروع.
+    const projectZoneForReceptors = buildProjectZoneFromRow(project);
+    const NEARBY_RECEPTOR_RADIUS_M = 1000;
+    const searchAnchors = zoneSearchAnchorPoints(projectZoneForReceptors);
+
+    const [dustResults, sensitiveReceptorsResult, discoveredReceptorsByAnchor] = await Promise.all([
+      computeDustResults(dustProfiles || [], project, supabaseAdmin),
+      supabaseAdmin.from('sensitive_receptors').select('id, name, receptor_type, lat, lng'),
+      Promise.all(
+        searchAnchors.map((anchor) =>
+          fetchNearbySensitiveReceptorsFromOsm(anchor.lat, anchor.lng, NEARBY_RECEPTOR_RADIUS_M)
+        )
+      ),
+    ]);
+
     // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "فشل استعلام المستقبلات
     // الحساسة يتحول إلى مصفوفة فارغة ثم Infinity؛ قد يظهر الموقع آمناً عند
     // تعطل البيانات"): كان لا يوجد أي فحص لـerror هنا — فشل الاستعلام
@@ -390,9 +448,7 @@ export async function GET(
     // فتعطّل الشبكة/القاعدة يظهر فعلياً كـ"لا مستقبِلات قريبة" بدل خطأ واضح،
     // على عكس فلسفة fail-safe المتبعة بكل مكان آخر في هذا الملف. الآن فشل
     // الاستعلام يوقف الطلب بخطأ 500 صريح بدل الاستمرار بأمان زائف.
-    const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
-      .from('sensitive_receptors')
-      .select('id, name, receptor_type, lat, lng');
+    const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = sensitiveReceptorsResult;
     if (sensitiveReceptorsError) {
       return NextResponse.json(
         { error: safeErrorResponse(sensitiveReceptorsError, 'sensitive_receptors fetch failed') },
@@ -400,26 +456,6 @@ export async function GET(
       );
     }
     const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
-
-    // قائمة "المستقبِلات القريبة" المعروضة في بطاقة الامتثال (عرض توعوي
-    // فقط، لا تُغذّي أي قاعدة امتثال) — تُكتشف تلقائياً عبر Overpass API
-    // (OpenStreetMap) بدل الاعتماد على جدول sensitive_receptors الذي قد
-    // يبقى فارغاً بلا إدخال يدوي. المسافة تُحسب من كل مستقبِل إلى أقرب
-    // نقطة على حدود منطقة المشروع الفعلية (مضلع/دائرة مرسومة عبر KML)،
-    // وليس إلى مركزها.
-    const projectZoneForReceptors = buildProjectZoneFromRow(project);
-    const NEARBY_RECEPTOR_RADIUS_M = 1000;
-    // البحث نفسه ينطلق من عدة نقاط على حدود المشروع الفعلية (رؤوس المضلع،
-    // أو نقاط موزَّعة على محيط الدائرة) بدل استعلام واحد من مركز تمثيلي
-    // بنصف قطر موسَّع — نفس مبدأ حساب موقع الكسارة/الهدم من موقعها الفعلي،
-    // لا من مركز المشروع. مضلع ممدود مثلاً قد تكون إحدى حوافه قريبة جداً من
-    // مستقبِل لا يظهر أبداً في بحث دائري من المركز وحده مهما اتسع نصف القطر.
-    const searchAnchors = zoneSearchAnchorPoints(projectZoneForReceptors);
-    const discoveredReceptorsByAnchor = await Promise.all(
-      searchAnchors.map((anchor) =>
-        fetchNearbySensitiveReceptorsFromOsm(anchor.lat, anchor.lng, NEARBY_RECEPTOR_RADIUS_M)
-      )
-    );
     const discoveredReceptorsById = new Map<string, (typeof discoveredReceptorsByAnchor)[number][number]>();
     discoveredReceptorsByAnchor.flat().forEach((r) => discoveredReceptorsById.set(r.id, r));
     const discoveredReceptors = Array.from(discoveredReceptorsById.values());
@@ -446,7 +482,7 @@ export async function GET(
     // مُعلَنة هنا (بدل داخل الشرط أدناه) حتى يمكن قراءتها لاحقاً في هذا
     // الملف (نقطة finalDecisionsByGroup الموحَّدة للبانر) بلا مشكلة نطاق —
     // تبقى undefined إن كان dustResults فارغاً (الفرع أدناه لا يُنفَّذ).
-    let finalDecisionsByGroupForAei: Map<string, any> | undefined;
+    let finalDecisionsByGroupForAei: Map<string, StoredFinalDecisionRow> | undefined;
 
     if (dustResults.length > 0) {
       // طبقة الامتثال التنظيمي (Riyadh Dust Compliance) — تستهلك نتيجة DVI
@@ -464,10 +500,10 @@ export async function GET(
       // تماماً — الواجهة تحتاج compliance/unitReceptors/complianceHourly
       // فوراً ضمن نفس استجابة GET، فقط الكتابة انتقلت.
       const dustComplianceResults = await computeDustComplianceResults(dustProfiles || [], project, dustResults, sensitiveReceptors, supabaseAdmin);
-      const complianceByActivityId = new Map<string, any>(
-        dustComplianceResults.map((r: any) => [r.activityId, r.result])
+      const complianceByActivityId = new Map<string, DustComplianceResult>(
+        dustComplianceResults.map((r) => [r.activityId, r.result])
       );
-      dustResults.forEach((r: any) => {
+      dustResults.forEach((r) => {
         r.compliance = complianceByActivityId.get(r.activityId) ?? null;
       });
 
@@ -496,7 +532,7 @@ export async function GET(
         dustResults,
         receptorsForUnitDisplay
       );
-      dustResults.forEach((r: any) => {
+      dustResults.forEach((r) => {
         r.unitReceptors = unitReceptorsByActivityId.get(r.activityId) ?? [];
       });
 
@@ -504,7 +540,7 @@ export async function GET(
       // في ComplianceWidgetCard، بنفس مبدأ hourlyForecasts الخاصة بـ DVI
       // لكن كل ساعة تمر عبر محرك الامتثال كاملاً بدل DVI فقط.
       const complianceHourlyByActivityId = computeDustComplianceHourly(dustProfiles || [], project, dustResults, sensitiveReceptors);
-      dustResults.forEach((r: any) => {
+      dustResults.forEach((r) => {
         r.complianceHourly = complianceHourlyByActivityId.get(r.activityId) ?? [];
       });
 
@@ -519,11 +555,11 @@ export async function GET(
       // كان يحدث لاحقاً في هذا الملف لأغراض البانر فقط) ليسبق هذا الاستدعاء
       // ويُمرَّر إليه، فتقرأ بطاقة AEI الآن نفس القرار المخزَّن المعروض في
       // البانر أعلاها بالضبط، لا نسخة مُعاد حسابها بمعزل بنفس اللحظة تقريباً.
-      const activityGroupIdsForFinalDecisions = Array.from(
-        new Set((dustProfiles || []).map((row: any) => row.activity_group_id || `dust-${row.id}`))
-      );
-      finalDecisionsByGroupForAei = await fetchLatestFinalDecisions(supabaseAdmin, activityGroupIdsForFinalDecisions);
-      applyComplianceGatesToDustAei(dustResults, finalDecisionsByGroupForAei);
+      const activityGroupTargetsForFinalDecisions = Array.from(
+        new Set((dustProfiles || []).map((row: DustActivityRow) => row.activity_group_id || `dust-${row.id}`))
+      ).map((activityGroupId) => ({ projectId, activityGroupId }));
+      finalDecisionsByGroupForAei = await fetchLatestFinalDecisions(supabaseAdmin, activityGroupTargetsForFinalDecisions);
+      applyComplianceGatesToDustAei(dustResults, projectId, finalDecisionsByGroupForAei);
     }
 
     // دمج صفوف الغبار المتعددة التي تشترك في activityGroupId إلى بطاقة DVI
@@ -548,22 +584,22 @@ export async function GET(
     // pickWorstCompliance (Compliancewidgetcard.tsx)، فيتطابق العنوان الرئيسي
     // مع أسوأ تفصيل معروض أسفله دائماً، تطبيقاً حرفياً لمبدأ "الأشد يحكم"
     // على مستوى المجموعة كاملة لا وحدة واحدة.
-    const dustResultsGrouped: any[] = (() => {
-      const byGroup = new Map<string, any[]>();
-      dustResults.forEach((r: any) => {
+    const dustResultsGrouped: (DustResultItem & { complianceList: DustComplianceResult[] })[] = (() => {
+      const byGroup = new Map<string, DustResultItem[]>();
+      dustResults.forEach((r) => {
         const list = byGroup.get(r.activityGroupId) || [];
         list.push(r);
         byGroup.set(r.activityGroupId, list);
       });
       return Array.from(byGroup.values()).map((rows) => {
-        const representative = rows.reduce((worst: any, current: any) => {
+        const representative = rows.reduce((worst, current) => {
           const worstPriority = DECISION_PRIORITY[worst.compliance?.decisionCategory as keyof typeof DECISION_PRIORITY] ?? -1;
           const currentPriority = DECISION_PRIORITY[current.compliance?.decisionCategory as keyof typeof DECISION_PRIORITY] ?? -1;
           return currentPriority > worstPriority ? current : worst;
         }, rows[0]);
         return {
           ...representative,
-          complianceList: rows.map((r) => r.compliance).filter(Boolean),
+          complianceList: rows.map((r) => r.compliance).filter((c): c is DustComplianceResult => Boolean(c)),
           // وحدات الكسارة/الخلاطة تُجمَّع من كل صفوف المجموعة وليس من الصف
           // الممثّل وحده: المجموعة الواحدة قد تحوي عدة وحدات (محطتا خلط
           // مثلاً) في صفين مختلفين لنفس النشاط التنظيمي، فأخذها من ممثّل
@@ -575,8 +611,8 @@ export async function GET(
 
     // خريطة بحث للملخص العلوي: المفتاح activityGroupId-activityId ليطابق
     // نفس المفتاح المُستخدم داخل upsertGroup في buildRecentActivities.
-    const dustByGroup = new Map<string, any>();
-    dustResults.forEach((r: any) => dustByGroup.set(`${r.activityGroupId}-${r.activityId}`, r));
+    const dustByGroup = new Map<string, DustResultItem>();
+    dustResults.forEach((r) => dustByGroup.set(`${r.activityGroupId}-${r.activityId}`, r));
 
     // آخر قرار نهائي مخزَّن لكل activity_group_id — راجع تعليق
     // persistFinalDecisions/fetchLatestFinalDecisions في dustEvaluation.ts:
@@ -586,9 +622,11 @@ export async function GET(
     // نفس الخريطة المجلوبة أعلاه لبطاقة AEI إن توفرت (dustResults.length > 0)
     // بدل استعلام مكرر لنفس البيانات بالضبط؛ الجلب المحلي هنا يبقى fallback
     // وحيداً لحالة dustResults فارغة (حيث لا يُنفَّذ الفرع أعلاه إطلاقاً).
-    const allActivityGroupIds = Array.from(new Set((dustProfiles || []).map((row: any) => row.activity_group_id || `dust-${row.id}`)));
+    const allActivityGroupTargets = Array.from(new Set((dustProfiles || []).map((row: DustActivityRow) => row.activity_group_id || `dust-${row.id}`))).map(
+      (activityGroupId) => ({ projectId, activityGroupId })
+    );
     const finalDecisionsByGroup =
-      finalDecisionsByGroupForAei ?? (await fetchLatestFinalDecisions(supabaseAdmin, allActivityGroupIds));
+      finalDecisionsByGroupForAei ?? (await fetchLatestFinalDecisions(supabaseAdmin, allActivityGroupTargets));
 
     // 5. معالجة الأنشطة الحديثة (Recent Activities) — البانر يعكس الآن قرار
     // المحرك الحي عبر الخريطة أعلاه، ويرجع لـ decision_records عند غيابه.
@@ -596,7 +634,7 @@ export async function GET(
     // كان يقصّ صفوفاً فردية فيضيع أحياناً صف نشاط تنظيمي ضمن مجموعة تضم أكثر
     // من نشاط (كسارة + هدم)، فيظهر عنوان المجموعة ناقصاً. buildRecentActivities
     // يجمع حسب activity_group_id ويقصّ إلى أحدث 6 مجموعات داخلياً.
-    const recentActivitiesRaw: any[] = buildRecentActivities(
+    const recentActivitiesRaw: RecentActivityItem[] = buildRecentActivities(
       projectId,
       dustProfiles || [],
       latestDecisionsMap,
@@ -704,10 +742,12 @@ export async function PATCH(
 
   // تحقق الملكية — يقبل السوبر أدمن كذلك (راجع verifyProjectOwnership في
   // apiAuth.ts)، فنحتاج صف المشروع نفسه (name/user_id) لتحديد لاحقاً هل
-  // الفاعل هو المالك المباشر أم أدمن يعدّل مشروع غيره (لتسجيل admin_audit_log)
+  // الفاعل هو المالك المباشر أم أدمن يعدّل مشروع غيره (لتسجيل admin_audit_log).
+  // dmp_approval_status الحالي مطلوب أيضاً لفحص "هل تغيّرت هذه القيمة فعلياً؟"
+  // أدناه (راجع تعليق ذلك الفحص للسبب الكامل).
   const { data: project } = await supabaseAdmin
     .from('projects')
-    .select('id, name, user_id')
+    .select('id, name, user_id, dmp_approval_status')
     .eq('id', projectId)
     .maybeSingle();
   if (!project) return NextResponse.json({ error: 'المشروع غير موجود' }, { status: 404 });
@@ -737,7 +777,19 @@ export async function PATCH(
   // المؤقت الآمن: تعيين APPROVED يتطلب صلاحية super_admin تحديداً (نفس
   // صلاحية admin_audit_log/requireSuperAdmin في apiAuth.ts) — مالك المشروع
   // العادي يبقى يقدر يرى الحقل ويطلب اعتماده، لكن لا يعتمده لنفسه مباشرة.
-  if (updates.dmp_approval_status === 'APPROVED') {
+  //
+  // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — "ساعات العمل ما تنحفظ"، السبب
+  // الفعلي: هذا الفحص كان يمنع أي حفظ إطلاقاً): settings/page.tsx يرسل
+  // النموذج بأكمله (...projectForm) في كل حفظ، بصرف النظر عن أي حقل غيّره
+  // المستخدم فعلياً — فمشروع اعتُمدت DMP له مسبقاً (dmp_approval_status
+  // فعلياً APPROVED بالفعل بقاعدة البيانات) كان يُعيد إرسال نفس القيمة
+  // القائمة أصلاً مع كل حفظ، فيصطدم بهذا القيد ويُرفَض الطلب بالكامل (403)
+  // حتى لو المستخدم لم يلمس حقل DMP إطلاقاً (مثلاً عدّل ساعات العمل فقط).
+  // الإصلاح: القيد يُطبَّق فقط عند *تغيّر* القيمة فعلياً (من غير APPROVED
+  // إلى APPROVED) — إعادة إرسال نفس APPROVED القائمة أصلاً (project.
+  // dmp_approval_status === 'APPROVED' من قبل) لا تُعتبَر "تعييناً" جديداً
+  // يستحق هذا القيد.
+  if (updates.dmp_approval_status === 'APPROVED' && project.dmp_approval_status !== 'APPROVED') {
     const { data: authz } = await supabaseAdmin
       .from('user_authorizations')
       .select('is_super_admin')
@@ -756,7 +808,7 @@ export async function PATCH(
   // يُميَّز بـ"in" (لا Array.isArray فقط) حتى تبقى دلالة "المفتاح غائب
   // إطلاقاً" (لا تُغيَّر الورديات) مختلفة عن shifts:[] الصريحة (احذف الكل)،
   // نفس العقد القديم قبل هذا التصحيح.
-  const shifts = 'shifts' in parsed.data ? (parsed.data.shifts as any[]) : null;
+  const shifts = 'shifts' in parsed.data ? (parsed.data.shifts ?? null) : null;
   delete updates.shifts;
 
   const { error } = await supabaseAdmin.from('projects').update(updates).eq('id', projectId);
@@ -786,7 +838,7 @@ export async function PATCH(
       return NextResponse.json({ error: safeErrorResponse(deleteError, 'project shifts delete failed') }, { status: 500 });
     }
     if (shifts.length > 0) {
-      const shiftRows = shifts.map((s: any, i: number) => ({
+      const shiftRows = shifts.map((s, i) => ({
         project_id: projectId,
         name: s.name,
         start_time: s.start_time,
@@ -823,6 +875,14 @@ export async function PATCH(
 // alerts/generate-mine) — راجع كل ملف على حدة. لا حذف فعلي لأي صف إطلاقاً
 // — الأرشفة قابلة للتراجع مبدئياً (تصفير archived_at) لو احتاج التطبيق
 // ميزة استعادة مستقبلاً.
+// خطأ تشغيلي/أمني مكتشَف ومُصلَح (القسم 13 من "دليل الإصلاح الجذري لمنظومة
+// مرقاب" — "الأرشفة الذرية"): كانت الأرشفة UPDATE واحداً على projects فقط —
+// لا تعطيل ذرّي للأجهزة/الاتصالات/المهام المعلَّقة في نفس المعاملة، ولا قفل
+// يمنع سباق أرشفة متزامنة مع تقييم/إدخال جهاز جارٍ لنفس المشروع بنفس
+// اللحظة (ingest_device_reading_atomic/ingest_device_event_v2 كانا يفحصان
+// نشاط الجهاز فقط، لا أرشفة المشروع المرتبط به). الإصلاح: archive_project_
+// atomic (202608040009) تنفّذ كل ذلك في معاملة واحدة تحت نفس قفل المشروع
+// المستخدَم الآن في كل RPC كتابة أخرى (ingest/persist_activity_decision).
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> }
@@ -843,26 +903,15 @@ export async function DELETE(
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
-  const isDirectOwner = project.user_id === auth.userId;
-
-  const { error: archiveError } = await supabaseAdmin
-    .from('projects')
-    .update({ archived_at: new Date().toISOString(), archived_by: auth.userId })
-    .eq('id', projectId);
+  const { error: archiveError } = await supabaseAdmin.rpc('archive_project_atomic', {
+    p_project_id: projectId,
+    p_actor_id: auth.userId,
+  });
   if (archiveError) {
+    if (archiveError.message?.includes('PROJECT_NOT_FOUND_OR_ARCHIVED')) {
+      return NextResponse.json({ error: 'المشروع مؤرشف مسبقاً' }, { status: 400 });
+    }
     return NextResponse.json({ error: safeErrorResponse(archiveError, `فشل أرشفة المشروع ${projectId} (${archiveError.code})`) }, { status: 500 });
-  }
-
-  // تسجيل تدقيق: فقط عندما أدمن يؤرشف مشروعاً لا يملكه (راجع نفس المنطق في PATCH أعلاه)
-  if (!isDirectOwner) {
-    await supabaseAdmin.from('admin_audit_log').insert({
-      admin_user_id: auth.userId,
-      action: 'project_archive',
-      target_project_id: projectId,
-      target_project_name: project.name,
-      target_owner_user_id: project.user_id,
-      details: null,
-    });
   }
 
   return NextResponse.json({ success: true });

@@ -50,11 +50,26 @@ function formatRangeLabel(start: Date, end: Date): string {
 // صفحة "جدول الأسبوع" — تقويم أسبوعي (7 أعمدة) لأنشطة الغبار المجدولة عبر
 // كل مشاريع المستخدم، نظرة تخطيطية بحتة على المواعيد (بلا حساب DVI حي لكل
 // نشاط بكل الأسبوع، تجنباً لعشرات نداءات الطقس المتزامنة).
+interface ScheduleProjectRow {
+  id: string;
+  name: string;
+}
+
+interface ScheduleActivityRow {
+  id: string;
+  project_id: string;
+  activity_type: string | null;
+  regulatory_activity: string | null;
+  planned_date: string;
+  planned_time: string | null;
+  duration_hours: number | null;
+}
+
 export default function SchedulePage() {
   const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date()));
   const [isLoading, setIsLoading] = useState(true);
-  const [projects, setProjects] = useState<any[]>([]);
-  const [activities, setActivities] = useState<any[]>([]);
+  const [projects, setProjects] = useState<ScheduleProjectRow[]>([]);
+  const [activities, setActivities] = useState<ScheduleActivityRow[]>([]);
 
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
 
@@ -83,7 +98,7 @@ export default function SchedulePage() {
   );
 
   const activitiesByDate = useMemo(() => {
-    const map = new Map<string, any[]>();
+    const map = new Map<string, ScheduleActivityRow[]>();
     activities.forEach((a) => {
       const list = map.get(a.planned_date) || [];
       list.push(a);

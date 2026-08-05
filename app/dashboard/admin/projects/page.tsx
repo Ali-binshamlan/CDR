@@ -11,10 +11,22 @@ const PROJECT_STATUS_LABEL_AR: Record<string, string> = {
   in_progress: 'جاري',
 };
 
+interface AdminProjectRow {
+  id: string;
+  name: string;
+  city: string | null;
+  project_status: string | null;
+  created_at: string;
+  ownerUsername: string | null;
+  ownerCompany: string | null;
+  activeAlertsCount: number;
+  decisionsCount: number;
+}
+
 export default function AdminProjectsPage() {
   const router = useRouter();
   const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | undefined>(undefined);
-  const [projects, setProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<AdminProjectRow[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
@@ -31,8 +43,8 @@ export default function AdminProjectsPage() {
       try {
         const { data } = await apiClient.get('/admin/projects');
         setProjects(data?.data || []);
-      } catch (error: any) {
-        if (error?.response?.status === 403) setAccessDenied(true);
+      } catch (error: unknown) {
+        if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
       } finally {
         setIsLoading(false);
       }
@@ -114,7 +126,7 @@ export default function AdminProjectsPage() {
                       <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-slate-400" /> {p.city || '—'}</span>
                     </td>
                     <td className="py-3 px-5 text-slate-600">{p.ownerUsername || p.ownerCompany || '—'}</td>
-                    <td className="py-3 px-5 text-slate-600">{PROJECT_STATUS_LABEL_AR[p.project_status] || p.project_status || '—'}</td>
+                    <td className="py-3 px-5 text-slate-600">{(p.project_status && PROJECT_STATUS_LABEL_AR[p.project_status]) || p.project_status || '—'}</td>
                     <td className="py-3 px-5 text-slate-600">
                       <span className="flex items-center gap-1"><Bell className="w-3.5 h-3.5 text-orange-400" /> {p.activeAlertsCount}</span>
                     </td>

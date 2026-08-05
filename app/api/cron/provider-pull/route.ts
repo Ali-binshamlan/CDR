@@ -4,6 +4,7 @@ import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { getConnector } from '@/app/lib/providers/registry';
 import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
 import { evaluateProject } from '@/app/lib/evaluateProject';
+import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
 
 // مسار سحب دوري (pull) لكل محطات provider_connections النشطة عبر كل
 // المشاريع — بديل عن دفع (push) الجهاز لبياناته عبر /api/devices/ingest،
@@ -29,11 +30,26 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
+  // خطأ أمني/تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المشروع المؤرشف يمكن
+  // أن يستمر في Provider pull والتقييم". provider_connections.is_active لا
+  // علاقة له بأرشفة المشروع نفسه (projects.archived_at) — أرشفة مشروع لا
+  // تُعطِّل اتصالاته تلقائياً، فكانت هذه الحلقة تسحب من محطة خارجية حقيقية
+  // وتُعيد تقييم مشروع مؤرشف بالكامل في كل دورة (كل دقيقتين) بلا داعٍ.
+  // projects!inner(archived_at) + .is('projects.archived_at', null) يستبعد
+  // هذه الاتصالات من الاستعلام مباشرة (نفس نمط dashboard/global/route.ts)،
+  // بدل فحص لاحق بعد السحب الفعلي من المزوّد.
+  // provider_instance_id + provider_instances(origin, is_approved, is_active)
+  // مُضمَّن هنا (القسم 15.1) — origin يُحل من السجل المعتمد وقت كل سحب، لا
+  // من عمود ثابت بـprovider_connections، بحيث لو أُلغي اعتماد/تفعيل منصة
+  // لاحقاً (مسؤول النظام) يتوقف السحب فوراً بلا حاجة لتعديل كل اتصال يستخدمها.
   const { data: connections, error: fetchError } = await supabaseAdmin
     .from('provider_connections')
-    .select('id, device_id, project_id, provider, credentials, vendor_station_id')
+    .select(
+      'id, device_id, project_id, provider, credentials_ciphertext, credentials_key_version, vendor_station_id, provider_instance_id, projects!inner(archived_at), provider_instances(origin, is_approved, is_active)'
+    )
     .eq('is_active', true)
-    .not('vendor_station_id', 'is', null);
+    .not('vendor_station_id', 'is', null)
+    .is('projects.archived_at', null);
 
   if (fetchError) {
     return NextResponse.json({ ok: false, error: fetchError.message }, { status: 500 });
@@ -59,7 +75,36 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const reading = await connector.fetchLatestReading(conn.credentials ?? {}, conn.vendor_station_id as string);
+      // خطأ أمني مكتشَف ومُصلَح (القسم 15.1): إن كان الـConnector يتطلب
+      // provider_instance ولم يعد السجل معتمداً/نشطاً (أُلغي بعد ربط
+      // الاتصال)، يُرفَض السحب فوراً بدل استخدام origin قديم مخزَّن أو
+      // فارغ.
+      let origin = '';
+      if (connector.requiresProviderInstance) {
+        const rawInstance = (conn as { provider_instances?: { origin: string; is_approved: boolean; is_active: boolean } | { origin: string; is_approved: boolean; is_active: boolean }[] | null }).provider_instances;
+        const instance = Array.isArray(rawInstance) ? rawInstance[0] : rawInstance;
+        if (!instance || !instance.is_approved || !instance.is_active) {
+          results.push({ connectionId: conn.id, provider: conn.provider, ok: false, error: 'المنصة المرتبطة لم تعد معتمدة/نشطة' });
+          await supabaseAdmin
+            .from('provider_connections')
+            .update({ last_pull_at: new Date().toISOString(), last_pull_success: false, last_pull_error: 'المنصة المرتبطة لم تعد معتمدة/نشطة', updated_at: new Date().toISOString() })
+            .eq('id', conn.id);
+          continue;
+        }
+        origin = instance.origin;
+      }
+
+      if (!conn.credentials_ciphertext || !conn.credentials_key_version) {
+        results.push({ connectionId: conn.id, provider: conn.provider, ok: false, error: 'بيانات اعتماد الاتصال غير مُرحَّلة لصيغة enc:v2' });
+        continue;
+      }
+      const credentials = decryptCredentialsV2(conn.credentials_ciphertext, conn.credentials_key_version, {
+        connectionId: conn.id,
+        projectId: conn.project_id,
+        deviceId: conn.device_id,
+        provider: conn.provider,
+      });
+      const reading = await connector.fetchLatestReading(origin, credentials, conn.vendor_station_id as string);
       if (!reading) {
         // لا قراءة جديدة متاحة — ليس خطأً، فقط لا شيء لكتابته الآن.
         results.push({ connectionId: conn.id, provider: conn.provider, ok: true });
@@ -121,7 +166,7 @@ export async function GET(request: Request) {
   const evaluationResults: Array<{ projectId: string; ok: boolean; error?: string }> = [];
   for (const projectId of affectedProjectIds) {
     try {
-      const evalResult = await evaluateProject(projectId);
+      const evalResult = await evaluateProject(projectId, 'provider_pull');
       evaluationResults.push({ projectId, ok: evalResult.success, error: evalResult.error });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

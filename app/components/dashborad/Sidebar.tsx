@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import type { AxiosError } from 'axios';
 import { supabase } from '@/app/lib/supabase';
 import { apiClient } from '@/app/lib/apiClient';
 import {
@@ -129,6 +130,12 @@ const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, 
           {/* الصورة الرمزية (Avatar) */}
           <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#fb8801] to-[#ffb766] text-white flex items-center justify-center font-bold shrink-0 shadow-sm">
             {user.avatarUrl ? (
+              // next/image يتطلب تسجيل نطاقات remotePatterns مسبقاً في
+              // next.config — avatarUrl لا مصدر فعلي يملؤه حالياً في أي
+              // استعلام بالمشروع (حقل معرَّف تحسباً لميزة مستقبلية)، فلا
+              // نطاق معروف اليوم لتسجيله. <img> عادي مقبول لصورة أفاتار
+              // صغيرة (36×36) بلا تكلفة LCP فعلية تُذكر.
+              // eslint-disable-next-line @next/next/no-img-element
               <img src={user.avatarUrl} alt={user.name} className="w-full h-full rounded-full object-cover" />
             ) : (
               <span>{initial}</span>
@@ -181,8 +188,9 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
       try {
         const { data } = await apiClient.get('/alerts/count');
         if (isMounted) setAlertsCount(data?.count ?? 0);
-      } catch (error: any) {
-        console.error('fetchAlertsCount failed:', error?.response?.data?.error || error?.message);
+      } catch (error) {
+        const err = error as AxiosError<{ error?: string }>;
+        console.error('fetchAlertsCount failed:', err?.response?.data?.error || err?.message);
       }
     }
 

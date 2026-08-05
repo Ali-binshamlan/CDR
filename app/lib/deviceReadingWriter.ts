@@ -5,9 +5,19 @@ import type { NormalizedReading } from '@/app/lib/providers/types';
 // app/api/devices/ingest/route.ts (مسار push) ليُستخدَم أيضاً من مسار
 // السحب الدوري (app/api/cron/provider-pull/route.ts, pull). التحقق من
 // القيم يبقى هنا بـTypeScript؛ الكتابة الفعلية تُفوَّض بالكامل لـRPC ذرّي
-// واحد (ingest_device_reading_atomic، راجع supabase/migrations/
-// 202608020004_atomic_device_ingest.sql) — أي تعديل مستقبلي على منطق
+// واحد (ingest_device_reading_and_event_atomic، راجع supabase/migrations/
+// 202608040027_merge_device_ingest_atomic.sql) — أي تعديل مستقبلي على منطق
 // الكتابة (لا التحقق) يكون هناك، لا هنا.
+//
+// خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "الكتابتان ليستا عملية واحدة
+// ذرية؛ يمكن أن يتحول PM10 قديم إلى دليل حديث زائف، وفشل V2 لا يُفشل
+// العملية كلها"): كانت هذه الدالة تستدعي ingest_device_reading_atomic ثم
+// ingest_device_event_v2 كاستدعاءين شبكة منفصلين، كل منهما معاملة SQL
+// خاصة — نجاح الأول (يغذّي device_readings_history/pm10_readings_history/
+// project_devices.last_*) لم يكن يضمن نجاح الثاني (device_metric_latest،
+// مصدر resolveFreshProjectDevice للقرار الحي)، وفشل الثاني كان يُسجَّل فقط
+// بـconsole.error بلا rollback وبلا إشارة فشل تصل للمستدعي. الآن استدعاء
+// واحد ذرّي يدمج كل الكتابات في معاملة SQL واحدة — تنجح معاً أو تفشل معاً.
 
 const MEASUREMENT_FIELDS = [
   'windSpeedKmh',
@@ -54,7 +64,7 @@ export interface WriteDeviceReadingParams {
 export type WriteDeviceReadingResult = { success: true; duplicate?: boolean } | { success: false; error: string };
 
 export async function writeDeviceReading(params: WriteDeviceReadingParams): Promise<WriteDeviceReadingResult> {
-  const { deviceId, projectId, reading, externalEventId = null, sequence = null } = params;
+  const { deviceId, projectId, reading, externalEventId = null, sequence: sequenceParam = null } = params;
 
   const rawValues: Record<(typeof MEASUREMENT_FIELDS)[number], number | undefined> = {
     windSpeedKmh: reading.windSpeedKmh,
@@ -81,19 +91,60 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
   }
 
   const receivedAt = new Date();
-  // observedAtIso غائب فقط من مصادر push قديمة لا ترسله بعد — نستخدم وقت
-  // وصول الخادم بدلاً منه في تلك الحالة فقط (فشل آمن معروف ومقصود). أي
-  // مصدر يرسل observedAtIso فعلياً (push حديث أو أي pull) يُستخدَم حصراً
-  // لتحديث لقطة project_devices الحية — لا receivedAt أبداً حين يتوفر،
-  // بخلاف السلوك السابق الذي كان يستخدم receivedAt دائماً.
+  // observedAtIso أصبح إلزامياً في مسار devices/ingest/route.ts (عقد الحدث
+  // الكامل)، ويبقى مُرسَلاً دائماً من كل مصادر pull أيضاً — غيابه هنا نظرياً
+  // فقط (fallback دفاعي لأي استدعاء لا يمر عبر أي من المسارين). لا receivedAt
+  // أبداً حين observedAtIso متوفر — بخلاف السلوك السابق الذي كان يستخدم
+  // receivedAt دائماً.
   const observedAt = reading.observedAtIso ? new Date(reading.observedAtIso) : receivedAt;
 
-  // كتابة ذرّية واحدة (RPC، معاملة SQL واحدة) — راجع
-  // supabase/migrations/202608020004_atomic_device_ingest.sql. يستبدل 3
-  // استدعاءات شبكة منفصلة (تحديث project_devices، إدراج device_readings_
-  // history، إدراج pm10_readings_history) كانت تسمح بنجاح جزئي (فشل صامت
-  // في console.error فقط) لو فشل استدعاء لاحق بعد نجاح سابق.
-  const { data, error } = await supabaseAdmin.rpc('ingest_device_reading_atomic', {
+  // القسم 5.10/P0-8 من "دليل الإصلاح الجذري لمنظومة مرقاب" — "عقد الحدث
+  // كامل فقط في Push": مسار Push (devices/ingest/route.ts) يفرض sequence
+  // رقماً صحيحاً غير سالب إلزامياً من العميل، لكن Provider Pull (موصلات مثل
+  // ThingsBoard) لا تملك مفهوم "sequence" أصلاً — تعطي فقط observedAtIso لكل
+  // حقل. بدل ترك sequence_no فارغاً (كان يمر null إلى الجدول والـRPC بلا أي
+  // رفض)، يُشتَق رقم بديل حتمي من observedAt نفسه (طابع Unix بالمللي ثانية)
+  // متى لم يُمرَّر sequence صراحةً — يبقى غير سالب دائماً (Date.getTime() لأي
+  // تاريخ حقيقي بعد 1970 موجب)، ويحافظ على ترتيب زمني صحيح بين قراءات نفس
+  // الجهاز (نفس الغرض من sequence الحقيقي: كشف late events عبر المقارنة، لا
+  // فقط الفرادة).
+  const sequence = sequenceParam ?? observedAt.getTime();
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "ThingsBoard ما زال يعيد تأريخ
+  // PM10 القديم كقراءة حديثة"): observedAt أعلاه هو الوقت المشترك للحمولة
+  // كلها (أحدث حقل — راجع fetchLatestReading في thingsboardConnector.ts)،
+  // لا وقت PM10 المستقل تحديداً. pm10_readings_history (مصدر computeSustainedPm10Status
+  // الوحيد لحساب استمرار المخالفة) كانت تُكتَب بهذا الوقت المشترك دائماً —
+  // فحرارة حديثة كانت تجعل PM10 قديماً يبدو حديثاً في سجل الاستمرار. الآن
+  // يُمرَّر وقت PM10 الفردي (reading.fields.pm10.observedAtIso، إن وُجد) عبر
+  // p_pm10_observed_at — يُستخدَم حصراً لإدراج pm10_readings_history، ويبقى
+  // observedAt المشترك كما هو لبقية الجداول (device_readings_history/
+  // project_devices، سجل عام لا يعتمد عليه حساب الاستمرار). غياب
+  // reading.fields.pm10 (مصادر push قديمة بلا fields) يعني fallback لنفس
+  // observedAt المشترك — لا تغيير في ذلك المسار.
+  const pm10ObservedAtIso = reading.fields?.pm10?.observedAtIso ?? null;
+
+  // نفس القياسات بصيغة V2 ({value, observedAtIso} مستقل لكل حقل) — يُبنى
+  // هنا فقط للحقول التي فعلياً تملك fields مستقلة (reading.fields)، لا لكل
+  // حقل بلا استثناء؛ الـRPC نفسه يبني fallback بـp_observed_at المشتركة لأي
+  // حقل غائب عن هذا الكائن (راجع تعليق p_measurements_v2 في الهجرة).
+  const measurementsV2: Record<string, { value: number; observedAtIso: string }> = {};
+  for (const field of Object.keys(measurements)) {
+    const point = reading.fields?.[field as keyof NonNullable<NormalizedReading['fields']>];
+    if (point?.observedAtIso) {
+      measurementsV2[field] = { value: measurements[field], observedAtIso: point.observedAtIso };
+    }
+  }
+
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "الكتابتان ليستا عملية واحدة
+  // ذرية؛ فشل V2 لا يُفشل العملية كلها، يُسجَّل في console فقط"): كان هذا
+  // استدعاءين شبكة منفصلين (ingest_device_reading_atomic ثم ingest_device_
+  // event_v2)، كل منهما معاملة SQL مستقلة — نجاح الأول لا يضمن نجاح الثاني،
+  // فيتباعد pm10_readings_history (استمرار المخالفة) عن device_metric_latest
+  // (القرار الحي) بصمت. استدعاء واحد الآن (ingest_device_reading_and_event_
+  // atomic، 202608040027) يدمج كل الكتابات في معاملة SQL واحدة — تنجح معاً
+  // أو تفشل معاً، بلا احتمال تناقض بين المصدرين.
+  const { data, error } = await supabaseAdmin.rpc('ingest_device_reading_and_event_atomic', {
     p_project_id: projectId,
     p_device_id: deviceId,
     p_external_event_id: externalEventId,
@@ -101,6 +152,8 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
     p_observed_at: observedAt.toISOString(),
     p_received_at: receivedAt.toISOString(),
     p_measurements: measurements,
+    p_pm10_observed_at: pm10ObservedAtIso,
+    p_measurements_v2: measurementsV2,
   });
 
   if (error) return { success: false, error: error.message };

@@ -50,7 +50,10 @@ export interface ProjectLite {
   zone_type?: 'polygon' | 'circle' | null;
   zone_polygon?: { lat: number; lng: number }[] | null;
   zone_radius_m?: number | null;
-  [key: string]: any;
+  // حقول إضافية قد تُرفَق من صف المشروع الفعلي (project row) ولا تُستخدم
+  // مباشرة داخل هذا المودال — تبقى قيمتها غير معروفة الشكل مسبقاً (unknown)
+  // بدل any، فأي استخدام فعلي لها يتطلب تضييق النوع (type guard) أولاً.
+  [key: string]: unknown;
 }
 
 export interface AddActivityModalProps {

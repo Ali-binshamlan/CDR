@@ -31,6 +31,23 @@ export interface DiscoveredReceptor {
 
 const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
 
+// شكل مبسّط لعنصر واحد من استجابة Overpass ("out geom;") — فقط الحقول
+// التي يقرأها الكود أدناه فعلياً (type/id/lat/lon/tags/geometry)، لا كل
+// حقول Overpass API الموسّعة (لا فائدة من نوع شامل لبيانات خارجية لا
+// نستهلك منها إلا هذا الجزء).
+interface OverpassElement {
+  type: string;
+  id: number | string;
+  lat?: number;
+  lon?: number;
+  tags?: Record<string, string>;
+  geometry?: { lat: number; lon: number }[];
+}
+
+interface OverpassResponse {
+  elements?: OverpassElement[];
+}
+
 // ذاكرة مؤقتة داخل العملية (in-memory) لنتائج Overpass — موقع المشروع لا
 // يتغيّر عملياً بعد التأسيس، فلا داعي لاستدعاء الخدمة العامة مجدداً في كل
 // مرة يفتح فيها صاحب المشروع لوحته (كانت ستُستدعى عند كل GET). المفتاح
@@ -145,8 +162,8 @@ export async function fetchNearbySensitiveReceptorsFromOsm(
 
     if (!response.ok) return [];
 
-    const json: any = await response.json();
-    const elements: any[] = Array.isArray(json?.elements) ? json.elements : [];
+    const json: OverpassResponse = await response.json();
+    const elements: OverpassElement[] = Array.isArray(json?.elements) ? json.elements : [];
 
     const results: DiscoveredReceptor[] = [];
     for (const el of elements) {

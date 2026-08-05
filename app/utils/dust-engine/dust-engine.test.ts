@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { classifyCause, computeDviResult, mergeDustReading } from './engine';
 import type { DustEngineInput, DustWeatherSample } from './types';
 
@@ -77,7 +77,16 @@ describe('classifyCause — تصنيف سبب ضعف الرؤية', () => {
 // computeDviResult — أولوية 3 مستويات: قراءة جهاز حية > onsite_* يدوي >
 // تقدير الطقس (Open-Meteo). راجع خطة "ربط أجهزة الرصد بالمشاريع".
 // -----------------------------------------------------------------------
+// القسم 5.3/18.3: buildDeviceMergedReading (engine.ts) يُسقِط قيمة رياح/رؤية
+// الجهاز إلى null إن غاب وقت رصدها المستقل أو تجاوز عمره 4 دقائق. الاختبارات
+// أدناه تختبر عزل/دمج المصادر (hasDeviceLink)، لا الحداثة نفسها — لذا
+// baseInput يمرر وقتاً "الآن" افتراضياً لكل حقل حاسم، فتبقى القيم تمر كما
+// كانت قبل هذا الإصلاح ما لم يختبر test الحداثة تحديداً (وصف منفصل أدناه).
+// يُحسَب عند كل استدعاء (لا ثابت وحيد وقت تحميل الملف) — تفادياً لأي فرق
+// توقيت نظري لو تباعد وقت الاستيراد عن وقت تنفيذ test فعلياً بأكثر من 4
+// دقائق ضمن تشغيلة اختبارات طويلة.
 function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
+  const freshNowIso = new Date().toISOString();
   return {
     activityType: 'GENERAL_OUTDOOR_WORK',
     latitude: 24.7136,
@@ -103,6 +112,13 @@ function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
       openConcretePour: false,
     },
     hasDeviceLink: false,
+    deviceWindSpeedAt: freshNowIso,
+    deviceWindGustAt: freshNowIso,
+    deviceWindDirectionAt: freshNowIso,
+    deviceVisibilityAt: freshNowIso,
+    devicePm25At: freshNowIso,
+    deviceRelativeHumidityAt: freshNowIso,
+    deviceTemperatureAt: freshNowIso,
     ...overrides,
   } as DustEngineInput;
 }
@@ -205,6 +221,173 @@ describe('computeDviResult — عزل تام: جهاز فقط أو طقس فقط
       sample({ visibilityM: 5000, pm10: 40, pm25: 15 })
     );
     expect(withDeviceNulls.visibilityKm).toBeNull();
+  });
+});
+
+// القسم 5.3/18.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" — مصفوفة اختبارات
+// القبول: حداثة مستقلة لكل حقل حرج (رياح/رؤية)، 4 دقائق بالضبط هي الحد.
+describe('mergeDustReading — حداثة مستقلة لكل حقل (القسم 5.3/18.3)', () => {
+  // ساعة مجمَّدة (vi.setSystemTime) للاختبار الحدّي بالضبط — buildDeviceMergedReading
+  // يستدعي Date.now() داخلياً بشكل مستقل عن "now" المحسوبة هنا؛ بلا تجميد،
+  // فارق مللي ثانية واحد بين حساب observedAt وتنفيذ mergeDustReading الفعلي
+  // كافٍ لتخطي حد 240000ms بالضبط، فيفشل الاختبار عشوائياً بحسب توقيت التنفيذ.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('عمر الحقل 4:00.000 بالضبط (240000ms) → لا يزال طازجاً (Fresh)، القيمة تمر', () => {
+    const now = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const observedAt = new Date(now - 240_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({
+        hasDeviceLink: true,
+        deviceWindSpeedKmh: 40,
+        deviceWindSpeedAt: observedAt,
+        deviceVisibilityM: 300,
+        deviceVisibilityAt: observedAt,
+      }),
+      sample()
+    );
+    expect(merged.windSpeedKmh).toBe(40);
+    expect(merged.visibilityM).toBe(300);
+    expect(merged.sources.windSpeedKmh).toBe('device');
+    expect(merged.sources.visibilityM).toBe('device');
+  });
+
+  it('عمر الحقل 4:00.001 (240001ms) → قديم (Stale)، تُسقَط القيمة إلى null', () => {
+    const now = Date.now();
+    const observedAt = new Date(now - 240_001).toISOString();
+    const merged = mergeDustReading(
+      baseInput({
+        hasDeviceLink: true,
+        deviceWindSpeedKmh: 40,
+        deviceWindSpeedAt: observedAt,
+        deviceVisibilityM: 300,
+        deviceVisibilityAt: observedAt,
+      }),
+      sample()
+    );
+    expect(merged.windSpeedKmh).toBeNull();
+    expect(merged.visibilityM).toBeNull();
+    expect(merged.sources.windSpeedKmh).toBe('none');
+    expect(merged.sources.visibilityM).toBe('none');
+  });
+
+  // حرارة حديثة، PM10 قديم: لا يصبح PM10 حديثاً — كل حقل يُحاسَب بوقته
+  // المستقل فقط، لا وقت حقل آخر ولو كان أحدث. PM10 هنا خارج freshOrNull
+  // (منطقه المستقل في dustEvaluation.ts)، لكن الاختبار يثبت المبدأ نفسه على
+  // رياح/رؤية: رؤية حديثة لا تُخفي أن الرياح قديمة، ولا العكس.
+  it('رياح حديثة + رؤية قديمة → رياح Fresh والرؤية Stale مستقلتان تماماً، لا تتأثر إحداهما بالأخرى', () => {
+    const now = Date.now();
+    const freshAt = new Date(now - 60_000).toISOString();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({
+        hasDeviceLink: true,
+        deviceWindSpeedKmh: 40,
+        deviceWindSpeedAt: freshAt,
+        deviceVisibilityM: 300,
+        deviceVisibilityAt: staleAt,
+      }),
+      sample()
+    );
+    expect(merged.windSpeedKmh).toBe(40);
+    expect(merged.sources.windSpeedKmh).toBe('device');
+    expect(merged.visibilityM).toBeNull();
+    expect(merged.sources.visibilityM).toBe('none');
+  });
+
+  it('رؤية آمنة قديمة (Stale) → لا تُستخدَم لإثبات Allow حي (تُسقَط إلى null، لا "آمن مؤكَّد")', () => {
+    const now = Date.now();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({ hasDeviceLink: true, deviceVisibilityM: 10000, deviceVisibilityAt: staleAt }),
+      sample()
+    );
+    expect(merged.visibilityM).toBeNull();
+  });
+
+  it('رؤية خطرة قديمة (Stale) → لا تُثبِت خطراً حياً (تُسقَط إلى null، لا إيقاف مبني على بيانات قديمة)', () => {
+    const now = Date.now();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({ hasDeviceLink: true, deviceVisibilityM: 300, deviceVisibilityAt: staleAt }),
+      sample()
+    );
+    expect(merged.visibilityM).toBeNull();
+  });
+
+  it('وقت رصد مستقبلي (Clock Error) → غير مؤهل، القيمة تُسقَط إلى null', () => {
+    const now = Date.now();
+    const futureAt = new Date(now + 60_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({ hasDeviceLink: true, deviceWindSpeedKmh: 40, deviceWindSpeedAt: futureAt }),
+      sample()
+    );
+    expect(merged.windSpeedKmh).toBeNull();
+  });
+
+  it('بلا وقت رصد مستقل إطلاقاً (undefined) → يُعامَل كغير معروف/قديم، القيمة تُسقَط إلى null', () => {
+    const merged = mergeDustReading(
+      baseInput({ hasDeviceLink: true, deviceWindSpeedKmh: 40, deviceWindSpeedAt: undefined }),
+      sample()
+    );
+    expect(merged.windSpeedKmh).toBeNull();
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "حداثة البيانات ما زالت جزئية:
+  // بوابة الأربع دقائق مطبَّقة فقط تقريباً على الرياح والهبات والاتجاه
+  // والرؤية؛ أما PM2.5/الحرارة/الرطوبة فقد تدخل القرار دون نفس الاستبعاد"):
+  // نفس بوابة freshOrNull تُطبَّق الآن أيضاً على PM2.5/الحرارة/الرطوبة —
+  // PM10 وحده يبقى مستثنى عمداً (آلية استمرار/تأكيد مستقلة في
+  // dustEvaluation.ts، راجع تعليق أعلى الوصف).
+  it('PM2.5 قديم (Stale) → يُسقَط إلى null، لا يدخل القرار بقيمته الخام', () => {
+    const now = Date.now();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(baseInput({ hasDeviceLink: true, devicePm25: 500, devicePm25At: staleAt }), sample());
+    expect(merged.pm25).toBeNull();
+    expect(merged.sources.pm25).toBe('none');
+  });
+
+  it('الرطوبة قديمة (Stale) → تُسقَط إلى null', () => {
+    const now = Date.now();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({ hasDeviceLink: true, deviceRelativeHumidityPercent: 85, deviceRelativeHumidityAt: staleAt }),
+      sample()
+    );
+    expect(merged.relativeHumidityPercent).toBeNull();
+    expect(merged.sources.relativeHumidityPercent).toBe('none');
+  });
+
+  it('الحرارة قديمة (Stale) → تُسقَط إلى null', () => {
+    const now = Date.now();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(baseInput({ hasDeviceLink: true, deviceTemperatureC: 55, deviceTemperatureAt: staleAt }), sample());
+    expect(merged.temperatureC).toBeNull();
+    expect(merged.sources.temperatureC).toBe('none');
+  });
+
+  it('حرارة حديثة، PM10 قديم — لا يصبح PM10 حديثاً (حقول مستقلة تماماً، لا وقت مشترك)', () => {
+    // هذا الاختبار يثبت المبدأ صراحةً على PM2.5 (بدل PM10 المستثنى من
+    // freshOrNull هنا) — حرارة حديثة لا يجوز أن "تُثبت" حداثة أي حقل آخر.
+    const now = Date.now();
+    const freshAt = new Date(now - 60_000).toISOString();
+    const staleAt = new Date(now - 300_000).toISOString();
+    const merged = mergeDustReading(
+      baseInput({
+        hasDeviceLink: true,
+        deviceTemperatureC: 40,
+        deviceTemperatureAt: freshAt,
+        devicePm25: 300,
+        devicePm25At: staleAt,
+      }),
+      sample()
+    );
+    expect(merged.temperatureC).toBe(40);
+    expect(merged.pm25).toBeNull();
   });
 });
 

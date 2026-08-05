@@ -9,6 +9,7 @@
 // =============================================================
 
 import 'leaflet/dist/leaflet.css';
+import type { Icon, LeafletEvent } from 'leaflet';
 import { MapContainer, TileLayer, Marker, Circle, Polygon, useMapEvents } from 'react-leaflet';
 import { MapPin } from 'lucide-react';
 import { MapController } from './MapController';
@@ -16,8 +17,12 @@ import type { ProjectZone } from '@/app/utils/geo/zone';
 import { clampPointToZone, isPointInProjectZone } from '@/app/utils/geo/zone';
 import { SAUDI_BOUNDS } from '@/app/utils/geo/countryBounds';
 
-let customIcon: any = null;
+let customIcon: Icon | undefined = undefined;
 if (typeof window !== 'undefined') {
+  // require() متعمَّد (نفس سبب MultiActivityMapPicker.tsx): leaflet يفشل
+  // خارج بيئة متصفح، وهذا يُنفَّذ مرة واحدة عند تحميل الوحدة محمياً بفحص
+  // typeof window — لا فائدة إضافية من import() ديناميكي هنا.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const L = require('leaflet');
   customIcon = new L.Icon({
     iconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
@@ -77,8 +82,8 @@ export function SinglePointMapPicker({
     }
   };
 
-  const handleDragEnd = (e: any) => {
-    const marker = e.target;
+  const handleDragEnd = (e: LeafletEvent) => {
+    const marker = e.target as { getLatLng: () => { lat: number; lng: number }; setLatLng: (pos: [number, number]) => void };
     const newPos = marker.getLatLng();
     if (projectZone) {
       const clamped = clampPointToZone({ lat: newPos.lat, lng: newPos.lng }, projectZone);

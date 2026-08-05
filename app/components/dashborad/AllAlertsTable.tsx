@@ -15,13 +15,35 @@ const STATE_LABEL_AR: Record<string, string> = {
   CLOSED: 'مغلق',
 };
 
+// شكل صف واحد من استجابة GET /api/admin/alerts (راجع route.ts) — صف alerts
+// الخام مع حقول مُلحَقة من projects/profiles/project_dust_profiles.
+interface AdminAlertRow {
+  id: string;
+  project_id: string;
+  kind: string;
+  state: string;
+  message: string;
+  created_at: string;
+  projectName: string | null;
+  projectCity: string | null;
+  projectNeighborhood: string | null;
+  projectLatitude: number | null;
+  projectLongitude: number | null;
+  projectManager: string | null;
+  ownerUsername: string | null;
+  ownerCompany: string | null;
+  ownerPhone: string | null;
+  activityType: string | null;
+  regulatoryActivity: string | null;
+}
+
 // جدول قراءة فقط لكل التنبيهات عبر كل المشاريع — مستخدَم من صفحتي الأدمن
 // والمراقب معاً (كلتاهما تستهلك /api/admin/alerts المُوسَّع، راجع
 // app/api/admin/alerts/route.ts). لا props ولا أزرار إجراء — الشكل مطابق
 // تماماً للطرفين، الاختلاف الوحيد بينهما هو منطق التحقق من الصلاحية نفسه
 // (is_super_admin مقابل account_role='viewer')، المتروك لكل صفحة wrapper.
 export default function AllAlertsTable() {
-  const [alerts, setAlerts] = useState<any[]>([]);
+  const [alerts, setAlerts] = useState<AdminAlertRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {

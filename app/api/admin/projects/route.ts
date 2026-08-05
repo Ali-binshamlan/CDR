@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
   ]);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'admin/projects fetch failed') }, { status: 500 });
 
-  const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));
+  const profileByUserId = new Map((profiles || []).map((p: { id: string; username: string | null; company_name: string | null }) => [p.id, p]));
 
   const activeAlertsCountByProject = new Map<string, number>();
   for (const row of alertRows || []) {
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     decisionsCountByProject.set(row.project_id, (decisionsCountByProject.get(row.project_id) || 0) + 1);
   }
 
-  const data = (projects || []).map((project: any) => {
+  const data = (projects || []).map((project: { id: string; user_id: string }) => {
     const owner = profileByUserId.get(project.user_id);
     return {
       ...project,

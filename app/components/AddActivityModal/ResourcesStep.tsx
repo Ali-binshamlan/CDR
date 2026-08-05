@@ -1,11 +1,20 @@
 'use client';
 
 import { Users, Truck, Wrench } from 'lucide-react';
-import { getInputClass, labelClass } from './constants';
+import { getInputClass } from './constants';
+
+// شكل الحقول التي تعرضها/تعدّلها هذه الشاشة تحديداً — الموارد المخصصة
+// للنشاط (عدد العمال، المعدات، ووجود رافعة).
+export interface ResourcesFormFields {
+  workersCount: number;
+  hasEquipment: boolean;
+  equipmentType: string;
+  hasCrane: boolean;
+}
 
 interface ResourcesStepProps {
-  form: any;
-  updateField: (field: string, value: any) => void;
+  form: ResourcesFormFields;
+  updateField: <K extends keyof ResourcesFormFields>(field: K, value: ResourcesFormFields[K]) => void;
   onNext: () => void;
   onBack: () => void;
 }

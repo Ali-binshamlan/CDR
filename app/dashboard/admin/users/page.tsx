@@ -5,10 +5,22 @@ import { useRouter } from 'next/navigation';
 import { apiClient } from '@/app/lib/apiClient';
 import { Loader2, ShieldAlert, ShieldCheck, CloudRain } from 'lucide-react';
 
+interface AdminUserRow {
+  id: string;
+  username: string | null;
+  companyName: string | null;
+  phoneNumber: string | null;
+  role: string | null;
+  isSuperAdmin: boolean;
+  createdAt: string;
+  email: string | null;
+  projectCount: number;
+}
+
 export default function AdminUsersPage() {
   const router = useRouter();
   const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | undefined>(undefined);
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
 
@@ -24,8 +36,8 @@ export default function AdminUsersPage() {
       try {
         const { data } = await apiClient.get('/admin/users');
         setUsers(data?.data || []);
-      } catch (error: any) {
-        if (error?.response?.status === 403) setAccessDenied(true);
+      } catch (error: unknown) {
+        if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
       } finally {
         setIsLoading(false);
       }

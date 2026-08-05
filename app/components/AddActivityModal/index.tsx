@@ -1,20 +1,20 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useHasMounted } from '@/app/lib/useHasMounted';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '@/app/lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { X, Plus, CheckCircle2 } from 'lucide-react';
 
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
-import type { DustEngineInput, DviEvaluationResult, DustWindowEvaluation, ActivityCategory } from '@/app/utils/dust-engine/types';
+import type { DustEngineInput, ActivityCategory } from '@/app/utils/dust-engine/types';
 
 import { evaluateAei } from '@/app/utils/aei-engine';
-import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 
 import { ActivityTypeStep } from './ActivityTypeStep';
 import { DustStep } from './DustStep';
-import { DUST_FORM_DEFAULTS, BATCHING_UNIT_DEFAULTS, IDLE_SURFACE_UNIT_DEFAULTS, CRUSHER_UNIT_DEFAULTS, REGULATORY_ACTIVITY_FIELDS_DEFAULTS, REGULATORY_ACTIVITY_OPTIONS, INDICATOR_LABEL_AR, labelClass, getInputClass } from './constants';
+import { DUST_FORM_DEFAULTS, BATCHING_UNIT_DEFAULTS, IDLE_SURFACE_UNIT_DEFAULTS, CRUSHER_UNIT_DEFAULTS, REGULATORY_ACTIVITY_FIELDS_DEFAULTS, REGULATORY_ACTIVITY_OPTIONS, INDICATOR_LABEL_AR } from './constants';
 import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem, RegulatoryActivityKey } from './constants';
 import type { ActivityStep, AddActivityModalProps, IndicatorTab, ProjectDeviceLite } from './types';
 import { haversineDistanceM } from '@/app/utils/geo/zone';
@@ -22,8 +22,7 @@ import { haversineDistanceM } from '@/app/utils/geo/zone';
 export default function AddActivityModal({ project, onActivityCreated }: AddActivityModalProps) {
   const router = useRouter();
 
-  const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => { setIsMounted(true); }, []);
+  const isMounted = useHasMounted();
 
   const [isOpen, setIsOpen] = useState(false);
   const [step, setStep] = useState<ActivityStep>('choose');
@@ -122,7 +121,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     }
 
     if (projectShifts.length > 0) {
-      const selectedShift = projectShifts.find((s: any) => s.id === shiftId) || null;
+      const selectedShift = projectShifts.find((s) => s.id === shiftId) || null;
       if (!selectedShift) return 'الرجاء اختيار وردية.';
       // الوقت مأخوذ مباشرة من الوردية، فهو صالح دائماً بالتعريف — لا حاجة
       // لفحص إضافي هنا (يبقى الفحص فقط عند timingMode === 'custom' أدناه).
@@ -141,13 +140,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     return null;
   };
 
-  const [loading, setLoading] = useState(false);
-  const [submitStage, setSubmitStage] = useState('');
-
   const [dustForm, setDustForm] = useState({ ...DUST_FORM_DEFAULTS });
-  const [dustResult, setDustResult] = useState<DviEvaluationResult | null>(null);
-  const [dustWindow, setDustWindow] = useState<DustWindowEvaluation | null>(null);
-  const [aeiResult, setAeiResult] = useState<AeiEvaluationResult | null>(null);
   const [dustLoading, setDustLoading] = useState(false);
 
   // الأنشطة التنظيمية (Riyadh Dust Compliance) — قائمة مسطّحة واحدة، كل
@@ -160,7 +153,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // والمستخدم يفتح غيرها يدوياً (يسمح بفتح أكثر من بطاقة معاً).
   const [expandedActivityIds, setExpandedActivityIds] = useState<Set<string>>(new Set());
 
-  const updateDustField = (field: keyof typeof DUST_FORM_DEFAULTS, value: any) => { setDustForm((prev) => ({ ...prev, [field]: value })); };
+  const updateDustField = <K extends keyof typeof DUST_FORM_DEFAULTS>(field: K, value: (typeof DUST_FORM_DEFAULTS)[K]) => { setDustForm((prev) => ({ ...prev, [field]: value })); };
 
   const generateActivityItemId = (): string => {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') { try { return crypto.randomUUID(); } catch {} }
@@ -169,7 +162,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
 
   // تحديث حقل عام (fields) لنشاط تنظيمي واحد ضمن القائمة عبر id — يستبدل
   // updateRegulatoryField القديمة (كانت تحدّث "المسودة" الوحيدة فقط).
-  const updateRegulatoryActivityField = (itemId: string, field: keyof RegulatoryActivityFields, value: any) => {
+  const updateRegulatoryActivityField = <K extends keyof RegulatoryActivityFields>(itemId: string, field: K, value: RegulatoryActivityFields[K]) => {
     setRegulatoryActivities((prev) =>
       prev.map((item) => (item.id === itemId ? { ...item, fields: { ...item.fields, [field]: value } } : item))
     );
@@ -256,7 +249,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     return { lat: numLat, lng: numLng, deviceId };
   };
 
-  const updateBatchingUnit = (itemId: string, index: number, field: keyof BatchingUnit, value: any) => {
+  const updateBatchingUnit = <K extends keyof BatchingUnit>(itemId: string, index: number, field: K, value: BatchingUnit[K]) => {
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
@@ -264,8 +257,8 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const syncLoc =
           index === 0 && (field === 'batchingLat' || field === 'batchingLng')
             ? syncItemLocationFromUnit(
-                field === 'batchingLat' ? value : batchingUnits[0].batchingLat,
-                field === 'batchingLng' ? value : batchingUnits[0].batchingLng
+                field === 'batchingLat' ? (value as string | number) : batchingUnits[0].batchingLat,
+                field === 'batchingLng' ? (value as string | number) : batchingUnits[0].batchingLng
               )
             : {};
         return { ...item, batchingUnits, ...syncLoc };
@@ -291,7 +284,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     );
   };
 
-  const updateIdleSurfaceUnit = (itemId: string, index: number, field: keyof IdleSurfaceUnit, value: any) => {
+  const updateIdleSurfaceUnit = <K extends keyof IdleSurfaceUnit>(itemId: string, index: number, field: K, value: IdleSurfaceUnit[K]) => {
     setRegulatoryActivities((prev) =>
       prev.map((item) =>
         item.id === itemId
@@ -315,7 +308,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     );
   };
 
-  const updateCrusherUnit = (itemId: string, index: number, field: keyof CrusherUnit, value: any) => {
+  const updateCrusherUnit = <K extends keyof CrusherUnit>(itemId: string, index: number, field: K, value: CrusherUnit[K]) => {
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
@@ -323,8 +316,8 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const syncLoc =
           index === 0 && (field === 'crusherLat' || field === 'crusherLng')
             ? syncItemLocationFromUnit(
-                field === 'crusherLat' ? value : crusherUnits[0].crusherLat,
-                field === 'crusherLng' ? value : crusherUnits[0].crusherLng
+                field === 'crusherLat' ? (value as string | number) : crusherUnits[0].crusherLat,
+                field === 'crusherLng' ? (value as string | number) : crusherUnits[0].crusherLng
               )
             : {};
         return { ...item, crusherUnits, ...syncLoc };
@@ -353,11 +346,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   const resetAndClose = () => {
     setIsOpen(false);
     setStep('choose');
-    setSubmitStage('');
     setDustForm({ ...DUST_FORM_DEFAULTS });
-    setDustResult(null);
-    setDustWindow(null);
-    setAeiResult(null);
     setRegulatoryActivities([]);
     setExpandedActivityIds(new Set());
     setSelectedActivityLabel('');
@@ -490,7 +479,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // إن لم يكتمل الاختيار بعد.
   const resolveDailyTimeRange = (item: RegulatoryActivityItem): { start: string; end: string } | null => {
     if (item.timingMode === 'shift') {
-      const shift = projectShifts.find((s: any) => s.id === item.shiftId);
+      const shift = projectShifts.find((s) => s.id === item.shiftId);
       if (!shift) return null;
       return { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) };
     }
@@ -787,7 +776,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       if (unitsError) { toast.error(`النشاط ${i + 1}: ${unitsError}`); return; }
     }
 
-    setDustLoading(true); setDustResult(null); setDustWindow(null); setAeiResult(null);
+    setDustLoading(true);
     toast.loading('جاري التقييم...', { id: 'dvi-calc' });
 
     try {
@@ -815,9 +804,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const windowStartIso = new Date(`${item.startDate}T${daily.start}:00`).toISOString();
         const windowEval = await evaluateDustVisibilityWindow(engineInput, windowStartIso, dailyHours);
         const result = windowEval.worst;
-        setDustResult(result); setDustWindow(windowEval);
         const aei = evaluateAei(result, dustForm.activityType);
-        setAeiResult(aei);
 
         try {
           await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status);
@@ -827,7 +814,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       }
       toast.success('تم التقييم والحفظ بنجاح.', { id: 'dvi-calc' });
       finishIndicator('dust');
-    } catch (error: any) { toast.error(error?.message || 'حدث خطأ', { id: 'dvi-calc' }); } finally { setDustLoading(false); }
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'حدث خطأ', { id: 'dvi-calc' }); } finally { setDustLoading(false); }
   };
 
   return (

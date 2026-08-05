@@ -4,33 +4,59 @@ import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { X, Wifi, CheckCircle2, Loader2 } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
+import type {
+  ProviderCredentialField,
+  VendorStation,
+  ConnectionTestResult,
+  ProviderCredentials,
+} from '@/app/lib/providers/types';
 
-interface ProviderCredentialField {
-  key: string;
-  label: string;
-  type: 'text' | 'password';
-  required: boolean;
-}
-
+// شكل عنصر واحد من GET /api/providers (listAvailableProviders في
+// app/lib/providers/registry.ts) — id/displayName/credentialFields فقط،
+// بلا testConnection/listStations/fetchLatestReading (تلك دوال سيرفر فقط،
+// لا تُصدَّر عبر JSON).
 interface ProviderInfo {
   id: string;
   displayName: string;
   credentialFields?: ProviderCredentialField[];
+  requiresProviderInstance?: boolean;
 }
 
-interface VendorStation {
-  vendorStationId: string;
-  vendorStationName: string;
+// عنصر واحد من GET /api/providers/instances — منصات معتمدة ونشطة فقط
+// (القسم 15.1)، يختار المستخدم منها بدل كتابة base_url حر.
+interface ProviderInstanceInfo {
+  id: string;
+  provider: string;
+  origin: string;
+  hostname: string;
+}
+
+// يستخرج رسالة خطأ آمنة للعرض من استجابة apiClient (axios) الفاشلة، أو من
+// أي خطأ JS عادي — بلا افتراض شكل any. نفس منطق app/login/page.tsx.
+function getApiErrorMessage(error: unknown): string | undefined {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    typeof (error as { response?: unknown }).response === 'object'
+  ) {
+    const response = (error as { response?: { data?: { error?: string } } }).response;
+    if (response?.data?.error) return response.data.error;
+  }
+  if (error instanceof Error) return error.message;
+  return undefined;
 }
 
 // نموذج حقول الاتصال الافتراضي — يُستخدم لأي Connector لا يُعرِّف
 // credentialFields الخاصة به (نقطة توسّع اختيارية، راجع app/lib/providers/types.ts).
+// لا يتضمن base_url (القسم 15.1 — Connectors التي تتصل بشبكة خارجية فعلياً
+// تُلزَم بـrequiresProviderInstance وتحصل على origin من provider_instances،
+// لا من هذا النموذج).
 const DEFAULT_CREDENTIAL_FIELDS: ProviderCredentialField[] = [
-  { key: 'base_url', label: 'رابط API (اختياري)', type: 'text', required: false },
   { key: 'api_key', label: 'مفتاح API', type: 'password', required: true },
 ];
 
-type Step = 'select-provider' | 'credentials' | 'select-station';
+type Step = 'select-provider' | 'select-instance' | 'credentials' | 'select-station';
 
 interface ConnectProviderModalProps {
   projectId: string;
@@ -46,9 +72,13 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
   const [loadingProviders, setLoadingProviders] = useState(true);
   const [selectedProviderId, setSelectedProviderId] = useState('');
 
-  const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [instances, setInstances] = useState<ProviderInstanceInfo[]>([]);
+  const [loadingInstances, setLoadingInstances] = useState(false);
+  const [selectedInstanceId, setSelectedInstanceId] = useState('');
+
+  const [credentials, setCredentials] = useState<ProviderCredentials>({});
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; errorMessage?: string } | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
 
   const [loadingStations, setLoadingStations] = useState(false);
   const [stations, setStations] = useState<VendorStation[]>([]);
@@ -71,10 +101,26 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
   const selectedProvider = providers.find((p) => p.id === selectedProviderId) || null;
   const credentialFields = selectedProvider?.credentialFields?.length ? selectedProvider.credentialFields : DEFAULT_CREDENTIAL_FIELDS;
 
-  const handleSelectProvider = (providerId: string) => {
+  const handleSelectProvider = async (providerId: string) => {
     setSelectedProviderId(providerId);
     setCredentials({});
     setTestResult(null);
+    setSelectedInstanceId('');
+
+    const provider = providers.find((p) => p.id === providerId);
+    if (provider?.requiresProviderInstance) {
+      setLoadingInstances(true);
+      setStep('select-instance');
+      try {
+        const { data } = await apiClient.get('/providers/instances', { params: { provider: providerId } });
+        setInstances(data?.instances || []);
+      } catch {
+        toast.error('فشل جلب قائمة المنصات المعتمدة');
+      } finally {
+        setLoadingInstances(false);
+      }
+      return;
+    }
     setStep('credentials');
   };
 
@@ -84,11 +130,12 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
     try {
       const { data } = await apiClient.post('/providers/test-connection', {
         provider: selectedProviderId,
+        providerInstanceId: selectedInstanceId || undefined,
         credentials,
       });
       setTestResult(data);
-    } catch (error: any) {
-      setTestResult({ success: false, errorMessage: error?.response?.data?.error || 'تعذّر اختبار الاتصال' });
+    } catch (error) {
+      setTestResult({ success: false, errorMessage: getApiErrorMessage(error) || 'تعذّر اختبار الاتصال' });
     } finally {
       setTesting(false);
     }
@@ -99,12 +146,13 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
     try {
       const { data } = await apiClient.post('/providers/list-stations', {
         provider: selectedProviderId,
+        providerInstanceId: selectedInstanceId || undefined,
         credentials,
       });
       setStations(data?.stations || []);
       setStep('select-station');
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'فشل جلب قائمة المحطات');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل جلب قائمة المحطات');
     } finally {
       setLoadingStations(false);
     }
@@ -120,6 +168,7 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
     try {
       await apiClient.post(`/projects/${projectId}/devices/${deviceId}/provider-connection`, {
         provider: selectedProviderId,
+        providerInstanceId: selectedInstanceId || undefined,
         credentials,
         vendorStationId: station.vendorStationId,
         vendorStationName: station.vendorStationName,
@@ -127,8 +176,8 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
       toast.success('تم ربط مصدر البيانات بنجاح');
       onConnected();
       onClose();
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'فشل حفظ الربط');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل حفظ الربط');
     } finally {
       setSaving(false);
     }
@@ -177,10 +226,64 @@ export default function ConnectProviderModal({ projectId, deviceId, deviceName, 
             </div>
           )}
 
-          {step === 'credentials' && (
+          {step === 'select-instance' && (
             <div className="space-y-3">
               <button type="button" onClick={() => setStep('select-provider')} className="text-[11px] font-bold text-[#3995FF] hover:underline">
                 ← رجوع لاختيار المزوّد
+              </button>
+              <p className="text-[11px] font-bold text-[#061B40]/50 mb-1">
+                اختر المنصة المعتمدة من قبل مسؤول النظام — لا يمكن إدخال رابط منصة مخصَّص.
+              </p>
+              {loadingInstances ? (
+                <p className="text-[12px] font-bold text-[#061B40]/40">جاري التحميل...</p>
+              ) : instances.length === 0 ? (
+                <p className="text-[11px] font-bold text-[#061B40]/40">
+                  لا توجد منصات معتمدة لهذا المزوّد حالياً. تواصل مع مسؤول النظام لاعتماد منصتك.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {instances.map((inst) => (
+                    <label
+                      key={inst.id}
+                      className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-all ${
+                        selectedInstanceId === inst.id ? 'bg-[#3995FF]/10 border-[#3995FF]' : 'bg-[#F4F7FB] border-[#061B40]/10'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="instance"
+                        checked={selectedInstanceId === inst.id}
+                        onChange={() => setSelectedInstanceId(inst.id)}
+                        className="accent-[#3995FF]"
+                      />
+                      <span className="text-sm font-bold text-[#061B40]" dir="ltr">{inst.origin}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setCredentials({});
+                  setTestResult(null);
+                  setStep('credentials');
+                }}
+                disabled={!selectedInstanceId}
+                className="w-full bg-[#061B40] hover:bg-[#061B40]/90 disabled:bg-gray-300 text-white text-xs font-bold py-2.5 rounded-lg transition-all"
+              >
+                متابعة
+              </button>
+            </div>
+          )}
+
+          {step === 'credentials' && (
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => setStep(selectedProvider?.requiresProviderInstance ? 'select-instance' : 'select-provider')}
+                className="text-[11px] font-bold text-[#3995FF] hover:underline"
+              >
+                ← رجوع
               </button>
               {credentialFields.map((field) => (
                 <div key={field.key}>

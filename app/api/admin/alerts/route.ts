@@ -35,20 +35,27 @@ export async function GET(request: NextRequest) {
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'admin/alerts fetch failed') }, { status: 500 });
 
   const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name, phone_number');
-  const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));
+  const profileByUserId = new Map(
+    (profiles || []).map((p: { id: string; username: string | null; company_name: string | null; phone_number: string | null }) => [p.id, p])
+  );
 
   // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي، نفس
   // الاتفاقية المستخدمة في app/api/alerts/generate/route.ts) — نجلب
   // regulatory_activity (النشاط التنظيمي المختار فعلياً: كسارة/هدم/...)
   // لعرضه بدل activity_type الفيزيائي الداخلي (HEAVY_EQUIPMENT_MOVEMENT).
-  const activityIds = [...new Set((alerts || []).map((a: any) => a.activity_id).filter(Boolean))];
+  const activityIds = [...new Set((alerts || []).map((a: { activity_id: string }) => a.activity_id).filter(Boolean))];
   const { data: dustProfiles } = activityIds.length > 0
     ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', activityIds)
-    : { data: [] as any[] };
-  const dustProfileById = new Map((dustProfiles || []).map((p: any) => [p.id, p]));
+    : { data: [] as { id: string; activity_type: string | null; regulatory_activity: string | null }[] };
+  const dustProfileById = new Map((dustProfiles || []).map((p: { id: string; activity_type: string | null; regulatory_activity: string | null }) => [p.id, p]));
 
-  const data = (alerts || []).map((alert: any) => {
-    const owner = profileByUserId.get(alert.projects?.user_id);
+  const data = (alerts || []).map((alert: {
+    activity_id: string;
+    viewer_message?: string | null;
+    message: string;
+    projects?: { user_id: string; name: string | null; city: string | null; neighborhood: string | null; latitude: number | null; longitude: number | null; project_manager: string | null };
+  }) => {
+    const owner = profileByUserId.get(alert.projects?.user_id ?? '');
     const dustProfile = dustProfileById.get(alert.activity_id);
     return {
       ...alert,

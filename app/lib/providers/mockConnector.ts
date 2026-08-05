@@ -20,7 +20,7 @@ export const mockConnector: ProviderConnector = {
   displayName: 'محطة تجريبية (Mock Provider)',
   credentialFields: [{ key: 'api_key', label: 'مفتاح API (تجريبي)', type: 'password', required: true }],
 
-  async testConnection(credentials: ProviderCredentials) {
+  async testConnection(_origin: string, credentials: ProviderCredentials) {
     // قيمة مخصصة للاختبار اليدوي: api_key === 'invalid' يفشل عمداً — يثبت
     // مسار عرض رسالة الخطأ بالواجهة بلا انتظار شركة حقيقية تُرجع فشلاً.
     if (credentials.api_key === 'invalid') {
@@ -29,11 +29,11 @@ export const mockConnector: ProviderConnector = {
     return { success: true };
   },
 
-  async listStations(_credentials: ProviderCredentials) {
+  async listStations(_origin: string, _credentials: ProviderCredentials) {
     return MOCK_STATIONS;
   },
 
-  async fetchLatestReading(_credentials: ProviderCredentials, vendorStationId: string): Promise<NormalizedReading | null> {
+  async fetchLatestReading(_origin: string, _credentials: ProviderCredentials, vendorStationId: string): Promise<NormalizedReading | null> {
     if (!MOCK_STATIONS.some((s) => s.vendorStationId === vendorStationId)) return null;
     return {
       observedAtIso: new Date().toISOString(),

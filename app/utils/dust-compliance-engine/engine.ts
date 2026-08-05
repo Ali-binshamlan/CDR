@@ -18,6 +18,7 @@ import {
   REGULATORY_ACTIVITY_LABEL_AR,
   DECISION_PRIORITY,
   BATCHING_PM10_FILTER_MIN_PERCENT,
+  PM10_WARNING_UG_M3,
   ruleHit,
 } from './rulebook';
 import type {
@@ -78,10 +79,29 @@ const DVI_FORECAST_FAVORABLE: ReadonlySet<string> = new Set(['ALLOW', 'ALLOW_WIT
 function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): DustComplianceResult {
   const { riskClass, reasonAr: riskClassReasonAr } = classifyProject(ctx.project);
   const windBand = classifyWind(ctx.windSpeedKmh);
-  const isFavorable = DVI_FORECAST_FAVORABLE.has(ctx.dviDecision);
-  const shortReasonAr = isFavorable
-    ? 'الأجواء المتوقعة تصلح للنشاط — تقييم مبني على توقّعات الطقس، لا قراءة جهاز حية بعد.'
-    : 'الأجواء المتوقعة لا تصلح للنشاط — يُرجى مراجعة توقعات الساعات القادمة قبل البدء الفعلي (لا إيقاف إلزامي، تقييم توقّعي فقط).';
+
+  // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "ليه ما يقول تنبيه استباقي
+  // الأجواء غير المناسبة... اتوقع انه يستثني قاعدة PM10". isFavorable كانت
+  // تفحص dviDecision (DVI الفيزيائي: رياح/رؤية) فقط، بلا أي فحص لـ PM10
+  // المتوقّع — فساعة PM10=1315 (أكبر من حد المخالفة 340 بأضعاف) كانت تظهر
+  // "مسموح — تشغيل اعتيادي" طالما الرياح/الرؤية جيدتان، لكل الأنشطة (لا
+  // خاص بمحطة الخلط). الآن أي PM10 متوقّع ≥ PM10_WARNING_UG_M3 (251) يجعل
+  // التوقّع "غير مناسب" بصرف النظر عن DVI الفيزيائي — لا يزال decisionCategory
+  // يبقى ALLOW دائماً (بلا إيقاف إلزامي على تقدير)، فقط النص/isFavorable
+  // يعكسان جودة الهواء المتوقّعة أيضاً، لا الطقس الفيزيائي وحده.
+  const isPm10Unfavorable = ctx.pm10UgM3 !== null && ctx.pm10UgM3 >= PM10_WARNING_UG_M3;
+  const isFavorable = DVI_FORECAST_FAVORABLE.has(ctx.dviDecision) && !isPm10Unfavorable;
+  // القسم 18.6: توقّع مبني على بيانات طقس قديمة (فشل/انقطاع Open-Meteo) لا
+  // يجوز أن يعرض ثقة كاملة "تصلح/لا تصلح" — يُستبدَل بتحذير قِدم صريح يبقى
+  // decisionCategory=ALLOW/mandatoryStop=false (لا إيقاف إلزامي على تقدير
+  // مهما كانت حالته، نفس مبدأ mode==='PLANNING' في decideFinal).
+  const shortReasonAr = ctx.isForecastStale
+    ? 'تعذّر تحديث توقّعات الطقس لهذه الساعة (انقطاع مؤقت في مصدر التوقعات) — النتيجة المعروضة قديمة وقد لا تعكس الأجواء الفعلية. يُرجى مراجعة توقعات الساعات القادمة لاحقاً قبل البدء الفعلي.'
+    : isFavorable
+      ? 'الأجواء المتوقعة تصلح للنشاط — تقييم مبني على توقّعات الطقس، لا قراءة جهاز حية بعد.'
+      : isPm10Unfavorable
+        ? `الأجواء المتوقعة لا تصلح للنشاط — تركيز الغبار (PM10) المتوقّع (${ctx.pm10UgM3} ميكروجرام/م³) يتجاوز حد التحذير التنظيمي (${PM10_WARNING_UG_M3} ميكروجرام/م³). يُرجى مراجعة توقعات الساعات القادمة قبل البدء الفعلي (لا إيقاف إلزامي، تقييم توقّعي فقط).`
+        : 'الأجواء المتوقعة لا تصلح للنشاط — يُرجى مراجعة توقعات الساعات القادمة قبل البدء الفعلي (لا إيقاف إلزامي، تقييم توقّعي فقط).';
 
   return {
     engineType: 'RIYADH_DUST_COMPLIANCE',
@@ -304,6 +324,14 @@ export function evaluateDustCompliance(
   }
   if (ctx.project.dmpApprovalStatus === 'UNKNOWN') {
     missingCriticalInputs.push('حالة اعتماد خطة إدارة الغبار (DMP) غير مُدخلة');
+  }
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "فقد الرؤية قد يؤدي إلى ALLOW"):
+  // راجع تعليق dviVisibilityDataMissing الكامل في types.ts. غياب قراءة
+  // الرؤية (جهاز مرتبط فعلياً، لكن الرؤية تحديداً غائبة/قديمة) لم يكن يُعامَل
+  // كنقص بيانات حرج إطلاقاً — الآن يمنع ALLOW واثقاً بنفس آلية بقية الحقول
+  // الحرجة أعلاه، بدل ترك بوابتي الرؤية في dust-engine تتخطيان صامتاً.
+  if (ctx.dviVisibilityDataMissing === true) {
+    missingCriticalInputs.push('قراءة الرؤية غير متوفرة من الجهاز');
   }
 
   const ruleHits: DustRuleHit[] = [];
@@ -554,6 +582,30 @@ export function evaluateDustCompliance(
       );
       decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
     }
+  }
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "فقد الرؤية قد يؤدي إلى ALLOW أو
+  // يسمح باستكمال نافذة الاستئناف من إيقاف سابق"): applyMandatoryGates
+  // (dust-engine/engine.ts) يتخطى بوابتي الرؤية بصمت عند visibilityKm===null
+  // (غياب القراءة، لا تحسّنها الفعلي) — فلو كان النشاط موقَّفاً سابقاً
+  // (MANDATORY_STOP/STOP_AFFECTED_ACTIVITY) لأي سبب، وانقطعت قراءة الرؤية
+  // الآن (dviVisibilityDataMissing=true)، كان القرار الخام قد "يتحسّن" بمجرد
+  // غياب البيانات لا بتحسّن الظروف فعلياً، فيبدأ عداد RESUME_STABILITY_MINUTES
+  // أعلاه من بيانات لا تثبت شيئاً. الإصلاح: نفس مبدأ previousStopWasWindGate
+  // أعلاه بالضبط — طالما الرؤية غير متوفرة، لا يجوز اعتبار الإيقاف السابق
+  // "تحسّن" إطلاقاً، بصرف النظر عن مدة استقرار أي حقل آخر.
+  if (previousWasStopped && ctx.dviVisibilityDataMissing === true && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
+    resumeHoldApplied = true;
+    ruleHits.push(
+      ruleHit(
+        'VISIBILITY-DATA-MISSING-RESUME-HOLD',
+        'STOP_AFFECTED_ACTIVITY',
+        'قراءة الرؤية غير متوفرة من الجهاز — لا يمكن التأكد من تحسّن الرؤية بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
+        'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من الرؤية قبل اعتماد أي استئناف',
+        false
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
   }
 
   const confidenceScore = calculateComplianceConfidence(ctx, missingCriticalInputs);

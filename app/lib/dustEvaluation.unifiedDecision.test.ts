@@ -24,10 +24,32 @@ function baseDviWorst(overrides: Partial<DviEvaluationResult> = {}): DviEvaluati
     decisionLabelAr: 'تقييد النشاط وتفعيل أنظمة الرش',
     mandatoryStop: false,
     overridable: true,
-    channels: {} as any,
-    multipliers: {} as any,
+    stopBasis: 'NONE',
+    confirmationState: 'NOT_APPLICABLE',
+    channels: {
+      visibilityRisk: 0,
+      particulateRisk: 0,
+      windTransportRisk: 0,
+      dustForecastRisk: 0,
+      siteDustGenerationRisk: 0,
+      adjustedSiteDustGenerationRisk: 0,
+      externalHazard: 0,
+      internalDustHazard: 0,
+    },
+    multipliers: {
+      activitySensitivity: 0,
+      activitySensitivityMultiplier: 1,
+      receptorSensitivity: 0,
+      downwindAlignment: 0,
+      distanceFactor: 1,
+      receptorImpact: 0,
+      receptorSensitivityMultiplier: 1,
+      mitigationScore: 0,
+      mitigationReductionFactor: 1,
+    },
     visibilityKm: 5,
     effectiveWindKmh: 10,
+    visibilityDataMissing: false,
     visibilityConstraint: false,
     mandatoryVisibilityStop: false,
     respiratoryPPERequired: false,
@@ -75,13 +97,20 @@ function complianceWith(
 }
 
 describe('computeUnifiedActivityDecision — قرار امتثال غير إيقاف يجب ألا يختفي خلف نص DVI', () => {
+  // ملاحظة: baseDviWorst() الافتراضي decisionCategory='RESTRICT' (رتبة 2) —
+  // أشد من ALLOW_WITH_CONTROLS/RESTRICT_ACTIVITY (رتبة 1/2) في بعض هذه
+  // الاختبارات، فيُستخدَم dvi:{decisionCategory:'ALLOW'} صراحةً هنا (رتبة 0،
+  // أضعف فعلياً من كل فئات الامتثال المختبرة) لعزل مسار "الامتثال هو الفائز
+  // فعلاً" تحديداً (راجع القسم 18.1 في final-decision-engine/engine.test.ts
+  // لنفس مبدأ العزل، وتعليق complianceIsDecisive في engine.ts لسبب الربط
+  // الآن برتبة الفائز الفعلي لا بمجرد decisionCategory!=='ALLOW').
   it('PM10-EARLY-WARNING-007 (ALLOW_WITH_CONTROLS) يظهر بدل رسالة DVI العامة', () => {
     const compliance = complianceWith(
       'ALLOW_WITH_CONTROLS',
       'مسموح مع ضوابط تحكم إضافية',
       'تنبيه استباقي: تركيز PM10 (300 ميكروجرام/م³) يقترب من حد المخالفة (340 ميكروجرام/م³)'
     );
-    const r = computeUnifiedActivityDecision(baseDviWorst(), compliance);
+    const r = computeUnifiedActivityDecision(baseDviWorst({ decisionCategory: 'ALLOW' }), compliance);
     expect(r.shortReason).toBe('تنبيه استباقي: تركيز PM10 (300 ميكروجرام/م³) يقترب من حد المخالفة (340 ميكروجرام/م³)');
     expect(r.decisionLabelAr).toBe('مسموح مع ضوابط تحكم إضافية');
     expect(r.mandatoryStop).toBe(false);
@@ -89,14 +118,14 @@ describe('computeUnifiedActivityDecision — قرار امتثال غير إيق
 
   it('RESTRICT_ACTIVITY يظهر نصه الخاص بدل نص DVI العام', () => {
     const compliance = complianceWith('RESTRICT_ACTIVITY', 'تقييد النشاط', 'سرعة الطرق غير المسفلتة (15 كم/س) تتجاوز الحد (10 كم/س)');
-    const r = computeUnifiedActivityDecision(baseDviWorst(), compliance);
+    const r = computeUnifiedActivityDecision(baseDviWorst({ decisionCategory: 'ALLOW' }), compliance);
     expect(r.shortReason).toBe('سرعة الطرق غير المسفلتة (15 كم/س) تتجاوز الحد (10 كم/س)');
     expect(r.decisionLabelAr).toBe('تقييد النشاط');
   });
 
   it('FIELD_VERIFICATION_REQUIRED يظهر نصه الخاص بدل نص DVI العام', () => {
     const compliance = complianceWith('FIELD_VERIFICATION_REQUIRED', 'يتطلب تحقق ميداني قبل الاستمرار', 'لم يتم تحديد نقطة دخول المشروع على الخريطة');
-    const r = computeUnifiedActivityDecision(baseDviWorst(), compliance);
+    const r = computeUnifiedActivityDecision(baseDviWorst({ decisionCategory: 'ALLOW' }), compliance);
     expect(r.shortReason).toBe('لم يتم تحديد نقطة دخول المشروع على الخريطة');
     expect(r.decisionLabelAr).toBe('يتطلب تحقق ميداني قبل الاستمرار');
   });
@@ -163,7 +192,7 @@ describe('computeUnifiedActivityDecision — قرار امتثال غير إيق
       'مسموح مع ضوابط تحكم إضافية',
       'تحذير: تركيز PM10 (260 ميكروجرام/م³) تجاوز حد التحذير (250 ميكروجرام/م³)'
     );
-    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'GREEN', mandatoryStop: false }), compliance);
+    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'GREEN', decisionCategory: 'ALLOW', mandatoryStop: false }), compliance);
     expect(r.level).not.toBe('GREEN');
     expect(r.level).toBe('RED');
     expect(r.mandatoryStop).toBe(false);
@@ -171,7 +200,7 @@ describe('computeUnifiedActivityDecision — قرار امتثال غير إيق
 
   it('DVI أخضر + امتثال PRECAUTION → level يصبح أصفر (لا أخضر متناقض مع نص الاحتراز، ولا أحمر مبالغ فيه)', () => {
     const compliance = complianceWith('PRECAUTION', 'احتراز — زيادة المراقبة', 'حالة احتراز: تركيز PM10 (200 ميكروجرام/م³) ضمن نطاق الإنذار المبكر (150–250 ميكروجرام/م³)');
-    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'GREEN', mandatoryStop: false }), compliance);
+    const r = computeUnifiedActivityDecision(baseDviWorst({ level: 'GREEN', decisionCategory: 'ALLOW', mandatoryStop: false }), compliance);
     expect(r.level).toBe('YELLOW');
     expect(r.decisionLabelAr).toBe('احتراز — زيادة المراقبة');
     expect(r.mandatoryStop).toBe(false);

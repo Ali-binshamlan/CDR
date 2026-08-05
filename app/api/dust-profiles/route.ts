@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { haversineDistanceM } from '@/app/utils/geo/zone';
+import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
 
 // حقول حساسة لا يجوز أن يتحكم بها العميل مطلقاً — id لمنع انتحال/تصادم
 // صف موجود، created_at لمنع تزوير توقيت السجل، device_id (الربط بمحطة
@@ -155,6 +156,28 @@ export async function POST(request: NextRequest) {
   const owns = await verifyProjectOwnership(insert.project_id as string, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  // خطأ معماري مكتشَف ومُصلَح (القسم 12.2/12.3 من "دليل الإصلاح الجذري
+  // لمنظومة مرقاب" — "الأفضل ألا يقبل api/dust-profiles قيمة activity_
+  // group_id حرة من العميل"): كان العميل (AddActivityModal.tsx) يرسل
+  // activity_group_id=null أحياناً فعلياً (قبل توليده محلياً لأول نشاط في
+  // الجلسة)، بلا أي fallback خادمي يضمن قيمة قبل الإدراج — قيد NOT NULL/FK
+  // المركّب على activity_group_id (activity_groups(project_id, id)) كان
+  // سيكسر هذا التدفق الصحيح فعلياً. الإصلاح: الخادم يولّد المعرّف دائماً
+  // إن غاب من العميل، ويُسجَّل صراحة في activity_groups (هوية المجموعة)
+  // قبل إدراج صف النشاط نفسه — يضمن استيفاء FK المركّب دائماً بلا استثناء.
+  const activityGroupId =
+    typeof insert.activity_group_id === 'string' && insert.activity_group_id.trim()
+      ? insert.activity_group_id.trim()
+      : crypto.randomUUID();
+  insert.activity_group_id = activityGroupId;
+
+  const { error: groupError } = await supabaseAdmin
+    .from('activity_groups')
+    .upsert({ project_id: insert.project_id as string, id: activityGroupId }, { onConflict: 'project_id,id', ignoreDuplicates: true });
+  if (groupError) {
+    return NextResponse.json({ error: safeErrorResponse(groupError, 'activity_groups upsert failed') }, { status: 500 });
+  }
+
   // منع جدولة نشاط في تاريخ ماضٍ على مستوى السيرفر أيضاً (لا نعتمد على فحص
   // الواجهة وحده) — تقييم DVI/الامتثال يعتمد على توقّع طقس ساعي لا يخدم
   // الماضي، فنشاط بتاريخ سابق لا يملك بيانات ساعية. المقارنة بتوقيت الرياض
@@ -163,6 +186,29 @@ export async function POST(request: NextRequest) {
     const todayRiyadh = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
     if (String(insert.planned_date) < todayRiyadh) {
       return NextResponse.json({ error: 'لا يمكن جدولة نشاط في تاريخ سابق لليوم.' }, { status: 400 });
+    }
+  }
+
+  // خطأ مكتشَف ومُصلَح: تحقق أوقات الدوام هنا كان يستخدم project_shifts
+  // خطأً (جدول ورديات فرعية اختيارية، منفصل تماماً) — المصدر الحقيقي
+  // work_hours_start/work_hours_end على projects نفسه (نفس ما تتحقق منه
+  // الواجهة بالفعل في AddActivityModal/index.tsx). هذا التحقق الخادمي كان
+  // غائباً تماماً قبل ذلك (الواجهة وحدها كانت تمنع، قابل للتجاوز بطلب API
+  // مباشر) — الآن مطابق فعلياً لنفس المصدر الذي تعرضه الواجهة، ومكرَّر أيضاً
+  // عند التعديل في app/api/activities/route.ts.
+  if (insert.planned_time && typeof insert.duration_hours === 'number') {
+    const { data: projectRow } = await supabaseAdmin
+      .from('projects')
+      .select('work_hours_start, work_hours_end')
+      .eq('id', insert.project_id as string)
+      .maybeSingle();
+    const ws = projectRow?.work_hours_start ?? null;
+    const we = projectRow?.work_hours_end ?? null;
+    if (!isActivityTimeWithinWorkHours(ws, we, String(insert.planned_time), insert.duration_hours)) {
+      return NextResponse.json(
+        { error: `وقت النشاط اليومي يجب أن يقع ضمن أوقات دوام المشروع (${String(ws).slice(0, 5)} – ${String(we).slice(0, 5)}).` },
+        { status: 400 }
+      );
     }
   }
 

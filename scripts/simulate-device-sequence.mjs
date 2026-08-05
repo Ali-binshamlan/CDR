@@ -31,14 +31,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendReading(pm10, label) {
+async function sendReading(pm10, label, sequence) {
   const res = await fetch(`${baseUrl}/api/devices/ingest`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ pm10 }),
+    body: JSON.stringify({
+      pm10,
+      eventId: `sim-sequence-${Date.now()}-${sequence}`,
+      sequence,
+      observedAt: new Date().toISOString(),
+    }),
   });
   const body = await res.json().catch(() => ({}));
   const time = new Date().toLocaleTimeString('ar-SA');
@@ -56,7 +61,7 @@ async function sendReading(pm10, label) {
   for (const stage of stages) {
     for (let i = 1; i <= stage.count; i++) {
       sent++;
-      await sendReading(stage.pm10, `مرحلة pm10=${stage.pm10} — قراءة ${i}/${stage.count} (إجمالي ${sent}/${totalReadings})`);
+      await sendReading(stage.pm10, `مرحلة pm10=${stage.pm10} — قراءة ${i}/${stage.count} (إجمالي ${sent}/${totalReadings})`, sent);
       if (sent < totalReadings) await sleep(intervalMinutes * 60_000);
     }
   }

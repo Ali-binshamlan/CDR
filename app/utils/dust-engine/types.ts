@@ -49,6 +49,14 @@ export type CauseClassification =
 
 export type DviLevel = 'GREEN' | 'YELLOW' | 'ORANGE' | 'RED' | 'DARK_RED' | 'BLACK';
 
+// StopBasis/ConfirmationState — القسم 4.4 من "دليل الإصلاح الجذري لمنظومة
+// مرقاب": حقول Typed تحل محل الاستدلال على سبب الإيقاف من نص كود قاعدة
+// (triggeredRules?.includes('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY')) — ربط
+// هش بين محركين. Final Decision يستخدم هذين الحقلين مباشرة للتفسير/التدقيق،
+// لا للتحكم الخفي في مسار البرنامج.
+export type StopBasis = 'NONE' | 'PM10' | 'VISIBILITY' | 'WIND' | 'MIXED';
+export type ConfirmationState = 'NOT_APPLICABLE' | 'PENDING' | 'CONFIRMED';
+
 export type DviDecisionCategory =
   | 'ALLOW'
   | 'ALLOW_WITH_MONITORING'
@@ -109,6 +117,18 @@ export interface DustEngineInput {
   longitude: number;
   site: DustSiteInputs;
 
+  // طلب صريح من المستخدم — "محطة الخلط لا تنتج غبار": محطة خلط خرسانة
+  // (regulatory_activity='BATCHING_PLANT') بصوامع مختومة (silos_sealed)
+  // وفلتر PM10 كفؤ (pm10_filter_efficiency_percent >= الحد الأدنى — راجع
+  // isBatchingPm10Exempt في dustEvaluation.ts، نفس شرط استثناء بوابة
+  // الرياح التنظيمية) كانت تبقى تُقاس بمضاعف حساسية CONCRETE_POURING
+  // (0.55) كأي نشاط صب خرسانة مكشوف عادي، فتظهر "مراقبة" رغم طقس ممتاز
+  // ونشاط لا ينتج غباراً فعلياً. true هنا يُصفِّر مخاطر الموقع الداخلية
+  // (internalDustHazard) ويُسقِط مضاعفي حساسية النشاط/المستقبِل لأدنى قيمة
+  // ممكنة (كأن النشاط بلا حساسية غبار إطلاقاً) في computeDviResult —
+  // الطقس (externalHazard) يبقى العامل الوحيد المؤثر فعلياً حينها.
+  isEnclosedDustExempt?: boolean;
+
   // قياسات ميدانية اختيارية (أعلى ثقة من تقدير الطقس)
   onsiteVisibilityM?: number | null;
   onsitePm10?: number | null;
@@ -141,6 +161,32 @@ export interface DustEngineInput {
   deviceVisibilityM?: number | null;
   deviceRelativeHumidityPercent?: number | null;
   deviceTemperatureC?: number | null;
+
+  // القسم 5.3/18.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" — وقت رصد مستقل
+  // لكل حقل فيزيائي حاسم في القرار (رياح/رؤية)، منفصل عن deviceLastReadingAt
+  // العام (يتحدّث عند أي push جزئي حتى بلا هذا الحقل تحديداً — نفس علة
+  // devicePm10LastReadingAt أعلاه). buildDeviceMergedReading (engine.ts)
+  // يُسقِط القيمة (يعيدها null) إن كان عمرها أكبر من FIELD_FRESHNESS_MS —
+  // حرارة/PM10 حديثان لا يجوز أن "يُثبتا" حداثة رياح أو رؤية عمرها فعلياً
+  // أقدم بكثير (كانت كل الحقول تُقرأ بقيمتها الخام دائماً، بصرف النظر عن
+  // عمرها الفردي، طالما وُجد صف جهاز نشط). undefined/null يعني "غير معروف"
+  // — يُعامَل كغير طازج (فشل آمن، نفس مبدأ evidenceUnavailable في
+  // final-decision-engine).
+  deviceWindSpeedAt?: string | null;
+  deviceWindGustAt?: string | null;
+  deviceWindDirectionAt?: string | null;
+  deviceVisibilityAt?: string | null;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "حداثة البيانات ما زالت جزئية:
+  // بوابة الأربع دقائق مطبَّقة فقط تقريباً على الرياح والهبات والاتجاه
+  // والرؤية؛ أما PM2.5/الحرارة/الرطوبة فقد تدخل القرار دون نفس الاستبعاد"):
+  // عُمِّمت البوابة لتشمل كل حقل جهاز فعلي يدخل القرار الحي، لا الحقول
+  // الأربعة الأولى فقط. PM10 نفسه مستثنى عمداً هنا — له آلية استمرار/تأكيد
+  // مستقلة تماماً (computeSustainedPm10Status في dustEvaluation.ts تقرأ من
+  // تاريخ القراءات، لا من قيمة لحظية واحدة)، فتطبيق freshOrNull عليه هنا
+  // يتعارض مع ذلك المنطق المصمَّم عمداً بعتبة/سلوك مختلفَين.
+  devicePm25At?: string | null;
+  deviceRelativeHumidityAt?: string | null;
+  deviceTemperatureAt?: string | null;
 
   // أيام عمل المشروع (معرّفات sun..sat) — تُقيّد اقتراح أفضل/أسوأ نافذة
   // بديلة بأيام العمل فقط، فلا يُقترح يوم عطلة (مثل الجمعة). اختيارية.
@@ -267,11 +313,31 @@ export interface DviEvaluationResult {
   mandatoryStop: boolean;
   overridable: boolean;
 
+  // راجع تعليق StopBasis/ConfirmationState أعلى الملف. stopBasis='NONE' إن
+  // لم يكن هناك أي إيقاف/تقييد فعلي (decisionCategory لا يحمل خطراً فيزيائياً
+  // فورياً). confirmationState='NOT_APPLICABLE' إلا عند PM10 لحظي لم يثبت
+  // استمراره بعد (نفس حالة DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY القديمة).
+  stopBasis: StopBasis;
+  confirmationState: ConfirmationState;
+
   channels: DviRiskChannels;
   multipliers: DviMultipliers;
 
   visibilityKm: number | null;
   effectiveWindKmh: number | null;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "فقد الرؤية قد يؤدي إلى ALLOW أو
+  // يسمح باستكمال نافذة الاستئناف من إيقاف سابق"): applyMandatoryGates كان
+  // يتخطى بوابتي الرؤية (DVI-VISIBILITY-MANDATORY-STOP-001/RED-002) بصمت
+  // عند visibilityKm===null (جهاز مرتبط لكن قراءة الرؤية غائبة/قديمة)، فيُعامَل
+  // غياب البيانات فعلياً كـ"رؤية ممتازة" — لا فرق بين الحالتين في
+  // decisionCategory/mandatoryStop الناتجين. true فقط عندما يكون هناك جهاز
+  // مرتبط فعلياً (hasDeviceLink) لكن قراءة الرؤية غير متوفرة/غير طازجة —
+  // تُستهلَك في dust-compliance-engine (missingCriticalInputs + منع تخفيف
+  // قرار إيقاف سابق عبر resumeHoldApplied) لمعاملة غياب الرؤية كبيانات ناقصة
+  // حرجة، لا كتحسّن فعلي. false دائماً بلا جهاز مرتبط (hasDeviceLink=false):
+  // القراءة حينها تقدير طقس فقط، لا معنى لـ"جهاز لم يرسل قراءة رؤية".
+  visibilityDataMissing: boolean;
 
   // إشارات للمحركات الأخرى (قسم 17 و 16.1 من المواصفة)
   visibilityConstraint: boolean;

@@ -27,8 +27,13 @@ if (confirmGapSeconds <= 120) {
 const baseUrl = process.env.DCR_BASE_URL ?? 'http://localhost:3000';
 const VIOLATION_PM10 = 350; // >340 بوضوح
 
+let _sequenceCounter = 0;
 function buildPayload(pm10) {
+  _sequenceCounter += 1;
   return {
+    eventId: `sim-${Date.now()}-${_sequenceCounter}`,
+    sequence: _sequenceCounter,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: 10,
     windGustKmh: 15,
     windDirectionDeg: 180,

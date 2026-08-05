@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireViewer } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { fetchLatestFinalDecisions, riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
+import { fetchLatestFinalDecisions, activityDecisionKey, riyadhLocalToUtcIso, type DustActivityRow } from '@/app/lib/dustEvaluation';
 import { pickWorstDecision } from '@/app/utils/final-decision-engine';
 
 // نسخة غير مقيّدة من app/api/dashboard/global/route.ts — نفس الشكل تماماً
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     .is('archived_at', null);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'viewer/dashboard projects fetch failed') }, { status: 500 });
 
-  const projectIds = (projectsData || []).map((p: any) => p.id);
+  const projectIds = (projectsData || []).map((p: { id: string }) => p.id);
 
   const { data: alerts, error: alertsError } = await supabaseAdmin
     .from('alerts')
@@ -32,8 +32,8 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false });
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'viewer/dashboard alerts fetch failed') }, { status: 500 });
 
-  let dustData: any[] = [];
-  let decisionsData: any[] = [];
+  let dustData: DustActivityRow[] = [];
+  let decisionsData: Record<string, unknown>[] = [];
   let liveActivityByProjectId: Record<string, { decisionLabelAr: string; shortReason: string; level: string; mandatoryStop: boolean }> = {};
 
   if (projectIds.length > 0) {
@@ -54,13 +54,13 @@ export async function GET(request: NextRequest) {
     // جارٍ بالتوازي لنفس المشروع — راجع نفس التعليق الكامل في
     // dashboard/global/route.ts للسبب التفصيلي.
     const nowMs = Date.now();
-    const projectById = new Map((projectsData || []).map((p: any) => [p.id, p]));
-    const runningRowsByProject = new Map<string, any[]>();
+    const runningRowsByProject = new Map<string, DustActivityRow[]>();
     for (const row of dustData) {
       const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
       if (!startIso) continue;
       const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
       const endMs = new Date(startIso).getTime() + durationHours * 3600000;
+      if (!row.project_id) continue;
       if (nowMs >= new Date(startIso).getTime() && nowMs <= endMs) {
         const list = runningRowsByProject.get(row.project_id) ?? [];
         list.push(row);
@@ -76,25 +76,31 @@ export async function GET(request: NextRequest) {
     for (const row of dustData) {
       activityGroupIdByRowId.set(String(row.id), row.activity_group_id || `dust-${row.id}`);
     }
-    const allGroupIds = Array.from(new Set(Array.from(runningRowsByProject.values()).flat().map((row) => activityGroupIdByRowId.get(String(row.id))!)));
-    const finalDecisionsByGroup = await fetchLatestFinalDecisions(supabaseAdmin, allGroupIds);
+    // خطأ أمني معماري مكتشَف ومُصلَح (القسم 5.7/12.2 من "دليل الإصلاح
+    // الجذري لمنظومة مرقاب") — نفس إصلاح dashboard/global/route.ts بالضبط،
+    // وأخطر هنا: هذا المسار يعرض كل المشاريع عبر كل المستخدمين معاً بلا أي
+    // فلترة user_id (راجع تعليق أعلى الملف)، فخطر خلط قرار مشروع بآخر أعلى.
+    const allTargets = Array.from(runningRowsByProject.entries()).flatMap(([projectId, rows]) =>
+      rows.map((row) => ({ projectId, activityGroupId: activityGroupIdByRowId.get(String(row.id))! }))
+    );
+    const finalDecisionsByGroup = await fetchLatestFinalDecisions(supabaseAdmin, allTargets);
 
     const liveResults = Array.from(runningRowsByProject.entries()).map(([projectId, rows]) => {
       const decisions = rows
-        .map((row) => finalDecisionsByGroup.get(activityGroupIdByRowId.get(String(row.id))!))
+        .map((row) => finalDecisionsByGroup.get(activityDecisionKey(projectId, activityGroupIdByRowId.get(String(row.id))!)))
         .filter((d): d is NonNullable<typeof d> => !!d)
         .map((d) => ({
           finalDecision: {
             decisionLabelAr: d.decision_label_ar,
-            shortReasonAr: d.short_reason_ar,
-            level: d.level,
+            shortReasonAr: d.short_reason_ar ?? '',
+            level: d.level as 'GREEN' | 'YELLOW' | 'ORANGE' | 'RED' | 'DARK_RED' | 'BLACK',
             mandatoryStop: d.mandatory_stop,
             pendingConfirmation: d.pending_confirmation,
             operationalDecision: d.operational_decision,
           },
         }));
       if (decisions.length === 0) return null;
-      const worst = pickWorstDecision(decisions as any).finalDecision;
+      const worst = pickWorstDecision(decisions).finalDecision;
       return {
         projectId,
         decisionLabelAr: worst.decisionLabelAr,

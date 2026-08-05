@@ -11,6 +11,11 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 const DEVICE_LIST_COLUMNS =
   'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at';
 
+// أعمدة آمنة للعرض — credentials مُستبعَد دائماً عمداً (نفس فلسفة
+// api_key_hash أعلاه)، يطابق CONNECTION_SAFE_COLUMNS في provider-connection/route.ts.
+const CONNECTION_SAFE_COLUMNS =
+  'id, device_id, project_id, provider, vendor_station_id, vendor_station_name, is_active, last_pull_at, last_pull_success, last_pull_error, created_at, updated_at';
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> }
@@ -31,7 +36,22 @@ export async function GET(
     .order('created_at', { ascending: false });
 
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'devices list fetch failed') }, { status: 500 });
-  return NextResponse.json({ devices: data || [] });
+
+  // خطأ أداء مكتشَف — مراجعة صفحة settings/page.tsx: كانت تجلب هذه القائمة
+  // ثم تُطلق طلب GET منفصل لكل جهاز على حدة (N+1) لجلب حالة اتصال المزوّد
+  // الخارجي الخاص به (provider-connection/route.ts) — استعلام واحد مجمَّع هنا
+  // (project_id بدل device_id) يستبدل كل تلك الطلبات المنفصلة بطلب شبكة واحد.
+  const { data: connections } = await supabaseAdmin
+    .from('provider_connections')
+    .select(CONNECTION_SAFE_COLUMNS)
+    .eq('project_id', projectId);
+
+  const connectionsByDeviceId: Record<string, unknown> = {};
+  for (const conn of connections || []) {
+    connectionsByDeviceId[(conn as { device_id: string }).device_id] = conn;
+  }
+
+  return NextResponse.json({ devices: data || [], connectionsByDeviceId });
 }
 
 export async function POST(

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { fetchLatestFinalDecisions } from '@/app/lib/dustEvaluation';
+import { fetchLatestFinalDecisions, activityDecisionKey, type StoredFinalDecisionRow } from '@/app/lib/dustEvaluation';
 
 type DecisionTarget = { projectId: string; activityId: string; activitySource: string };
 
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
   }
 
-  let latest: any = null;
+  let latest: Record<string, unknown> | null = null;
   for (const t of targets) {
     const { data, error } = await supabaseAdmin
       .from('decision_records')
@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
 
     if (error) return NextResponse.json({ error: safeErrorResponse(error, 'decisions fetch failed') }, { status: 500 });
-    if (data && (!latest || new Date(data.created_at) > new Date(latest.created_at))) {
+    if (data && (!latest || new Date(data.created_at) > new Date(latest.created_at as string))) {
       latest = data;
     }
   }
@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
       .from('project_dust_profiles')
       .select('id, project_id, activity_group_id')
       .in('id', activityIds);
-    const projectIdByActivityId = new Map((validProfiles || []).map((p: any) => [p.id, p.project_id]));
+    const projectIdByActivityId = new Map((validProfiles || []).map((p: { id: string; project_id: string }) => [p.id, p.project_id]));
     for (const p of validProfiles || []) {
       activityGroupIdByActivityId.set(p.id, p.activity_group_id || `dust-${p.id}`);
     }
@@ -112,6 +112,13 @@ export async function POST(request: NextRequest) {
       }
     }
   }
+
+  // groupId وحده غير كافٍ كمفتاح خريطة عبر مشاريع متعددة (targets قد تخص
+  // مشاريع مختلفة يملكها نفس المستخدم معاً — راجع التحقق أعلاه) — القسم
+  // 5.7/12.2 من "دليل الإصلاح الجذري لمنظومة مرقاب": activity_group_id قيمة
+  // حرة من العميل، فقد تتصادم بين مشروعين. r.project_id (مُتحقَّق أعلاه أنه
+  // يطابق فعلياً project_id الحقيقي لهذا activity_id) هو مصدر المشروع الآمن
+  // هنا، لا حاجة لخريطة إضافية.
 
   for (const r of rawRows) {
     if (!ALLOWED_STATUSES.has(r.status)) {
@@ -133,16 +140,18 @@ export async function POST(request: NextRequest) {
   // (راجع supabase-add-decision-records-final-decision-link-migration.sql) —
   // رابطة تدقيق صريحة بين قرار المستخدم البشري والقرار الآلي المعروض له
   // لحظة اتخاذه، بدل الاعتماد على تطابق زمني تقريبي بين جدولين منفصلين.
-  const storedFinalDecisions = dustRows.length > 0
-    ? await fetchLatestFinalDecisions(
-        supabaseAdmin,
-        [...new Set(dustRows.map((r) => activityGroupIdByActivityId.get(r.activity_id)).filter((id): id is string => !!id))]
-      )
-    : new Map<string, any>();
+  const finalDecisionTargets = dustRows
+    .map((r) => {
+      const groupId = activityGroupIdByActivityId.get(r.activity_id);
+      return groupId ? { projectId: r.project_id as string, activityGroupId: groupId } : null;
+    })
+    .filter((t): t is { projectId: string; activityGroupId: string } => t !== null);
+  const storedFinalDecisions =
+    finalDecisionTargets.length > 0 ? await fetchLatestFinalDecisions(supabaseAdmin, finalDecisionTargets) : new Map<string, StoredFinalDecisionRow>();
 
   for (const r of dustRows) {
     const groupId = activityGroupIdByActivityId.get(r.activity_id);
-    const stored = groupId ? storedFinalDecisions.get(groupId) : undefined;
+    const stored = groupId ? storedFinalDecisions.get(activityDecisionKey(r.project_id, groupId)) : undefined;
     if (stored?.mandatory_stop === true && stored?.overridable === false && r.status !== 'stopped') {
       return NextResponse.json(
         {
@@ -172,7 +181,7 @@ export async function POST(request: NextRequest) {
 
   const sanitizedRows = rawRows.map((r) => {
     const groupId = activityGroupIdByActivityId.get(r.activity_id);
-    const stored = groupId ? storedFinalDecisions.get(groupId) : undefined;
+    const stored = groupId ? storedFinalDecisions.get(activityDecisionKey(r.project_id, groupId)) : undefined;
     return {
       project_id: r.project_id,
       activity_source: r.activity_source,

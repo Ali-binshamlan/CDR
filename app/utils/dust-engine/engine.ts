@@ -14,6 +14,8 @@ import {
   DviHourlyEvaluation,
   DviLevel,
   DviMergedReading,
+  DviRiskChannels,
+  DviMultipliers,
   DustWindowEvaluation,
 } from './types';
 import {
@@ -33,6 +35,7 @@ import {
 } from './tables';
 import { fetchDustWeather, fetchDustWeatherHourly } from './weather';
 import { DustWeatherSample } from './types';
+import { LIVE_FIELD_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 
 // -------------------------------------------------------------
 // تصنيف مستوى توقع الغبار من تركيز الغبار السطحي ورمز الطقس
@@ -187,7 +190,21 @@ function applyMandatoryGates(
   receptorImpact: number,
   score: number,
   weatherSymbol: DustWeatherSample['weatherSymbol'],
-  baseDecision: DviDecisionCategory
+  baseDecision: DviDecisionCategory,
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "PM10 بقيمة 500 وعمر أكبر من
+  // أربع دقائق ما زال قادراً على إنتاج إيقاف"): كانت pm10RuleTriggered أدناه
+  // تستهلك pm10 اللحظي بلا أي فحص عمر/حداثة — فقراءة قديمة جداً (ساعات، طالما
+  // devicePm10 لا يزال غير null من صف الجهاز نفسه) تُفعِّل mandatoryStop=true
+  // فوراً، ويُستهلَك هذا الحقل الخام مباشرة في مواضع لا تمر عبر آلية استمرار
+  // PM10 الصحيحة في dustEvaluation.ts (مثال: dviLevelToDecision في نقطة
+  // الخريطة الحية بـGlobalDashboard/IntegratedDashboard). false هنا (قراءة
+  // قديمة/غير متوفرة) لا يُسقِط بوابة PM10 كلياً — فقط يمنعها من فرض
+  // mandatoryStop=true القطعي، ويُبقيها عند RESTRICT_SEVERE احترازياً (نفس
+  // شدة رؤية<1كم) بانتظار قراءة طازجة تؤكد الخطر فعلياً. لا تأثير على
+  // combinedVisibilityWindTriggered (خطر فيزيائي فوري لا علاقة له بحداثة
+  // PM10). true دائماً بلا جهاز مرتبط (input.hasDeviceLink=false، القراءة من
+  // تقدير طقس لا "قراءة" فردية لها عمر بالمعنى نفسه).
+  pm10ReadingIsFreshEnoughForImmediateStop: boolean
 ): GateOutcome {
   const rules: string[] = [];
   const actions: string[] = [];
@@ -259,17 +276,28 @@ function applyMandatoryGates(
   const combinedVisibilityWindTriggered =
     visibilityKm !== null && visibilityKm < 1 && input.site.hasEarthworks && (effectiveWindKmh ?? 0) > 40;
   const rule4Triggered = pm10RuleTriggered || combinedVisibilityWindTriggered;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — راجع تعليق
+  // pm10ReadingIsFreshEnoughForImmediateStop الكامل أعلى الدالة): PM10 لحظي
+  // فقط (بلا خطر فيزيائي فوري آخر مساهم) لا يفرض mandatoryStop=true القطعي
+  // إلا إن كانت القراءة نفسها طازجة. قراءة قديمة تبقى STOP_DUST_GENERATING_
+  // ACTIVITIES احترازياً (يمنع الاستمرار) لكن بدرجة mandatoryStop=false — نفس
+  // شدة RESTRICT_SEVERE منطقياً (رؤية<1كم)، لا خطر مؤكَّد فوري.
+  const pm10OnlyTriggered = pm10RuleTriggered && !combinedVisibilityWindTriggered;
+  const pm10OnlyConfirmable = pm10OnlyTriggered && pm10ReadingIsFreshEnoughForImmediateStop;
   if (rule4Triggered && isDustActivity) {
     rules.push('DVI-DUST-ACTIVITY-STOP-004');
-    if (pm10RuleTriggered && !combinedVisibilityWindTriggered) {
+    if (pm10OnlyTriggered) {
       // وسم فرعي مخصَّص لمحرك الامتثال — يميّز "PM10 لحظي فقط" (يحتاج دليل
       // استمرار) عن الرمز العام أعلاه، بلا تغيير أي مستهلك حالي لـ
       // DVI-DUST-ACTIVITY-STOP-004 نفسه.
       rules.push('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
+      if (!pm10OnlyConfirmable) {
+        rules.push('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE');
+      }
     }
     actions.push('إيقاف مؤقت للأعمال المثيرة للغبار (حفر/ردم/دمك/تسوية/نقل تربة) حتى تحسن الظروف');
     decision = 'STOP_DUST_GENERATING_ACTIVITIES';
-    mandatoryStop = true;
+    mandatoryStop = pm10OnlyTriggered ? pm10OnlyConfirmable : true;
   }
 
   if (effectiveWindKmh !== null && effectiveWindKmh >= 30 && input.site.looseMaterials) {
@@ -305,6 +333,46 @@ function applyMandatoryGates(
   }
 
   return { decision, mandatoryStop, overridable, triggeredRules: rules, extraActions: actions };
+}
+
+// راجع StopBasis/ConfirmationState في types.ts — يُشتقان هنا من رموز
+// القواعد المفعّلة فعلياً (gates.triggeredRules)، بدل ترك كل مستهلك خارجي
+// (مثل dust-compliance-engine/adapters.ts) يستدل على السبب بنفسه عبر
+// .includes() على نص كود قاعدة مفرد (ربط هش بين محركين، القسم 4.4 من
+// "دليل الإصلاح الجذري"). لا تُستخدم لأي قرار داخل هذا الملف نفسه — للعرض/
+// التفسير في محركات أخرى فقط.
+function deriveStopBasisAndConfirmation(
+  mandatoryStop: boolean,
+  triggeredRules: string[]
+): { stopBasis: DviEvaluationResult['stopBasis']; confirmationState: DviEvaluationResult['confirmationState'] } {
+  if (!mandatoryStop) {
+    return { stopBasis: 'NONE', confirmationState: 'NOT_APPLICABLE' };
+  }
+
+  const hasVisibility = triggeredRules.some((r) => r.startsWith('DVI-VISIBILITY-'));
+  const hasWind = triggeredRules.includes('DVI-WIND-LOOSE-MATERIAL-005');
+  const hasPm10Only = triggeredRules.includes('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
+  // خطر فيزيائي فوري (رؤية حرجة/رياح شديدة+مواد سائبة) مساهم بنفس اللحظة —
+  // بمعزل عن كون PM10 اللحظي مساهماً أيضاً أم لا.
+  const hasPhysicalHazard = hasVisibility || hasWind;
+
+  const stopBasis: DviEvaluationResult['stopBasis'] = hasPhysicalHazard && hasPm10Only
+    ? 'MIXED'
+    : hasVisibility
+      ? 'VISIBILITY'
+      : hasWind
+        ? 'WIND'
+        : hasPm10Only
+          ? 'PM10'
+          : 'NONE';
+
+  // معلَّق (PENDING) فقط إن كان السبب PM10 لحظي فقط بلا أي خطر فيزيائي حقيقي
+  // مساهم — نفس شرط dviMandatoryStopIsPm10Only القديم بالضبط (قسم "الإصلاح"
+  // في final-decision-engine/engine.ts).
+  const confirmationState: DviEvaluationResult['confirmationState'] =
+    stopBasis === 'PM10' ? 'PENDING' : 'CONFIRMED';
+
+  return { stopBasis, confirmationState };
 }
 
 function hasMeaningfulSiteData(site: DustSiteInputs): boolean {
@@ -433,30 +501,63 @@ function baseRequiredActions(decision: DviDecisionCategory): string[] {
 // بـsampleTimeIso=undefined في evaluateDustVisibilityWindow (راجع تعليق
 // "لو جهاز حقيقي اعرضها حتى لو قراءاه قديمه" هناك) الذي يفرض هذا الفرع
 // بالذات لإعادة حساب worst من الجهاز دائماً، بصرف النظر عن حداثة القراءة.
-function buildDeviceMergedReading(input: DustEngineInput): DviMergedReading {
+// القسم 5.3/18.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" — حداثة مستقلة لكل
+// حقل فيزيائي حاسم (رياح/رؤية)، منفصلة تماماً عن حداثة أي حقل آخر (حرارة
+// حديثة لا يجوز أن "تُثبت" أن قراءة رياح/رؤية قديمة لا تزال حديثة). عمر
+// أكبر من هذا الحد يُسقِط القيمة إلى null — تماماً كأن الحقل لم يصل من
+// الجهاز إطلاقاً، لا كأنه وصل بقيمة قديمة موثوقة.
+//
+// راجع app/utils/rule-bundles/field-freshness.ts (LIVE_FIELD_FRESHNESS_MS)
+// للتوثيق المركزي الكامل لهذه القيمة ولماذا تختلف عمداً عن عتبة اتصال
+// الجهاز العامة (20 دقيقة، DEVICE_CONNECTION_FRESHNESS_MS).
+const FIELD_FRESHNESS_MS = LIVE_FIELD_FRESHNESS_MS;
+
+function freshOrNull<T>(value: T | null | undefined, observedAtIso: string | null | undefined, nowMs: number): T | null {
+  if (value === null || value === undefined || !observedAtIso) return null;
+  const observedMs = new Date(observedAtIso).getTime();
+  if (!Number.isFinite(observedMs)) return null;
+  const ageMs = nowMs - observedMs;
+  // عمر سالب (وقت مستقبلي — ساعة جهاز غير متزامنة) يُبطل الحداثة أيضاً، نفس
+  // مبدأ H-03.2 في computeSustainedPm10Status (dustEvaluation.ts).
+  if (ageMs < 0 || ageMs > FIELD_FRESHNESS_MS) return null;
+  return value;
+}
+
+function buildDeviceMergedReading(input: DustEngineInput, nowMs: number = Date.now()): DviMergedReading {
+  const freshWindSpeedKmh = freshOrNull(input.deviceWindSpeedKmh, input.deviceWindSpeedAt, nowMs);
+  const freshWindGustKmh = freshOrNull(input.deviceWindGustKmh, input.deviceWindGustAt, nowMs);
+  const freshWindDirectionDeg = freshOrNull(input.deviceWindDirectionDeg, input.deviceWindDirectionAt, nowMs);
+  const freshVisibilityM = freshOrNull(input.deviceVisibilityM, input.deviceVisibilityAt, nowMs);
+  // تعميم البوابة (راجع تعليق devicePm25At/deviceRelativeHumidityAt/
+  // deviceTemperatureAt في types.ts) — PM10 مستثنى عمداً، له آلية حداثة/
+  // استمرار مستقلة في dustEvaluation.ts.
+  const freshPm25 = freshOrNull(input.devicePm25, input.devicePm25At, nowMs);
+  const freshRelativeHumidityPercent = freshOrNull(input.deviceRelativeHumidityPercent, input.deviceRelativeHumidityAt, nowMs);
+  const freshTemperatureC = freshOrNull(input.deviceTemperatureC, input.deviceTemperatureAt, nowMs);
+
   const sourceOfDevice = <T,>(device: T | null | undefined): 'device' | 'none' =>
     device !== null && device !== undefined ? 'device' : 'none';
 
   return {
-    windSpeedKmh: input.deviceWindSpeedKmh ?? null,
-    windGustKmh: input.deviceWindGustKmh ?? null,
-    windDirectionDeg: input.deviceWindDirectionDeg ?? null,
+    windSpeedKmh: freshWindSpeedKmh,
+    windGustKmh: freshWindGustKmh,
+    windDirectionDeg: freshWindDirectionDeg,
     pm10: input.devicePm10 ?? null,
-    pm25: input.devicePm25 ?? null,
-    visibilityM: input.deviceVisibilityM ?? null,
-    relativeHumidityPercent: input.deviceRelativeHumidityPercent ?? null,
-    temperatureC: input.deviceTemperatureC ?? null,
+    pm25: freshPm25,
+    visibilityM: freshVisibilityM,
+    relativeHumidityPercent: freshRelativeHumidityPercent,
+    temperatureC: freshTemperatureC,
     deviceLastReadingAt: input.deviceLastReadingAt ?? null,
     devicePm10LastReadingAt: input.devicePm10LastReadingAt ?? null,
     sources: {
-      windSpeedKmh: sourceOfDevice(input.deviceWindSpeedKmh),
-      windGustKmh: sourceOfDevice(input.deviceWindGustKmh),
-      windDirectionDeg: sourceOfDevice(input.deviceWindDirectionDeg),
+      windSpeedKmh: sourceOfDevice(freshWindSpeedKmh),
+      windGustKmh: sourceOfDevice(freshWindGustKmh),
+      windDirectionDeg: sourceOfDevice(freshWindDirectionDeg),
       pm10: sourceOfDevice(input.devicePm10),
-      pm25: sourceOfDevice(input.devicePm25),
-      visibilityM: sourceOfDevice(input.deviceVisibilityM),
-      relativeHumidityPercent: sourceOfDevice(input.deviceRelativeHumidityPercent),
-      temperatureC: sourceOfDevice(input.deviceTemperatureC),
+      pm25: sourceOfDevice(freshPm25),
+      visibilityM: sourceOfDevice(freshVisibilityM),
+      relativeHumidityPercent: sourceOfDevice(freshRelativeHumidityPercent),
+      temperatureC: sourceOfDevice(freshTemperatureC),
     },
   };
 }
@@ -609,20 +710,45 @@ export function computeDviResult(
     input.site,
     weather.rainfallLast24hMm
   );
-  const internalDustHazard = adjustedSiteDustGenerationRisk;
+  // isEnclosedDustExempt (راجع تعليق DustEngineInput الكامل في types.ts):
+  // محطة خلط مغلقة بصوامع مختومة وفلتر PM10 كفؤ لا تنتج غباراً من الموقع
+  // نفسه فعلياً — internalDustHazard يُصفَّر بدل تركه يُحسَب من site.* كأي
+  // نشاط عادي.
+  const internalDustHazard = input.isEnclosedDustExempt ? 0 : adjustedSiteDustGenerationRisk;
 
   const dviBase = 0.7 * externalHazard + 0.3 * internalDustHazard;
 
   const mult = calculateMultipliers(input.activityType, input.site);
   const siteExposureMultiplier = 1.0;
 
+  // نفس الاستثناء: مضاعفا حساسية النشاط والمستقبِل يُسقَطان لقيمة 1 (بلا
+  // أي تضخيم) — النشاط لا يُصدر غباراً فعلياً، فلا معنى لتضخيم تأثير طقس
+  // خارجي بحساسية نشاط/قرب مستقبِل لا علاقة لهما بمصدر غبار غير موجود أصلاً.
+  const activitySensitivityMultiplier = input.isEnclosedDustExempt ? 1 : mult.activitySensitivityMultiplier;
+  const receptorSensitivityMultiplier = input.isEnclosedDustExempt ? 1 : mult.receptorSensitivityMultiplier;
+
   const dviActivityRaw =
-    dviBase * mult.activitySensitivityMultiplier * mult.receptorSensitivityMultiplier * siteExposureMultiplier * mult.mitigationReductionFactor;
+    dviBase * activitySensitivityMultiplier * receptorSensitivityMultiplier * siteExposureMultiplier * mult.mitigationReductionFactor;
   const score = Math.round(Math.min(100, Math.max(0, dviActivityRaw)) * 10) / 10;
 
   const level = dviLevelFromScore(score);
   const baseDecision = baseDecisionFromLevel(level, input.activityType);
   const dustForecastRisk = DFR;
+
+  // راجع تعليق pm10ReadingIsFreshEnoughForImmediateStop الكامل في
+  // applyMandatoryGates. بلا جهاز مرتبط (hasDeviceLink=false)، pm10 قادم من
+  // تقدير طقس لا من "قراءة" فردية لها عمر بنفس المعنى — يُعامَل كطازج دائماً
+  // (فشل آمن نحو السلوك السابق، بلا كسر لمسارات التخطيط/التوقّع). نفس عتبة
+  // 4 دقائق المستخدمة في FIELD_FRESHNESS_MS أعلاه (ومطابقة
+  // PM10_LAST_READING_FRESHNESS_MINUTES في dustEvaluation.ts — قيمة مكرَّرة
+  // عمداً بين الطبقتين، نفس اتفاقية DEVICE_READING_FRESHNESS_MINUTES القائمة
+  // أصلاً في المشروع).
+  const pm10ReadingAgeMs =
+    input.hasDeviceLink && merged.devicePm10LastReadingAt
+      ? Date.now() - new Date(merged.devicePm10LastReadingAt).getTime()
+      : null;
+  const pm10ReadingIsFreshEnoughForImmediateStop =
+    !input.hasDeviceLink || (pm10ReadingAgeMs !== null && pm10ReadingAgeMs >= 0 && pm10ReadingAgeMs <= FIELD_FRESHNESS_MS);
 
   const gates = applyMandatoryGates(
     input,
@@ -633,7 +759,8 @@ export function computeDviResult(
     mult.receptorImpact,
     score,
     weather.weatherSymbol,
-    baseDecision
+    baseDecision,
+    pm10ReadingIsFreshEnoughForImmediateStop
   );
 
   const siteDataProvided = hasMeaningfulSiteData(input.site);
@@ -699,6 +826,7 @@ export function computeDviResult(
   const finalMandatoryStop = gates.mandatoryStop;
   const finalOverridable = !gates.mandatoryStop && gates.overridable;
   assertMandatoryStopInvariant({ mandatoryStop: finalMandatoryStop, overridable: finalOverridable });
+  const { stopBasis, confirmationState } = deriveStopBasisAndConfirmation(finalMandatoryStop, gates.triggeredRules);
 
   return {
     indicatorType: 'DVI',
@@ -711,6 +839,8 @@ export function computeDviResult(
     decisionLabelAr: DVI_DECISION_LABEL_AR[gates.decision] ?? gates.decision,
     mandatoryStop: finalMandatoryStop,
     overridable: finalOverridable,
+    stopBasis,
+    confirmationState,
 
     channels: {
       visibilityRisk: VR,
@@ -726,6 +856,11 @@ export function computeDviResult(
 
     visibilityKm,
     effectiveWindKmh,
+
+    // راجع تعليق visibilityDataMissing الكامل في types.ts. hasDeviceLink
+    // يحصر هذا العلم على مسار الجهاز الحي فقط — طقس تقديري (hasDeviceLink=
+    // false) لا "يفتقد" قراءة رؤية بنفس المعنى، فيبقى false دائماً هناك.
+    visibilityDataMissing: input.hasDeviceLink && visibilityKm === null,
 
     visibilityConstraint: visibilityKm !== null && visibilityKm < 1,
     mandatoryVisibilityStop: visibilityKm !== null && visibilityKm < 0.5,
@@ -750,6 +885,54 @@ export function computeDviResult(
 export async function evaluateDustVisibility(input: DustEngineInput): Promise<DviEvaluationResult> {
   const weather = await fetchDustWeather(input.latitude, input.longitude);
   return computeDviResult(input, weather);
+}
+
+// =============================================================
+// evaluateLiveOperationalDecision — القسم 9.2 من "دليل الإصلاح الجذري
+// لمنظومة مرقاب": دالة نقية بالكامل (Pure، بلا fetch إطلاقاً) تبني القرار
+// الحي حصراً من لقطة جهاز واحدة (input.device*) — لا تستورد weather.ts ولا
+// تستدعي Open-Meteo بأي حال، بخلاف evaluateDustVisibilityWindow التي تبقى
+// تجلب توقعات الشبكة (hourly/bestWindow) لأغراض التخطيط.
+//
+// نشاط بلا جهاز مرتبط (hasDeviceLink=false) لا يملك "قرار حي" فعلياً —
+// نفس منطق buildAwaitingEvaluationWindow أعلاه (fallback محايد "بانتظار
+// تقييم"). القرار الحي الحقيقي دائماً من input.device* مباشرة، بصرف النظر
+// عن قِدم القراءة (القِدم مسؤولية طبقة جودة الأدلة في محرك القرار النهائي،
+// لا هذه الدالة — راجع evidenceQuality في final-decision-engine/adapters.ts).
+// =============================================================
+export function evaluateLiveOperationalDecision(input: DustEngineInput): DviHourlyEvaluation {
+  const nowIso = new Date().toISOString();
+
+  if (!input.hasDeviceLink) {
+    const awaiting = buildAwaitingEvaluationWindow(nowIso, Date.now(), 1);
+    return awaiting.worst;
+  }
+
+  const neutralWeatherSample: DustWeatherSample = {
+    visibilityM: null,
+    weatherCode: null,
+    weatherSymbol: 'UNKNOWN',
+    windSpeedKmh: null,
+    windGustKmh: null,
+    windDirectionDeg: null,
+    relativeHumidityPercent: null,
+    temperatureC: null,
+    rainfallLast24hMm: null,
+    pm10: null,
+    pm25: null,
+    dustConcentration: null,
+    dataSource: 'none',
+    isForecastStale: true,
+  };
+
+  // sampleTimeIso=undefined يفرض مسار الجهاز دائماً (buildDeviceMergedReading)
+  // في mergeDustReading — بلا أي فحص "قريب من الآن"، بلا أي مكالمة شبكة.
+  return {
+    ...computeDviResult(input, neutralWeatherSample, undefined),
+    time: nowIso,
+    rawWeatherSample: neutralWeatherSample,
+    mergedReading: mergeDustReading(input, neutralWeatherSample, undefined),
+  };
 }
 
 export async function evaluateDustVisibilityHourly(
@@ -909,8 +1092,8 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
   // الإشارة الفعلية التي يقرأها deriveEvidenceQuality (final-decision-engine/
   // adapters.ts) لتصنيف "لا جهاز مرتبط أصلاً" → UNAVAILABLE → HOLD_FOR_
   // VERIFICATION. null هنا كان سيعني خطأً "جهاز مرتبط لكن بلا قراءة بعد".
-  delete (neutralMergedReading as any).deviceLastReadingAt;
-  delete (neutralMergedReading as any).devicePm10LastReadingAt;
+  delete (neutralMergedReading as Partial<DviMergedReading>).deviceLastReadingAt;
+  delete (neutralMergedReading as Partial<DviMergedReading>).devicePm10LastReadingAt;
 
   const neutralDvi: DviEvaluationResult = {
     indicatorType: 'DVI',
@@ -922,10 +1105,36 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
     decisionLabelAr: 'بانتظار تقييم — لا جهاز رصد مرتبط بهذا النشاط',
     mandatoryStop: false,
     overridable: true,
-    channels: {} as any,
-    multipliers: {} as any,
+    stopBasis: 'NONE',
+    confirmationState: 'NOT_APPLICABLE',
+    channels: {
+      visibilityRisk: 0,
+      particulateRisk: 0,
+      windTransportRisk: 0,
+      dustForecastRisk: 0,
+      siteDustGenerationRisk: 0,
+      adjustedSiteDustGenerationRisk: 0,
+      externalHazard: 0,
+      internalDustHazard: 0,
+    } as DviRiskChannels,
+    multipliers: {
+      activitySensitivity: 0,
+      activitySensitivityMultiplier: 0,
+      receptorSensitivity: 0,
+      downwindAlignment: 0,
+      distanceFactor: 0,
+      receptorImpact: 0,
+      receptorSensitivityMultiplier: 0,
+      mitigationScore: 0,
+      mitigationReductionFactor: 0,
+    } as DviMultipliers,
     visibilityKm: null,
     effectiveWindKmh: null,
+    // لا جهاز مرتبط أصلاً هنا (راجع تعليق الدالة أعلاه) — visibilityDataMissing
+    // مخصَّص لحالة "جهاز مرتبط لكن قراءة الرؤية تحديداً غائبة" فقط، فيبقى
+    // false. evidenceQuality=UNAVAILABLE (عبر deviceLastReadingAt المحذوف
+    // أعلاه) يكفي لمنع أي قرار واثق هنا أصلاً.
+    visibilityDataMissing: false,
     visibilityConstraint: false,
     mandatoryVisibilityStop: false,
     respiratoryPPERequired: false,
@@ -977,6 +1186,18 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
   };
 }
 
+// نشاط ضمن هامش ساعتين من بدايته المجدولة (بدأ فعلاً، أو سيبدأ قريباً) —
+// "جهاز الرصد يتفعّل قبل ساعتين من بداية النشاط" (طلب صريح موثَّق أدناه في
+// isActivityLiveNow/buildAwaitingEvaluationWindow). ثابت وحدة واحد بدل تكرار
+// نفس الرقم 120*60000 محلياً في ثلاثة مواضع مختلفة داخل هذا الملف.
+const ACTIVITY_LIVE_MARGIN_MS_ENGINE = 120 * 60000;
+
+// راجع تعليق weatherTimeoutMs الكامل داخل evaluateDustVisibilityWindow —
+// مهلة مختصرة لطلب Open-Meteo حصراً لنشاط حي بجهاز مرتبط (القرار الحي لا
+// يعتمد على نتيجتها أصلاً)، بدل المهلة الكاملة الطبيعية (FETCH_TIMEOUT_MS
+// في weather.ts) التي تبقى مطبَّقة لأي نشاط توقّعي بحت.
+const LIVE_WEATHER_TIMEOUT_MS = 3000;
+
 // -------------------------------------------------------------
 // المنسق الرئيسي للنافذة الزمنية بعد حل مشكلة التاريخ المجدول المستقبلي
 // -------------------------------------------------------------
@@ -999,9 +1220,25 @@ export async function evaluateDustVisibilityWindow(
 
   const hoursFromNowToWindowEnd = Math.max(0, Math.ceil((endMs - nowMs) / 3600000));
   const horizonHours = Math.max(hoursFromNowToWindowEnd + 6, safeDuration + 24, 24);
-  
+
+  // خطأ تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المسار التشغيلي الحي ما
+  // زال ينتظر Open-Meteo وقد يفشل عند بيانات غير متطابقة زمنياً". لنشاط حي
+  // بجهاز مرتبط (نفس شرط isActivityLiveNow أدناه، محسوب مبكراً هنا قبل جلب
+  // الشبكة)، worst (القرار الحي الفعلي) سيُعاد بناؤه لاحقاً من قراءة الجهاز
+  // مباشرة بصرف النظر عن نتيجة هذا الطلب (راجع mergeDustReading/
+  // isDeviceApplicableToSample — sampleTimeIso=undefined يفرض مسار الجهاز
+  // دائماً) — فلا مبرر لانتظار مهلة الشبكة الكاملة (حتى ~14 ثانية مع إعادة
+  // المحاولة) قبل الوصول لتلك النتيجة. مهلة مختصرة هنا (3 ثوانٍ، محاولة
+  // واحدة فعلياً ضمنها) تكفي لالتقاط استجابة سريعة إن وُجدت (تُفيد hourly/
+  // bestWindowWorst فقط)، بلا حجب القرار الحي طويلاً عند بطء/فشل الشبكة.
+  // نشاط غير حي الآن (توقّع مستقبلي بحت) يبقى بالمهلة الكاملة الطبيعية —
+  // hourly هنا هي مصدر worst الوحيد فعلياً لتلك الحالة (راجع pickWorstActualHour
+  // أدناه)، فتقصير مهلتها كان سيُفقد دقة القرار التوقّعي بلا أي فائدة مقابلة.
+  const isLiveNow = nowMs >= startMs - ACTIVITY_LIVE_MARGIN_MS_ENGINE;
+  const weatherTimeoutMs = isLiveNow ? LIVE_WEATHER_TIMEOUT_MS : undefined;
+
   // تعديل حاسم: تم تمرير windowStartIso كـ anchorIso لمنع تكرار بيانات التنبؤ عند اختلاف التواريخ المستقبلية
-  const allSamples = await fetchDustWeatherHourly(input.latitude, input.longitude, horizonHours, windowStartIso);
+  const allSamples = await fetchDustWeatherHourly(input.latitude, input.longitude, horizonHours, windowStartIso, weatherTimeoutMs);
 
   // فشل جلب توقع الطقس (بعد stale-cache fallback في weather.ts) لا يجوز أن
   // يُسقط تقييم النشاط بالكامل — خطأ مكتشَف (تجربة مستخدم سيئة جداً: كل
@@ -1013,8 +1250,7 @@ export async function evaluateDustVisibilityWindow(
   // ستكون فارغة مؤقتاً). نشاط بلا جهاز، أو لم يبدأ بعد، يرجع نافذة محايدة
   // "بانتظار تقييم" بدل استثناء يسقط النشاط كاملاً.
   if (allSamples.length === 0) {
-    const ACTIVITY_LIVE_MARGIN_MS = 120 * 60000;
-    if (!input.hasDeviceLink || nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS) {
+    if (!input.hasDeviceLink || nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS_ENGINE) {
       return buildAwaitingEvaluationWindow(windowStartIso, endMs, safeDuration);
     }
 
@@ -1107,8 +1343,10 @@ export async function evaluateDustVisibilityWindow(
   // بمنطقه التوقّعي الطبيعي (worst من pickWorstActualHour أعلاه، مبني
   // بـtreatAsForecast عبر allHourlyEvaluations — تقدير طقس صرف، لا قراءة
   // جهاز مقحَمة). الانتقال فوري بمجرد عبور الحد — لا منطقة رمادية/تدرّج.
-  const ACTIVITY_LIVE_MARGIN_MS = 120 * 60000;
-  const isActivityLiveNow = nowMs >= startMs - ACTIVITY_LIVE_MARGIN_MS;
+  // isLiveNow محسوبة مبكراً أعلاه (نفس القيمة بالضبط — nowMs/startMs
+  // ثابتان طوال الدالة) لتحديد weatherTimeoutMs قبل جلب الشبكة؛ يُعاد
+  // استخدامها هنا بنفس الاسم isActivityLiveNow لسهولة القراءة في هذا السياق.
+  const isActivityLiveNow = isLiveNow;
   if (input.hasDeviceLink && isActivityLiveNow) {
     worst = {
       ...computeDviResult(input, worst.rawWeatherSample, undefined),

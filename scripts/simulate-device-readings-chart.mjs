@@ -38,6 +38,9 @@ function wobble(base, amplitude, i, total) {
 
 async function sendReading(i) {
   const payload = {
+    eventId: `sim-chart-${Date.now()}-${i}`,
+    sequence: i,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: Math.max(0, wobble(12, 8, i, count)),
     windGustKmh: Math.max(0, wobble(18, 10, i, count)),
     windDirectionDeg: Math.round(((180 + i * 15) % 360)),

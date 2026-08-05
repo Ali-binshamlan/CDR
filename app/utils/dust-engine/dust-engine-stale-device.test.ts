@@ -55,7 +55,7 @@ function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   };
 }
 
-function mockForecastAirResponses(forecastBody: any, airBody: any) {
+function mockForecastAirResponses(forecastBody: unknown, airBody: unknown) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -75,7 +75,16 @@ afterEach(() => {
 });
 
 describe('evaluateDustVisibilityWindow — جهاز مرتبط بقراءة قديمة جداً يبقى معتمَداً، لا فولباك لطقس', () => {
-  it('نشاط بدأ الآن ومرتبط بجهاز، آخر قراءة جهاز عمرها ساعات → worst يستخدم قراءة الجهاز (حتى لو قديمة)، لا تقدير الطقس', async () => {
+  // القسم 5.3/18.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" — إصلاح جذري صريح
+  // يُقيِّد السلوك الموثَّق أعلاه (تعليق الوصف الكامل لهذا describe): "جهاز
+  // مرتبط = دائماً جهاز، لا fallback لطقس" يبقى صحيحاً لعزل المصدر (لا خلط
+  // مع طقس)، لكن الآن مقيّداً بحداثة مستقلة لكل حقل حرج (رياح/رؤية) — قراءة
+  // جهاز عمرها 5 ساعات بلا وقت رصد حديث لحقل معيّن تُسقِط ذلك الحقل تحديداً
+  // إلى null (لا قراءة الطقس، ولا القيمة القديمة موثوقة)، لا تستمر "كما هي"
+  // إلى الأبد. PM10 يبقى بمنطقه المستقل الأقدم (computeSustainedPm10Status
+  // في dustEvaluation.ts يتعامل مع قِدمه بآلية استمرار/تعليق منفصلة تماماً،
+  // لا freshOrNull هنا) — غير مذكور صراحة في هذا التحديث.
+  it('نشاط بدأ الآن ومرتبط بجهاز، آخر قراءة جهاز عمرها ساعات وبلا وقت رصد مستقل حديث لرياح/رؤية → worst يُسقِط رياح/رؤية إلى null (القسم 5.3/18.3)، PM10 يبقى كما هو', async () => {
     // نافذة النشاط تبدأ من بداية الساعة الحالية بالضبط (لا "الآن" الدقيق)
     // لضمان وقوعها دائماً ضمن فلتر windowHours (هامش 30 دقيقة) بصرف النظر
     // عن أي دقيقة فعلية من الساعة يُشغَّل فيها الاختبار — تفادياً لعدم
@@ -126,14 +135,74 @@ describe('evaluateDustVisibilityWindow — جهاز مرتبط بقراءة قد
       1
     );
 
-    // القرار الحي يجب أن يعكس قراءة الجهاز (45)، لا تقدير الطقس (1229.3)
+    // القرار الحي يجب أن يعكس قراءة الجهاز لـPM10 (45)، لا تقدير الطقس
+    // (1229.3) — PM10 بلا حداثة مستقلة هنا (منطقه منفصل تماماً).
     expect(result.worst.mergedReading.pm10).toBe(45);
     expect(result.worst.mergedReading.sources.pm10).toBe('device');
-    expect(result.worst.mergedReading.windSpeedKmh).toBe(12);
-    expect(result.worst.mergedReading.visibilityM).toBe(9000);
+    // رياح/رؤية: لا وقت رصد مستقل (deviceWindSpeedAt/deviceVisibilityAt)
+    // مُمرَّر هنا → freshOrNull يُسقِطهما إلى null (لا الطقس، ولا القيمة
+    // القديمة) — القسم 5.3/18.3.
+    expect(result.worst.mergedReading.windSpeedKmh).toBeNull();
+    expect(result.worst.mergedReading.visibilityM).toBeNull();
+    expect(result.worst.mergedReading.sources.windSpeedKmh).toBe('none');
+    expect(result.worst.mergedReading.sources.visibilityM).toBe('none');
     // deviceLastReadingAt يبقى القيمة القديمة الفعلية (لعرض تحذير القِدم
     // بالواجهة)، لا يُخفى ولا يُستبدل
     expect(result.worst.mergedReading.deviceLastReadingAt).toBe(staleDeviceTime);
+  });
+
+  it('نفس القراءة القديمة لكن مع وقت رصد مستقل حديث لرياح/رؤية → القيمتان تُستخدَمان كما هما (الحداثة لكل حقل مستقلة عن deviceLastReadingAt العام)', async () => {
+    const now = new Date();
+    const currentHourStart = new Date(Math.floor(now.getTime() / 3600000) * 3600000);
+    const currentHourIso = currentHourStart.toISOString().slice(0, 16);
+    const windowStartIso = currentHourStart.toISOString();
+
+    const forecastBody = {
+      hourly: {
+        time: [currentHourIso],
+        visibility: [3000],
+        weather_code: [0],
+        wind_speed_10m: [50],
+        wind_gusts_10m: [60],
+        wind_direction_10m: [180],
+        relative_humidity_2m: [30],
+        temperature_2m: [45],
+        precipitation: [0],
+      },
+      daily: { precipitation_sum: [0] },
+    };
+    const airBody = {
+      hourly: { time: [currentHourIso], pm10: [1229.3], pm2_5: [124.8], dust: [900] },
+    };
+    mockForecastAirResponses(forecastBody, airBody);
+
+    const staleDeviceTime = new Date(now.getTime() - 5 * 3600000).toISOString();
+    const freshNowIso = now.toISOString();
+
+    const result = await evaluateDustVisibilityWindow(
+      input({
+        hasDeviceLink: true,
+        deviceLastReadingAt: staleDeviceTime,
+        devicePm10LastReadingAt: staleDeviceTime,
+        devicePm10: 45,
+        devicePm25: 15,
+        deviceWindSpeedKmh: 12,
+        deviceWindGustKmh: 18,
+        deviceWindSpeedAt: freshNowIso,
+        deviceWindGustAt: freshNowIso,
+        deviceVisibilityM: 9000,
+        deviceVisibilityAt: freshNowIso,
+        deviceTemperatureC: 38,
+        deviceRelativeHumidityPercent: 20,
+      }),
+      windowStartIso,
+      1
+    );
+
+    expect(result.worst.mergedReading.windSpeedKmh).toBe(12);
+    expect(result.worst.mergedReading.visibilityM).toBe(9000);
+    expect(result.worst.mergedReading.sources.windSpeedKmh).toBe('device');
+    expect(result.worst.mergedReading.sources.visibilityM).toBe('device');
   });
 
   // خطأ مكتشَف ومُصلَح إضافي (اكتشاف المستخدم أثناء المراجعة — "قراءة الجهاز

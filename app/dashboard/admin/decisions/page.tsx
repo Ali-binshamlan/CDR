@@ -9,10 +9,24 @@ import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { Loader2, ShieldAlert, CloudRain } from 'lucide-react';
 
+interface AdminDecisionRow {
+  id: string;
+  project_id: string;
+  status: string;
+  reason: string | null;
+  approved_by: string | null;
+  created_at: string;
+  projectName: string | null;
+  ownerUsername: string | null;
+  ownerCompany: string | null;
+  activityType: string | null;
+  regulatoryActivity: string | null;
+}
+
 export default function AdminDecisionsPage() {
   const router = useRouter();
   const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | undefined>(undefined);
-  const [decisions, setDecisions] = useState<any[]>([]);
+  const [decisions, setDecisions] = useState<AdminDecisionRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
 
@@ -28,8 +42,8 @@ export default function AdminDecisionsPage() {
       try {
         const { data } = await apiClient.get('/admin/decisions');
         setDecisions(data?.data || []);
-      } catch (error: any) {
-        if (error?.response?.status === 403) setAccessDenied(true);
+      } catch (error: unknown) {
+        if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
       } finally {
         setIsLoading(false);
       }

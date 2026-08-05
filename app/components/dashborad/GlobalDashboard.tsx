@@ -28,12 +28,34 @@ interface GlobalDashboardProps {
   hideRawReadings?: boolean;
 }
 
+interface DashboardProjectRow {
+  id: string;
+  name: string;
+  city?: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  project_status?: string | null;
+  [key: string]: unknown;
+}
+
+interface DashboardActivityRow {
+  project_id: string;
+  [key: string]: unknown;
+}
+
+interface LiveActivitySummary {
+  decisionLabelAr: string;
+  shortReason: string;
+  level: string;
+  mandatoryStop: boolean;
+}
+
 export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hideRawReadings = false }: GlobalDashboardProps) {
   const router = useRouter();
 
-  const [projects, setProjects] = useState<any[]>([]);
-  const [todayActivities, setTodayActivities] = useState<any[]>([]);
-  const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, any>>({});
+  const [projects, setProjects] = useState<DashboardProjectRow[]>([]);
+  const [todayActivities, setTodayActivities] = useState<DashboardActivityRow[]>([]);
+  const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, LiveActivitySummary>>({});
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -65,18 +87,24 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
       .map((p) => {
         const liveActivity = liveActivityByProjectId[p.id];
         const todayActivitiesCount = todayActivities.filter((a) => a.project_id === p.id).length;
+        const decision = liveActivity ? dviLevelToDecision(liveActivity.level, liveActivity.mandatoryStop) : null;
+        // جهة المراقبة الخارجية (viewer) لا تُعرض لها صياغة القرار الداخلية
+        // التفصيلية (مثال: "إيقاف إلزامي نظامي") عند حالة الإيقاف تحديدًا —
+        // بطلب صريح من المستخدم تُستبدل بصياغة تنظيمية مبسطة، وباقي الحالات
+        // تبقى بنصها الحالي (statusLabel/statusReason كما هما).
+        const isStopped = decision === 'stopped';
         return {
           id: p.id,
           name: p.name,
-          city: p.city,
-          latitude: p.latitude,
-          longitude: p.longitude,
-          decision: liveActivity ? dviLevelToDecision(liveActivity.level, liveActivity.mandatoryStop) : null,
+          city: p.city ?? undefined,
+          latitude: p.latitude as number,
+          longitude: p.longitude as number,
+          decision,
           projectStatus: p.project_status,
           todayActivitiesCount,
           hasLiveActivity: !!liveActivity,
-          statusLabel: liveActivity?.decisionLabelAr,
-          statusReason: liveActivity?.shortReason,
+          statusLabel: isStopped ? 'تم تسجيل مخالفة' : liveActivity?.decisionLabelAr,
+          statusReason: isStopped ? undefined : liveActivity?.shortReason,
         };
       });
   }, [projects, todayActivities, liveActivityByProjectId]);
@@ -109,6 +137,7 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
             points={mapPoints}
             onSelect={(id) => router.push(`/dashboard/Projects/${id}`)}
             hideRawReadings={hideRawReadings}
+            minimal
           />
         )}
       </div>

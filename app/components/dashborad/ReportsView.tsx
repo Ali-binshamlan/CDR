@@ -47,12 +47,25 @@ interface ReportsViewProps {
   apiEndpoint?: string;
 }
 
+interface RawDecisionRow {
+  id: string;
+  project_id: string;
+  status: string;
+  activity_source: string;
+}
+
+interface RawAlertRow {
+  id: string;
+  project_id: string;
+  kind: string;
+}
+
 export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: ReportsViewProps) {
   const [isLoading, setIsLoading] = useState(true);
 
   // البيانات الخام التي سنجلبها ونحللها
-  const [rawDecisions, setRawDecisions] = useState<any[]>([]);
-  const [rawAlerts, setRawAlerts] = useState<any[]>([]);
+  const [rawDecisions, setRawDecisions] = useState<RawDecisionRow[]>([]);
+  const [rawAlerts, setRawAlerts] = useState<RawAlertRow[]>([]);
   const [projectsMap, setProjectsMap] = useState<Map<string, string>>(new Map());
 
   // فلاتر التواريخ
@@ -64,27 +77,36 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
   const [projectFilter, setProjectFilter] = useState<string>('ALL');
 
   const fetchReportData = useCallback(async () => {
+    // await فوري (microtask) قبل أول setState — يفصل استدعاء الدالة نفسه
+    // (المباشر من جسم الـEffect) عن أول تعديل حالة متزامن، بلا أي تأخير
+    // محسوس (microtask ينفَّذ قبل أي رسم/طلاء). راجع
+    // https://react.dev/learn/you-might-not-need-an-effect.
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const { data: list } = await apiClient.get(apiEndpoint, { params: { fromDate, toDate } });
       const dbProjects = list?.projects || [];
 
       const pMap = new Map<string, string>();
-      (dbProjects as any[]).forEach((p) => pMap.set(p.id, p.name));
+      (dbProjects as { id: string; name: string }[]).forEach((p) => pMap.set(p.id, p.name));
       setProjectsMap(pMap);
 
       setRawDecisions(list?.decisions || []);
       setRawAlerts(list?.alerts || []);
 
-    } catch (error: any) {
-      console.error('Error fetching report data:', error?.message || error);
+    } catch (error: unknown) {
+      console.error('Error fetching report data:', (error as { message?: string })?.message || error);
     } finally {
       setIsLoading(false);
     }
   }, [apiEndpoint, fromDate, toDate]);
 
   useEffect(() => {
-    fetchReportData();
+    // جدولة عبر microtask بدل استدعاء fetchReportData مباشرة من جسم
+    // الـEffect — نفس السبب الموثَّق أعلى الدالة (تعديل حالة متزامن داخل Effect).
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) fetchReportData(); });
+    return () => { cancelled = true; };
   }, [fetchReportData]);
 
   // ============================================================
@@ -113,7 +135,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     // تجاوز فيزيائي صارم (SAFETY_BREACH) أو مخالفة تنظيمية فعلية توقف
     // النشاط (COMPLIANCE_VIOLATION، من محرك الامتثال).
     const criticalAlerts = filteredAlerts.filter(a =>
-      a.severity === 'CRITICAL' || ['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(a.kind)
+      ['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(a.kind)
     ).length;
 
     // حساب المشروع الأكثر تضرراً

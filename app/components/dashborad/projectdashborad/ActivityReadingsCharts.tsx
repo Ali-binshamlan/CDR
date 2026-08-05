@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
+import type { ValueType } from 'recharts/types/component/DefaultTooltipContent';
+import type { AxiosError } from 'axios';
 import { LineChart as LineChartIcon } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 
@@ -114,7 +116,7 @@ function SingleElementChart({
             />
             <Tooltip
               labelFormatter={(v) => formatDateTimeAr(String(v))}
-              formatter={(value: any) => [`${value} ${element.unit}`, element.titleAr]}
+              formatter={(value: ValueType | undefined) => [`${value ?? ''} ${element.unit}`, element.titleAr]}
               contentStyle={{ borderRadius: 10, border: '1px solid #E2E8F0', fontSize: 11, direction: 'rtl' }}
             />
             <Line
@@ -147,14 +149,13 @@ export default function ActivityReadingsCharts({
   activityGroupId?: string;
 }) {
   const [series, setSeries] = useState<ActivityReadingsSeries | null>(null);
-  const [loading, setLoading] = useState(true);
+  // القيمة الابتدائية تعكس ما إذا كان الجلب سيُطلَق فعلياً (projectId/
+  // activityGroupId متوفران) — بلا حاجة لتصحيحها لاحقاً false داخل الـEffect.
+  const [loading, setLoading] = useState(Boolean(projectId && activityGroupId));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!projectId || !activityGroupId) {
-      setLoading(false);
-      return;
-    }
+    if (!projectId || !activityGroupId) return;
     let cancelled = false;
 
     const fetchHistory = async (silent = false) => {
@@ -167,9 +168,10 @@ export default function ActivityReadingsCharts({
         const found = (data.activities || []).find((a: ActivityReadingsSeries) => a.activityGroupId === activityGroupId);
         setSeries(found ?? { activityGroupId, label: '', readings: [] });
         setError(null);
-      } catch (err: any) {
+      } catch (err) {
         if (cancelled || silent) return;
-        setError(err?.response?.data?.error || 'حدث خطأ أثناء جلب سجل قراءات النشاط');
+        const axiosErr = err as AxiosError<{ error?: string }>;
+        setError(axiosErr?.response?.data?.error || 'حدث خطأ أثناء جلب سجل قراءات النشاط');
       } finally {
         if (!cancelled && !silent) setLoading(false);
       }

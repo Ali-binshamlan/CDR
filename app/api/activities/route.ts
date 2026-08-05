@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
+import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
 
 // تعديل زمن نشاط غبار (تاريخ/وقت البداية اليومي/المدة) — يُستدعى من
 // MultiIndicatorActivityBox.tsx (handleSaveEdit). جسم الطلب:
@@ -41,6 +42,33 @@ export async function PATCH(request: NextRequest) {
     }
     const owns = await verifyProjectOwnership(t.projectId, auth.userId);
     if (!owns) return NextResponse.json({ error: 'لا تملك أحد هذه المشاريع' }, { status: 403 });
+  }
+
+  // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — "زر التعديل الموجود في الأنشطة
+  // هو المشكلة بذاتها": يسمح بضبط وقت خارج أوقات دوام المشروع، بعكس نموذج
+  // الإنشاء الذي يمنع ذلك فعلاً): المحاولة الأولى هنا استخدمت خطأً
+  // project_shifts (ورديات فرعية اختيارية، منفصلة تماماً) بدل المصدر
+  // الحقيقي لهذا القيد فعلياً — عمودا work_hours_start/work_hours_end على
+  // projects نفسه، وهما نفس ما يتحقق منه AddActivityModal/index.tsx (بناء
+  // validateSchedule) عند إنشاء نشاط جديد. مشروع بلا work_hours_start/end
+  // مُعرَّفين (أعمدة nullable) لا يُقيَّد إطلاقاً — نفس فشل آمن مطابق لمنطق
+  // الإنشاء. المشاريع المستهدَفة قد تختلف بأوقات دوامها — نتحقق لكل مشروع
+  // فريد بمجموعة targets على حدة بدل افتراض أنها كلها لنفس المشروع.
+  const uniqueProjectIds = Array.from(new Set(targets.map((t: { projectId: string }) => String(t.projectId))));
+  for (const projectId of uniqueProjectIds) {
+    const { data: projectRow } = await supabaseAdmin
+      .from('projects')
+      .select('work_hours_start, work_hours_end')
+      .eq('id', projectId)
+      .maybeSingle();
+    const ws = projectRow?.work_hours_start ?? null;
+    const we = projectRow?.work_hours_end ?? null;
+    if (!isActivityTimeWithinWorkHours(ws, we, String(plannedTime), durationHours)) {
+      return NextResponse.json(
+        { error: `وقت النشاط اليومي يجب أن يقع ضمن أوقات دوام المشروع (${String(ws).slice(0, 5)} – ${String(we).slice(0, 5)}).` },
+        { status: 400 }
+      );
+    }
   }
 
   for (const t of targets) {
@@ -118,6 +146,7 @@ export async function DELETE(request: NextRequest) {
     const { error: currentDecisionsError } = await supabaseAdmin
       .from('current_dust_decisions')
       .delete()
+      .eq('project_id', projectId)
       .eq('activity_group_id', groupId);
     if (currentDecisionsError) {
       return NextResponse.json({ error: safeErrorResponse(currentDecisionsError, `فشل حذف current_dust_decisions للنشاط ${activityId}`) }, { status: 500 });
@@ -126,6 +155,7 @@ export async function DELETE(request: NextRequest) {
     const { error: currentComplianceError } = await supabaseAdmin
       .from('current_dust_compliance_decisions')
       .delete()
+      .eq('project_id', projectId)
       .eq('activity_group_id', groupId);
     if (currentComplianceError) {
       return NextResponse.json({ error: safeErrorResponse(currentComplianceError, `فشل حذف current_dust_compliance_decisions للنشاط ${activityId}`) }, { status: 500 });

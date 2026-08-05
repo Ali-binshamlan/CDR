@@ -12,6 +12,7 @@ export {
   evaluateDustVisibilityHourly,
   evaluateDustVisibilityWindow,
   evaluateDustVisibilityWorkDayHourly,
+  evaluateLiveOperationalDecision,
   computeDviResult,
   classifyCause,
 } from './engine';

@@ -110,6 +110,7 @@ function HoverCard({
   point,
   screenPosition,
   hideRawReadings = false,
+  minimal = false,
 }: {
   point: ProjectPoint;
   screenPosition: { x: number; y: number };
@@ -118,33 +119,43 @@ function HoverCard({
   // ظاهراً كما هو. حين مفعَّل، لا يُستدعى /api/weather إطلاقاً (لا فقط
   // إخفاء العرض بعد الجلب) — توفير طلب شبكة لا داعي له.
   hideRawReadings?: boolean;
+  // طلب صريح لاحق من المستخدم (جهة المراقبة فقط): لا يظهر بالفقاعة سوى
+  // اسم المشروع/المدينة وحالة المخالفة — تُخفى كل التفاصيل الأخرى (سبب
+  // الحالة، الحالة الإدارية، عدد أنشطة اليوم، وقراءات الطقس بالكامل).
+  minimal?: boolean;
 }) {
   const [weather, setWeather] = useState<LiveWeather | null>(null);
-  const [isLoadingWeather, setIsLoadingWeather] = useState(true);
+  // القيمة الابتدائية تعكس ما إذا كان الطلب سيُطلَق فعلياً — hideRawReadings/
+  // minimal يمنعان الجلب كلياً (راجع الشرط أدناه)، فلا داعي أن تبدأ true ثم
+  // تُصحَّح لاحقاً false داخل الـEffect.
+  const [isLoadingWeather, setIsLoadingWeather] = useState(!hideRawReadings && !minimal);
 
   useEffect(() => {
-    if (hideRawReadings) {
-      setIsLoadingWeather(false);
-      return;
-    }
+    if (hideRawReadings || minimal) return;
     let cancelled = false;
-    setWeather(null);
-    setIsLoadingWeather(true);
-    apiClient
-      .get('/weather', { params: { lat: point.latitude, lng: point.longitude } })
-      .then(({ data }) => {
-        if (!cancelled) setWeather(data?.data ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setWeather(null);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoadingWeather(false);
-      });
+    // جدولة عبر microtask بدل استدعاء setWeather/setIsLoadingWeather مباشرة
+    // من جسم الـEffect — تعديل حالة متزامن مباشر داخل Effect (نفس السبب
+    // الموثَّق في fetchDevices/fetchHistory بصفحات المشروع).
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setWeather(null);
+      setIsLoadingWeather(true);
+      apiClient
+        .get('/weather', { params: { lat: point.latitude, lng: point.longitude } })
+        .then(({ data }) => {
+          if (!cancelled) setWeather(data?.data ?? null);
+        })
+        .catch(() => {
+          if (!cancelled) setWeather(null);
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingWeather(false);
+        });
+    });
     return () => {
       cancelled = true;
     };
-  }, [point.id, point.latitude, point.longitude, hideRawReadings]);
+  }, [point.id, point.latitude, point.longitude, hideRawReadings, minimal]);
 
   return (
     <div
@@ -163,17 +174,21 @@ function HoverCard({
           {point.decision ? point.statusLabel || decisionLabelAr[point.decision] : NO_ACTIVITY_LABEL_AR}
         </span>
       </div>
-      {point.hasLiveActivity && point.statusReason && (
+      {!minimal && point.hasLiveActivity && point.statusReason && (
         <div className="text-[11px] text-slate-500 mb-1.5 leading-relaxed">{point.statusReason}</div>
       )}
-      <div className="text-[11px] text-slate-500">
-        الحالة الإدارية: <span className="font-bold text-slate-700">{PROJECT_STATUS_LABEL_AR[point.projectStatus || ''] || 'غير محدد'}</span>
-      </div>
-      <div className="text-[11px] text-slate-500 mb-2">
-        أنشطة اليوم: <span className="font-bold text-slate-700">{point.todayActivitiesCount ?? 0}</span>
-      </div>
+      {!minimal && (
+        <div className="text-[11px] text-slate-500">
+          الحالة الإدارية: <span className="font-bold text-slate-700">{PROJECT_STATUS_LABEL_AR[point.projectStatus || ''] || 'غير محدد'}</span>
+        </div>
+      )}
+      {!minimal && (
+        <div className="text-[11px] text-slate-500 mb-2">
+          أنشطة اليوم: <span className="font-bold text-slate-700">{point.todayActivitiesCount ?? 0}</span>
+        </div>
+      )}
 
-      {!hideRawReadings && (
+      {!hideRawReadings && !minimal && (
         <div className="pt-2 border-t border-slate-100 space-y-1">
           {isLoadingWeather ? (
             <div className="text-[11px] text-slate-400">جاري جلب قراءات الطقس...</div>
@@ -206,10 +221,14 @@ export default function ProjectsMap({
   points,
   onSelect,
   hideRawReadings = false,
+  minimal = false,
 }: {
   points: ProjectPoint[];
   onSelect?: (id: string) => void;
   hideRawReadings?: boolean;
+  // طلب صريح من المستخدم: بفقاعة جهة المراقبة لا يظهر سوى اسم المشروع/
+  // المدينة وحالة القرار — كل التفاصيل الأخرى مخفاة (راجع HoverCard أعلاه).
+  minimal?: boolean;
 }) {
   const [hovered, setHovered] = useState<{ point: ProjectPoint; screenPosition: { x: number; y: number } } | null>(null);
 
@@ -250,7 +269,7 @@ export default function ProjectsMap({
         ))}
       </MapContainer>
       {hovered && (
-        <HoverCard point={hovered.point} screenPosition={hovered.screenPosition} hideRawReadings={hideRawReadings} />
+        <HoverCard point={hovered.point} screenPosition={hovered.screenPosition} hideRawReadings={hideRawReadings} minimal={minimal} />
       )}
     </div>
   );

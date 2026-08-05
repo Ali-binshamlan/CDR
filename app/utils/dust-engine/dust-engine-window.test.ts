@@ -47,7 +47,7 @@ function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   };
 }
 
-function mockForecastAirResponses(forecastBody: any, airBody: any) {
+function mockForecastAirResponses(forecastBody: unknown, airBody: unknown) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -144,5 +144,62 @@ describe('evaluateDustVisibilityWindow — worst يجب أن يكون ساعة �
     await expect(
       evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), '2026-07-29T10:00:00Z', 3)
     ).rejects.toThrow('DATA_UNAVAILABLE');
+  });
+
+  // خطأ تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المسار التشغيلي الحي ما زال
+  // ينتظر Open-Meteo". نشاط حي بجهاز مرتبط لا يحتاج انتظار مهلة الشبكة
+  // الكاملة (worst يُعاد بناؤه من الجهاز بصرف النظر عن نتيجة هذا الطلب) —
+  // يجب أن يستخدم مهلة مختصرة (3 ثوانٍ) بدل الافتراضية (7 ثوانٍ).
+  //
+  // بيانات محاكاة مبنية على الوقت الفعلي وقت التشغيل (لا تواريخ ثابتة مثل
+  // THREE_HOUR_FORECAST أعلاه) — windowStartIso يجب أن يقع فعلياً ضمن ساعات
+  // الاستجابة المُحاكاة، وإلا يُرمى DATA_UNAVAILABLE بغض النظر عن الغرض
+  // الفعلي من هذين الاختبارين (فحص قيمة timeout، لا محتوى النتيجة).
+  function buildHourlySamplesAround(anchorIso: string) {
+    const anchorHourMs = Math.floor(new Date(anchorIso).getTime() / 3600000) * 3600000;
+    const times = [-1, 0, 1, 2, 3].map((h) => new Date(anchorHourMs + h * 3600000).toISOString().slice(0, 16));
+    const n = times.length;
+    return {
+      forecast: {
+        hourly: {
+          time: times,
+          visibility: Array(n).fill(9000),
+          weather_code: Array(n).fill(0),
+          wind_speed_10m: Array(n).fill(10),
+          wind_gusts_10m: Array(n).fill(15),
+          wind_direction_10m: Array(n).fill(180),
+          relative_humidity_2m: Array(n).fill(30),
+          temperature_2m: Array(n).fill(35),
+          precipitation: Array(n).fill(0),
+        },
+        daily: { precipitation_sum: [0] },
+      },
+      air: {
+        hourly: { time: times, pm10: Array(n).fill(50), pm2_5: Array(n).fill(20), dust: Array(n).fill(10) },
+      },
+    };
+  }
+
+  it('نشاط حي الآن بجهاز مرتبط يستخدم مهلة شبكة مختصرة (3 ثوانٍ)', async () => {
+    const nowIso = new Date().toISOString();
+    const { forecast, air } = buildHourlySamplesAround(nowIso);
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    await evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), nowIso, 3);
+
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(3000);
+  });
+
+  it('نشاط توقّعي بعيد (خارج هامش الساعتين الحية) يستخدم مهلة الشبكة الكاملة', async () => {
+    const farFutureIso = new Date(Date.now() + 5 * 3600000).toISOString();
+    const { forecast, air } = buildHourlySamplesAround(farFutureIso);
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    await evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), farFutureIso, 3);
+
+    expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);
   });
 });

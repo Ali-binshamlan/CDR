@@ -8,6 +8,12 @@
 // =============================================================
 
 import type { FinalDecision, FinalDecisionInput, OperationalDecision, RegulatoryFinding } from './types';
+// PM10_WARNING_UG_M3 (251 ميكروجرام/م³) — نفس الحد المستخدَم في
+// buildPlanningForecastResult (dust-compliance-engine/engine.ts) لتصنيف
+// توقّع PM10 "غير مناسب". decideFinal تبقى "الدالة الوحيدة المسموح لها
+// بقراءة dvi/compliance معاً" (راجع تعليق أعلى الملف) — هذا الاستيراد ثابت
+// قيمة رقمية بحتة فقط، لا منطق قرار من محرك آخر، فلا يخالف ذلك المبدأ.
+import { PM10_WARNING_UG_M3 as PM10_FORECAST_WARNING_UG_M3 } from '@/app/utils/dust-compliance-engine';
 
 // invariant صارم — لا يعتمد على التزام كل فرع من decideFinal بضبط
 // overridable=false يدوياً عند mandatoryStop=true (نفس مبدأ
@@ -19,6 +25,19 @@ function assertDecisionInvariant(result: { mandatoryStop: boolean; overridable: 
     throw new Error('Invalid FinalDecision: mandatoryStop=true cannot coexist with overridable=true');
   }
 }
+
+// ترتيب أولوية القرار التشغيلي (القسم 4.3 من "دليل الإصلاح الجذري لمنظومة
+// مرقاب") — الأعلى دائماً يفوز عند اختيار الأشد بين مرشحين. يجب أن يبقى
+// satisfies Record<OperationalDecision, number> — أي فئة جديدة في
+// OperationalDecision (types.ts) تُجبِر المترجم على تصنيفها هنا فوراً.
+const OPERATION_RANK = {
+  ALLOW: 0,
+  MONITOR: 1,
+  RESTRICT: 2,
+  HOLD_FOR_VERIFICATION: 3,
+  PROTECTIVE_STOP: 4,
+  MANDATORY_STOP: 5,
+} as const satisfies Record<OperationalDecision, number>;
 
 const LEVEL_BY_DVI: Record<string, FinalDecision['level']> = {
   GREEN: 'GREEN',
@@ -75,7 +94,23 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // الحالتين mandatoryStop=false/overridable=true دائماً (لا إيقاف إلزامي
   // فعلي على توقّع، مهما كان اللون).
   if (mode === 'PLANNING') {
-    const isFavorable = dvi.decisionCategory === 'ALLOW' || dvi.decisionCategory === 'ALLOW_WITH_MONITORING';
+    // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "ليه ما يقول تنبيه استباقي
+    // الأجواء غير المناسبة... اتوقع انه يستثني قاعدة PM10". isFavorable كانت
+    // تفحص dvi.decisionCategory (DVI الفيزيائي: رياح/رؤية) فقط، بلا أي فحص
+    // لتركيز PM10 المتوقّع — فتوقّع بـPM10=1315 (أضعاف حد المخالفة 340) كان
+    // يظهر "مسموح — تشغيل اعتيادي" طالما الرياح/الرؤية جيدتان، لكل الأنشطة
+    // (لا خاص بمحطة الخلط). compliance.evidence.pm10UgM3 هو نفس تركيز PM10
+    // المتوقّع الذي بنى عليه buildPlanningForecastResult (dust-compliance-
+    // engine/engine.ts) نصه التوعوي المطابق — قراءته هنا مباشرة (بدل نص
+    // shortReasonAr الهش) يجعل isFavorable يعكس فعلياً DVI + PM10 معاً، مع
+    // بقاء decisionCategory=ALLOW/mandatoryStop=false دائماً (لا إيقاف إلزامي
+    // على تقدير مهما بلغت القيمة).
+    const isPm10Unfavorable =
+      compliance?.evidence?.pm10UgM3 !== null &&
+      compliance?.evidence?.pm10UgM3 !== undefined &&
+      compliance.evidence.pm10UgM3 >= PM10_FORECAST_WARNING_UG_M3;
+    const isFavorable =
+      (dvi.decisionCategory === 'ALLOW' || dvi.decisionCategory === 'ALLOW_WITH_MONITORING') && !isPm10Unfavorable;
     const result: FinalDecision = {
       snapshotId: input.snapshotId,
       mode,
@@ -85,7 +120,9 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
       overridable: true,
       shortReasonAr: isFavorable
         ? 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة تصلح للنشاط. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.'
-        : 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة لا تصلح للنشاط، يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.',
+        : isPm10Unfavorable
+          ? `تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — تركيز الغبار (PM10) المتوقّع (${compliance!.evidence.pm10UgM3} ميكروجرام/م³) يتجاوز حد التحذير التنظيمي (${PM10_FORECAST_WARNING_UG_M3} ميكروجرام/م³). يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.`
+          : 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة لا تصلح للنشاط، يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.',
       decisionLabelAr: isFavorable ? 'مسموح — تشغيل اعتيادي' : 'تنبيه: أجواء متوقعة غير مناسبة',
       level: isFavorable ? 'GREEN' : 'YELLOW',
       pendingConfirmation: false,
@@ -102,156 +139,150 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   const complianceBlocks = complianceMandatory || complianceStopAffected;
   // معلَّق = pendingConfirmation === true تحديداً بصرف النظر عن الفئة
   // (MANDATORY_STOP أو STOP_AFFECTED_ACTIVITY كلاهما) — "الحقل هو الحاسم لا
-  // الفئة"، يطابق applyComplianceGateToAei القديمة بالضبط (فحص pendingConfirmation
-  // داخل فرع AEI_COMPLIANCE_CLOSED_DECISIONS الذي يضم الفئتين معاً). أي حالة
-  // أخرى (بما فيها pendingConfirmation=undefined) مؤكَّدة فوراً بلا حاجة
-  // لدليل استمرار — فشل آمن نحو "مؤكَّد" لا "معلَّق" بلا دليل.
+  // الفئة". أي حالة أخرى (بما فيها pendingConfirmation=undefined) مؤكَّدة
+  // فوراً بلا حاجة لدليل استمرار — فشل آمن نحو "مؤكَّد" لا "معلَّق" بلا دليل.
   const confirmedAffectedStop = complianceBlocks && compliance?.pendingConfirmation !== true;
   const pendingAffectedStop = complianceBlocks && compliance?.pendingConfirmation === true;
 
   // الأدلة غير كافية — يُطبَّق فقط في LIVE_OPERATIONAL (PLANNING لا تملك
-  // "الآن" ليُطلَب تحقق ميداني منه؛ ساعات التوقّع تُعرض توعوياً بصرف النظر
-  // عن جودة الأدلة، نفس السلوك القديم في computeDustComplianceHourly).
-  //
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "القراءة القديمة ما زالت
-  // تنتج ALLOW أو STOP حيًا"): كان الفحص يقتصر على UNAVAILABLE فقط، فتُستثنى
-  // عمداً STALE (جهاز مرتبط فعلياً لكن آخر قراءة PM10 غائبة أو أقدم من
-  // DEVICE_READING_FRESHNESS_MINUTES، راجع deriveEvidenceQuality في
-  // adapters.ts) — يعني الواجهة تعرض تحذير "قراءة قديمة" بينما القرار
-  // التشغيلي (ALLOW/RESTRICT/MANDATORY_STOP) يُحسَب ويُعرَض بثقة كاملة من
-  // نفس تلك القراءة القديمة. القرار السابق (لا تصعيد لـSTALE) عُكس صراحة:
-  // الآن STALE تُعامَل معاملة UNAVAILABLE تماماً — قراءة قديمة لا يجوز أن
-  // تنتج "آمن الآن" ولا "مخالفة مؤكَّدة الآن"، بل HOLD_FOR_VERIFICATION.
-  // dvi.mandatoryStop (خطر فيزيائي مباشر) يبقى يفوز دائماً (يُفحَص أعلاه قبل
-  // هذا الشرط) — قِدم قراءة الجهاز لا يُسقِط بوابة إيقاف فيزيائية حقيقية.
+  // "الآن" ليُطلَب تحقق ميداني منه). STALE تُعامَل معاملة UNAVAILABLE تماماً
+  // — قراءة قديمة لا يجوز أن تنتج "آمن الآن" ولا "مخالفة مؤكَّدة الآن".
   const evidenceUnavailable =
     mode === 'LIVE_OPERATIONAL' && (evidenceQuality === 'UNAVAILABLE' || evidenceQuality === 'STALE');
 
   // هل سبب dvi.mandatoryStop هو PM10 لحظي فقط (لا خطر فيزيائي حقيقي آخر
-  // كرؤية حرجة/عاصفة مساهم بنفس اللحظة)؟ نفس الوسم المستخدَم في dust-engine/
-  // engine.ts (rule4Triggered فرع pm10RuleTriggered) — DVI-DUST-ACTIVITY-
-  // STOP-004-PM10-ONLY يُضاف حصراً في ذلك الفرع، فوجوده في triggeredRules
-  // يعني "PM10 اللحظي وحده كان كافياً"، بمعزل عن أي دليل فيزيائي حقيقي آخر.
-  const dviMandatoryStopIsPm10Only = dvi.triggeredRules?.includes('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY') === true;
+  // كرؤية حرجة/عاصفة مساهم بنفس اللحظة)؟ يُقرأ الآن من dvi.stopBasis/
+  // confirmationState (حقول Typed، القسم 4.4 من "دليل الإصلاح الجذري") بدل
+  // مطابقة نص كود قاعدة (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY) يدوياً.
+  const dviMandatoryStopIsPm10Only = dvi.stopBasis === 'PM10' && dvi.confirmationState === 'PENDING';
 
-  // dvi.mandatoryStop (خطر فيزيائي فوري — رؤية حرجة/عاصفة، أو PM10 لحظي +
-  // الشرط الفرعي المزدوج، راجع dust-engine/engine.ts) يبقى أرضية مطلقة —
-  // لا يجوز لأي قرار امتثال أن "يُخفّف" إيقافاً فيزيائياً فعلياً. هذا يطابق
-  // GATE-DVI-002 في dust-compliance-engine (إيقاف إلزامي يورَث من DVI).
-  //
-  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "FinalDecisionEngine يعيد الخطأ
-  // بعد أن يصححه محرك الامتثال"): التعليق القديم هنا ادّعى أن تمييز PM10
-  // لحظي (dviMandatoryStopIsPm10Only) مقابل خطر فيزيائي حقيقي "طُبِّق بالفعل
-  // داخل محرك الامتثال نفسه قبل وصول compliance.decisionCategory" — صحيح
-  // جزئياً فقط: محرك الامتثال يحوّل تلك الحالة فعلاً إلى STOP_AFFECTED_ACTIVITY
-  // معلَّق (pendingConfirmation=true) عبر GATE-DVI-002 (راجع isPendingRuleHit
-  // بـengine.ts هناك)، لكن dvi.mandatoryStop الخام (من dust-engine) يبقى
-  // true بلا أي تعديل — هو مخرَج محرك مختلف تماماً لا يعرف بقرار الامتثال
-  // إطلاقاً. فكان `dvi.mandatoryStop === true` وحدها هنا تفوز دائماً بصرف
-  // النظر عن pendingAffectedStop، منتجةً بالضبط التناقض المكتشَف: عينة PM10
-  // واحدة لحظية → dvi.mandatoryStop=true → محرك الامتثال يخفّضها لمعلَّقة
-  // (regulatoryFinding=PENDING_CONFIRMATION) → لكن decideFinal يعيد ترقيتها
-  // لـmandatoryStop=true/operationalDecision=MANDATORY_STOP رغم ذلك — نتيجة
-  // متناقضة فعلياً تُبطل بالضبط ما صححه محرك الامتثال للتو.
-  //
-  // خطأ ثانٍ مكتشَف ومُصلَح (مراجعة كود مدير — "القراءة القديمة قد تنتج
-  // إيقافاً إلزامياً إذا كان DVI قد أوقفها أولاً"): كان dvi.mandatoryStop
-  // يفوز دائماً حتى مع evidenceUnavailable=true (قراءة PM10 قديمة/غائبة) —
-  // مبرَّراً بأن "خطر فيزيائي حقيقي (رؤية حرجة/عاصفة) لا ينبغي أن ينتظر
-  // تحقق بيانات". هذا صحيح لخطر فيزيائي *حقيقي*، لكن خاطئ لـPM10 لحظي:
-  // إن كانت قراءة PM10 نفسها هي سبب dvi.mandatoryStop الوحيد (dviMandatoryStopIsPm10Only)
-  // وكانت هذه القراءة قديمة/غير متوفرة (evidenceUnavailable)، فالإيقاف
-  // مبني على بيانات لا يُعتمَد عليها أصلاً — نفس فلسفة "القراءة القديمة ما
-  // زالت تنتج ALLOW أو STOP حيًا" الموثَّقة أعلاه بالضبط، لم تُطبَّق سابقاً
-  // على dvi.mandatoryStop تحديداً. خطر فيزيائي حقيقي (رؤية حرجة/رياح شديدة،
-  // dviMandatoryStopIsPm10Only=false) يبقى يفوز فوراً كما كان دائماً — لا
-  // تغيير هناك، فهو لا يعتمد على قراءة PM10 التي قد تكون قديمة.
-  //
-  // الإصلاح: dvi.mandatoryStop يُستثنى في حالتين معاً: (1) pendingAffectedStop=true
-  // (محرك الامتثال قرر صراحة أن سبب هذا الإيقاف معلَّق بانتظار تأكيد)، أو
-  // (2) PM10 لحظي فقط + evidenceUnavailable (بيانات قديمة/غير متوفرة).
-  //
-  // confirmedAffectedStop يشمل MANDATORY_STOP وSTOP_AFFECTED_ACTIVITY معاً
-  // (complianceBlocks أعلاه) طالما غير معلَّق — عمداً لا complianceMandatory
-  // بمفردها هنا: MANDATORY_STOP مع pendingConfirmation=true (حالة نظرية
-  // نادرة لكن ممكنة في البيانات) يجب أن تبقى "معلَّقة" أيضاً، لا قطعية،
-  // بنفس معاملة STOP_AFFECTED_ACTIVITY المعلَّق تماماً — "الحقل هو الحاسم،
-  // لا الفئة" (طلب صريح موثَّق في اختبارات applyComplianceGateToAei القديمة).
+  // dviPm10StopIsUnreliable: PM10 لحظي فقط + قراءة قديمة/غير متوفرة — إيقاف
+  // مبني على بيانات لا يُعتمَد عليها أصلاً. خطر فيزيائي حقيقي (رؤية حرجة/
+  // رياح شديدة، dviMandatoryStopIsPm10Only=false) يبقى يفوز فوراً دائماً —
+  // لا يعتمد على قراءة PM10 التي قد تكون قديمة.
   const dviPm10StopIsUnreliable = dviMandatoryStopIsPm10Only && evidenceUnavailable;
-  const mandatoryStop =
-    confirmedAffectedStop || (dvi.mandatoryStop === true && !pendingAffectedStop && !dviPm10StopIsUnreliable);
 
-  // محرك DVI الفيزيائي لا يعرف مفهوم "العملية المغلقة" إطلاقاً — راجع
-  // التعليق الكامل أسفل حساب suppressDviMonitoring في shortReasonAr/level.
-  // يُحسَب هنا مبكراً لأنه يؤثر على operationalDecision أيضاً (لا يبقى
-  // MONITOR بسبب رياح فقط لنشاط مغلق وامتثاله نظيف).
-  //
-  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "عند اعتبار العملية
-  // مغلقة، قد يُلغى خطأً تقييد شديد أو إيقاف متعلق بالرؤية ويصدر ALLOW"):
-  // كان الشرط يفحص فقط isEnclosedOperation وcompliance.decisionCategory،
-  // بلا أي فحص لـdvi.decisionCategory — فيُقمَع أي قرار DVI (بما فيها
-  // RESTRICT_SEVERE بسبب رؤية حرجة فعلية، أو STOP_DUST_GENERATING_ACTIVITIES/
-  // STOP_VISIBILITY_DEPENDENT_ACTIVITIES) لمجرد أن النشاط مغلق وامتثاله
-  // نظيف، حتى لو كان سبب القرار غباراً/رؤية فيزيائية حقيقية لا علاقة لها
-  // بالرياح إطلاقاً (بروتوكول الملحق أ يُعفي العمليات المغلقة من بوابة
-  // الرياح تحديداً، لا من كل خطر فيزيائي آخر). القصد الأصلي لهذا القمع
-  // (راجع عنوان describe المقابل في engine.test.ts: "يُخفي تنبيه مراقبة DVI
-  // مصدره الرياح فقط") كان محصوراً بحالة ALLOW_WITH_MONITORING تحديداً —
-  // الآن يُطبَّق حصراً عليها، لا على أي قرار DVI آخر.
+  // --- محرك المرشحين (Candidates + Strictest) — القسم 4.3 من "دليل
+  // الإصلاح الجذري لمنظومة مرقاب": بدل سلسلة if/else هشة (تسمح بتكرار
+  // المشكلة عند إضافة فئة DVI/Compliance جديدة بلا تصنيفها)، يُبنى مرشح
+  // مستقل من كل مصدر (DVI/Compliance/Evidence/Enclosed-suppression) ثم
+  // يُختار الأشد عبر OPERATION_RANK. لا حاجة لـsatisfies Record shape هنا
+  // لأن كل مصدر مُعالَج بفرعه الخاص أدناه (لا تعداد شامل لكل DviDecisionCategory
+  // بدون معنى تشغيلي — RESTRICT_SEVERE/STOP_* الفيزيائية كلها تُطابَق MONITOR
+  // بنفس منطق aei-engine/tables.ts AEI_CAPPING_DVI_DECISIONS، لا MANDATORY_STOP
+  // إلا عبر dvi.mandatoryStop المنفصل أدناه).
+  interface DecisionCandidate {
+    source: 'DVI' | 'COMPLIANCE' | 'EVIDENCE' | 'ENCLOSED_SUPPRESS';
+    decision: OperationalDecision;
+  }
+
+  // القسم 18.1 من "دليل الإصلاح الجذري لمنظومة مرقاب" (مصفوفة اختبارات
+  // القبول) — إصلاح جذري صريح فوق الإصلاح الجزئي السابق (كان يُطابِق كل
+  // هذه الفئات MONITOR وحده، معتمداً على compliance وحده لإنتاج RESTICT/
+  // PROTECTIVE_STOP حقيقيَّين — تناقض مباشر مع جدول 18.1 الذي يطلب DVI
+  // RESTRICT/RESTRICT_SEVERE → RESTRICT مباشرة حتى مع Compliance=ALLOW،
+  // وSTOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPENDENT_ACTIVITIES
+  // → PROTECTIVE_STOP غير إلزامي، بلا انتظار أن يكتشف محرك امتثال منفصل
+  // نفس الخطر الفيزيائي الذي رصده DVI بالفعل):
+  //   RESTRICT/RESTRICT_SEVERE → RESTRICT مباشرة.
+  //   STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPENDENT_ACTIVITIES
+  //   (خطر فيزيائي فعلي بلا mandatoryStop صريح بعد من applyMandatoryGates)
+  //   → PROTECTIVE_STOP (إيقاف احترازي غير إلزامي — OPERATION_RANK يضعه
+  //   أعلى من RESTRICT، فيفوز حتى مع compliance=ALLOW نظيف).
+  //   ALLOW_WITH_MONITORING → MONITOR كما كان (لا تغيير — غير مذكورة في
+  //   جدول 18.1 بقيمة مختلفة).
+  const dviCandidate: DecisionCandidate = {
+    source: 'DVI',
+    decision:
+      dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
+      dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES'
+        ? 'PROTECTIVE_STOP'
+        : dvi.decisionCategory === 'RESTRICT' || dvi.decisionCategory === 'RESTRICT_SEVERE'
+          ? 'RESTRICT'
+          : dvi.decisionCategory === 'ALLOW_WITH_MONITORING'
+            ? 'MONITOR'
+            : 'ALLOW',
+  };
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "التحقق الميداني ما زال يتحول
+  // إلى مراقبة"): compliance.decisionCategory==='FIELD_VERIFICATION_
+  // REQUIRED' كان يُطابَق MONITOR هنا — نفس مستوى الاحتراز العادي
+  // (ALLOW_WITH_CONTROLS/PRECAUTION)، رغم أن اسم الفئة نفسه يقول صراحة
+  // "يتطلب تحقق ميداني قبل الاستمرار" (نفس دلالة HOLD_FOR_VERIFICATION
+  // بالضبط — نقص بيانات مشروع/موقع حرجة، لا مجرد تحذير تشغيلي أخف).
+  // OPERATION_RANK يضع HOLD_FOR_VERIFICATION (3) أعلى بكثير من MONITOR (1)
+  // عمداً — القرار السابق كان يُخفي هذا النقص خلف نص احترازي عادي بدل
+  // إيقاف اعتماد القرار حتى يُستكمَل التحقق الميداني المطلوب فعلياً.
+  const complianceCandidate: DecisionCandidate = {
+    source: 'COMPLIANCE',
+    decision: !compliance
+      ? 'ALLOW'
+      : confirmedAffectedStop
+        ? 'MANDATORY_STOP'
+        : pendingAffectedStop
+          ? 'PROTECTIVE_STOP'
+          : compliance.decisionCategory === 'RESTRICT_ACTIVITY'
+            ? 'RESTRICT'
+            : compliance.decisionCategory === 'FIELD_VERIFICATION_REQUIRED'
+              ? 'HOLD_FOR_VERIFICATION'
+              : compliance.decisionCategory === 'ALLOW_WITH_CONTROLS' || compliance.decisionCategory === 'PRECAUTION'
+                ? 'MONITOR'
+                : 'ALLOW',
+  };
+
+  // dvi.mandatoryStop (خطر فيزيائي فوري — رؤية حرجة/عاصفة، أو PM10 لحظي مع
+  // الشرط الفرعي المزدوج) أرضية مطلقة — يُستثنى فقط في حالتين: (1)
+  // pendingAffectedStop=true (محرك الامتثال قرر صراحة أن السبب معلَّق)، أو
+  // (2) PM10 لحظي فقط + evidenceUnavailable (بيانات قديمة/غير متوفرة).
+  const dviMandatoryCandidate: DecisionCandidate = {
+    source: 'DVI',
+    decision:
+      dvi.mandatoryStop === true && !pendingAffectedStop && !dviPm10StopIsUnreliable ? 'MANDATORY_STOP' : 'ALLOW',
+  };
+
+  const evidenceCandidate: DecisionCandidate = {
+    source: 'EVIDENCE',
+    decision: evidenceUnavailable ? 'HOLD_FOR_VERIFICATION' : 'ALLOW',
+  };
+
+  // محرك DVI الفيزيائي لا يعرف مفهوم "العملية المغلقة" إطلاقاً. القمع هنا
+  // محصور بحالة dvi.decisionCategory==='ALLOW_WITH_MONITORING' تحديداً (لا
+  // أي قرار DVI آخر) — RESTRICT_SEVERE/STOP_* بسبب رؤية فيزيائية حقيقية لا
+  // علاقة لها بالرياح لا تُقمَع أبداً (بروتوكول الملحق أ يُعفي العمليات
+  // المغلقة من بوابة الرياح تحديداً، لا من كل خطر فيزيائي آخر). يُطبَّق فقط
+  // إن لم يكن هناك mandatoryStop أصلاً (محسوبة من dviMandatoryCandidate
+  // نفسه أدناه بعد اختيار الأشد، فلا حاجة لحسابها هنا مسبقاً).
   const suppressDviMonitoring =
-    !mandatoryStop &&
     compliance?.isEnclosedOperation === true &&
     compliance.decisionCategory === 'ALLOW' &&
     dvi.decisionCategory === 'ALLOW_WITH_MONITORING';
 
-  let operationalDecision: OperationalDecision;
-  if (mandatoryStop) {
-    operationalDecision = 'MANDATORY_STOP';
-  } else if (pendingAffectedStop) {
-    // معلَّق فقط (بانتظار تأكيد استمرار) — النشاط متوقف احترازياً لكن غير
-    // مؤكَّد تنظيمياً بعد، فيصل PROTECTIVE_STOP لا MANDATORY_STOP.
-    operationalDecision = 'PROTECTIVE_STOP';
-  } else if (evidenceUnavailable) {
-    operationalDecision = 'HOLD_FOR_VERIFICATION';
-  } else if (suppressDviMonitoring) {
-    operationalDecision = 'ALLOW';
-  } else if (compliance?.decisionCategory === 'RESTRICT_ACTIVITY') {
-    operationalDecision = 'RESTRICT';
-  } else if (
-    compliance?.decisionCategory === 'FIELD_VERIFICATION_REQUIRED' ||
-    compliance?.decisionCategory === 'ALLOW_WITH_CONTROLS' ||
-    compliance?.decisionCategory === 'PRECAUTION' ||
-    dvi.decisionCategory === 'ALLOW_WITH_MONITORING' ||
-    dvi.decisionCategory === 'RESTRICT' ||
-    dvi.decisionCategory === 'RESTRICT_SEVERE' ||
-    // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "بعض قرارات DVI من نوع
-    // STOP_DUST_GENERATING_ACTIVITIES أو STOP_VISIBILITY_DEPENDENT_ACTIVITIES
-    // لا يغطيها تسلسل القرار بالكامل، وقد تسقط إلى ALLOW"): applyMandatoryGates
-    // في dust-engine/engine.ts تبدأ decision=baseDecision (من baseDecisionFromLevel
-    // عند level=RED/DARK_RED/BLACK)، وقد تبقى عند هاتين الفئتين بلا أي فرع
-    // لاحق يضبط mandatoryStop=true (ذلك يحدث فقط من بوابات صريحة كرؤية<0.5
-    // كم أو PM10>340 أو رياح≥55). هاتان الفئتان كانتا غائبتين تماماً من هذا
-    // التعداد، فتسقط النتيجة إلى else النهائي (ALLOW) رغم أن DVI نفسه يطلب
-    // إيقاف فئة النشاط. أضيفتا هنا بنفس درجة RESTRICT_SEVERE تحديداً — ليس
-    // اختياراً عشوائياً: aei-engine/tables.ts (AEI_CAPPING_DVI_DECISIONS)
-    // يضع الفئتين في نفس مجموعة RESTRICT_SEVERE/RESTRICT فعلياً (سقف AEI
-    // واحد لكل الأربع)، فهذا يطابق التصنيف الموجود فعلاً في مكان آخر من
-    // النظام، لا تصنيفاً جديداً مخترَعاً هنا. MANDATORY_STOP الحقيقي (dvi.
-    // mandatoryStop=true) يبقى الأعلى أولوية كما هو، بلا تغيير.
-    dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
-    dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES'
-  ) {
-    operationalDecision = 'MONITOR';
-  } else {
-    operationalDecision = 'ALLOW';
+  const candidates: DecisionCandidate[] = [dviCandidate, complianceCandidate, dviMandatoryCandidate, evidenceCandidate];
+  if (suppressDviMonitoring) {
+    // استبعاد مرشح DVI (ALLOW_WITH_MONITORING→MONITOR) من الاختيار عندما
+    // النشاط مغلق فعلياً وامتثاله نظيف — لا يجوز لأي مصدر آخر (compliance/
+    // evidence) أن "يُخفي" هذا الاستبعاد لاحقاً، لذا يُستبعد المرشح نفسه بدل
+    // تخفيف النتيجة بعد اختيار الأشد.
+    candidates[0] = { source: 'DVI', decision: 'ALLOW' };
   }
+
+  const winner = candidates.reduce((strictest, current) =>
+    OPERATION_RANK[current.decision] > OPERATION_RANK[strictest.decision] ? current : strictest
+  );
+  const operationalDecision = winner.decision;
+  const mandatoryStop = operationalDecision === 'MANDATORY_STOP';
 
   let regulatoryFinding: RegulatoryFinding;
   if (confirmedAffectedStop) {
     regulatoryFinding = 'NON_COMPLIANT';
   } else if (pendingAffectedStop) {
     regulatoryFinding = 'PENDING_CONFIRMATION';
-  } else if (evidenceUnavailable) {
+  } else if (evidenceUnavailable || compliance?.decisionCategory === 'FIELD_VERIFICATION_REQUIRED') {
+    // FIELD_VERIFICATION_REQUIRED (نقص بيانات مشروع/موقع حرجة يمنع الحكم —
+    // راجع complianceCandidate أعلاه) نفس دلالة evidenceUnavailable تماماً:
+    // لا يمكن الحكم بامتثال أو مخالفة قبل تحقق ميداني فعلي، فلا يجوز أن
+    // يبقى regulatoryFinding=COMPLIANT بينما operationalDecision=
+    // HOLD_FOR_VERIFICATION في نفس النتيجة (تناقض مباشر بين حقلين).
     regulatoryFinding = 'NOT_DETERMINABLE';
   } else {
     // compliance غائب أصلاً (مثال: PLANNING بلا سياق امتثال كامل) يُعامَل
@@ -262,10 +293,31 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
 
   const overridable = !mandatoryStop && (compliance ? compliance.canOverride === true : dvi.overridable === true);
 
-  // shortReasonAr/decisionLabelAr: الامتثال يفوز دائماً إن كان قراره غير
-  // ALLOW (نص القاعدة التنظيمية الفعلية، لا نص DVI الفيزيائي العام) — نفس
-  // أولوية computeUnifiedActivityDecision القديمة. mandatoryStop من DVI
-  // وحده (بلا مساهمة امتثال) يستخدم نص DVI لأنه السبب الفعلي حينها.
+  // shortReasonAr/decisionLabelAr: يجب أن يطابقا المرشح الفائز فعلياً
+  // (winner.source)، لا فحصاً منفصلاً عن حالة compliance وحدها.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — البند 2: "سبب القرار المعروض لا
+  // يرتبط دائمًا بالمرشح الفائز"): الشرط السابق كان
+  // `compliance.decisionCategory !== 'ALLOW'` بمعزل تام عن نتيجة
+  // candidates.reduce() أعلاه — فلو فاز DVI فعلياً بقرار أشد (مثال:
+  // PROTECTIVE_STOP، رتبة 4) بينما compliance في نفس اللحظة غير-ALLOW لكن
+  // أضعف (مثال: PRECAUTION→MONITOR، رتبة 1 فقط)، كان الشرط يتحقق رغم أن
+  // COMPLIANCE لم يفز بشيء، فيعرض نص/عنوان compliance الأضعف بدل نص DVI الذي
+  // يفسر القرار الفعلي — يفسد قابلية التدقيق حتى مع operationalDecision
+  // صحيح.
+  //
+  // الإصلاح: مقارنة رتبة complianceCandidate مباشرةً بالفائز الفعلي
+  // (OPERATION_RANK[complianceCandidate.decision] >=
+  // OPERATION_RANK[operationalDecision]) بدل الاعتماد على winner.source
+  // نفسه — التعادل على الرتبة (compliance بنفس شدة DVI تماماً) يجب أن يبقى
+  // لصالح نص compliance (الاتفاقية القديمة الموروثة من
+  // computeUnifiedActivityDecision: نص القاعدة التنظيمية الفعلية يُفضَّل
+  // على نص DVI الفيزيائي العام كلما تساويا في الشدة)، بينما candidates.reduce
+  // أعلاه يبقي أول عنصر (dviCandidate) عند التعادل لأغراض اختيار
+  // operationalDecision نفسه فقط — لا علاقة لذلك باختيار النص المعروض.
+  //
+  // mandatoryStop من DVI وحده (بلا مساهمة امتثال) يستخدم نص DVI لأنه السبب
+  // الفعلي حينها.
   //
   // evidenceUnavailable (HOLD_FOR_VERIFICATION) يجب أن يعرض نصاً/لوناً
   // محايدَين يعكسان "البيانات غير كافية للحكم" صراحةً — لا نص/لون DVI أو
@@ -275,7 +327,10 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // الشرط أعلاه). يُفحَص بعد mandatoryStop/pendingAffectedStop (يبقيان
   // الأولوية القصوى — خطر فيزيائي فعلي أو إيقاف امتثال معلَّق يفوزان حتى مع
   // بيانات قديمة)، وقبل أي نص/لون مشتق من DVI/الامتثال العاديين.
-  const complianceIsDecisive = compliance && compliance.decisionCategory !== 'ALLOW';
+  const complianceIsDecisive =
+    !!compliance &&
+    compliance.decisionCategory !== 'ALLOW' &&
+    OPERATION_RANK[complianceCandidate.decision] >= OPERATION_RANK[operationalDecision];
   const shortReasonAr = evidenceUnavailable
     ? 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.'
     : complianceIsDecisive
@@ -380,7 +435,18 @@ const FINAL_RANK: Record<OperationalDecision, number> = {
 // global، viewer/dashboard يبنيان finalDecision جزئياً من صف final_decisions
 // المخزَّن، بلا evidenceQuality/evaluatedAt/snapshotId) — لا افتراض حقول
 // قد تكون undefined فعلياً عند الاستدعاء الحقيقي.
-function compareDecisionSeverity(a: FinalDecision, b: FinalDecision): number {
+// شكل أدنى يكفي المقارنة فعلياً — راجع التعليق أعلاه: dashboard/global
+// وviewer/dashboard يبنيان finalDecision جزئياً من صف final_decisions
+// مخزَّن، بلا evidenceQuality/evaluatedAt/snapshotId/regulatoryFinding/
+// overridable/reasonCodes/ruleBundleVersion/mode. الاسم الكامل FinalDecision
+// يبقى النوع الحقيقي المستخدَم في decideFinal نفسه؛ هذا فقط توثيق صريح لما
+// تقرأه compareDecisionSeverity/pickWorstDecision تحديداً.
+type ComparableFinalDecision = Pick<
+  FinalDecision,
+  'operationalDecision' | 'level' | 'mandatoryStop' | 'pendingConfirmation' | 'shortReasonAr' | 'decisionLabelAr'
+>;
+
+function compareDecisionSeverity(a: ComparableFinalDecision, b: ComparableFinalDecision): number {
   const rankDiff = FINAL_RANK[a.operationalDecision] - FINAL_RANK[b.operationalDecision];
   if (rankDiff !== 0) return rankDiff;
 
@@ -401,7 +467,7 @@ function compareDecisionSeverity(a: FinalDecision, b: FinalDecision): number {
   return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
 }
 
-export function pickWorstDecision<T extends { finalDecision: FinalDecision }>(rows: readonly T[]): T {
+export function pickWorstDecision<T extends { finalDecision: ComparableFinalDecision }>(rows: readonly T[]): T {
   if (rows.length === 0) {
     throw new Error('pickWorstDecision: cannot select from an empty list');
   }

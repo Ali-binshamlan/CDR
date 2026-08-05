@@ -10,6 +10,7 @@ import type {
   DustProjectComplianceProfile,
   SensitiveReceptor,
 } from './types';
+import type { DviMergedReading, DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
 
 // =====================================================================
 // اختبارات تكامل محرك امتثال الغبار (Riyadh Dust Compliance) — تُشغّل
@@ -214,6 +215,7 @@ function context(overrides: Partial<DustComplianceContext> = {}): DustCompliance
   return {
     project: projectProfile(),
     activity: activityProfile(),
+    isForecastStale: false,
     dviScore: 10,
     dviDecision: 'ALLOW',
     dviMandatoryStop: false,
@@ -482,17 +484,24 @@ describe('محرك امتثال الغبار — تثبيط معزز عام (15-
   });
 });
 
-// "الاستخراج التنظيمي من المرفق" القسم 6 — حدود PM10 التنظيمية (250 تحذير،
-// 340 مخالفة/إيقاف)، بالإضافة لتنبيه استباقي عند 300 بطلب صريح من المستخدم
-// لحمايته من الغرامة قبل الوصول لحد المخالفة الفعلي.
+// حدود PM10 التشغيلية من حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE=2026.2،
+// طلب صريح من المستخدم — تراجع عن رفع الإصدار): 200 طبيعي، 201-250 احتراز،
+// 251-339 ضوابط (تحذير)، 340 فقط تقييد شديد (أحمر — نطاق ضيق جداً في هذه
+// الحزمة)، >340 معلَّق/مؤكَّد.
 describe('محرك امتثال الغبار — حدود PM10 التنظيمية', () => {
-  it('PM10=310 (بين 300-339) → ALLOW_WITH_CONTROLS مع تنبيه استباقي', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 310 }));
-    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-EARLY-WARNING-007')).toBe(true);
+  it('PM10=340 (فقط — نطاق RESTRICT_ACTIVITY الضيق في 2026.2) → RESTRICT_ACTIVITY (تقييد شديد)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 340 }));
+    expect(r.decisionCategory).toBe('RESTRICT_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-RED-RESTRICT-010')).toBe(true);
   });
 
-  it('PM10=260 (بين 250-299) → ALLOW_WITH_CONTROLS مع تحذير', () => {
+  it('PM10=330 (بين 251-339، ما زال ضمن نطاق الضوابط في 2026.2) → ALLOW_WITH_CONTROLS، ليس تقييداً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 330 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-RED-RESTRICT-010')).toBe(false);
+  });
+
+  it('PM10=260 (بين 251-339) → ALLOW_WITH_CONTROLS مع تحذير', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 260 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
@@ -533,7 +542,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
   // دقيقتين" يعني `>` صراحة لا `>=`. الاختبارات التالية تثبّت السلوك الصحيح
   // عند الحدود الأربعة بالضبط.
   it.each([
-    { pm10: 340, minutes: 60, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تنبيه استباقي فقط، لا معلَّق ولا مؤكَّد' },
+    { pm10: 340, minutes: 60, decision: 'RESTRICT_ACTIVITY', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تقييد شديد فقط، لا معلَّق ولا مؤكَّد' },
     { pm10: 340.01, minutes: 1.99, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → معلَّق فقط' },
     { pm10: 340.01, minutes: 2, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط (لم يتجاوز) → معلَّق فقط، ليس مؤكَّداً بعد' },
     { pm10: 340.01, minutes: 2.01, decision: 'MANDATORY_STOP', label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → مخالفة مؤكدة' },
@@ -659,10 +668,11 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  // نطاق 201-250 (احتراز): طلب صريح من المستخدم (عدَّل النطاقات الأصلية
-  // 150-250) — "القراءة من 201 إلى 250 تُفعل حالة الاحتراز لزيادة المراقبة"،
-  // أخف من نطاق الضوابط 251-339 (ALLOW_WITH_CONTROLS) ولا يُقيّد AEI إطلاقاً
-  // (راجع applyComplianceGateToAei). السماح النظيف (ALLOW) يمتد حتى 200.
+  // طلب صريح من المستخدم — تراجع عن رفع إصدار حزمة القواعد (RIYADH_DUST_
+  // 2026_3) إلى الحزمة القديمة RIYADH_DUST_2026_2: نطاق 201-250 (احتراز)،
+  // أخف من نطاق الضوابط 251-339 (ALLOW_WITH_CONTROLS) ولا يُقيّد AEI
+  // إطلاقاً (راجع applyComplianceGateToAei). السماح النظيف (ALLOW) يمتد
+  // حتى 200 (لا 150).
   it('PM10=220 (بين 201 و250) → حالة احتراز (PRECAUTION) فقط، ليست تحذيراً', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 220 }));
     expect(r.decisionCategory).toBe('PRECAUTION');
@@ -697,7 +707,16 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
   it('PM10=339 (أقصى نطاق الضوابط قبل حد المخالفة 340) → لا يزال ALLOW_WITH_CONTROLS', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 339 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-EARLY-WARNING-007')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+  });
+
+  // نطاق RESTRICT_ACTIVITY في حزمة 2026.2 أصبح ضيقاً جداً (339 < pm10 <= 340
+  // فقط) بعد التراجع عن رفع الإصدار — controlsMaxInclusive=339 قريب جداً من
+  // حد المخالفة 340 نفسه (لا فاصل 320-340 كما في 2026.3).
+  it('PM10=340 (الحد الأقصى لنطاق الضوابط في 2026.2 بالضبط) → RESTRICT_ACTIVITY (تقييد شديد)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 340 }));
+    expect(r.decisionCategory).toBe('RESTRICT_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-RED-RESTRICT-010')).toBe(true);
   });
 });
 
@@ -1282,6 +1301,55 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
       // القيد العام (10 دقائق استقرار) يُستوفى (15 دقيقة)، وقيد بوابة الرياح
       // المخصَّص لا يُطبَّق هنا لأن السبب السابق لم يكن GATE-WIND-ABOVE-25-004.
       expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    });
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "فقد الرؤية قد يؤدي إلى ALLOW أو
+  // يسمح باستكمال نافذة الاستئناف من إيقاف سابق"): dust-engine/engine.ts
+  // (applyMandatoryGates) يتخطى بوابتي الرؤية بصمت عند visibilityKm===null
+  // (جهاز مرتبط لكن القراءة غائبة/قديمة) — لا فرق بينها وبين "رؤية ممتازة"
+  // في القرار الخام. dviVisibilityDataMissing (من DviEvaluationResult.
+  // visibilityDataMissing عبر buildComplianceContext) يُصلح هذا على مستوى
+  // محرك الامتثال: (1) يُضاف لـmissingCriticalInputs فيمنع ALLOW واثقاً،
+  // (2) يمنع resumeHoldApplied من معاملة الغياب كتحسّن فعلي بعد إيقاف سابق.
+  describe('dviVisibilityDataMissing — غياب قراءة الرؤية لا يُعامَل كتحسّن', () => {
+    it('جهاز مرتبط، الرؤية غائبة (dviVisibilityDataMissing=true)، لا إيقاف سابق → يُضاف لـmissingCriticalInputs ويمنع ALLOW واثقاً', () => {
+      const r = evaluateDustCompliance(context({ dviVisibilityDataMissing: true }));
+      expect(r.missingCriticalInputs).toContain('قراءة الرؤية غير متوفرة من الجهاز');
+      expect(r.decisionCategory).not.toBe('ALLOW');
+    });
+
+    it('إيقاف سابق (STOP_AFFECTED_ACTIVITY) + استقرار 15 دقيقة مستوفى + الرؤية غائبة الآن → يبقى موقوفاً (لا يُستأنف بسبب غياب البيانات)', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+          dviVisibilityDataMissing: true,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'VISIBILITY-DATA-MISSING-RESUME-HOLD')).toBe(true);
+      expect(r.decidingRuleCode).toBe('VISIBILITY-DATA-MISSING-RESUME-HOLD');
+      expect(r.canOverride).toBe(false);
+    });
+
+    it('إيقاف سابق + استقرار مستوفى + الرؤية متوفرة فعلياً (dviVisibilityDataMissing=false) → يُستأنف طبيعياً كالمعتاد', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+          dviVisibilityDataMissing: false,
+        })
+      );
+      expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    });
+
+    it('لا إيقاف سابق أصلاً + الرؤية غائبة الآن → لا يُطبَّق قيد الاستئناف (لا معنى له بلا إيقاف سابق)، لكن يبقى في missingCriticalInputs', () => {
+      const r = evaluateDustCompliance(context({ dviVisibilityDataMissing: true }));
+      expect(r.triggeredRules.some((h) => h.code === 'VISIBILITY-DATA-MISSING-RESUME-HOLD')).toBe(false);
+      expect(r.missingCriticalInputs).toContain('قراءة الرؤية غير متوفرة من الجهاز');
     });
   });
 });
@@ -2048,7 +2116,7 @@ describe('محرك امتثال الغبار — عدد محطات الرصد ح
   it('مشروع غير مصنَّف (بيانات ناقصة) بلا أجهزة رصد → NOT_APPLICABLE أيضاً', () => {
     const r = evaluateDustCompliance(
       context({
-        project: projectProfile({ siteAreaM2: null as any, dailyTruckMovements: null as any, monitoringStationCount: 0 }),
+        project: projectProfile({ siteAreaM2: null, dailyTruckMovements: null, monitoringStationCount: 0 }),
       })
     );
     const obligation = r.monitoringObligations.find((o) => o.key === 'MONITORING_STATION_COUNT');
@@ -2189,6 +2257,8 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     decisionLabelAr: 'مسموح',
     mandatoryStop: false,
     overridable: true,
+    stopBasis: 'NONE' as const,
+    confirmationState: 'NOT_APPLICABLE' as const,
     channels: {
       visibilityRisk: 0,
       particulateRisk: 0,
@@ -2212,6 +2282,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     },
     visibilityKm: 10,
     effectiveWindKmh: 29.66,
+    visibilityDataMissing: false,
     visibilityConstraint: false,
     mandatoryVisibilityStop: false,
     respiratoryPPERequired: false,
@@ -2227,13 +2298,29 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
     confidenceLabel: 'High',
     validUntil: new Date().toISOString(),
     time: new Date().toISOString(),
-  };
+    rawWeatherSample: {
+      visibilityM: 10000,
+      weatherCode: 0,
+      weatherSymbol: 'CLEAR' as const,
+      windSpeedKmh: 25,
+      windGustKmh: null,
+      windDirectionDeg: null,
+      relativeHumidityPercent: null,
+      temperatureC: null,
+      rainfallLast24hMm: null,
+      pm10: null,
+      pm25: null,
+      dustConcentration: null,
+      dataSource: 'open-meteo' as const,
+      isForecastStale: false,
+    },
+  } satisfies Omit<DviHourlyEvaluation, 'mergedReading'>;
 
   // مصدر مشترك لهذه المجموعة — mergedReading (لا rawWeatherSample مباشرة)
   // هو ما يُقرأ الآن فعلياً لـ windGustKmh/windDirectionDeg/pm10/pm25/
   // الرطوبة/الحرارة، بعد إصلاح تضارب سلسلة أولوية الامتثال مع DVI (راجع
   // خطة "إعادة ترتيب أولوية قراءات الغبار/الطقس").
-  function mergedReadingFixture(overrides: any = {}) {
+  function mergedReadingFixture(overrides: Partial<DviMergedReading> = {}): DviMergedReading {
     return {
       windSpeedKmh: 25,
       windGustKmh: 39.78,
@@ -2243,6 +2330,8 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       visibilityM: 10000,
       relativeHumidityPercent: 20,
       temperatureC: 30,
+      deviceLastReadingAt: null,
+      devicePm10LastReadingAt: null,
       sources: {
         windSpeedKmh: 'weather',
         windGustKmh: 'weather',
@@ -2321,7 +2410,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
   });
 
   it('بلا mergedReading (نتيجة DVI مبنية مباشرة بلا دمج) → الحقول الجديدة null بأمان', () => {
-    const ctx = buildComplianceContext({}, {}, baseDviHourly as any, []);
+    const ctx = buildComplianceContext({}, {}, baseDviHourly, []);
     expect(ctx.windGustKmh).toBeNull();
     expect(ctx.windDirectionDeg).toBeNull();
     expect(ctx.pm25UgM3).toBeNull();
@@ -2493,7 +2582,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
   });
 
   it('pm10Source=undefined بلا mergedReading (نتيجة DVI مبنية مباشرة بلا دمج)', () => {
-    const ctx = buildComplianceContext({}, {}, baseDviHourly as any, []);
+    const ctx = buildComplianceContext({}, {}, baseDviHourly, []);
     expect(ctx.pm10Source).toBeUndefined();
   });
 });
@@ -2526,10 +2615,10 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
   // قاعدة بشدة ALLOW_WITH_CONTROLS بصرف النظر عن استقلال actionAr عن
   // messageAr فعلياً — فيُخفي الإجراء التصحيحي الأهم تشغيلياً (مثال: تنبيه
   // PM10 الاستباقي) عن قسم "الإجراءات المطلوبة".
-  it('H-06.1: قاعدة ALLOW_WITH_CONTROLS (تنبيه PM10 استباقي) → actionAr يظهر في requiredActions، لا يُستبعَد', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 320 })); // نطاق 300-339: PM10-EARLY-WARNING-007
+  it('H-06.1: قاعدة ALLOW_WITH_CONTROLS (تحذير PM10) → actionAr يظهر في requiredActions، لا يُستبعَد', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 260 })); // نطاق 251-320: PM10-WARNING-008
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-EARLY-WARNING-007')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
     expect(r.requiredActions.some((a) => a.includes('التثبيط المعزز'))).toBe(true);
   });
 
@@ -2595,5 +2684,68 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
     );
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
     expect(r.restartConditions.some((c) => c.includes('انخفاض سرعة الرياح'))).toBe(true);
+  });
+});
+
+// خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "ليه ما يقول تنبيه استباقي
+// الأجواء غير المناسبة... اتوقع انه يستثني قاعدة PM10". buildPlanningForecastResult
+// (يُستدعى عبر evaluateDustCompliance(ctx, now, isPlanning=true)) كانت
+// isFavorable فيها تفحص dviDecision (رياح/رؤية فيزيائية) فقط، بلا أي فحص
+// لتركيز PM10 المتوقّع — فتوقّع PM10 ضخم (أكبر من حد المخالفة 340 بأضعاف)
+// كان ينتج "الأجواء المتوقعة تصلح للنشاط" طالما dviDecision=ALLOW، لكل
+// الأنشطة (لا خاص بمحطة الخلط).
+describe('evaluateDustCompliance — PLANNING: PM10 المتوقّع يُدرَج ضمن "هل تصلح الأجواء؟"', () => {
+  it('dviDecision=ALLOW لكن pm10UgM3 مرتفع جداً + isPlanning=true → "لا تصلح"، decisionCategory يبقى ALLOW (لا إيقاف إلزامي)', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 1315 }), Date.now(), true);
+
+    expect(r.decisionCategory).toBe('ALLOW'); // لا إيقاف إلزامي على تقدير مهما بلغت القيمة
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.shortReasonAr).toContain('لا تصلح للنشاط');
+    expect(r.shortReasonAr).toContain('1315');
+    expect(r.shortReasonAr).toContain('تركيز الغبار');
+  });
+
+  it('dviDecision=ALLOW وpm10UgM3 تحت حد التحذير (251) + isPlanning=true → "تصلح للنشاط"', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 100 }), Date.now(), true);
+
+    expect(r.shortReasonAr).toContain('تصلح للنشاط');
+    expect(r.shortReasonAr).not.toContain('لا تصلح للنشاط');
+  });
+
+  it('pm10UgM3=null (لا بيانات) + dviDecision=ALLOW + isPlanning=true → يبقى "تصلح للنشاط" (فشل آمن، لا افتراض ارتفاع بلا دليل)', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: null }), Date.now(), true);
+
+    expect(r.shortReasonAr).toContain('تصلح للنشاط');
+  });
+});
+
+// القسم 18.6 من "دليل الإصلاح الجذري لمنظومة مرقاب": "Forecast قديم: التخطيط
+// يظهر نتيجة Stale". isForecastStale=true (Open-Meteo فشل/انقطع لهذه الساعة،
+// راجع weather.ts) يجب أن يعرض تحذير قِدم صريح، لا "تصلح"/"لا تصلح" بثقة
+// كاملة على تقدير طقس فاشل أصلاً — decisionCategory/mandatoryStop يبقيان
+// بلا تغيير (لا إيقاف إلزامي على تقدير، نفس مبدأ isPlanning=true دائماً).
+describe('evaluateDustCompliance — PLANNING: توقّع طقس قديم (isForecastStale) يظهر تحذيراً صريحاً (القسم 18.6)', () => {
+  it('isForecastStale=true + isPlanning=true → نص تحذير قِدم صريح، لا "تصلح"/"لا تصلح" العادي', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 100, isForecastStale: true }), Date.now(), true);
+
+    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.shortReasonAr).toContain('قديمة');
+    expect(r.shortReasonAr).not.toContain('تصلح للنشاط');
+  });
+
+  it('isForecastStale=true حتى مع PM10 مرتفع جداً → لا إيقاف إلزامي، فقط تحذير قِدم (لا "لا تصلح" المرتبط بـPM10)', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 1315, isForecastStale: true }), Date.now(), true);
+
+    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.shortReasonAr).toContain('قديمة');
+  });
+
+  it('isForecastStale=false (طقس حديث) → السلوك المعتاد (تصلح/لا تصلح)، لا تحذير قِدم', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 100, isForecastStale: false }), Date.now(), true);
+
+    expect(r.shortReasonAr).toContain('تصلح للنشاط');
+    expect(r.shortReasonAr).not.toContain('قديمة');
   });
 });

@@ -23,8 +23,8 @@ const ALLOWED_PROJECT_FIELDS = [
   'data_accuracy_confirmed', 'data_accuracy_confirmed_at',
 ] as const;
 
-function pickAllowedProjectFields(project: Record<string, any>): Record<string, any> {
-  const picked: Record<string, any> = {};
+function pickAllowedProjectFields(project: Record<string, unknown>): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
   for (const key of ALLOWED_PROJECT_FIELDS) {
     if (key in project) picked[key] = project[key];
   }
@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
   // إدراج الورديات (إن وُجدت) بعد نجاح إدراج المشروع — فشل هذه الخطوة لا
   // يجوز أن يُسقط المشروع بأكمله (أُنشئ بالفعل)، فقط يُبلَّغ كخطأ منفصل.
   if (shifts.length > 0) {
-    const shiftRows = shifts.map((s: any, i: number) => ({
+    const shiftRows = shifts.map((s: { name: string; start_time: string; end_time: string }, i: number) => ({
       project_id: insertedProject.id,
       name: s.name,
       start_time: s.start_time,

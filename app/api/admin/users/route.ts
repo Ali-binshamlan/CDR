@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     .select('user_id, is_super_admin');
   if (authzError) return NextResponse.json({ error: safeErrorResponse(authzError, 'admin/users authorizations fetch failed') }, { status: 500 });
   const isSuperAdminByUserId = new Map<string, boolean>(
-    (authzRows || []).map((a: any) => [a.user_id, a.is_super_admin])
+    (authzRows || []).map((a: { user_id: string; is_super_admin: boolean }) => [a.user_id, a.is_super_admin])
   );
 
   const emailByUserId = new Map<string, string>();
@@ -53,7 +53,14 @@ export async function GET(request: NextRequest) {
     projectCountByUserId.set(row.user_id, (projectCountByUserId.get(row.user_id) || 0) + 1);
   }
 
-  const data = (profiles || []).map((p: any) => ({
+  const data = (profiles || []).map((p: {
+    id: string;
+    username: string | null;
+    company_name: string | null;
+    phone_number: string | null;
+    role: string | null;
+    created_at: string;
+  }) => ({
     id: p.id,
     username: p.username,
     companyName: p.company_name,

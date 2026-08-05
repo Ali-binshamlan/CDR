@@ -10,12 +10,15 @@ import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/ty
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { RULEBOOK_VERSION } from '@/app/utils/dust-compliance-engine';
 import type { EvidenceQuality, FinalDecisionInput, FinalDecisionMode } from './types';
+import { DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 
 // عتبة حداثة قراءة الجهاز — نفس DEVICE_READING_FRESHNESS_MINUTES في
 // app/lib/dustEvaluation.ts وDEVICE_READING_STALENESS_MINUTES في
 // Compliancewidgetcard.tsx (مكرَّرة عمداً بنفس القيمة، كلاهما مستقل عن
-// طبقة عرض/طبقة خادم مختلفة — نفس الاتفاقية القائمة في المشروع).
-const DEVICE_READING_FRESHNESS_MINUTES = 20;
+// طبقة عرض/طبقة خادم مختلفة — نفس الاتفاقية القائمة في المشروع). مصدرها
+// الآن app/utils/rule-bundles/field-freshness.ts (DEVICE_CONNECTION_
+// FRESHNESS_MS) — راجعه لسبب اختلافها عمداً عن عتبة PM10 اللحظية (4 دقائق).
+const DEVICE_READING_FRESHNESS_MINUTES = DEVICE_CONNECTION_FRESHNESS_MS / 60_000;
 
 // نفس CONFIDENCE_MIN_FOR_ALLOW في dust-compliance-engine/engine.ts (ثابت
 // محلي غير مُصدَّر هناك — مكرَّر هنا بنفس القيمة بدل توسيع الواجهة العامة

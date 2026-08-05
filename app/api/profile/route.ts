@@ -53,7 +53,7 @@ export async function PATCH(request: NextRequest) {
   const body = await request.json();
   // نقبل فقط الأعمدة القابلة للتعديل في profiles — البريد لا يُعدّل من هنا
   // (يتطلب تدفق تأكيد بريد منفصل في نظام المصادقة)
-  const updates: Record<string, any> = {};
+  const updates: Record<string, string> = {};
   if (typeof body.companyName === 'string') updates.company_name = body.companyName;
   if (typeof body.username === 'string') updates.username = body.username;
   if (typeof body.phoneNumber === 'string') updates.phone_number = body.phoneNumber;

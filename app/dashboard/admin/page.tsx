@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   ShieldAlert,
   Scale,
+  Wifi,
 } from 'lucide-react';
 
 const PROJECT_STATUS_LABEL_AR: Record<string, string> = {
@@ -52,8 +53,8 @@ export default function AdminOverviewPage() {
       try {
         const { data } = await apiClient.get('/admin/stats');
         setStats(data?.data || null);
-      } catch (error: any) {
-        if (error?.response?.status === 403) setAccessDenied(true);
+      } catch (error: unknown) {
+        if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
       } finally {
         setIsLoading(false);
       }
@@ -91,6 +92,7 @@ export default function AdminOverviewPage() {
     { href: '/dashboard/admin/alerts', label: 'التنبيهات', icon: Bell, count: stats.totalActiveAlerts },
     { href: '/dashboard/admin/decisions', label: 'القرارات', icon: ClipboardList, count: stats.totalDecisions },
     { href: '/dashboard/admin/rules', label: 'قواعد الامتثال', icon: Scale, count: totalRulesCount },
+    { href: '/dashboard/admin/provider-instances', label: 'منصات مصادر البيانات', icon: Wifi, count: undefined },
   ];
 
   return (

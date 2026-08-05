@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 // requireDeviceApiKey يستورد supabaseAdmin كـ singleton من ./supabaseAdmin —
 // نموّهه بسلسلة from().select().eq().maybeSingle() قابلة للتحكم بنتيجتها
 // لكل اختبار عبر متغير module-level.
-let mockDeviceRow: any = null;
+let mockDeviceRow: { id: string; project_id: string; is_active: boolean; api_key_prefix?: string } | null = null;
 
 vi.mock('./supabaseAdmin', () => ({
   supabaseAdmin: {

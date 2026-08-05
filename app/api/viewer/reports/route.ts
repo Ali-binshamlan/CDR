@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     .is('archived_at', null);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'viewer/reports projects fetch failed') }, { status: 500 });
 
-  const projectIds = (dbProjects || []).map((p: any) => p.id);
+  const projectIds = (dbProjects || []).map((p: { id: string }) => p.id);
   if (projectIds.length === 0) {
     return NextResponse.json({ projects: dbProjects || [], decisions: [], alerts: [] });
   }

@@ -10,8 +10,9 @@
 // على الخريطة لتحديد موقعها — أو ينقر على أي نقطة موجودة لتنشيطها.
 // =============================================================
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import 'leaflet/dist/leaflet.css';
+import type { DivIcon, LeafletEvent } from 'leaflet';
 import { MapContainer, TileLayer, Marker, Circle, Polygon, useMapEvents } from 'react-leaflet';
 import { MapPin } from 'lucide-react';
 import { MapController } from './MapController';
@@ -37,8 +38,15 @@ export interface MapPoint {
   lng: number | null;
 }
 
-function buildNumberedIcon(numberLabel: string, color: string, isActive: boolean): any {
+function buildNumberedIcon(numberLabel: string, color: string, isActive: boolean): DivIcon | undefined {
   if (typeof window === 'undefined') return undefined;
+  // require() متعمَّد هنا (لا import ثابت أعلى الملف): leaflet نفسه يفشل
+  // عند التحميل خارج بيئة متصفح (يعتمد على window/document فوراً وقت
+  // الاستيراد) — استيراد ثابت كان سيكسر SSR بالكامل لهذا الملف. buildNumberedIcon
+  // تُستخدَم كـ prop icon={...} متزامنة مباشرة في JSX (راجع نقطة الاستدعاء
+  // أدناه)، فتحويلها لـ import() ديناميكي (async) يتطلب إعادة هيكلة state/
+  // effect كاملة بمخاطرة أعلى من إبقاء require المحمي بفحص typeof window.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const L = require('leaflet');
   const size = isActive ? 34 : 28;
   return L.divIcon({
@@ -148,13 +156,20 @@ export function MultiActivityMapPicker({
   // إدخال يدوي للإحداثيات كبديل عن النقر على الخريطة — نصوص محلية حتى يقدر
   // المستخدم يكتب بحرية (مثلاً يمسح الحقل مؤقتاً) قبل أن يُطبَّق التغيير
   // الفعلي (قصّ داخل حدود المشروع) عند اكتمال رقم صالح.
+  //
+  // إعادة الضبط عند تغيّر النقطة النشِطة/موقعها تحدث أثناء الـrender نفسه
+  // (لا Effect منفصل) — نتتبّع آخر مفتاح مصدر زُوِّمن منه النص، ونعيد الضبط
+  // فوراً إن اختلف عن المفتاح الحالي، بنفس نمط React الموصى به لـ"تعديل
+  // حالة استجابة لتغيّر خاصية" (راجع https://react.dev/learn/you-might-not-need-an-effect).
   const [latText, setLatText] = useState('');
   const [lngText, setLngText] = useState('');
-  useEffect(() => {
+  const activePositionKey = activePointId ? `${activePointId}:${activePosition?.[0]}:${activePosition?.[1]}` : null;
+  const [syncedPositionKey, setSyncedPositionKey] = useState<string | null>(null);
+  if (activePositionKey !== syncedPositionKey) {
+    setSyncedPositionKey(activePositionKey);
     setLatText(activePosition ? String(activePosition[0]) : '');
     setLngText(activePosition ? String(activePosition[1]) : '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePointId, activePosition?.[0], activePosition?.[1]]);
+  }
 
   const commitManualCoords = (nextLatText: string, nextLngText: string) => {
     if (!activePoint) return;
@@ -292,8 +307,9 @@ export function MultiActivityMapPicker({
                   draggable={isActive}
                   eventHandlers={{
                     click: () => onActivate(point.id),
-                    dragend: (e: any) => {
-                      const newPos = e.target.getLatLng();
+                    dragend: (e: LeafletEvent) => {
+                      const marker = e.target as { getLatLng: () => { lat: number; lng: number } };
+                      const newPos = marker.getLatLng();
                       const clamped = clampPointToZone({ lat: newPos.lat, lng: newPos.lng }, projectZone);
                       onPointLocationChange(point, clamped.lat, clamped.lng);
                     },

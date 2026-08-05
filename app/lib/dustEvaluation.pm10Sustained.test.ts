@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { computeSustainedPm10Status, computeStoppedSince, fetchPm10SustainedStatus } from './dustEvaluation';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // =====================================================================
 // اختبارات computeSustainedPm10Status — يحقق 3 قواعد كانت مستحيلة التطبيق
@@ -57,15 +58,17 @@ describe('computeSustainedPm10Status', () => {
   });
 
   it('قراءتان فعليتان ≥340 بفارق حقيقي بينهما → الاستمرار يُقاس بين القراءتين، لا حتى "الآن"', () => {
-    // القراءة الأحدث وصلت قبل دقيقة من "الآن" (لا في نفس لحظته) — فرق مهم:
-    // لو احتُسبت المدة حتى now لكانت 4 دقائق (3 دقائق منذ الأقدم + دقيقة
-    // إضافية وهمية حتى الآن)، لكن الصحيح 3 دقائق فقط (بين القراءتين الفعليتين).
+    // القراءة الأحدث وصلت قبل نصف دقيقة من "الآن" (لا في نفس لحظته) — فرق
+    // مهم: لو احتُسبت المدة حتى now لكانت 2 دقيقة، لكن الصحيح 1.5 دقيقة فقط
+    // (بين القراءتين الفعليتين). الفجوة بينهما 1.5 دقيقة بالضبط — الحد
+    // الأقصى المسموح (90 ثانية، ACTIVE_RULE_BUNDLE.pm10.evidence.
+    // maxContinuityGapMs).
     const readings = readingsBackFromNow(NOW, [
-      { minutesAgo: 4, pm10: 345 },
-      { minutesAgo: 1, pm10: 350 },
+      { minutesAgo: 2, pm10: 345 },
+      { minutesAgo: 0.5, pm10: 350 },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
-    expect(r.sustainedMinutesAbove340).toBe(3);
+    expect(r.sustainedMinutesAbove340).toBe(1.5);
   });
 
   it('قراءات ≥340 مستمرة لأكثر من دقيقتين → مخالفة مؤكدة', () => {
@@ -104,6 +107,7 @@ describe('computeSustainedPm10Status', () => {
   it('استمرار فعلي = دقيقتان بالضبط (لا أكثر) فوق 340 → يبقى معلَّقاً، ليس مؤكَّداً بعد', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 2, pm10: 350, source: 'device' },
+      { minutesAgo: 1, pm10: 348, source: 'device' },
       { minutesAgo: 0, pm10: 345, source: 'device' },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
@@ -115,6 +119,7 @@ describe('computeSustainedPm10Status', () => {
   it('استمرار فعلي أكثر بقليل من دقيقتين (2 دقيقة و1 ثانية) فوق 340 → مؤكَّدة الآن', () => {
     const readings = [
       { pm10UgM3: 350, recordedAt: new Date(NOW - 121_000).toISOString(), source: 'device' as const },
+      { pm10UgM3: 348, recordedAt: new Date(NOW - 60_000).toISOString(), source: 'device' as const },
       { pm10UgM3: 345, recordedAt: new Date(NOW).toISOString(), source: 'device' as const },
     ];
     const r = computeSustainedPm10Status(readings, NOW);
@@ -132,16 +137,16 @@ describe('computeSustainedPm10Status', () => {
     expect(r.isPendingViolation340).toBe(true);
   });
 
-  it('فجوة زمنية كبيرة بين قراءتين (>4 دقائق) لا تُحسَب استمراراً واحداً متواصلاً', () => {
+  it('فجوة زمنية كبيرة بين قراءتين (>90 ثانية) لا تُحسَب استمراراً واحداً متواصلاً', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 40, pm10: 350 }, // قراءة قديمة معزولة (جهاز توقف ثم عاد)
       { minutesAgo: 1, pm10: 345 },
       { minutesAgo: 0, pm10: 350 },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
-    // الاستمرار يُحسب فقط من آخر قراءتين متتاليتين (فجوة أقل من 4 دقائق
-    // بينهما، تطابق دورة إرسال الجهاز كل دقيقتين)، لا يمتد للقراءة المعزولة
-    // قبل 40 دقيقة.
+    // الاستمرار يُحسب فقط من آخر قراءتين متتاليتين (فجوة أقل من 90 ثانية
+    // بينهما، القيمة الفعلية من ACTIVE_RULE_BUNDLE.pm10.evidence.
+    // maxContinuityGapMs)، لا يمتد للقراءة المعزولة قبل 40 دقيقة.
     expect(r.sustainedMinutesAbove340).toBeLessThan(5);
   });
 
@@ -156,11 +161,15 @@ describe('computeSustainedPm10Status', () => {
     expect(r.currentReadingUgM3).toBe(100);
   });
 
-  it('استمرار ≥250 لمدة 30 دقيقة متواصلة بالضبط (قراءات كل دقيقتين) → تعليق مفعَّل', () => {
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "استمرارية الدليل غير صحيحة"):
+  // كانت القراءات بفارق دقيقتين بين كل قراءتين (يتجاوز الحد الفعلي 90 ثانية
+  // من ACTIVE_RULE_BUNDLE.pm10.evidence.maxContinuityGapMs) — الآن بفارق
+  // دقيقة واحدة بالضبط (ضمن الحد المسموح).
+  it('استمرار ≥250 لمدة 30 دقيقة متواصلة بالضبط (قراءات كل دقيقة) → تعليق مفعَّل', () => {
     // source='device' صراحة — راجع تعليق H-03.1 في الاختبار السابق.
     const readings = readingsBackFromNow(
       NOW,
-      Array.from({ length: 16 }, (_, i) => ({ minutesAgo: 30 - i * 2, pm10: 255, source: 'device' as const }))
+      Array.from({ length: 31 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 255, source: 'device' as const }))
     );
     const r = computeSustainedPm10Status(readings, NOW);
     expect(r.isSuspended250For30Min).toBe(true);
@@ -197,10 +206,16 @@ describe('computeSustainedPm10Status', () => {
     expect(r.isPendingViolation340).toBe(true);
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "استمرارية الدليل غير صحيحة"):
+  // الفجوة المسموحة بين قراءتين متتاليتين أصبحت 90 ثانية (1.5 دقيقة) —
+  // القيمة الفعلية من ACTIVE_RULE_BUNDLE.pm10.evidence.maxContinuityGapMs
+  // (المرجع التنظيمي: الملحق ب، صفحة 82)، لا 4 دقائق كما كانت. القراءات
+  // هنا بفجوة دقيقة واحدة بين كل قراءتين — ضمن الحد المسموح.
   it('قراءات مصدرها device صريحاً وحديثة ومستمرة لأكثر من دقيقتين → مخالفة مؤكدة', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 3, pm10: 350, source: 'device' },
       { minutesAgo: 2, pm10: 345, source: 'device' },
+      { minutesAgo: 1, pm10: 344, source: 'device' },
       { minutesAgo: 0, pm10: 342, source: 'device' },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
@@ -230,7 +245,8 @@ describe('computeSustainedPm10Status', () => {
       { minutesAgo: 8, pm10: 350, source: 'open-meteo' },
       { minutesAgo: 6, pm10: 355, source: 'open-meteo' },
       { minutesAgo: 3, pm10: 345, source: 'device' },
-      { minutesAgo: 1, pm10: 350, source: 'device' },
+      { minutesAgo: 2, pm10: 350, source: 'device' },
+      { minutesAgo: 1, pm10: 344, source: 'device' },
       { minutesAgo: 0, pm10: 342, source: 'device' },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
@@ -262,11 +278,12 @@ describe('computeSustainedPm10Status', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 5, pm10: 340, source: 'device' }, // =340 بالضبط — يجب أن تقطع السلسلة هنا
       { minutesAgo: 3, pm10: 345, source: 'device' },
+      { minutesAgo: 2, pm10: 348, source: 'device' },
       { minutesAgo: 1, pm10: 350, source: 'device' },
       { minutesAgo: 0, pm10: 342, source: 'device' },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
-    // الاستمرار يُقاس فقط بين القراءات الثلاث الأخيرة (>340 فعلياً: منذ
+    // الاستمرار يُقاس فقط بين القراءات الأربع الأخيرة (>340 فعلياً: منذ
     // 3 دقائق حتى الآن)، لا ممتداً إلى القراءة الأقدم (منذ 5 دقائق، =340
     // بالضبط) — يجب أن يكون 3 دقائق بالضبط، لا 5.
     expect(r.sustainedMinutesAbove340).toBe(3);
@@ -275,7 +292,7 @@ describe('computeSustainedPm10Status', () => {
   it('H-03.3: كل القراءات =340 بالضبط (لا تتجاوز) → لا استمرار مؤكَّد إطلاقاً', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 5, pm10: 340, source: 'device' },
-      { minutesAgo: 3, pm10: 340, source: 'device' },
+      { minutesAgo: 4, pm10: 340, source: 'device' },
       { minutesAgo: 0, pm10: 340, source: 'device' },
     ]);
     const r = computeSustainedPm10Status(readings, NOW);
@@ -292,6 +309,7 @@ describe('computeSustainedPm10Status', () => {
   it('H-03.1: قراءات بلا source مسجَّل إطلاقاً (undefined) → لا تصل أبداً لحالة مؤكَّدة رغم الاستمرار والحداثة', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 3, pm10: 350 }, // source غائب تماماً
+      { minutesAgo: 2, pm10: 348 },
       { minutesAgo: 1, pm10: 345 },
       { minutesAgo: 0, pm10: 342 },
     ]);
@@ -336,14 +354,14 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
   // عميل Supabase مموّه بأقل ما يلزم من السلسلة المستخدمة فعلياً:
   // from().select().eq().gte().order() يُرجع { data: rows } مباشرة (لا
   // .maybeSingle()، القراءات مصفوفة لا صفاً واحداً).
-  function mockSupabase(rows: any[]) {
-    const chain: any = {
+  function mockSupabase(rows: Record<string, unknown>[]): SupabaseClient {
+    const chain: Record<string, unknown> = {
       select: () => chain,
       eq: () => chain,
       gte: () => chain,
       order: async () => ({ data: rows }),
     };
-    return { from: vi.fn(() => chain) };
+    return { from: vi.fn(() => chain) } as unknown as SupabaseClient;
   }
 
   const NOW = Date.now();
@@ -410,13 +428,14 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     const rows = [
       readingRow(3, 345, 'device-A'),
       readingRow(2, 355, 'device-B'), // متخلل — يُتجاهَل تماماً
-      readingRow(1, 350, 'device-A'),
+      readingRow(1.5, 350, 'device-A'),
       readingRow(0, 342, 'device-A'),
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
-      // 3 قراءات فعلية من A (3، 1، 0 دقائق) بفجوة أقصاها دقيقتان بينها —
-      // ضمن هامش التحمّل (4 دقائق)، فتُحسب سلسلة متصلة بمعزل عن B.
+      // 3 قراءات فعلية من A (3، 1.5، 0 دقائق) بفجوة أقصاها 1.5 دقيقة بينها —
+      // ضمن هامش التحمّل الفعلي (90 ثانية، ACTIVE_RULE_BUNDLE.pm10.evidence.
+      // maxContinuityGapMs)، فتُحسب سلسلة متصلة بمعزل عن B.
       expect(r.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
       expect(r.isConfirmedViolation340).toBe(true);
     });

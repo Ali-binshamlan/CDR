@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { computeDustComplianceResults } from './dustEvaluation';
+import { computeDustComplianceResults, NEUTRAL_DVI_FALLBACK } from './dustEvaluation';
+import type { DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // =====================================================================
 // اختبار قبول: فتح صفحة GET (لا يمرر persistPm10Reading) يجب ألا يكتب أي
@@ -38,34 +40,64 @@ const baseRow = {
 
 const project = { id: 'project-1', latitude: 24.7136, longitude: 46.6753 };
 
-function dustResult(pm10Source: 'onsite' | 'weather' = 'onsite') {
+function dustResult(pm10Source: 'onsite' | 'weather' = 'onsite'): {
+  activityId: string;
+  activityGroupId: string;
+  windowEval: { worst: DviHourlyEvaluation };
+} {
+  const worst: DviHourlyEvaluation = {
+    ...NEUTRAL_DVI_FALLBACK,
+    score: 90,
+    decisionCategory: 'ALLOW',
+    mandatoryStop: false,
+    shortReason: '',
+    confidenceScore: 1,
+    effectiveWindKmh: 10,
+    caveatsAr: [],
+    time: new Date().toISOString(),
+    rawWeatherSample: {
+      visibilityM: null,
+      weatherCode: null,
+      weatherSymbol: 'CLEAR',
+      windSpeedKmh: 10,
+      windGustKmh: null,
+      windDirectionDeg: null,
+      relativeHumidityPercent: null,
+      temperatureC: null,
+      rainfallLast24hMm: null,
+      pm10: 310,
+      pm25: null,
+      dustConcentration: null,
+      dataSource: 'none',
+      isForecastStale: false,
+    },
+    mergedReading: {
+      windSpeedKmh: 10,
+      windGustKmh: null,
+      windDirectionDeg: null,
+      pm10: 310, // فوق عتبة الاحتراز — يكفي ليُدرَج لو الكتابة مفعّلة
+      pm25: null,
+      relativeHumidityPercent: null,
+      temperatureC: null,
+      visibilityM: null,
+      deviceLastReadingAt: null,
+      devicePm10LastReadingAt: null,
+      sources: {
+        windSpeedKmh: 'device',
+        windGustKmh: 'none',
+        windDirectionDeg: 'none',
+        pm10: pm10Source === 'onsite' ? 'onsite' : 'weather',
+        pm25: 'none',
+        visibilityM: 'none',
+        relativeHumidityPercent: 'none',
+        temperatureC: 'none',
+      },
+    },
+  };
   return {
     activityId: 'profile-1',
     activityGroupId: 'group-1',
-    windowEval: {
-      worst: {
-        score: 90,
-        decisionCategory: 'ALLOW',
-        mandatoryStop: false,
-        shortReason: null,
-        confidenceScore: 1,
-        effectiveWindKmh: 10,
-        caveatsAr: [],
-        mergedReading: {
-          windSpeedKmh: 10,
-          windGustKmh: null,
-          windDirectionDeg: null,
-          pm10: 310, // فوق عتبة الاحتراز — يكفي ليُدرَج لو الكتابة مفعّلة
-          pm25: null,
-          relativeHumidityPercent: null,
-          temperatureC: null,
-          visibilityM: null,
-          deviceLastReadingAt: null,
-          devicePm10LastReadingAt: null,
-          sources: { pm10: pm10Source },
-        },
-      },
-    },
+    windowEval: { worst },
   };
 }
 
@@ -73,9 +105,20 @@ function dustResult(pm10Source: 'onsite' | 'weather' = 'onsite') {
 // ويرجع سلسلة عمليات فارغة كافية لكل الاستعلامات التي تنفّذها الدالة
 // (current_dust_compliance_decisions select، pm10_readings_history/
 // weather_forecasts select/insert).
-function mockSupabase() {
-  const inserts: { table: string; payload: any }[] = [];
-  const chain: any = {
+interface MockSupabase {
+  from: ReturnType<typeof vi.fn>;
+  _inserts: { table: string; payload: Record<string, unknown> }[];
+  readonly _insertedTables: string[];
+}
+
+// عميل مموَّه بشكل جزئي (chain/insert فقط) — يُستخدم في اختبارات هذا الملف
+// حصراً عبر توقيع computeDustComplianceResults الذي يقبل SupabaseClient
+// حقيقياً. بناء SupabaseClient كامل هنا غير عملي (عشرات الخصائص الداخلية
+// غير ذات صلة بما تختبره هذه الحالات) — cast صريح عند نقطة الإرجاع بدل
+// نثر `as any`/`as SupabaseClient` في كل موقع استدعاء داخل هذا الملف.
+function mockSupabase(): SupabaseClient & MockSupabase {
+  const inserts: { table: string; payload: Record<string, unknown> }[] = [];
+  const chain: Record<string, unknown> = {
     select: () => chain,
     eq: () => chain,
     in: () => chain,
@@ -87,14 +130,14 @@ function mockSupabase() {
   };
   // استعلامات select المتسلسلة تنتهي بـ await مباشر على chain (بلا
   // .maybeSingle) في بعض المسارات — نجعل chain نفسه thenable يرجع { data: [] }.
-  chain.then = (resolve: any) => resolve({ data: [] });
+  chain.then = (resolve: (v: { data: unknown[] }) => void) => resolve({ data: [] });
 
-  return {
+  const mock = {
     from: vi.fn((table: string) => ({
       ...chain,
-      insert: vi.fn((payload: any) => {
+      insert: vi.fn((payload: Record<string, unknown>) => {
         inserts.push({ table, payload });
-        return { then: (resolve: any) => resolve({ data: null }) };
+        return { then: (resolve: (v: { data: null }) => void) => resolve({ data: null }) };
       }),
     })),
     _inserts: inserts,
@@ -102,6 +145,7 @@ function mockSupabase() {
       return inserts.map((i) => i.table);
     },
   };
+  return mock as unknown as SupabaseClient & MockSupabase;
 }
 
 describe('computeDustComplianceResults — GET لا يكتب في pm10_readings_history', () => {

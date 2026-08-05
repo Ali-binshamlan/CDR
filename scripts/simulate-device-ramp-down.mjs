@@ -42,8 +42,13 @@ function labelFor(pm10) {
   return 'نظيف (<150) — يجب أن يستأنف بعد 10 دقائق من هبوطه هنا';
 }
 
+let _sequenceCounter = 0;
 async function sendReading(pm10, label) {
+  _sequenceCounter += 1;
   const payload = {
+    eventId: `sim-ramp-down-${Date.now()}-${_sequenceCounter}`,
+    sequence: _sequenceCounter,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: 10,
     windGustKmh: 15,
     windDirectionDeg: 180,

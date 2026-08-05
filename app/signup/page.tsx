@@ -1,6 +1,6 @@
 "use client";
 
-import { useForm, FormProvider } from "react-hook-form";
+import { useForm, useWatch, FormProvider } from "react-hook-form";
 
 import { yupResolver } from "@hookform/resolvers/yup";
 
@@ -10,14 +10,13 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { useRouter } from "next/navigation";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { toast, Toaster } from "react-hot-toast";
 import {
   User,
   Mail,
   Lock,
   TrendingUp,
-  ArrowRight,
   ShieldCheck,
   CheckCircle,
   Hand,
@@ -114,17 +113,11 @@ const combinedSchema = step1Schema.concat(step2Schema).concat(step3Schema);
 export default function RegisterPage() {
   const router = useRouter();
 
-  const [isClient, setIsClient] = useState(false);
-
   const [step, setStep] = useState(1);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const totalSteps = 3;
-
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
 
   const methods = useForm<FormData>({
     resolver: yupResolver(combinedSchema),
@@ -157,10 +150,14 @@ export default function RegisterPage() {
 
     trigger,
 
-    watch,
+    control,
   } = methods;
 
-  const watchedFields = watch();
+  // useWatch (hook تفاعلي، لا watch() الاستدعاء المباشر من useForm) — نفس
+  // النتيجة تماماً، لكن متوافق مع React Compiler (watch() المباشرة تُعامَل
+  // كدالة من مكتبة غير متوافقة مع التذكّر الآلي، راجع react-hooks/
+  // incompatible-library).
+  const watchedFields = useWatch({ control });
 
   const nextStep = async () => {
     let valid = false;
@@ -202,9 +199,10 @@ export default function RegisterPage() {
 
     // التوجيه لصفحة تسجيل الدخول بعد ثانيتين بشكل طبيعي
     setTimeout(() => router.push("/login"), 2000);
-  } catch (error: any) {
+  } catch (error) {
     // حالة الفشل
-    toast.error(error.message || "حدث خطأ غير متوقع", {
+    const message = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+    toast.error(message, {
       id: loadingToast,
     });
   } finally {

@@ -1,0 +1,14 @@
+{
+  "name": "dcr-egress-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "وكيل خروج (Egress Proxy) لمنصات ThingsBoard الخارجية — يفحص DNS ويتصل بنفس العنوان المفحوص في نفس اللحظة (لا فجوة زمنية بين الفحص والاتصال، خلافاً لما يحدث عند فحص الرابط في تطبيق Next.js ثم استدعاء fetch() منفصلاً). القسم 8 من مراجعة الخبير الخارجي — 'استخدام Egress Proxy/Resolver موثوق مع مهلة إجمالية للطلب'.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

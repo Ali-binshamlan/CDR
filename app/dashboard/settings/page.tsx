@@ -1,6 +1,6 @@
 "use client";
 
-import { useForm, FormProvider } from "react-hook-form";
+import { useForm, useWatch, FormProvider } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import * as Yup from "yup";
 import { useState, useEffect } from "react";
@@ -71,10 +71,14 @@ export default function SettingsProfilePage() {
     handleSubmit,
     formState: { errors, isDirty },
     reset,
-    watch,
+    control,
   } = methods;
 
-  const watchedFields = watch();
+  // useWatch (hook تفاعلي، لا watch() الاستدعاء المباشر من useForm) — نفس
+  // النتيجة تماماً، لكن متوافق مع React Compiler (watch() المباشرة تُعامَل
+  // كدالة من مكتبة غير متوافقة مع التذكّر الآلي، راجع react-hooks/
+  // incompatible-library).
+  const watchedFields = useWatch({ control });
 
   // جلب بيانات المستخدم الفعلية من profiles (+ البريد من نظام المصادقة)
   useEffect(() => {
@@ -89,7 +93,7 @@ export default function SettingsProfilePage() {
           email: p.email || '',
           role: p.role || '',
         });
-      } catch (error) {
+      } catch {
         toast.error("فشل في جلب بيانات الحساب");
       } finally {
         setIsLoadingData(false);
@@ -119,8 +123,9 @@ export default function SettingsProfilePage() {
       // إعادة ضبط حالة isDirty بعد الحفظ
       reset(data);
 
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || error.message || "حدث خطأ أثناء الحفظ", {
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } }; message?: string };
+      toast.error(err?.response?.data?.error || err?.message || "حدث خطأ أثناء الحفظ", {
         id: loadingToast,
       });
     } finally {

@@ -40,8 +40,13 @@ function labelFor(pm10) {
   return 'نظيف (<150)';
 }
 
+let _sequenceCounter = 0;
 async function sendReading(pm10) {
+  _sequenceCounter += 1;
   const payload = {
+    eventId: `sim-ramp-${Date.now()}-${_sequenceCounter}`,
+    sequence: _sequenceCounter,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: 10,
     windGustKmh: 15,
     windDirectionDeg: 180,

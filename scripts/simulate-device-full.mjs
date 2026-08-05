@@ -23,6 +23,9 @@ const pm10 = Number(pm10Arg ?? 150);
 const baseUrl = process.env.DCR_BASE_URL ?? 'http://localhost:3000';
 
 const payload = {
+  eventId: `sim-full-${Date.now()}-1`,
+  sequence: 1,
+  observedAt: new Date().toISOString(),
   windSpeedKmh: 10,
   windGustKmh: 15,
   windDirectionDeg: 180,

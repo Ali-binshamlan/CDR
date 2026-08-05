@@ -27,10 +27,32 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
     decisionLabelAr: 'تقييد النشاط وتفعيل أنظمة الرش',
     mandatoryStop: false,
     overridable: true,
-    channels: {} as any,
-    multipliers: {} as any,
+    stopBasis: 'NONE',
+    confirmationState: 'NOT_APPLICABLE',
+    channels: {
+      visibilityRisk: 0,
+      particulateRisk: 0,
+      windTransportRisk: 0,
+      dustForecastRisk: 0,
+      siteDustGenerationRisk: 0,
+      adjustedSiteDustGenerationRisk: 0,
+      externalHazard: 0,
+      internalDustHazard: 0,
+    },
+    multipliers: {
+      activitySensitivity: 0,
+      activitySensitivityMultiplier: 1,
+      receptorSensitivity: 0,
+      downwindAlignment: 0,
+      distanceFactor: 1,
+      receptorImpact: 0,
+      receptorSensitivityMultiplier: 1,
+      mitigationScore: 0,
+      mitigationReductionFactor: 1,
+    },
     visibilityKm: 5,
     effectiveWindKmh: 10,
+    visibilityDataMissing: false,
     visibilityConstraint: false,
     mandatoryVisibilityStop: false,
     respiratoryPPERequired: false,
@@ -208,6 +230,8 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
       mandatoryStop: true,
       overridable: false,
       triggeredRules: ['DVI-DUST-ACTIVITY-STOP-004', 'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY'],
+      stopBasis: 'PM10',
+      confirmationState: 'PENDING',
     });
     // امتثال نظيف عمداً هنا (لا STOP_AFFECTED_ACTIVITY/pendingConfirmation)
     // — يعزل اختبار dviPm10StopIsUnreliable بمعزل عن pendingAffectedStop
@@ -216,7 +240,7 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
     // اللحظي هو مصدره الوحيد، لا أي قرار امتثال معلَّق.
     const compliance = baseCompliance({
       decisionCategory: 'ALLOW',
-      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: new Date(Date.now() - 40 * 60000).toISOString() } as any,
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: new Date(Date.now() - 40 * 60000).toISOString() },
     });
     const finalInput = buildFinalDecisionInput('snap-1', dvi, compliance, null, 'LIVE_OPERATIONAL');
     expect(finalInput.evidenceQuality).toBe('STALE');
@@ -233,7 +257,7 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
     });
     const compliance = baseCompliance({
       decisionCategory: 'ALLOW',
-      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: new Date(Date.now() - 40 * 60000).toISOString() } as any,
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: new Date(Date.now() - 40 * 60000).toISOString() },
     });
     const finalInput = buildFinalDecisionInput('snap-1', dvi, compliance, null, 'LIVE_OPERATIONAL');
     expect(finalInput.evidenceQuality).toBe('STALE');
@@ -247,10 +271,12 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
       mandatoryStop: true,
       overridable: false,
       triggeredRules: ['DVI-DUST-ACTIVITY-STOP-004', 'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY'],
+      stopBasis: 'PM10',
+      confirmationState: 'PENDING',
     });
     const compliance = baseCompliance({
       decisionCategory: 'ALLOW',
-      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: new Date().toISOString() } as any,
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: new Date().toISOString() },
     });
     const finalInput = buildFinalDecisionInput('snap-1', dvi, compliance, null, 'LIVE_OPERATIONAL');
     expect(finalInput.evidenceQuality).toBe('OK');

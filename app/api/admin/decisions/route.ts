@@ -18,19 +18,19 @@ export async function GET(request: NextRequest) {
   if (decisionsError) return NextResponse.json({ error: safeErrorResponse(decisionsError, 'admin/decisions fetch failed') }, { status: 500 });
 
   const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name');
-  const profileByUserId = new Map((profiles || []).map((p: any) => [p.id, p]));
+  const profileByUserId = new Map((profiles || []).map((p: { id: string; username: string | null; company_name: string | null }) => [p.id, p]));
 
   // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي) —
   // نجلب regulatory_activity (النشاط التنظيمي المختار فعلياً) لعرضه بدل
   // activity_type الفيزيائي الداخلي، نفس نمط admin/alerts.
-  const activityIds = [...new Set((decisions || []).map((d: any) => d.activity_id).filter(Boolean))];
+  const activityIds = [...new Set((decisions || []).map((d: { activity_id: string }) => d.activity_id).filter(Boolean))];
   const { data: dustProfiles } = activityIds.length > 0
     ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', activityIds)
-    : { data: [] as any[] };
-  const dustProfileById = new Map((dustProfiles || []).map((p: any) => [p.id, p]));
+    : { data: [] as { id: string; activity_type: string | null; regulatory_activity: string | null }[] };
+  const dustProfileById = new Map((dustProfiles || []).map((p: { id: string; activity_type: string | null; regulatory_activity: string | null }) => [p.id, p]));
 
-  const data = (decisions || []).map((decision: any) => {
-    const owner = profileByUserId.get(decision.projects?.user_id);
+  const data = (decisions || []).map((decision: { activity_id: string; projects?: { user_id: string; name: string | null; city: string | null } }) => {
+    const owner = profileByUserId.get(decision.projects?.user_id ?? '');
     const dustProfile = dustProfileById.get(decision.activity_id);
     return {
       ...decision,

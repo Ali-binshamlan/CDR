@@ -106,6 +106,38 @@ interface AlertItem {
   recommendedAction: string;
 }
 
+// شكل صف مشروع خام كما يُرجعه GET /api/dashboard/alerts-list (تُقرأ منه
+// id/name فقط هنا لبناء projectNameById).
+interface DashboardProjectRow {
+  id: string;
+  name: string;
+}
+
+// شكل صف تنبيه خام من جدول alerts كما يُرجعه نفس المسار — الحقول المقروءة
+// فعلياً أدناه فقط (باقي أعمدة الجدول غير مستخدمة بهذه الصفحة).
+interface DashboardAlertRow {
+  id: string;
+  timing?: string;
+  kind?: string;
+  project_id: string;
+  activity_source: string;
+  activity_id: string;
+  state?: string;
+  created_at: string;
+  message?: string | null;
+  metric_label?: string | null;
+  metric_actual?: string | null;
+  metric_threshold?: string | null;
+  recommended_action?: string | null;
+}
+
+// شكل عنصر activityLabels (خريطة "source:id" → بيانات خام) كما يُرجعه نفس
+// المسار — راجع تعليق activityLabels في app/api/dashboard/alerts-list/route.ts.
+interface ActivityLabelInfo {
+  regulatory_activity?: string | null;
+  activity_type?: string;
+}
+
 // ============================================================
 // دوال الخطورة والتوصيات الاحتياطية
 // ============================================================
@@ -168,6 +200,9 @@ export default function AlertsPage() {
   const [alertStateFilterVal, setAlertStateFilterVal] = useState<AlertState | 'الكل'>('الكل');
 
   const fetchAlertsData = useCallback(async () => {
+    // await فوري (microtask) قبل أول setState — يفصل الاستدعاء المباشر من
+    // جسم الـEffect عن أول تعديل حالة متزامن، بلا تأخير محسوس.
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const { data: list } = await apiClient.get('/dashboard/alerts-list');
@@ -176,13 +211,13 @@ export default function AlertsPage() {
       const activityLabels = list?.activityLabels || {};
 
       const projectNameById = new Map<string, string>();
-      (dbProjects as any[]).forEach((p) => projectNameById.set(p.id, p.name));
+      (dbProjects as DashboardProjectRow[]).forEach((p) => projectNameById.set(p.id, p.name));
 
       // اسم النشاط المعروض = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...)،
       // لا التصنيف الفيزيائي الداخلي (activity_type) المستخدم فقط لتغذية
       // حساب حساسية محرك DVI.
       const activityLabelMap = new Map<string, string>();
-      Object.entries(activityLabels).forEach(([key, raw]: [string, any]) => {
+      Object.entries(activityLabels as Record<string, ActivityLabelInfo>).forEach(([key, raw]) => {
         const label =
           (raw.regulatory_activity && raw.regulatory_activity !== 'OTHER'
             ? REGULATORY_ACTIVITY_LABEL_AR[raw.regulatory_activity]
@@ -190,7 +225,7 @@ export default function AlertsPage() {
         activityLabelMap.set(key, label);
       });
 
-      const formattedAlerts: AlertItem[] = (dbAlerts || []).map((a: any) => {
+      const formattedAlerts: AlertItem[] = ((dbAlerts as DashboardAlertRow[]) || []).map((a) => {
         const kind = (a.kind as AlertKind) || 'SAFETY_BREACH';
 
         const metrics: AlertItem['metrics'] =
@@ -217,15 +252,19 @@ export default function AlertsPage() {
 
       setAlertsData(formattedAlerts);
 
-    } catch (error: any) {
-      console.error('Error fetching alerts data:', error?.message || error);
+    } catch (error) {
+      console.error('Error fetching alerts data:', error instanceof Error ? error.message : error);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchAlertsData();
+    // جدولة عبر microtask بدل استدعاء fetchAlertsData مباشرة من جسم
+    // الـEffect — نفس السبب الموثَّق أعلى الدالة (تعديل حالة متزامن داخل Effect).
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) fetchAlertsData(); });
+    return () => { cancelled = true; };
   }, [fetchAlertsData]);
 
   const projectsList = useMemo(() => Array.from(new Set(alertsData.map((a) => a.project))), [alertsData]);

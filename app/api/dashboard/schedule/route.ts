@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     .is('archived_at', null);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/schedule projects fetch failed') }, { status: 500 });
 
-  const projectIds = (projects || []).map((p: any) => p.id);
+  const projectIds = (projects || []).map((p: { id: string }) => p.id);
   if (projectIds.length === 0) {
     return NextResponse.json({ projects: [], activities: [] });
   }

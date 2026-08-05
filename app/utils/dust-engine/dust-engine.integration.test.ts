@@ -400,9 +400,17 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
     expect(r.mandatoryVisibilityStop).toBe(false);
   });
 
-  it('وضع الجهاز: قراءة رؤية سيئة من الجهاز نفسه تُفعّل بوابة الإيقاف كالمعتاد', () => {
+  // deviceVisibilityAt="الآن" مطلوب صراحة هنا بعد القسم 5.3/18.3 — بلا وقت
+  // رصد مستقل حديث، freshOrNull (dust-engine/engine.ts) تُسقِط deviceVisibilityM
+  // إلى null بصرف النظر عن قيمتها.
+  it('وضع الجهاز: قراءة رؤية سيئة وحديثة من الجهاز نفسه تُفعّل بوابة الإيقاف كالمعتاد', () => {
     const r = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING', hasDeviceLink: true, deviceVisibilityM: 300 }),
+      input({
+        activityType: 'CRANE_LIFTING',
+        hasDeviceLink: true,
+        deviceVisibilityM: 300,
+        deviceVisibilityAt: new Date().toISOString(),
+      }),
       weather({ visibilityM: 10000 })
     );
     expect(r.mandatoryVisibilityStop).toBe(true);

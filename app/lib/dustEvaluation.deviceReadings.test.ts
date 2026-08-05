@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildDustInput, resolveFreshProjectDevice, type FreshDeviceReading } from './dustEvaluation';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // =====================================================================
 // اختبارات مسار "قراءة جهاز حية" — راجع خطة "عزل مصادر القراءة: محطة
@@ -11,6 +12,7 @@ import { buildDustInput, resolveFreshProjectDevice, type FreshDeviceReading } fr
 // =====================================================================
 
 const baseRow = {
+  id: 'profile-1',
   activity_type: 'GENERAL_OUTDOOR_WORK',
   has_earthworks: false,
   internal_dirt_roads: false,
@@ -32,7 +34,7 @@ const baseRow = {
   open_concrete_pour: false,
 };
 
-const baseProject = { latitude: 24.7136, longitude: 46.6753 };
+const baseProject = { id: 'project-1', latitude: 24.7136, longitude: 46.6753 };
 
 function freshDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceReading {
   return {
@@ -50,6 +52,7 @@ function freshDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceRe
     last_wind_gust_at: new Date().toISOString(),
     last_wind_direction_at: new Date().toISOString(),
     last_visibility_at: new Date().toISOString(),
+    last_pm25_at: new Date().toISOString(),
     last_relative_humidity_at: new Date().toISOString(),
     last_temperature_at: new Date().toISOString(),
     ...overrides,
@@ -127,20 +130,37 @@ describe('buildDustInput — توصيل قراءة الجهاز وhasDeviceLink 
 });
 
 describe('resolveFreshProjectDevice — اختيار أحدث قراءة جهاز حية للمشروع', () => {
-  // عميل Supabase مموّه بأقل ما يلزم من السلسلة المستخدمة فعلياً في
-  // resolveFreshProjectDevice: from().select().eq().eq().not().order().limit().maybeSingle()
-  // (أو .eq(id) بدل .order() عند تمرير deviceId — راجع chain.eq أدناه).
-  function mockSupabase(row: any) {
-    const eqCalls: any[] = [];
-    const chain: any = {
-      select: () => chain,
-      eq: (...args: any[]) => { eqCalls.push(args); return chain; },
-      not: () => chain,
-      order: () => chain,
-      limit: () => chain,
-      maybeSingle: async () => ({ data: row }),
+  // عميل Supabase مموّه بجدولين: project_devices (id/last_reading_at فقط
+  // الآن — راجع resolveFreshProjectDevice) وdevice_metric_latest (صف واحد
+  // لكل مقياس، يُحوَّل داخلياً إلى شكل last_*/last_*_at المسطَّح). deviceRow
+  // null يعني "لا جهاز نشط" (device_metric_latest لا يُستعلَم عنه أصلاً).
+  function mockSupabase(
+    deviceRow: { id?: string; last_reading_at: string } | null,
+    metricRows: Record<string, unknown>[] = []
+  ): SupabaseClient & { from: ReturnType<typeof vi.fn>; _eqCalls: unknown[][] } {
+    const eqCalls: unknown[][] = [];
+    const deviceChain: Record<string, unknown> = {
+      select: () => deviceChain,
+      eq: (...args: unknown[]) => { eqCalls.push(args); return deviceChain; },
+      not: () => deviceChain,
+      order: () => deviceChain,
+      limit: () => deviceChain,
+      maybeSingle: async () => ({ data: deviceRow }),
     };
-    return { from: vi.fn(() => chain), _eqCalls: eqCalls };
+    const metricChain: Record<string, unknown> = {
+      select: () => metricChain,
+      eq: () => metricChain,
+      then: (resolve: (v: { data: unknown[] }) => void) => resolve({ data: metricRows }),
+    };
+    const mock = {
+      from: vi.fn((table: string) => (table === 'device_metric_latest' ? metricChain : deviceChain)),
+      _eqCalls: eqCalls,
+    };
+    return mock as unknown as SupabaseClient & { from: ReturnType<typeof vi.fn>; _eqCalls: unknown[][] };
+  }
+
+  function metricRow(metric: string, value: number | null, observedAt: string) {
+    return { device_id: 'device-1', metric, value, observed_at: observedAt };
   }
 
   it('يرجع null إن لم يوجد أي صف (لا أجهزة مسجَّلة أصلاً)', async () => {
@@ -151,17 +171,10 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
 
   it('يرجع القراءة حتى لو كانت last_reading_at أقدم من 20 دقيقة — لا إسقاط صامت بعد الآن', async () => {
     const staleTime = new Date(Date.now() - 25 * 60000).toISOString();
-    const supabase = mockSupabase({
-      last_reading_at: staleTime,
-      last_wind_speed_kmh: 40,
-      last_wind_gust_kmh: null,
-      last_wind_direction_deg: null,
-      last_pm10: null,
-      last_pm25: null,
-      last_visibility_m: null,
-      last_relative_humidity_percent: null,
-      last_temperature_c: null,
-    });
+    const supabase = mockSupabase(
+      { id: 'device-1', last_reading_at: staleTime },
+      [metricRow('windSpeedKmh', 40, staleTime)]
+    );
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
     expect(result).not.toBeNull();
     expect(result?.last_wind_speed_kmh).toBe(40);
@@ -170,17 +183,19 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
 
   it('يرجع القراءة عند وجود صف حديث (ضمن 20 دقيقة) — يشمل last_reading_at', async () => {
     const freshTime = new Date(Date.now() - 5 * 60000).toISOString();
-    const supabase = mockSupabase({
-      last_reading_at: freshTime,
-      last_wind_speed_kmh: 18,
-      last_wind_gust_kmh: 25,
-      last_wind_direction_deg: 90,
-      last_pm10: 150,
-      last_pm25: 60,
-      last_visibility_m: 3000,
-      last_relative_humidity_percent: 55,
-      last_temperature_c: 41,
-    });
+    const supabase = mockSupabase(
+      { id: 'device-1', last_reading_at: freshTime },
+      [
+        metricRow('windSpeedKmh', 18, freshTime),
+        metricRow('windGustKmh', 25, freshTime),
+        metricRow('windDirectionDeg', 90, freshTime),
+        metricRow('pm10', 150, freshTime),
+        metricRow('pm25', 60, freshTime),
+        metricRow('visibilityM', 3000, freshTime),
+        metricRow('relativeHumidityPercent', 55, freshTime),
+        metricRow('temperatureC', 41, freshTime),
+      ]
+    );
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
     expect(result).toEqual({
       last_wind_speed_kmh: 18,
@@ -192,29 +207,23 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
       last_relative_humidity_percent: 55,
       last_temperature_c: 41,
       last_reading_at: freshTime,
-      last_pm10_at: null,
-      last_wind_speed_at: null,
-      last_wind_gust_at: null,
-      last_wind_direction_at: null,
-      last_visibility_at: null,
-      last_relative_humidity_at: null,
-      last_temperature_at: null,
+      last_pm10_at: freshTime,
+      last_wind_speed_at: freshTime,
+      last_wind_gust_at: freshTime,
+      last_wind_direction_at: freshTime,
+      last_visibility_at: freshTime,
+      last_pm25_at: freshTime,
+      last_relative_humidity_at: freshTime,
+      last_temperature_at: freshTime,
     });
   });
 
   it('قراءة قديمة جداً (أياماً) تُرجَع أيضاً — القِدم مسؤولية طبقة العرض لا هذه الدالة', async () => {
     const veryOldTime = new Date(Date.now() - 5 * 24 * 3600000).toISOString();
-    const supabase = mockSupabase({
-      last_reading_at: veryOldTime,
-      last_wind_speed_kmh: 10,
-      last_wind_gust_kmh: null,
-      last_wind_direction_deg: null,
-      last_pm10: null,
-      last_pm25: null,
-      last_visibility_m: null,
-      last_relative_humidity_percent: null,
-      last_temperature_c: null,
-    });
+    const supabase = mockSupabase(
+      { id: 'device-1', last_reading_at: veryOldTime },
+      [metricRow('windSpeedKmh', 10, veryOldTime)]
+    );
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
     expect(result).not.toBeNull();
     expect(result?.last_reading_at).toBe(veryOldTime);
@@ -222,17 +231,10 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
 
   it('مع تمرير deviceId، يُفلتر الاستعلام بـ.eq("id", deviceId) بدل أحدث جهاز بالمشروع', async () => {
     const freshTime = new Date(Date.now() - 5 * 60000).toISOString();
-    const supabase = mockSupabase({
-      last_reading_at: freshTime,
-      last_wind_speed_kmh: 12,
-      last_wind_gust_kmh: null,
-      last_wind_direction_deg: null,
-      last_pm10: null,
-      last_pm25: null,
-      last_visibility_m: null,
-      last_relative_humidity_percent: null,
-      last_temperature_c: null,
-    });
+    const supabase = mockSupabase(
+      { id: 'device-42', last_reading_at: freshTime },
+      [metricRow('windSpeedKmh', 12, freshTime)]
+    );
     const result = await resolveFreshProjectDevice(supabase, 'project-1', 'device-42');
     expect(result?.last_wind_speed_kmh).toBe(12);
     // .eq('project_id', ...) و .eq('is_active', true) دائماً، بالإضافة إلى
@@ -243,19 +245,12 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
 
   it('بلا deviceId (أو null)، لا يُستدعى .eq("id", ...) — يبقى السلوك القديم (أحدث جهاز بالمشروع)', async () => {
     const freshTime = new Date(Date.now() - 5 * 60000).toISOString();
-    const supabase = mockSupabase({
-      last_reading_at: freshTime,
-      last_wind_speed_kmh: 12,
-      last_wind_gust_kmh: null,
-      last_wind_direction_deg: null,
-      last_pm10: null,
-      last_pm25: null,
-      last_visibility_m: null,
-      last_relative_humidity_percent: null,
-      last_temperature_c: null,
-    });
+    const supabase = mockSupabase(
+      { id: 'device-1', last_reading_at: freshTime },
+      [metricRow('windSpeedKmh', 12, freshTime)]
+    );
     await resolveFreshProjectDevice(supabase, 'project-1', null);
-    const idCalls = supabase._eqCalls.filter((args: any[]) => args[0] === 'id');
+    const idCalls = supabase._eqCalls.filter((args: unknown[]) => args[0] === 'id');
     expect(idCalls.length).toBe(0);
   });
 });

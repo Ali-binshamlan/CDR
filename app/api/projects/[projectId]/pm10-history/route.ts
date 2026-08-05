@@ -92,7 +92,7 @@ export async function GET(
     // قراءات الجهاز (activity_group_id=null) تُنسَخ لكل نشاط مرتبط فعلياً
     // بجهاز — نفس دمج fetchPm10SustainedStatus، حتى يعرض الرسم البياني
     // لكل نشاط بجهاز سلسلته الكاملة (لا سلسلة فارغة رغم وجود قراءات).
-    const deviceReadings = (readings || []).filter((r: any) => r.activity_group_id === null);
+    const deviceReadings = (readings || []).filter((r: { activity_group_id: string | null }) => r.activity_group_id === null);
     const series = new Map<string, { time: string; pm10: number; source: string }[]>();
     for (const g of groups.values()) series.set(g.activityGroupId, []);
 

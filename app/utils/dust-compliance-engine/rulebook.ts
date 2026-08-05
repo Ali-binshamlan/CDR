@@ -14,8 +14,9 @@ import type {
   DustRuleHit,
   DustWindBand,
 } from './types';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
 
-export const RULEBOOK_VERSION = 'RCRC-NCEC-RIYADH-DUST-2026.2';
+export const RULEBOOK_VERSION = ACTIVE_RULE_BUNDLE.id;
 
 // تسمية عربية لكل نشاط تنظيمي (RegulatoryDustActivity) — تُعرض في بطاقة
 // الامتثال بدل مسمى نشاط DVI الفيزيائي (activity_type)، لأن المستخدم يهتم
@@ -70,23 +71,24 @@ export const BATCHING_PM10_FILTER_MIN_PERCENT = 99;
 // (مختلفة عن عتبات 15/25 كم/س العامة — خاصة بحالة الأغطية تحديداً).
 const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = 20;
 
-// حدود PM10 التنظيمية — عدَّلها المستخدم صراحة (طلب مباشر) عن النطاقات
-// الأصلية في "الاستخراج التنظيمي من المرفق" القسم 6: السماح النظيف يمتد
-// حتى 200 (بدل 150)، الاحترازي 201-250 (بدل 150-250)، السماح مع ضوابط/
-// تنبيهات وقاعدة الاستمرار 30 دقيقة يمتد 251-339 (يدمج ما كان درجتين
-// منفصلتين "تحذير 250-300" و"تنبيه استباقي 300-340" بنطاق واحد، مع إبقاء
-// تدرّج الشدة النصي داخله فقط — لا تغيير بالقرار decisionCategory نفسه،
-// كلاهما ALLOW_WITH_CONTROLS). حد المخالفة/الإيقاف 340 (معلَّق فوراً، مؤكَّد
-// بعد أكثر من دقيقتين) يبقى دون تغيير — لم يطلب المستخدم تعديله.
-const PM10_EARLY_WARNING_UG_M3 = 301;
-const PM10_WARNING_UG_M3 = 251;
-const PM10_VIOLATION_STOP_UG_M3 = 340;
-// PM10_PRECAUTION_UG_M3: قراءة بين 201 و250 تُفعِّل "حالة احتراز" لزيادة
-// المراقبة، أخف من نطاق الضوابط 251-339 (ALLOW_WITH_CONTROLS) وأشد من
-// ALLOW النظيف (حتى 200). لا تُقيّد AEI (راجع applyComplianceGateToAei في
-// dustEvaluation.ts — PRECAUTION غير مُدرجة في AEI_COMPLIANCE_RESTRICTED_
-// DECISIONS عمداً)، فقط تنبيه مرئي أصفر في بطاقة الامتثال والبانر الموحّد.
-const PM10_PRECAUTION_UG_M3 = 201;
+// حدود PM10 التشغيلية — من حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE، القسم
+// 5.2-5.3 من "دليل الإصلاح الجذري"): النطاق التشغيلي لمرقاب منفصل عن الحكم
+// التنظيمي الرسمي (warningThresholdInclusive/violationThresholdExclusive
+// أدناه). لا تُعدَّل هذه القيم هنا مباشرة — أي تغيير يتطلب حزمة قواعد جديدة
+// في app/utils/rule-bundles.
+//   ≤150            → طبيعي (ALLOW)
+//   150 < x ≤ 250   → احتراز (PRECAUTION)
+//   250 < x ≤ 320   → ضوابط إلزامية (ALLOW_WITH_CONTROLS)
+//   320 < x ≤ 340   → تقييد شديد — تصعيد نصي فقط ضمن نفس ALLOW_WITH_CONTROLS
+//   > 340           → معلَّق/مؤكَّد (STOP_AFFECTED_ACTIVITY/MANDATORY_STOP)
+const PM10_NORMAL_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.normalMaxInclusive;
+const PM10_PRECAUTION_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.precautionMaxInclusive;
+const PM10_CONTROLS_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.controlsMaxInclusive;
+// مُصدَّر (لا محلي فقط) — يُستخدَم أيضاً في buildPlanningForecastResult
+// (engine.ts) لتحديد "هل التوقّع صالح للنشاط؟" بناءً على الحكم التنظيمي، لا
+// DVI الفيزيائي وحده (راجع تعليق isFavorable هناك للسبب الكامل).
+export const PM10_WARNING_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.warningThresholdInclusive;
+const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
 
 // -----------------------------------------------------------------------
 // تصنيف فئة مخاطر المشروع (القسم 6 من "مرقاب"، جدول 1 من الدليل التنظيمي)
@@ -324,16 +326,8 @@ export function pm10ThresholdRule(
   //
   // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
   // للمرجع"): كان هذا التوقيع يقبل معامل isPm10ExemptEnclosedBatching يُعفي
-  // محطة خلط (صوامع مغلقة + فلتر ≥99%) من قواعد PM10 كلها (احتراز/تحذير/
-  // تنبيه استباقي/تعليق 30 دقيقة/مخالفة مؤكدة). لكن نسبة الـ99% نفسها
-  // (BATCHING_PM10_FILTER_MIN_PERCENT أعلاه) موثّقة صراحة كـ"الحد المعتمد
-  // للاستمرار أثناء إيقاف الرياح فوق 25 كم/س" — أي القسم الرابع/السادس من
-  // "الاستخراج التنظيمي من المرفق" يُعفي محطة الخلط المغلقة والمفلترة من
-  // بوابة الرياح >25 تحديداً، لا من عتبات PM10 المستقلة (250/340) التي هي
-  // قياس تركيز فعلي في الهواء بصرف النظر عن سرعة الرياح أو حالة الصوامع.
-  // إعفاء PM10 كلياً كان توسيعاً غير موثَّق للنص التنظيمي، فحُذف بالكامل —
-  // الإعفاء يبقى مقصوراً على بوابة الرياح (isEnclosedExemptFromHighWind في
-  // engine.ts) كما كان مصدره الأصلي دائماً.
+  // محطة خلط (صوامع مغلقة + فلتر ≥99%) من قواعد PM10 كلها. الإعفاء يبقى
+  // مقصوراً على بوابة الرياح (isEnclosedExemptFromHighWind في engine.ts).
   confirmedViolation340?: boolean,
   suspended250For30Min?: boolean
 ): DustRuleHit[] {
@@ -341,10 +335,9 @@ export function pm10ThresholdRule(
 
   const hits: DustRuleHit[] = [];
 
-  // خطأ مكتشَف ومُصلَح (مراجعة كود): كانت `>=` تُدرج القراءة 340 بالضبط
-  // ضمن "مخالفة" — لكن النص التنظيمي يقول "تجاوز 340" (exceeds)، أي `>`
-  // صراحة لا `>=`. قراءة 340.000 بالضبط يجب أن تبقى "تحذير/تنبيه استباقي"
-  // لا "مخالفة"، حتى تتجاوز الحد فعلياً.
+  // ترتيب القواعد من الأشد إلى الأخف (القسم 5.2 من "دليل الإصلاح الجذري")
+  // — `>` صراحة لا `>=` عند حد المخالفة (340 بالضبط يبقى "تقييد شديد" لا
+  // "مخالفة"، حتى تتجاوز الحد فعلياً).
   if (pm10UgM3 > PM10_VIOLATION_STOP_UG_M3) {
     const isConfirmed = confirmedViolation340 === true;
     if (isConfirmed) {
@@ -366,16 +359,16 @@ export function pm10ThresholdRule(
         )
       );
     }
-  } else if (pm10UgM3 >= PM10_EARLY_WARNING_UG_M3) {
+  } else if (pm10UgM3 > PM10_CONTROLS_MAX_UG_M3) {
     hits.push(
       ruleHit(
-        'PM10-EARLY-WARNING-007',
-        'ALLOW_WITH_CONTROLS',
-        `تنبيه استباقي: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) يقترب من حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
-        'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة'
+        'PM10-RED-RESTRICT-010',
+        'RESTRICT_ACTIVITY',
+        `تقييد شديد: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) ضمن النطاق الأحمر (${PM10_CONTROLS_MAX_UG_M3 + 1}–${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
+        'فعّل التثبيط المعزز فوراً وقلّص واجهات العمل استعداداً لاحتمال بلوغ حد المخالفة'
       )
     );
-  } else if (pm10UgM3 >= PM10_WARNING_UG_M3) {
+  } else if (pm10UgM3 > PM10_PRECAUTION_MAX_UG_M3) {
     hits.push(
       ruleHit(
         'PM10-WARNING-008',
@@ -384,23 +377,21 @@ export function pm10ThresholdRule(
         'فعّل التثبيط المعزز (رش ساعي، تغطية الأكوام) وراقب التركيز عن كثب'
       )
     );
-  } else if (pm10UgM3 >= PM10_PRECAUTION_UG_M3) {
+  } else if (pm10UgM3 > PM10_NORMAL_MAX_UG_M3) {
     hits.push(
       ruleHit(
         'PM10-PRECAUTION-009',
         'PRECAUTION',
-        `حالة احتراز: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) ضمن نطاق الإنذار المبكر (${PM10_PRECAUTION_UG_M3}–${PM10_WARNING_UG_M3 - 1} ميكروجرام/م³)`,
+        `حالة احتراز: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) ضمن نطاق الإنذار المبكر (${PM10_NORMAL_MAX_UG_M3 + 1}–${PM10_PRECAUTION_MAX_UG_M3} ميكروجرام/م³)`,
         'زِد وتيرة المراقبة ومتابعة القراءة — لا يتطلب إجراءً تصحيحياً فورياً ما لم يستمر الارتفاع'
       )
     );
   }
 
-  // RCRC-PM10-30M-SUSPENSION-012: استمرار ≥251 (PM10_WARNING_UG_M3) لمدة 30
-  // دقيقة متواصلة يُفعِّل تعليق النشاط — منفصلة عن الشرط أعلاه (قد يتحقق
-  // الاثنان معاً لو القراءة >340 ومستمرة لأكثر من 30 دقيقة أيضاً؛
-  // decisionFromRules يختار الأشد).
-  // نفس مبدأ confirmedViolation340 أعلاه: القرار جاهز من computeSustainedPm10Status،
-  // لا يُعاد اشتقاقه من مقارنة الدقائق محلياً.
+  // RCRC-PM10-30M-SUSPENSION-012: استمرار عند حد التحذير التنظيمي فأكثر
+  // (PM10_WARNING_UG_M3) لمدة 30 دقيقة متواصلة يُفعِّل تعليق النشاط —
+  // منفصلة عن الشرط أعلاه (قد يتحقق الاثنان معاً؛ decisionFromRules يختار
+  // الأشد). القرار جاهز من computeSustainedPm10Status، لا يُعاد اشتقاقه هنا.
   if (pm10UgM3 >= PM10_WARNING_UG_M3 && suspended250For30Min === true) {
     hits.push(
       ruleHit(
@@ -776,7 +767,7 @@ function entryExitRules(
 // موصى به)، فتبقى قاعدة فعلية تؤثر على القرار.
 function siteTrafficRules(
   activity: DustActivityComplianceProfile,
-  riskClass: DustRiskClass
+  _riskClass: DustRiskClass
 ): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
 

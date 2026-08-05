@@ -6,17 +6,18 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ReferenceLine, ResponsiveContainer,
 } from 'recharts';
+import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { ArrowRight, Gauge, RefreshCw } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
 
-// نفس عتبات PM10 التنظيمية في app/utils/dust-compliance-engine/rulebook.ts
-// (PM10_PRECAUTION_UG_M3/PM10_WARNING_UG_M3/PM10_EARLY_WARNING_UG_M3/
-// PM10_VIOLATION_STOP_UG_M3) — مكرَّرة عمداً هنا فقط لرسم خطوط مرجعية على
+// نفس حدود PM10 التشغيلية في حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE) —
+// تُقرأ من الحزمة مباشرة (لا تُكرَّر كأرقام هنا) فقط لرسم خطوط مرجعية على
 // الرسم البياني، بلا أي تأثير على القرار الفعلي (المحسوب حصراً بالخادم).
-const PM10_PRECAUTION_UG_M3 = 201;
-const PM10_WARNING_UG_M3 = 251;
-const PM10_EARLY_WARNING_UG_M3 = 301;
-const PM10_VIOLATION_STOP_UG_M3 = 340;
+const PM10_PRECAUTION_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.normalMaxInclusive;
+const PM10_WARNING_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.warningThresholdInclusive;
+const PM10_RED_RESTRICT_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.controlsMaxInclusive;
+const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
 
 // دورة التحديث التلقائي — دقيقة واحدة (طلب صريح: تحديث لايف كل دقيقة بدل
 // دقيقتين بكل نظام الواجهة)، حتى يبقى الرسم البياني حياً بلا حاجة لريفريش
@@ -98,14 +99,17 @@ export default function ProjectReadingsPage({
   const [selectedIds, setSelectedIds] = useState<Set<string> | null>(null); // null = الكل
 
   const fetchHistory = async (silent = false) => {
+    // await فوري (microtask) قبل أول setState — يفصل الاستدعاء المباشر من
+    // جسم الـEffect عن أول تعديل حالة متزامن، بلا تأخير محسوس.
+    await Promise.resolve();
     try {
       if (!silent) setLoading(true);
       const { data } = await apiClient.get(`/projects/${id}/pm10-history`, { params: { hours } });
       setActivities(data.activities || []);
       setError(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (silent) return;
-      setError(err?.response?.data?.error || 'حدث خطأ أثناء جلب سجل القراءات');
+      setError((err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'حدث خطأ أثناء جلب سجل القراءات');
     } finally {
       if (!silent) setLoading(false);
     }
@@ -113,10 +117,16 @@ export default function ProjectReadingsPage({
 
   useEffect(() => {
     if (!id) return;
-    fetchHistory();
+    let cancelled = false;
+    // جدولة عبر microtask بدل استدعاء fetchHistory مباشرة من جسم الـEffect —
+    // نفس السبب الموثَّق أعلى fetchHistory (تعديل حالة متزامن داخل Effect).
+    void Promise.resolve().then(() => { if (!cancelled) fetchHistory(); });
 
-    const intervalId = window.setInterval(() => fetchHistory(true), REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(intervalId);
+    const intervalId = window.setInterval(() => { if (!cancelled) fetchHistory(true); }, REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, hours]);
 
@@ -243,9 +253,9 @@ export default function ProjectReadingsPage({
                       />
                       <Tooltip
                         labelFormatter={(v) => formatDateTimeAr(String(v))}
-                        formatter={(value: any, name: any) => {
+                        formatter={(value: ValueType | undefined, name: NameType | undefined) => {
                           const activity = activities.find((a) => a.activityGroupId === name);
-                          return [`${value} µg/m³`, activity?.label ?? name];
+                          return [`${value} µg/m³`, activity?.label ?? String(name)] as [string, string];
                         }}
                         contentStyle={{ borderRadius: 12, border: '1px solid #E2E8F0', fontSize: 12, direction: 'rtl' }}
                       />
@@ -256,10 +266,10 @@ export default function ProjectReadingsPage({
 
                       {/* خطوط مرجعية للعتبات التنظيمية — إعلامية بحتة، لا تُغيّر
                           أي بيانات، فقط توضّح أين تقع القراءات نسبةً للحدود. */}
-                      <ReferenceLine y={PM10_PRECAUTION_UG_M3} stroke="#EAB308" strokeDasharray="4 4" label={{ value: 'احتراز 201', position: 'insideTopLeft', fontSize: 10, fill: '#CA8A04' }} />
-                      <ReferenceLine y={PM10_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: 'تحذير 251', position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
-                      <ReferenceLine y={PM10_EARLY_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: 'استباقي 301', position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
-                      <ReferenceLine y={PM10_VIOLATION_STOP_UG_M3} stroke="#EF4444" strokeDasharray="4 4" label={{ value: 'مخالفة 340', position: 'insideTopLeft', fontSize: 10, fill: '#DC2626' }} />
+                      <ReferenceLine y={PM10_PRECAUTION_UG_M3} stroke="#EAB308" strokeDasharray="4 4" label={{ value: `احتراز ${PM10_PRECAUTION_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#CA8A04' }} />
+                      <ReferenceLine y={PM10_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: `تحذير ${PM10_WARNING_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
+                      <ReferenceLine y={PM10_RED_RESTRICT_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: `تقييد ${PM10_RED_RESTRICT_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
+                      <ReferenceLine y={PM10_VIOLATION_STOP_UG_M3} stroke="#EF4444" strokeDasharray="4 4" label={{ value: `مخالفة ${PM10_VIOLATION_STOP_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#DC2626' }} />
 
                       {activities.map((a, idx) => (
                         <Line

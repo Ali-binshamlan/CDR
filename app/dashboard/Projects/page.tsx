@@ -1,8 +1,8 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
-import { decisionMeta, alertKindToDecision, pickMostSevereAlert, type Decision } from '@/app/lib/decisionMeta';
+import { alertKindToDecision, pickMostSevereAlert, type Decision } from '@/app/lib/decisionMeta';
 import {
   Search,
   Filter,
@@ -15,19 +15,30 @@ import {
   Loader2
 } from 'lucide-react';
 
-const DecisionBadge = ({ decision }: { decision: Decision }) => {
-  const meta = decisionMeta[decision];
-  return (
-    <span className={`flex w-fit items-center gap-1.5 px-3 py-1 rounded-full ${meta.bg} ${meta.text} text-xs font-bold border ${meta.border}`}>
-      <span className={`w-2 h-2 rounded-full ${meta.dot} ${decision === 'stopped' || decision === 'postpone' ? 'animate-pulse' : ''}`}></span>
-      {meta.label}
-    </span>
-  );
-};
-
 // ============================================================
 // شكل بطاقة المشروع في القائمة
 // ============================================================
+// شكل صف مشروع خام كما يُرجعه GET /api/dashboard/projects-list (list.projects)
+interface DashboardProjectRow {
+  id: string;
+  name: string;
+  city: string;
+  [key: string]: unknown;
+}
+
+// شكل صف تنبيه خام (list.alerts) — الحقول المقروءة فعلياً في هذه الصفحة فقط.
+interface DashboardAlertRow {
+  project_id: string;
+  kind: string;
+  action_taken?: string | null;
+  message?: string | null;
+}
+
+// شكل صف نشاط غبار خام (list.dustActivities) — project_id فقط مطلوب هنا.
+interface DashboardDustActivityRow {
+  project_id: string;
+}
+
 interface ProjectCard {
   id: string;
   name: string;
@@ -36,7 +47,7 @@ interface ProjectCard {
   totalActivitiesCount: number;
   alertsCount: number;
   lastDecisionText: string;
-  originalData: any;
+  originalData: DashboardProjectRow;
 }
 
 export default function ProjectsPage() {
@@ -49,13 +60,13 @@ export default function ProjectsPage() {
       setIsLoading(true);
       try {
         const { data: list } = await apiClient.get('/dashboard/projects-list');
-        const dbProjects = list?.projects || [];
-        const alerts = list?.alerts || [];
+        const dbProjects: DashboardProjectRow[] = list?.projects || [];
+        const alerts: DashboardAlertRow[] = list?.alerts || [];
 
-        const allActivities = [...(list?.dustActivities || [])];
+        const allActivities: DashboardDustActivityRow[] = [...(list?.dustActivities || [])];
 
-        const processedProjects: ProjectCard[] = (dbProjects || []).map((p: any) => {
-          const projectAlerts: any[] = (alerts || []).filter((a: any) => a.project_id === p.id);
+        const processedProjects: ProjectCard[] = (dbProjects || []).map((p) => {
+          const projectAlerts: DashboardAlertRow[] = (alerts || []).filter((a) => a.project_id === p.id);
           const worstAlert = pickMostSevereAlert(projectAlerts);
           const decision = worstAlert ? alertKindToDecision(worstAlert.kind) : 'safe';
           const lastDecisionText = worstAlert

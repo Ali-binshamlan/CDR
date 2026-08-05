@@ -7,7 +7,8 @@
 // كـ Polygon/Circle للقراءة فقط.
 // =============================================================
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { useHasMounted } from '@/app/lib/useHasMounted';
 import { MapContainer, TileLayer, Polygon, Circle, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { LatLng, ProjectZoneType } from '@/app/utils/geo/zone';
@@ -47,15 +48,13 @@ function FitToZone({ value }: { value: ZonePickerValue }) {
         { maxZoom: 18 }
       );
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, value.zoneType, value.polygon, value.circleCenter, value.circleRadiusM]);
 
   return null;
 }
 
 export default function ZonePicker({ initialCenter, value }: ZonePickerProps) {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const mounted = useHasMounted();
 
   if (!mounted) {
     return (

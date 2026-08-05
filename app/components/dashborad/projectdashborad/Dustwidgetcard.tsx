@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { apiClient } from '@/app/lib/apiClient';
+import { useNow } from '@/app/lib/useNow';
 import {
   Wind, X, ArrowUpRight, Eye, Gauge, ShieldCheck, ListChecks,
   Clock, AlertTriangle, Printer, AlertOctagon, CheckCircle2,
@@ -16,6 +17,24 @@ interface DustDetailItem {
   label: string;
   value: string | number | boolean | null;
 }
+
+// صف واحد من جدول alerts (راجع GET /api/alerts) — نُستخدَم هنا فقط للتحقق
+// من وجود تنبيه نشط (activeAlert &&)، بلا قراءة أي حقل آخر منه حالياً.
+interface ActiveAlertRow {
+  id: string;
+  project_id: string;
+  activity_id: string;
+  kind: string;
+  state: string;
+  message: string;
+  created_at: string;
+}
+
+// annotateHourWithRegulatoryGate في app/lib/dustEvaluation.ts يُلحق هذا
+// الحقل على كل ساعة (windowEval.hourly وhourlyForecasts) على الخادم قبل
+// الإرسال — غير موجود على DviHourlyEvaluation نفسها (تعريفها في
+// dust-engine/types.ts لا يعرف بهذا الإلحاق الخاص بواجهة DCR).
+type HourlyWithRegulatoryGate = DviHourlyEvaluation & { regulatoryWindGateActive?: boolean };
 
 interface DustWidgetCardProps {
   activityType: string;
@@ -255,7 +274,7 @@ function RiskScoreGauge({
 export default function DustWidgetCard({ activityType, windowEval, aei, complianceList = null, hourlyForecasts, details = [], projectId, activityId, projectName, hideDecisionPanel = false, hideSchedule = false }: DustWidgetCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeAlert, setActiveAlert] = useState<any>(null);
+  const [activeAlert, setActiveAlert] = useState<ActiveAlertRow | null>(null);
   const [confirmedDecision, setConfirmedDecision] = useState<{status: string, time: string} | null>(null);
 
   const result = windowEval.worst;
@@ -279,9 +298,9 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
   const style = getDecisionStyle(result.decisionCategory, effectiveMandatoryStop);
   const aeiStyle = getAeiStyle(aei.color);
   
-  const isFutureActivity = new Date(windowEval.windowStartIso).getTime() > Date.now();
+  const nowTs = useNow(60000);
+  const isFutureActivity = new Date(windowEval.windowStartIso).getTime() > nowTs;
 
-  const nowTs = Date.now();
   const startTs = new Date(windowEval.windowStartIso).getTime();
   const endTs = new Date(windowEval.windowEndIso).getTime();
   const activityStatus: 'upcoming' | 'ongoing' | 'past' = nowTs < startTs ? 'upcoming' : nowTs <= endTs ? 'ongoing' : 'past';
@@ -691,7 +710,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                     <ShieldCheck className="w-4 h-4" /> توصية مرقاب
                   </h3>
                   <RiskScoreGauge score={result.score} decisionLabelAr={effectiveDecisionLabelAr} mandatoryStop={effectiveMandatoryStop} />
-                  {(result as any).overridable === false && (
+                  {result.overridable === false && (
                     <div className="bg-white/60 border border-current/20 p-2 rounded-lg text-[11px] font-bold mt-4 text-center flex items-center justify-center gap-1">
                       <ShieldAlert className="w-3.5 h-3.5" /> توصية إلزاميّة — يرجى الالتزام
                     </div>
@@ -716,7 +735,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                       ))
                     ) : effectiveMandatoryStop ? (
                       <li className="font-medium text-slate-800">
-                        لا توجد قواعد DVI فيزيائية مفعّلة — لكن النشاط موقوف فعلياً بسبب قواعد الامتثال التنظيمي أدناه (انظر قسم "الامتثال التنظيمي").
+                        لا توجد قواعد DVI فيزيائية مفعّلة — لكن النشاط موقوف فعلياً بسبب قواعد الامتثال التنظيمي أدناه (انظر قسم &quot;الامتثال التنظيمي&quot;).
                       </li>
                     ) : (
                       <li>لا توجد قواعد إيقاف مفعّلة حاليًا</li>
@@ -732,7 +751,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                     {result.requiredActions.length > 0 ? (
                       result.requiredActions.map((action, idx) => <li key={idx} className="font-medium">{action}</li>)
                     ) : effectiveMandatoryStop ? (
-                      <li className="font-medium text-slate-800">راجع قسم "الامتثال التنظيمي" أدناه لشروط الاستئناف المطلوبة لرفع الإيقاف.</li>
+                      <li className="font-medium text-slate-800">راجع قسم &quot;الامتثال التنظيمي&quot; أدناه لشروط الاستئناف المطلوبة لرفع الإيقاف.</li>
                     ) : (
                       <li>لا توجد توصيات إضافية مطلوبة</li>
                     )}
@@ -919,7 +938,7 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                       // مستقلة عن عتبات DVI الفيزيائي المختلفة، فتُطغى على
                       // مظهر الساعة حتى لو كانت توصية DVI لتلك الساعة آمنة،
                       // لتفادي عرض ساعة "آمنة" رغم إيقاف تنظيمي فعلي فيها.
-                      const hourGated = (h as any).regulatoryWindGateActive === true;
+                      const hourGated = (h as HourlyWithRegulatoryGate).regulatoryWindGateActive === true;
                       const hStyle = hourGated
                         ? { bg: 'bg-slate-900/5', border: 'border-slate-700', text: 'text-slate-800' }
                         : getDecisionStyle(h.decisionCategory, h.mandatoryStop);

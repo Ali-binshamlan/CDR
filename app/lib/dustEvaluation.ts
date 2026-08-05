@@ -1,18 +1,127 @@
 // تقييم الغبار والامتثال التنظيمي المشترك — نسخة DCR من craneEvaluation.ts
 // الأصلي في مرقاب، مقتصرة على الدوال الخاصة بالغبار (DVI)/الامتثال
 // التنظيمي/AEI فقط. لا رافعات ولا حرارة في DCR إطلاقاً.
-import { evaluateDustVisibilityWindow, evaluateDustVisibilityWorkDayHourly } from '@/app/utils/dust-engine';
-import type { DustEngineInput, DustWindowEvaluation } from '@/app/utils/dust-engine/types';
+import { createHash } from 'node:crypto';
+import {
+  evaluateDustVisibilityWindow,
+  evaluateDustVisibilityWorkDayHourly,
+  evaluateLiveOperationalDecision,
+} from '@/app/utils/dust-engine';
+import type { ActivityCategory, DustEngineInput, DustWindowEvaluation } from '@/app/utils/dust-engine/types';
 import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
 import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT } from '@/app/utils/dust-compliance-engine';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
+import { LIVE_FIELD_FRESHNESS_MS, DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
 import type { ReceptorWithinRadius } from '@/app/utils/dust-compliance-engine/geo';
+import type { SensitiveReceptor } from '@/app/utils/dust-compliance-engine/types';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
 import { decideFinal, buildFinalDecisionInput } from '@/app/utils/final-decision-engine';
 import type { FinalDecision } from '@/app/utils/final-decision-engine';
-import type { DviEvaluationResult } from '@/app/utils/dust-engine/types';
+import type { DviEvaluationResult, DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+// صف project الخام (Supabase select('*'), لا Database types مُولَّدة في هذا
+// المشروع) — الحقول الفعلية المقروءة عبر مستهلكي هذا الملف (مثال:
+// ProjectHeader.tsx). [key: string]: unknown يستوعب أي عمود إضافي بلا حاجة
+// لتعداد كل عمود project هنا.
+export interface ProjectRow {
+  id: string;
+  name?: string | null;
+  city?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  terrain_type?: string | null;
+  dust_causing_activities?: unknown;
+  exposed_dust_area_size?: unknown;
+  unpaved_roads_length?: unknown;
+  heavy_machinery_count?: unknown;
+  trucks_per_day?: unknown;
+  is_near_public_road?: unknown;
+  is_near_sensitive_areas?: unknown;
+  dust_mitigation_measures?: unknown;
+  has_concrete_curing_plan?: unknown;
+  can_advance_pouring_time?: unknown;
+  work_hours_start?: unknown;
+  work_hours_end?: unknown;
+  shifts?: unknown;
+  work_days_list?: unknown;
+  zone_type?: unknown;
+  zone_polygon?: unknown;
+  zone_radius_m?: unknown;
+  [key: string]: unknown;
+}
+
+// صف project_dust_profiles الخام (Supabase select('*') مع فلترة زمنية/
+// نشاط لاحقة عبر مستهلكي هذا الملف) — الحقول الفعلية المقروءة عبر
+// buildDustInput/computeDustResults/computeDustComplianceResults وبقية
+// دوال هذا الملف. [key: string]: unknown يستوعب أي عمود إضافي (مثال: أعمدة
+// محطة الكسارة/الخلط المشروطة بـregulatory_activity) بلا تعداد كامل هنا —
+// نفس فلسفة ProjectRow أعلاه بالضبط.
+export interface DustActivityRow {
+  id: string | number;
+  project_id?: string;
+  activity_group_id?: string | null;
+  activity_type?: string;
+  created_at?: string;
+  activity_lat?: number | null;
+  activity_lng?: number | null;
+  device_id?: string | null;
+  planned_date?: string | null;
+  planned_time?: string | null;
+  duration_hours?: number | null;
+  is_dust_generating?: boolean;
+  is_enclosed_operation?: boolean;
+  regulatory_activity?: string;
+  silos_sealed?: boolean;
+  pm10_filter_efficiency_percent?: number | null;
+  crusher_lat?: number | null;
+  crusher_lng?: number | null;
+  batching_lat?: number | null;
+  batching_lng?: number | null;
+  [key: string]: unknown;
+}
+
+// عنصر نتيجة محرك الغبار الفعلي المُعاد من computeDustResults أدناه —
+// راجع return { ... } داخل تلك الدالة لنفس الشكل بالضبط.
+export interface DustResultItem {
+  activityGroupId: string;
+  activityId: string;
+  activityType: ActivityCategory;
+  windowEval: DustWindowEvaluation;
+  aei: AeiEvaluationResult;
+  hourlyForecasts: unknown[];
+  startIso: string;
+  compliance?: DustComplianceResult | null;
+  unitReceptors?: unknown[];
+  complianceHourly?: unknown[];
+  [key: string]: unknown;
+}
+
+// شكل عنصر النتيجة المُعاد من computeDustComplianceResults أدناه
+// (activityGroupId/activityId/dustProfileId + النتيجة الجاهزة).
+export interface DustComplianceResultItem {
+  activityGroupId?: string;
+  activityId: string;
+  dustProfileId?: string | number;
+  result: DustComplianceResult;
+}
+
+// صف final_decisions المخزَّن (Supabase select('*')) — الحقول الفعلية
+// المقروءة منه عبر مستهلكي fetchLatestFinalDecisions فقط، [key: string]:
+// unknown يستوعب أي عمود إضافي بلا تعداد كامل هنا.
+export interface StoredFinalDecisionRow {
+  activity_group_id: string;
+  decision_label_ar: string;
+  level: string;
+  short_reason_ar?: string | null;
+  operational_decision: FinalDecision['operationalDecision'];
+  pending_confirmation: boolean;
+  mandatory_stop: boolean;
+  [key: string]: unknown;
+}
 
 /** مجموعة المستقبِلات الحساسة حول وحدة واحدة (كسارة/خلاطة) ضمن نصف قطرها
  * التنظيمي — راجع computeUnitReceptors أدناه. */
@@ -44,9 +153,10 @@ export function riyadhLocalToUtcIso(dateStr?: string | null, timeStr?: string | 
 // /api/projects/[projectId] من جدول project_shifts) إلى الشكل الذي يقبله
 // DustEngineInput.shifts — undefined إن لم تُعرَّف أي ورديات، فيسلك المحرك
 // مساره القديم (نافذة work_hours واحدة).
-function buildEngineShifts(project: any): { startTime: string; endTime: string }[] | undefined {
-  if (!Array.isArray(project?.shifts) || project.shifts.length === 0) return undefined;
-  return project.shifts.map((s: any) => ({
+function buildEngineShifts(project: ProjectRow): { startTime: string; endTime: string }[] | undefined {
+  const shifts = project.shifts;
+  if (!Array.isArray(shifts) || shifts.length === 0) return undefined;
+  return shifts.map((s: { start_time: unknown; end_time: unknown }) => ({
     startTime: String(s.start_time).slice(0, 5),
     endTime: String(s.end_time).slice(0, 5),
   }));
@@ -73,49 +183,53 @@ export interface FreshDeviceReading {
   last_pm10_at: string | null;
   // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — H-05: "حداثة القياسات
   // مشتركة جزئياً"): نفس مبدأ last_pm10_at بالضبط، مطبَّق على بقية الحقول —
-  // راجع supabase-add-device-per-field-timestamps-migration.sql. للعرض فقط
-  // (تحذير قِدم لكل حقل على حدة في الواجهة)، لا تدخل في أي قرار/عتبة ضمن
-  // المحرك — راجع تعليق devicePm10LastReadingAt في dust-engine/types.ts
-  // للتفصيل الكامل حول الفرق بين "للعرض فقط" و"يدخل في قرار".
+  // راجع supabase-add-device-per-field-timestamps-migration.sql. تُستهلَك
+  // الآن أيضاً في buildDustInput أدناه (تمرَّر لـDustEngineInput.device*At
+  // فتدخل بوابة الحداثة الفعلية في dust-engine/engine.ts — راجع مراجعة خبير
+  // خارجي لاحقة: "PM2.5/الحرارة/الرطوبة قد تدخل القرار دون نفس الاستبعاد")،
+  // لا للعرض فقط كما كانت (باستثناء last_pm10_at نفسه، الذي يبقى للعرض فقط
+  // — PM10 له آلية حداثة/استمرار مستقلة تماماً، راجع devicePm10LastReadingAt
+  // في dust-engine/types.ts).
   last_wind_speed_at: string | null;
   last_wind_gust_at: string | null;
   last_wind_direction_at: string | null;
   last_visibility_at: string | null;
+  last_pm25_at: string | null;
   last_relative_humidity_at: string | null;
   last_temperature_at: string | null;
 }
 
-export function buildDustInput(row: any, project: any, freshDevice?: FreshDeviceReading | null): DustEngineInput {
+export function buildDustInput(row: DustActivityRow, project: ProjectRow, freshDevice?: FreshDeviceReading | null): DustEngineInput {
   return {
-    activityType: row.activity_type,
+    activityType: row.activity_type as DustEngineInput['activityType'],
     // موقع النشاط المستقل (محدد يدوياً داخل zone المشروع) له الأولوية على
     // موقع المشروع المركزي — يُستخدم فعلياً في جلب طقس هذه النقطة تحديداً.
     // fallback لموقع المشروع فقط لأنشطة قديمة محفوظة قبل هذه الميزة.
-    latitude: typeof row.activity_lat === 'number' ? row.activity_lat : project.latitude,
-    longitude: typeof row.activity_lng === 'number' ? row.activity_lng : project.longitude,
+    latitude: typeof row.activity_lat === 'number' ? row.activity_lat : (project.latitude ?? 0),
+    longitude: typeof row.activity_lng === 'number' ? row.activity_lng : (project.longitude ?? 0),
     site: {
-      hasEarthworks: row.has_earthworks,
-      internalDirtRoads: row.internal_dirt_roads,
-      heavyEquipmentMovement: row.heavy_equipment_movement,
-      looseMaterials: row.loose_materials,
-      largeExposedArea: row.large_exposed_area,
-      drySurface: row.dry_surface,
-      surfaceWet: row.surface_wet,
-      wateringAvailable: row.watering_available,
-      stockpilesCovered: row.stockpiles_covered,
-      speedLimitApplied: row.speed_limit_applied,
-      wheelWashAvailable: row.wheel_wash_available,
-      dustScreensAvailable: row.dust_screens_available,
-      fieldMonitoringAvailable: row.field_monitoring_available,
-      receptorType: row.receptor_type,
-      receptorDistance: row.receptor_distance,
-      receptorIsDownwind: row.receptor_is_downwind,
-      visibleDustPlumeReported: row.visible_dust_plume_reported,
-      openConcretePour: row.open_concrete_pour,
+      hasEarthworks: !!row.has_earthworks,
+      internalDirtRoads: !!row.internal_dirt_roads,
+      heavyEquipmentMovement: !!row.heavy_equipment_movement,
+      looseMaterials: !!row.loose_materials,
+      largeExposedArea: !!row.large_exposed_area,
+      drySurface: !!row.dry_surface,
+      surfaceWet: !!row.surface_wet,
+      wateringAvailable: !!row.watering_available,
+      stockpilesCovered: !!row.stockpiles_covered,
+      speedLimitApplied: !!row.speed_limit_applied,
+      wheelWashAvailable: !!row.wheel_wash_available,
+      dustScreensAvailable: !!row.dust_screens_available,
+      fieldMonitoringAvailable: !!row.field_monitoring_available,
+      receptorType: row.receptor_type as DustEngineInput['site']['receptorType'],
+      receptorDistance: row.receptor_distance as DustEngineInput['site']['receptorDistance'],
+      receptorIsDownwind: !!row.receptor_is_downwind,
+      visibleDustPlumeReported: !!row.visible_dust_plume_reported,
+      openConcretePour: !!row.open_concrete_pour,
     },
-    onsiteVisibilityM: row.onsite_visibility_m ?? null,
-    onsitePm10: row.onsite_pm10 ?? null,
-    onsitePm25: row.onsite_pm25 ?? null,
+    onsiteVisibilityM: (row.onsite_visibility_m as number | null | undefined) ?? null,
+    onsitePm10: (row.onsite_pm10 as number | null | undefined) ?? null,
+    onsitePm25: (row.onsite_pm25 as number | null | undefined) ?? null,
     // hasDeviceLink يعكس اختيار المستخدم الفعلي (device_id على النشاط)،
     // لا مجرد توفر freshDevice — هذا هو مفتاح العزل التام في
     // mergeDustReading (engine.ts): نشاط مرتبط بمحطة يعرض بياناتها حصراً
@@ -131,9 +245,25 @@ export function buildDustInput(row: any, project: any, freshDevice?: FreshDevice
     deviceVisibilityM: freshDevice?.last_visibility_m ?? null,
     deviceRelativeHumidityPercent: freshDevice?.last_relative_humidity_percent ?? null,
     deviceTemperatureC: freshDevice?.last_temperature_c ?? null,
-    workDaysList: Array.isArray(project.work_days_list) ? project.work_days_list : undefined,
-    workHoursStart: project.work_hours_start ?? undefined,
-    workHoursEnd: project.work_hours_end ?? undefined,
+    // القسم 5.3/18.3: وقت رصد مستقل لكل حقل حاسم — يُستهلَك في
+    // buildDeviceMergedReading (dust-engine/engine.ts) لإسقاط قيمة أقدم من
+    // 4 دقائق بمعزل عن حداثة أي حقل آخر (راجع last_wind_speed_at/
+    // last_visibility_at في METRIC_LATEST_FIELD_MAP أعلاه — كانا يُجلَبان
+    // مسبقاً لكن يُستهلَكان للعرض فقط قبل هذا الإصلاح).
+    deviceWindSpeedAt: freshDevice?.last_wind_speed_at ?? null,
+    deviceWindGustAt: freshDevice?.last_wind_gust_at ?? null,
+    deviceWindDirectionAt: freshDevice?.last_wind_direction_at ?? null,
+    deviceVisibilityAt: freshDevice?.last_visibility_at ?? null,
+    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "حداثة البيانات ما زالت
+    // جزئية"): PM2.5/الحرارة/الرطوبة كانت تصل بقيمتها الخام دائماً بلا فحص
+    // عمر فردي، بخلاف الرياح/الرؤية أعلاه — الآن تدخل نفس بوابة الحداثة في
+    // buildDeviceMergedReading (dust-engine/engine.ts).
+    devicePm25At: freshDevice?.last_pm25_at ?? null,
+    deviceRelativeHumidityAt: freshDevice?.last_relative_humidity_at ?? null,
+    deviceTemperatureAt: freshDevice?.last_temperature_at ?? null,
+    workDaysList: Array.isArray(project.work_days_list) ? (project.work_days_list as string[]) : undefined,
+    workHoursStart: (project.work_hours_start as string | undefined) ?? undefined,
+    workHoursEnd: (project.work_hours_end as string | undefined) ?? undefined,
     shifts: buildEngineShifts(project),
   };
 }
@@ -155,7 +285,54 @@ function annotateHourWithRegulatoryGate<T extends { effectiveWindKmh: number | n
 // عتبة "حداثة" القراءة — لم تعد تُستخدم لإسقاط القراءة في هذه الدالة (راجع
 // التعليق أدناه)، فقط كمرجع للواجهة (buildStalenessAdvisory في
 // Compliancewidgetcard.tsx) لتحديد متى تُعرض بطاقة تحذير "قراءة قديمة".
-export const DEVICE_READING_FRESHNESS_MINUTES = 20;
+// مُنقول من app/utils/rule-bundles/field-freshness.ts (DEVICE_CONNECTION_
+// FRESHNESS_MS) — راجع تعليقه الكامل لسبب اختلافها عمداً عن عتبة PM10
+// اللحظية (4 دقائق، LIVE_FIELD_FRESHNESS_MS).
+export const DEVICE_READING_FRESHNESS_MINUTES = DEVICE_CONNECTION_FRESHNESS_MS / 60_000;
+
+// خريطة metric (device_metric_latest/NormalizedReading) → زوج حقلي
+// FreshDeviceReading (value/at) — تُستخدم لتحويل صفوف device_metric_latest
+// المحورة (صف واحد لكل مقياس) إلى الشكل المسطَّح الذي يستهلكه buildDustInput.
+const METRIC_LATEST_FIELD_MAP: Record<
+  string,
+  { valueKey: keyof FreshDeviceReading; atKey: keyof FreshDeviceReading }
+> = {
+  windSpeedKmh: { valueKey: 'last_wind_speed_kmh', atKey: 'last_wind_speed_at' },
+  windGustKmh: { valueKey: 'last_wind_gust_kmh', atKey: 'last_wind_gust_at' },
+  windDirectionDeg: { valueKey: 'last_wind_direction_deg', atKey: 'last_wind_direction_at' },
+  pm10: { valueKey: 'last_pm10', atKey: 'last_pm10_at' },
+  pm25: { valueKey: 'last_pm25', atKey: 'last_pm25_at' },
+  visibilityM: { valueKey: 'last_visibility_m', atKey: 'last_visibility_at' },
+  relativeHumidityPercent: { valueKey: 'last_relative_humidity_percent', atKey: 'last_relative_humidity_at' },
+  temperatureC: { valueKey: 'last_temperature_c', atKey: 'last_temperature_at' },
+};
+
+// يبني FreshDeviceReading من صفوف device_metric_latest (Projection —
+// القسم 8.3 من "دليل الإصلاح الجذري لمنظومة مرقاب") لجهاز واحد محدَّد —
+// مصدر الحقيقة الجديد لمسار القرار الحي، بدل قراءة project_devices.last_*
+// مباشرة (تلك تبقى مُحدَّثة أيضاً — راجع deviceReadingWriter.ts — لكن
+// device_metric_latest هي ما يُقرَأ هنا الآن، لأنها تحمل وقت رصد مستقل
+// حقيقي لكل حقل جاء من ingest_device_event_v2، لا وقتاً مشتركاً واحداً).
+async function fetchDeviceMetricLatest(
+  supabaseAdmin: SupabaseClient,
+  projectId: string,
+  deviceId: string
+): Promise<Partial<FreshDeviceReading>> {
+  const { data } = await supabaseAdmin
+    .from('device_metric_latest')
+    .select('metric, value, observed_at')
+    .eq('project_id', projectId)
+    .eq('device_id', deviceId);
+
+  const result: Partial<FreshDeviceReading> = {};
+  for (const row of data || []) {
+    const mapping = METRIC_LATEST_FIELD_MAP[row.metric];
+    if (!mapping) continue;
+    (result as Record<string, unknown>)[mapping.valueKey] = row.value ?? null;
+    (result as Record<string, unknown>)[mapping.atKey] = row.observed_at ?? null;
+  }
+  return result;
+}
 
 // يجلب آخر قراءة معروفة لجهاز مشروع معيّن. مع تمرير deviceId (النشاط
 // مرتبط بمحطة محددة يختارها المستخدم عند الإضافة، راجع AddActivityModal)
@@ -170,14 +347,20 @@ export const DEVICE_READING_FRESHNESS_MINUTES = 20;
 // هي من تقرر عرض تحذير "قراءة قديمة" بدل الفشل الصامت والانتقال لـAPI
 // الطقس كما كان يحدث سابقاً. يرجع null فقط عند عدم وجود أي صف جهاز نشط
 // بقراءة واحدة مسجَّلة إطلاقاً (لا صف قابل للعرض أصلاً).
+//
+// القيم/الأوقات الفعلية (last_wind_speed_kmh/last_pm10_at/إلخ) تُقرأ الآن
+// من device_metric_latest (fetchDeviceMetricLatest أعلاه) — الاستعلام على
+// project_devices هنا يبقى فقط لتحديد *أي جهاز* (نشط، يطابق deviceId إن
+// وُجد، أو الأحدث last_reading_at) واستخدام last_reading_at كعلامة "هل
+// يوجد أي قراءة على الإطلاق" (نفس دلالة السلوك السابق تماماً).
 export async function resolveFreshProjectDevice(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string,
   deviceId?: string | null
 ): Promise<FreshDeviceReading | null> {
   let query = supabaseAdmin
     .from('project_devices')
-    .select('last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at, last_wind_speed_at, last_wind_gust_at, last_wind_direction_at, last_visibility_at, last_relative_humidity_at, last_temperature_at')
+    .select('id, last_reading_at')
     .eq('project_id', projectId)
     .eq('is_active', true)
     .not('last_reading_at', 'is', null);
@@ -190,22 +373,25 @@ export async function resolveFreshProjectDevice(
 
   if (!data?.last_reading_at) return null;
 
+  const metricLatest = await fetchDeviceMetricLatest(supabaseAdmin, projectId, data.id);
+
   return {
-    last_wind_speed_kmh: data.last_wind_speed_kmh ?? null,
-    last_wind_gust_kmh: data.last_wind_gust_kmh ?? null,
-    last_wind_direction_deg: data.last_wind_direction_deg ?? null,
-    last_pm10: data.last_pm10 ?? null,
-    last_pm25: data.last_pm25 ?? null,
-    last_visibility_m: data.last_visibility_m ?? null,
-    last_relative_humidity_percent: data.last_relative_humidity_percent ?? null,
-    last_temperature_c: data.last_temperature_c ?? null,
-    last_pm10_at: data.last_pm10_at ?? null,
-    last_wind_speed_at: data.last_wind_speed_at ?? null,
-    last_wind_gust_at: data.last_wind_gust_at ?? null,
-    last_wind_direction_at: data.last_wind_direction_at ?? null,
-    last_visibility_at: data.last_visibility_at ?? null,
-    last_relative_humidity_at: data.last_relative_humidity_at ?? null,
-    last_temperature_at: data.last_temperature_at ?? null,
+    last_wind_speed_kmh: metricLatest.last_wind_speed_kmh ?? null,
+    last_wind_gust_kmh: metricLatest.last_wind_gust_kmh ?? null,
+    last_wind_direction_deg: metricLatest.last_wind_direction_deg ?? null,
+    last_pm10: metricLatest.last_pm10 ?? null,
+    last_pm25: metricLatest.last_pm25 ?? null,
+    last_visibility_m: metricLatest.last_visibility_m ?? null,
+    last_relative_humidity_percent: metricLatest.last_relative_humidity_percent ?? null,
+    last_temperature_c: metricLatest.last_temperature_c ?? null,
+    last_pm10_at: metricLatest.last_pm10_at ?? null,
+    last_wind_speed_at: metricLatest.last_wind_speed_at ?? null,
+    last_wind_gust_at: metricLatest.last_wind_gust_at ?? null,
+    last_wind_direction_at: metricLatest.last_wind_direction_at ?? null,
+    last_visibility_at: metricLatest.last_visibility_at ?? null,
+    last_pm25_at: metricLatest.last_pm25_at ?? null,
+    last_relative_humidity_at: metricLatest.last_relative_humidity_at ?? null,
+    last_temperature_at: metricLatest.last_temperature_at ?? null,
     last_reading_at: data.last_reading_at,
   };
 }
@@ -232,14 +418,20 @@ const PM10_SUSTAINED_VIOLATION_THRESHOLD = 340;
 const PM10_SUSTAINED_WARNING_THRESHOLD = 250;
 const PM10_VIOLATION_CONFIRM_MINUTES = 2;
 const PM10_SUSPENSION_MINUTES = 30;
-// هامش استمرار: لو مضت أكثر من هذي المدة بين قراءتين متتاليتين، لا نعتبر
-// الفجوة "استمراراً بلا انقطاع" — يطابق دورة إرسال الجهاز الفعلية (كل
-// دقيقتين، طلب صريح من المستخدم) بهامش تحمّل بسيط (تأخر شبكة/إعادة محاولة)
-// بدل الهامش القديم الفضفاض (15 دقيقة) الذي كان يسمح بقراءة معزولة واحدة
-// قديمة نسبياً أن تُحسب "استمراراً" كاملاً بلا أي دليل فعلي على القراءات
-// بينها. راجع أيضاً PM10_LAST_READING_FRESHNESS_MINUTES أدناه لضمان أن
-// "الآن" نفسه ليس بعيداً عن آخر قراءة فعلية.
-const PM10_READING_GAP_TOLERANCE_MINUTES = 4;
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "استمرارية الدليل نفسها غير
+// صحيحة؛ يمكن لعينتين متباعدتين أكثر من المسموح إثبات مخالفة"): كان هذا
+// الثابت رقماً مستقلاً (4 دقائق) مبنياً على افتراض دورة إرسال الجهاز (كل
+// دقيقتين + هامش)، بمعزل تام عن ACTIVE_RULE_BUNDLE.pm10.evidence.
+// maxContinuityGapMs (90 ثانية) — القيمة الفعلية المشتقة من المرجع
+// التنظيمي الرسمي (الملحق ب، صفحة 82: دورية تسجيل معتمدة لا تتجاوز دقيقة
+// + هامش منطقي). فجوة حتى 4 دقائق كانت تُقبَل كـ"استمرار بلا انقطاع" رغم
+// أن حزمة القواعد النشطة نفسها (2026.2 أو 2026.3، كلتاهما 90 ثانية) تقول
+// إن أي فجوة أطول من 90 ثانية لا تثبت استمراراً فعلياً — عينتان بفارق
+// دقيقتين إلى أربع دقائق كانتا تُحتسَبان "سلسلة واحدة متصلة" بلا أي دليل
+// حقيقي على ما جرى بينهما. الإصلاح: يُقرأ الحد من حزمة القواعد النشطة
+// مباشرة، فيتبع تلقائياً أي حزمة (بما فيها حزم مستقبلية) بدل رقم ثابت
+// منفصل قد يتعارض معها.
+const PM10_READING_GAP_TOLERANCE_MINUTES = ACTIVE_RULE_BUNDLE.pm10.evidence.maxContinuityGapMs / 60_000;
 // أقصى عمر لآخر قراءة حتى تبقى "حالة حية" — لو توقف الجهاز عن الإرسال
 // وتجاوز عمر آخر قراءة هذه العتبة، لا يجوز اعتبار الاستمرار "حياً حتى
 // الآن" (كان النظام سابقاً يُبقي isConfirmedViolation340/isSuspended250For30Min
@@ -248,7 +440,14 @@ const PM10_READING_GAP_TOLERANCE_MINUTES = 4;
 // حالة "مخالفة مستمرة" أو "معلَّق" بلا أي دليل حي، بدل التنبيه لانقطاع
 // الاتصال). القراءة نفسها تبقى ظاهرة (لا تُخفى)، فقط لا تُستخدم لإثبات
 // استمرار "حتى الآن" إن كانت أقدم من هذا الحد.
-const PM10_LAST_READING_FRESHNESS_MINUTES = 4;
+//
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — البند 3: "تصنيف حداثة مركزي لكل
+// Metric"): مُنقول الآن من app/utils/rule-bundles/field-freshness.ts
+// (LIVE_FIELD_FRESHNESS_MS) — نفس القيمة (4 دقائق) بالضبط، لا تغيير سلوكي.
+// عمداً لا يُستخدَم DEVICE_READING_FRESHNESS_MINUTES (20 دقيقة، مصدَّر أدناه
+// لغرض مختلف تماماً — عرض قِدم اتصال المحطة، لا حسم استمرار مخالفة PM10) —
+// راجع تعليق field-freshness.ts الكامل لسبب الفصل المتعمَّد بين القيمتين.
+const PM10_LAST_READING_FRESHNESS_MINUTES = LIVE_FIELD_FRESHNESS_MS / 60_000;
 
 // دالة حسابية بحتة (بلا I/O) — تأخذ قراءات مرتّبة تنازلياً (الأحدث أولاً،
 // نفس ترتيب استعلام Supabase الطبيعي بـ order desc) وتحسب مدة الاستمرار
@@ -427,7 +626,7 @@ export function computeSustainedPm10Status(
 // device إطلاقاً — فقط manual الخاصة بـactivity_group_id نفسه (open-meteo
 // لم يعد يُسجَّل في هذا الجدول إطلاقاً، راجع weather_forecasts أدناه).
 export async function fetchPm10SustainedStatus(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string,
   activityGroupId: string,
   deviceId?: string | null
@@ -441,17 +640,24 @@ export async function fetchPm10SustainedStatus(
       .gte('recorded_at', sinceIso)
       .order('recorded_at', { ascending: false });
 
-    const relevant = (data || []).filter((row: any) => {
+    type Pm10HistoryRow = {
+      pm10_ug_m3: number;
+      recorded_at: string;
+      activity_group_id: string | null;
+      source?: 'device' | 'manual' | 'open-meteo';
+      device_id: string | null;
+    };
+    const relevant = ((data as Pm10HistoryRow[]) || []).filter((row) => {
       if (row.activity_group_id === activityGroupId) return true;
       // قراءة جهاز على مستوى المشروع (activity_group_id=null): تخص هذا
       // النشاط فقط لو device_id يطابق جهازه المحدد فعلياً — لا أي جهاز آخر.
       if (row.activity_group_id === null) return !!deviceId && row.device_id === deviceId;
       return false;
     });
-    const readings = relevant.map((row: any) => ({
+    const readings = relevant.map((row) => ({
       pm10UgM3: Number(row.pm10_ug_m3),
       recordedAt: row.recorded_at,
-      source: row.source as 'device' | 'manual' | 'open-meteo' | undefined,
+      source: row.source,
     }));
     return computeSustainedPm10Status(readings);
   } catch {
@@ -467,38 +673,130 @@ export async function fetchPm10SustainedStatus(
 // جهاز نشط له last_reading_at يُضاف للخريطة بصرف النظر عن عمره؛ الواجهة
 // تقرر عرض تحذير القِدم.
 async function resolveProjectDeviceMap(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string
 ): Promise<Map<string, FreshDeviceReading | null>> {
   const map = new Map<string, FreshDeviceReading | null>();
   const { data } = await supabaseAdmin
     .from('project_devices')
-    .select('id, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, last_relative_humidity_percent, last_temperature_c, last_pm10_at, last_wind_speed_at, last_wind_gust_at, last_wind_direction_at, last_visibility_at, last_relative_humidity_at, last_temperature_at')
+    .select('id, last_reading_at')
     .eq('project_id', projectId)
     .eq('is_active', true);
 
+  type ProjectDeviceRow = { id: string; last_reading_at: string | null };
+  const activeDeviceIds = ((data as ProjectDeviceRow[]) || []).filter((d) => d.last_reading_at).map((d) => d.id);
+  if (activeDeviceIds.length === 0) return map;
+
+  // استعلام واحد لكل مقاييس كل الأجهزة النشطة معاً (بدل استعلام منفصل لكل
+  // جهاز) — نفس مبدأ "دفعة واحدة" الذي بُنيت لأجله هذه الدالة أصلاً.
+  const { data: metricRows } = await supabaseAdmin
+    .from('device_metric_latest')
+    .select('device_id, metric, value, observed_at')
+    .eq('project_id', projectId)
+    .in('device_id', activeDeviceIds);
+
+  const metricsByDevice = new Map<string, Partial<FreshDeviceReading>>();
+  for (const row of metricRows || []) {
+    const mapping = METRIC_LATEST_FIELD_MAP[row.metric];
+    if (!mapping) continue;
+    const bucket = metricsByDevice.get(row.device_id) ?? {};
+    (bucket as Record<string, unknown>)[mapping.valueKey] = row.value ?? null;
+    (bucket as Record<string, unknown>)[mapping.atKey] = row.observed_at ?? null;
+    metricsByDevice.set(row.device_id, bucket);
+  }
+
   for (const d of data || []) {
     if (!d.last_reading_at) continue;
+    const metricLatest = metricsByDevice.get(d.id) ?? {};
     map.set(d.id, {
-      last_wind_speed_kmh: d.last_wind_speed_kmh ?? null,
-      last_wind_gust_kmh: d.last_wind_gust_kmh ?? null,
-      last_wind_direction_deg: d.last_wind_direction_deg ?? null,
-      last_pm10: d.last_pm10 ?? null,
-      last_pm25: d.last_pm25 ?? null,
-      last_visibility_m: d.last_visibility_m ?? null,
-      last_relative_humidity_percent: d.last_relative_humidity_percent ?? null,
-      last_temperature_c: d.last_temperature_c ?? null,
+      last_wind_speed_kmh: metricLatest.last_wind_speed_kmh ?? null,
+      last_wind_gust_kmh: metricLatest.last_wind_gust_kmh ?? null,
+      last_wind_direction_deg: metricLatest.last_wind_direction_deg ?? null,
+      last_pm10: metricLatest.last_pm10 ?? null,
+      last_pm25: metricLatest.last_pm25 ?? null,
+      last_visibility_m: metricLatest.last_visibility_m ?? null,
+      last_relative_humidity_percent: metricLatest.last_relative_humidity_percent ?? null,
+      last_temperature_c: metricLatest.last_temperature_c ?? null,
       last_reading_at: d.last_reading_at,
-      last_pm10_at: d.last_pm10_at ?? null,
-      last_wind_speed_at: d.last_wind_speed_at ?? null,
-      last_wind_gust_at: d.last_wind_gust_at ?? null,
-      last_wind_direction_at: d.last_wind_direction_at ?? null,
-      last_visibility_at: d.last_visibility_at ?? null,
-      last_relative_humidity_at: d.last_relative_humidity_at ?? null,
-      last_temperature_at: d.last_temperature_at ?? null,
+      last_pm10_at: metricLatest.last_pm10_at ?? null,
+      last_wind_speed_at: metricLatest.last_wind_speed_at ?? null,
+      last_wind_gust_at: metricLatest.last_wind_gust_at ?? null,
+      last_wind_direction_at: metricLatest.last_wind_direction_at ?? null,
+      last_visibility_at: metricLatest.last_visibility_at ?? null,
+      last_pm25_at: metricLatest.last_pm25_at ?? null,
+      last_relative_humidity_at: metricLatest.last_relative_humidity_at ?? null,
+      last_temperature_at: metricLatest.last_temperature_at ?? null,
     });
   }
   return map;
+}
+
+// يجلب لقطات forecast_snapshots لكل أنشطة مشروع دفعة واحدة — القسم 9 من
+// "دليل الإصلاح الجذري لمنظومة مرقاب". لا fetch هنا إطلاقاً؛ قراءة جدول
+// مخزَّن مسبقاً فقط (يملؤه refreshForecastSnapshots أدناه بمسار منفصل).
+async function resolveForecastSnapshotMap(
+  supabaseAdmin: SupabaseClient,
+  projectId: string
+): Promise<Map<string, DviHourlyEvaluation[]>> {
+  const map = new Map<string, DviHourlyEvaluation[]>();
+  const { data } = await supabaseAdmin
+    .from('forecast_snapshots')
+    .select('activity_group_id, hourly')
+    .eq('project_id', projectId);
+
+  for (const row of data || []) {
+    if (Array.isArray(row.hourly)) map.set(row.activity_group_id, row.hourly as DviHourlyEvaluation[]);
+  }
+  return map;
+}
+
+// مسار الإثراء المنفصل (Forecast Worker، القسم 9.2 من "دليل الإصلاح الجذري
+// لمنظومة مرقاب") — يجلب Open-Meteo لكل نشاط دوام قادم ويخزّن النتيجة في
+// forecast_snapshots. لا علاقة له بمسار القرار الحي إطلاقاً: يُستدعى من
+// endpoint/cron منفصل (app/api/cron/forecast-refresh/route.ts)، لا من
+// evaluateProject/computeDustResults. فشل نشاط واحد لا يوقف البقية.
+export async function refreshForecastSnapshots(
+  supabaseAdmin: SupabaseClient,
+  projectId: string,
+  dustRows: DustActivityRow[],
+  project: ProjectRow
+): Promise<{ refreshed: number; failed: number }> {
+  let refreshed = 0;
+  let failed = 0;
+
+  for (const row of dustRows || []) {
+    try {
+      const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
+      if (!startIso) continue;
+
+      const input = buildDustInput(row, project, null);
+      const workDayHourly = await evaluateDustVisibilityWorkDayHourly(input, startIso);
+      const activityGroupId = row.activity_group_id || `dust-${row.id}`;
+
+      const { error } = await supabaseAdmin.from('forecast_snapshots').upsert(
+        {
+          project_id: projectId,
+          activity_group_id: activityGroupId,
+          hourly: workDayHourly,
+          activity_start_iso: startIso,
+          fetched_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'project_id,activity_group_id' }
+      );
+      if (error) {
+        failed++;
+        console.error(`refreshForecastSnapshots: فشل تخزين لقطة النشاط ${row.id}:`, error.message);
+        continue;
+      }
+      refreshed++;
+    } catch (error) {
+      failed++;
+      console.error(`refreshForecastSnapshots: فشل جلب توقعات النشاط ${row.id}:`, error);
+    }
+  }
+
+  return { refreshed, failed };
 }
 
 // تشغيل محرك الغبار لكل نشاط غبار، مع دمج AEI، وإرجاع شكل يطابق props
@@ -506,7 +804,11 @@ async function resolveProjectDeviceMap(
 // supabaseAdmin اختياري: بلا تمريره (استدعاءات قديمة/اختبارات) يتجاهل
 // المسار مسار الجهاز بالكامل ويسلك onsite_*/الطقس كما كان دائماً — إضافة
 // تراكمية بحتة، بلا أي كسر توافقي.
-export async function computeDustResults(dustRows: any[], project: any, supabaseAdmin?: any) {
+export async function computeDustResults(
+  dustRows: DustActivityRow[],
+  project: ProjectRow,
+  supabaseAdmin?: SupabaseClient
+): Promise<DustResultItem[]> {
   // كل نشاط قد يكون مرتبطاً بمحطة مختلفة (device_id، راجع AddActivityModal) —
   // لم يعد ممكناً استخدام "أحدث جهاز واحد بالمشروع" لكل الأنشطة كما كان
   // سابقاً. نجلب كل أجهزة المشروع دفعة واحدة، ثم نحلّ جهاز كل نشاط محلياً
@@ -516,30 +818,21 @@ export async function computeDustResults(dustRows: any[], project: any, supabase
     ? await resolveProjectDeviceMap(supabaseAdmin, project.id).catch(() => new Map<string, FreshDeviceReading | null>())
     : new Map<string, FreshDeviceReading | null>();
 
+  // لقطات التوقعات الساعية المخزَّنة مسبقاً (forecast_snapshots، القسم 9 من
+  // "دليل الإصلاح الجذري لمنظومة مرقاب") — تُقرأ دفعة واحدة هنا، لا تُجلَب
+  // من الشبكة إطلاقاً ضمن هذه الدالة. نشاط حي بجهاز مرتبط يستهلك هذه اللقطة
+  // (إن وُجدت) لملء hourlyForecasts بدل استدعاء evaluateDustVisibilityWorkDayHourly
+  // مباشرة (الذي يستدعي Open-Meteo) — راجع refreshForecastSnapshots أدناه
+  // لمسار الإثراء المنفصل الذي يملأ هذا الجدول فعلياً.
+  const forecastSnapshotMap = supabaseAdmin && project?.id
+    ? await resolveForecastSnapshotMap(supabaseAdmin, project.id).catch(() => new Map<string, unknown[]>())
+    : new Map<string, unknown[]>();
+
   const results = await Promise.all(
     (dustRows || []).map(async (row) => {
       try {
         const freshDevice = row.device_id ? deviceMap.get(row.device_id) ?? null : null;
-        const input = buildDustInput(row, project, freshDevice);
-        const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
-        const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
-        if (!startIso) return null;
 
-        const windowEval: DustWindowEvaluation = await evaluateDustVisibilityWindow(
-          input,
-          startIso,
-          durationHours
-        );
-        const aei: AeiEvaluationResult = evaluateAei(windowEval.worst, input.activityType as any);
-
-        // توقعات ساعية عبر كامل ساعات دوام *يوم النشاط المجدول* (startIso)،
-        // لا يوم فتح الصفحة؛ فشلها لا يُسقط تقييم النشاط بأكمله.
-        const workDayHourly = await evaluateDustVisibilityWorkDayHourly(input, startIso).catch(() => []);
-
-        // وسم كل ساعة (نافذة النشاط + كامل يوم الدوام) ببوابة الرياح
-        // التنظيمية حتى تتماشى شبكة "توقعات الطقس طوال فترة الدوام" مع
-        // قرار الامتثال، بدل الاعتماد فقط على عتبات DVI الفيزيائي المختلفة.
-        const isDustGenerating = row.is_dust_generating ?? true;
         // خطأ مكتشَف ومُصلَح: كان يُستخدَم row.is_enclosed_operation الخام
         // مباشرة هنا، بينما محطة الخلط (BATCHING_PLANT) مستثناة عمداً من
         // اشتراطه إطلاقاً في محرك القرار الفعلي (isEnclosedExemptFromHighWind
@@ -549,11 +842,73 @@ export async function computeDustResults(dustRows: any[], project: any, supabase
         // تظهر "مفعَّلة" لمحطة خلط مكشوفة فعلياً معفاة، رغم أن قرار الامتثال
         // الفعلي (evaluateDustCompliance) لا يوقفها — تناقض مربك بين الشارة
         // الإعلامية والقرار الملزم الفعلي لنفس النشاط.
+        //
+        // نُحسَب هنا (قبل buildDustInput) لتمريرها لمحرك DVI الفيزيائي نفسه
+        // أيضاً عبر input.isEnclosedDustExempt — طلب صريح من المستخدم:
+        // "محطة الخلط لا تنتج غبار". قبل هذا، الاستثناء كان يؤثر فقط على
+        // شارة بوابة الرياح المعروضة (isEnclosedOperation أدناه)، لا على
+        // score/level الأساسي لمحرك DVI نفسه — فمحطة خلط معفاة فعلياً كانت
+        // لا تزال تُقاس بمضاعف حساسية CONCRETE_POURING (0.55) كأي نشاط صب
+        // خرسانة مكشوف عادي، فتظهر "قابل للتنفيذ مع مراقبة" رغم طقس ممتاز
+        // ونشاط لا ينتج غباراً فعلياً (راجع computeDviResult في dust-engine/
+        // engine.ts للتفصيل الكامل).
         const isBatchingPm10Exempt =
           (row.regulatory_activity ?? 'OTHER') === 'BATCHING_PLANT' &&
           row.silos_sealed === true &&
           typeof row.pm10_filter_efficiency_percent === 'number' &&
           row.pm10_filter_efficiency_percent >= BATCHING_PM10_FILTER_MIN_PERCENT;
+
+        const input = buildDustInput(row, project, freshDevice);
+        if (isBatchingPm10Exempt) input.isEnclosedDustExempt = true;
+
+        const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
+        const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
+        if (!startIso) return null;
+
+        // القسم 9 من "دليل الإصلاح الجذري لمنظومة مرقاب" — "لا تستدعِ
+        // Open-Meteo قبل القرار الحي؛ احفظ قرار الجهاز فوراً، ثم اجلب
+        // التوقعات في مسار إثراء منفصل لا يستطيع إسقاط القرار الحي أو
+        // تأخيره". لنشاط حي (LIVE_OPERATIONAL، ضمن هامش ساعتين من بدايته)
+        // مرتبط بجهاز: worst يُبنى فوراً عبر evaluateLiveOperationalDecision
+        // (دالة نقية، صفر fetch، بلا await)، وshبكة hourly/bestWindow/
+        // avoidWindow التوقّعية لا تُجلَب إطلاقاً لهذا المسار — تبقى فارغة/
+        // null (نفس شكل buildAwaitingEvaluationWindow)، فلا يوجد أي مسار
+        // شبكة يمكن أن يؤخر أو يُسقِط القرار المحفوظ. نشاط توقّعي بحت
+        // (PLANNING) أو حي بلا جهاز يبقى بمساره القديم كاملاً
+        // (evaluateDustVisibilityWindow، شبكة Open-Meteo الكاملة).
+        const isLiveActivity = determineFinalDecisionMode(startIso) === 'LIVE_OPERATIONAL';
+        const isLiveWithDevice = isLiveActivity && input.hasDeviceLink;
+
+        const windowEval: DustWindowEvaluation = isLiveWithDevice
+          ? {
+              worst: evaluateLiveOperationalDecision(input),
+              hourly: [],
+              windowStartIso: startIso,
+              windowEndIso: new Date(new Date(startIso).getTime() + durationHours * 3600000).toISOString(),
+              durationHours,
+              bestWindowStartIso: null,
+              bestWindowWorst: null,
+              avoidWindowStartIso: null,
+              avoidWindowWorst: null,
+            }
+          : await evaluateDustVisibilityWindow(input, startIso, durationHours);
+        const aei: AeiEvaluationResult = evaluateAei(windowEval.worst, input.activityType);
+
+        // توقعات ساعية عبر كامل ساعات دوام *يوم النشاط المجدول* (startIso)،
+        // لا يوم فتح الصفحة. نشاط حي بجهاز مرتبط لا يستدعي الشبكة إطلاقاً
+        // (نفس بوابة "صفر fetch" أعلاه بالضبط) — يقرأ بدلاً من ذلك لقطة
+        // forecast_snapshots المخزَّنة مسبقاً (قد تكون فارغة إن لم يُشغَّل
+        // مسار الإثراء بعد لهذا النشاط، فشل آمن نحو "لا شبكة توقعات معروضة"
+        // بدل استدعاء الشبكة هنا). فشل جلب الشبكة لأي نشاط توقّعي/بلا جهاز
+        // لا يُسقط تقييم النشاط بأكمله.
+        const workDayHourly = isLiveWithDevice
+          ? ((forecastSnapshotMap.get(row.activity_group_id || `dust-${row.id}`) ?? []) as DviHourlyEvaluation[])
+          : await evaluateDustVisibilityWorkDayHourly(input, startIso).catch(() => []);
+
+        // وسم كل ساعة (نافذة النشاط + كامل يوم الدوام) ببوابة الرياح
+        // التنظيمية حتى تتماشى شبكة "توقعات الطقس طوال فترة الدوام" مع
+        // قرار الامتثال، بدل الاعتماد فقط على عتبات DVI الفيزيائي المختلفة.
+        const isDustGenerating = row.is_dust_generating ?? true;
         const isEnclosedOperation = isBatchingPm10Exempt ? true : (row.is_enclosed_operation ?? false);
         const annotatedWindowEval: DustWindowEvaluation = {
           ...windowEval,
@@ -593,7 +948,7 @@ export async function computeDustResults(dustRows: any[], project: any, supabase
       }
     })
   );
-  return results.filter(Boolean);
+  return results.filter((r): r is NonNullable<typeof r> => r !== null);
 }
 
 // -----------------------------------------------------------------------
@@ -629,9 +984,9 @@ export function shouldSkipPersist(
 // حفظ DVI/compliance له أصلاً)، و(2) إرجاع 207/500 صريح يعكس الفشل الجزئي
 // بدل "success" كاذب. راجع تعليق evaluate/route.ts للتفاصيل الكاملة.
 export async function persistDustEvaluations(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string,
-  dustResults: any[],
+  dustResults: DustResultItem[],
   triggeredBy: string
 ): Promise<string[]> {
   const failedActivityIds: string[] = [];
@@ -646,6 +1001,7 @@ export async function persistDustEvaluations(
         const { data: existing } = await supabaseAdmin
           .from('current_dust_decisions')
           .select('decision, updated_at')
+          .eq('project_id', projectId)
           .eq('activity_group_id', r.activityGroupId)
           .maybeSingle();
 
@@ -663,7 +1019,7 @@ export async function persistDustEvaluations(
           .select('id')
           .single();
 
-        const evaluationId = (inserted as any)?.id;
+        const evaluationId = (inserted as { id: string } | null)?.id;
         if (!evaluationId) {
           failedActivityIds.push(r.activityId);
           if (insertError) console.error(`فشل حفظ تقييم الغبار للنشاط ${r.activityId}:`, insertError);
@@ -691,11 +1047,13 @@ export async function persistDustEvaluations(
           await supabaseAdmin
             .from('current_dust_decisions')
             .update(decisionRow)
+            .eq('project_id', projectId)
             .eq('activity_group_id', r.activityGroupId)
             .eq('updated_at', existing.updated_at);
         } else {
           // لا صف سابق — insert عادي. تصادم نادر (طلبان أولان متزامنان تماماً)
-          // يفشل أحدهما على قيد المفتاح الأساسي، وهو السلوك الصحيح هنا.
+          // يفشل أحدهما على قيد المفتاح الأساسي المركب (project_id,
+          // activity_group_id)، وهو السلوك الصحيح هنا.
           await supabaseAdmin.from('current_dust_decisions').insert(decisionRow);
         }
       } catch (error) {
@@ -719,11 +1077,11 @@ export async function persistDustEvaluations(
 // crusher_lat/lng، BATCHING_PLANT عبر batching_lat/lng) — بقية الأنشطة
 // لا تملك نقطة وحدة مستقلة عن الموقع فتُترك فارغة.
 export function computeUnitReceptors(
-  dustRows: any[],
-  dustResults: any[],
-  sensitiveReceptors: any[] = []
+  dustRows: DustActivityRow[],
+  dustResults: { activityId: string }[],
+  sensitiveReceptors: SensitiveReceptor[] = []
 ): Map<string, UnitReceptorGroup[]> {
-  const rowsById = new Map<string, any>((dustRows || []).map((row) => [String(row.id), row]));
+  const rowsById = new Map<string, DustActivityRow>((dustRows || []).map((row) => [String(row.id), row]));
   const byActivityId = new Map<string, UnitReceptorGroup[]>();
 
   (dustResults || []).forEach((r) => {
@@ -801,15 +1159,25 @@ export function computeUnitReceptors(
 // (fetchPm10SustainedStatus لا تزال تُقرأ من السجل الحالي كما هو)، وPOST
 // /evaluate فقط (المسار الكاتب المُصرَّح صراحة من الواجهة) يُمرِّر true
 // ليُسجِّل العينة الجديدة فعلياً — لا كتابة أدلة بلا فعل مستخدم صريح.
+// شكل أدنى يكفي computeDustComplianceResults فعلياً (activityId/
+// activityGroupId/startIso/windowEval.worst فقط — لا aei/hourlyForecasts
+// التي يحملها DustResultItem الكامل) — نفس فلسفة AeiGateableActivity أعلاه.
+export interface ComplianceEvaluatableActivity {
+  activityId: string;
+  activityGroupId?: string;
+  startIso?: string;
+  windowEval?: Pick<DustWindowEvaluation, 'worst'>;
+}
+
 export async function computeDustComplianceResults(
-  dustRows: any[],
-  project: any,
-  dustResults: any[],
-  sensitiveReceptors: any[] = [],
-  supabaseAdmin?: any,
+  dustRows: DustActivityRow[],
+  project: ProjectRow,
+  dustResults: ComplianceEvaluatableActivity[],
+  sensitiveReceptors: SensitiveReceptor[] = [],
+  supabaseAdmin?: SupabaseClient,
   persistPm10Reading: boolean = false
-): Promise<DustComplianceResult[]> {
-  const rowsById = new Map<string, any>((dustRows || []).map((row) => [String(row.id), row]));
+): Promise<DustComplianceResultItem[]> {
+  const rowsById = new Map<string, DustActivityRow>((dustRows || []).map((row) => [String(row.id), row]));
 
   // جلب مجمَّع لآخر قرار مسجَّل لكل activity_group_id ذي صلة — نداء واحد
   // بدل نداء لكل نشاط، بنفس روح تجميع resolveFreshProjectDevice. يُستخدم
@@ -831,14 +1199,30 @@ export async function computeDustComplianceResults(
     const groupIds = Array.from(
       new Set((dustResults || []).map((r) => r.activityGroupId).filter(Boolean))
     );
-    if (groupIds.length > 0) {
+    if (groupIds.length > 0 && project?.id) {
       try {
+        // خطأ أمني معماري مكتشَف ومُصلَح (القسم 5.7/12.2 من "دليل الإصلاح
+        // الجذري لمنظومة مرقاب" — "العزل بين المشاريع غير مكتمل"): كان هذا
+        // الاستعلام يفلتر بـactivity_group_id وحده — قيمة حرة من العميل قد
+        // تتصادم بين مشروعين، فيُقرأ "القرار السابق" لنشاط من مشروع مختلف
+        // تماماً هنا (يؤثر على منطق استئناف/استقرار الإيقاف في engine.ts).
+        // project.id ثابت طوال هذه الدالة (استدعاء واحد لمشروع واحد فقط)،
+        // فإضافة .eq('project_id', ...) كافية ولا تحتاج مفتاحاً مركّباً هنا.
         const { data } = await supabaseAdmin
           .from('current_dust_compliance_decisions')
           .select('activity_group_id, decision, updated_at, stopped_since, pending_resume_since, deciding_rule_code')
+          .eq('project_id', project.id)
           .in('activity_group_id', groupIds);
+        type PreviousComplianceDecisionRow = {
+          activity_group_id: string;
+          decision: string;
+          updated_at: string;
+          stopped_since: string | null;
+          pending_resume_since: string | null;
+          deciding_rule_code: string | null;
+        };
         previousDecisionsByGroup = new Map(
-          (data || []).map((row: any) => [
+          ((data as PreviousComplianceDecisionRow[]) || []).map((row) => [
             row.activity_group_id,
             {
               decision: row.decision,
@@ -873,7 +1257,8 @@ export async function computeDustComplianceResults(
         // ذلك القرار السابق هنا صحيح لأن التقييم الحالي لا يمثّل استمراراً
         // فعلياً لتلك الحالة أصلاً (توقّع منفصل تماماً، لا مصدره جهاز).
         const mode = determineFinalDecisionMode(r.startIso);
-        const previousDecision = mode === 'PLANNING' ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
+        const previousDecision =
+          mode === 'PLANNING' || !r.activityGroupId ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
@@ -976,7 +1361,7 @@ export async function computeDustComplianceResults(
       }
     })
   );
-  return results.filter(Boolean) as any[];
+  return results.filter((r): r is NonNullable<typeof r> => r !== null);
 }
 
 // -----------------------------------------------------------------------
@@ -993,14 +1378,20 @@ export async function computeDustComplianceResults(
 // applyComplianceGateToAei بنفس منطق البوابة الإجمالية) — بطلب صريح بدمج
 // كل قرارات الامتثال في مؤشر AEI الموحّد بدل عرضها كقرار امتثال خام منفصل
 // لكل ساعة في الواجهة (راجع applyComplianceGateToAei أدناه).
+export interface HourlyComplianceEntry {
+  time: string;
+  result: DustComplianceResult;
+  aei: AeiEvaluationResult;
+}
+
 export function computeDustComplianceHourly(
-  dustRows: any[],
-  project: any,
-  dustResults: any[],
-  sensitiveReceptors: any[] = []
-): Map<string, any[]> {
-  const rowsById = new Map<string, any>((dustRows || []).map((row) => [String(row.id), row]));
-  const byActivityId = new Map<string, any[]>();
+  dustRows: DustActivityRow[],
+  project: ProjectRow,
+  dustResults: DustResultItem[],
+  sensitiveReceptors: SensitiveReceptor[] = []
+): Map<string, HourlyComplianceEntry[]> {
+  const rowsById = new Map<string, DustActivityRow>((dustRows || []).map((row) => [String(row.id), row]));
+  const byActivityId = new Map<string, HourlyComplianceEntry[]>();
 
   (dustResults || []).forEach((r) => {
     try {
@@ -1012,9 +1403,9 @@ export function computeDustComplianceHourly(
       // توفرت (الحالة الشائعة)، وإلا نافذة النشاط المجدولة فقط — بدل ترك
       // الشبكة فارغة بصمت متى فشل جلب توقعات كامل اليوم أو وقعت خارج
       // ساعات الدوام الافتراضية بينما نافذة النشاط نفسها متوفرة.
-      const hourly: any[] =
+      const hourly: DviHourlyEvaluation[] =
         r.hourlyForecasts && r.hourlyForecasts.length > 0
-          ? r.hourlyForecasts
+          ? (r.hourlyForecasts as DviHourlyEvaluation[])
           : (r.windowEval?.hourly ?? []);
       if (hourly.length === 0) return;
 
@@ -1054,7 +1445,35 @@ export function computeDustComplianceHourly(
 // يستبدل منطق applyComplianceGateToAei اليدوي القديم (AEI_COMPLIANCE_
 // CLOSED_DECISIONS/AEI_COMPLIANCE_RESTRICTED_DECISIONS) بقراءة قرار decideFinal
 // المُجمَّع فعلياً، بدل إعادة اشتقاق نفس الأولويات هنا مرة أخرى.
-function applyFinalDecisionToAei(aei: AeiEvaluationResult, decision: FinalDecision, compliance: DustComplianceResult | null): AeiEvaluationResult {
+export function applyFinalDecisionToAei(aei: AeiEvaluationResult, decision: FinalDecision, compliance: DustComplianceResult | null): AeiEvaluationResult {
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "ابغاه يطلع نفس كذا في
+  // التوقعات المستقبلية... بدون قرار، فقط تنبيه إذا الأجواء مناسبة أو لا"):
+  // decideFinal بوضع PLANNING (راجع الفرع الكامل أعلى الدالة في
+  // final-decision-engine/engine.ts) يُنتج operationalDecision='ALLOW' أو
+  // 'MONITOR' فقط (لا MANDATORY_STOP/RESTRICT إطلاقاً — توقّع طقس لساعة لم
+  // تأتِ بعد لا يجوز أن يصدر قراراً ملزماً). بلا هذا الفرع هنا، حالة
+  // "MONITOR" لتوقّع PLANNING غير مناسب كانت تسقط في فرع "MONITOR && score
+  // > CAP" العام أدناه (نفس الفرع المخصَّص لتقييد امتثال تنظيمي حقيقي حي)،
+  // فتُعرض بلون أحمر "تقييد تشغيلي — امتثال تنظيمي" بدل الأصفر التوعوي
+  // الصحيح "تنبيه: أجواء متوقعة غير مناسبة" الظاهر فعلياً في البطاقة
+  // الرئيسية لنفس النشاط عبر decision.shortReasonAr/decisionLabelAr نفسها
+  // — تناقض بصري مباشر بين البطاقة الإجمالية وشبكة الساعات القادمة لنفس
+  // النشاط ونفس decideFinal بالضبط. يُفحَص أولاً (قبل حتى HOLD_FOR_VERIFICATION
+  // تحته) لأن "تحقق ميداني" لا معنى له لساعة توقّعية لم تبدأ بعد أصلاً.
+  if (decision.mode === 'PLANNING') {
+    const isFavorable = decision.operationalDecision === 'ALLOW';
+    return {
+      ...aei,
+      status: isFavorable ? aei.status : 'MONITOR',
+      statusLabelAr: decision.decisionLabelAr,
+      color: isFavorable ? aei.color : 'YELLOW',
+      shortReasonAr: decision.shortReasonAr,
+      recommendationAr: isFavorable
+        ? aei.recommendationAr
+        : 'راجع توقعات الساعات القادمة قبل البدء — لا قرار ملزم على توقّع طقس، فقط تنبيه توعوي.',
+    };
+  }
+
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "لا زالت المشكلة"، بعد أول
   // إصلاح لهذا الفرع): هذا الفحص كان يأتي *بعد* شرط aei.closedByGate أدناه
   // — فحين dvi.mandatoryStop=true (PM10 لحظي تقديري من Open-Meteo تجاوز
@@ -1199,7 +1618,7 @@ function applyFinalDecisionToAei(aei: AeiEvaluationResult, decision: FinalDecisi
 // compliance وحدها بلا أي DVI إطلاقاً). قيم ALLOW محايدة تماماً تضمن أن
 // decideFinal يعتمد على compliance وحدها كمصدر قرار حاسم هنا — نفس السلوك
 // الفعلي القديم بالضبط.
-const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
+export const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
   indicatorType: 'DVI',
   dviBase: 0,
   score: 0,
@@ -1209,10 +1628,34 @@ const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
   decisionLabelAr: 'مسموح — تشغيل اعتيادي',
   mandatoryStop: false,
   overridable: true,
-  channels: {} as any,
-  multipliers: {} as any,
+  stopBasis: 'NONE',
+  confirmationState: 'NOT_APPLICABLE',
+  channels: {
+    visibilityRisk: 0,
+    particulateRisk: 0,
+    windTransportRisk: 0,
+    dustForecastRisk: 0,
+    siteDustGenerationRisk: 0,
+    adjustedSiteDustGenerationRisk: 0,
+    externalHazard: 0,
+    internalDustHazard: 0,
+  },
+  multipliers: {
+    activitySensitivity: 0,
+    activitySensitivityMultiplier: 1,
+    receptorSensitivity: 0,
+    downwindAlignment: 0,
+    distanceFactor: 1,
+    receptorImpact: 0,
+    receptorSensitivityMultiplier: 1,
+    mitigationScore: 0,
+    mitigationReductionFactor: 1,
+  },
   visibilityKm: null,
   effectiveWindKmh: null,
+  // بديل ALLOW محايد تماماً (راجع تعليق الدالة أعلاه) — لا جهاز فعلي هنا
+  // إطلاقاً، فلا معنى لـ"جهاز مرتبط لكن الرؤية غائبة" تحديداً.
+  visibilityDataMissing: false,
   visibilityConstraint: false,
   mandatoryVisibilityStop: false,
   respiratoryPPERequired: false,
@@ -1229,16 +1672,18 @@ const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
   validUntil: new Date().toISOString(),
 };
 
-// يحوّل صفاً مخزَّناً من final_decisions إلى الحقول الأربعة الوحيدة التي
-// تقرأها applyFinalDecisionToAei فعلياً من decision (operationalDecision/
-// shortReasonAr/decisionLabelAr/pendingConfirmation) — لا حاجة لبناء
-// FinalDecision كامل هنا، فقط الحقول المُستهلَكة فعلياً.
-function storedRowToPartialFinalDecision(row: any): Pick<FinalDecision, 'operationalDecision' | 'shortReasonAr' | 'decisionLabelAr' | 'pendingConfirmation'> {
+// يحوّل صفاً مخزَّناً من final_decisions (StoredFinalDecisionRow، راجع
+// تعريفها أعلى الملف) إلى الحقول الخمسة الوحيدة التي تقرأها
+// applyFinalDecisionToAei فعلياً من decision (operationalDecision/
+// shortReasonAr/decisionLabelAr/pendingConfirmation/mandatoryStop) — لا
+// حاجة لبناء FinalDecision كامل هنا، فقط الحقول المُستهلَكة فعلياً.
+function storedRowToPartialFinalDecision(row: StoredFinalDecisionRow): Pick<FinalDecision, 'operationalDecision' | 'shortReasonAr' | 'decisionLabelAr' | 'pendingConfirmation' | 'mandatoryStop'> {
   return {
     operationalDecision: row.operational_decision,
-    shortReasonAr: row.short_reason_ar,
+    shortReasonAr: row.short_reason_ar ?? '',
     decisionLabelAr: row.decision_label_ar,
     pendingConfirmation: row.pending_confirmation,
+    mandatoryStop: row.mandatory_stop,
   };
 }
 
@@ -1261,16 +1706,56 @@ function storedRowToPartialFinalDecision(row: any): Pick<FinalDecision, 'operati
 // عند غيابه (اختبارات هذا الملف، أو نشاط جديد لم يُقيَّم بعد عبر evaluate/
 // route.ts فيغيب صفه المخزَّن) يبقى fallback الحساب المحلي كما كان — فشل
 // آمن، لا يُسقِط تعديل AEI بأكمله.
-export function applyComplianceGatesToDustAei(dustResults: any[], finalDecisionsByGroup?: Map<string, any>): void {
-  (dustResults || []).forEach((r: any) => {
+//
+// خطأ أمني معماري مكتشَف ومُصلَح (القسم 5.7/12.2 من "دليل الإصلاح الجذري
+// لمنظومة مرقاب"): finalDecisionsByGroup مصدرها الآن fetchLatestFinalDecisions
+// بمفتاح مركّب activityDecisionKey(projectId, activityGroupId) — projectId
+// إلزامي هنا (لا اختياري) ليُبنى نفس المفتاح المركّب عند القراءة، فلا يُقرأ
+// أبداً قرار من مشروع آخر ولو تصادف activityGroupId بين مشروعين.
+// شكل أدنى يكفي applyComplianceGatesToDustAei فعلياً (لا تحتاج activityType/
+// hourlyForecasts/unitReceptors التي يحملها DustResultItem الكامل) — يتيح
+// لمستهلكين اختباريين بناء حمولة مبسَّطة (activityId/aei/compliance فقط)
+// بلا اضطرار لملء كل حقول DustResultItem الإنتاجية غير المُستخدَمة هنا.
+export interface AeiGateableActivity {
+  activityId: string;
+  activityGroupId?: string;
+  startIso?: string;
+  aei: AeiEvaluationResult;
+  compliance?: DustComplianceResult | null;
+  windowEval?: { worst: DviEvaluationResult };
+}
+
+export function applyComplianceGatesToDustAei(
+  dustResults: AeiGateableActivity[],
+  projectId: string,
+  finalDecisionsByGroup?: Map<string, StoredFinalDecisionRow>
+): void {
+  (dustResults || []).forEach((r) => {
     if (!r?.aei) return;
-    const storedRow = finalDecisionsByGroup?.get(r.activityGroupId);
-    let decision: Pick<FinalDecision, 'operationalDecision' | 'shortReasonAr' | 'decisionLabelAr' | 'pendingConfirmation'>;
+    // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "شوف الفرق" (البانر العلوي
+    // عرض "تنبيه: أجواء متوقعة غير مناسبة" أصفر بشكل صحيح، بينما بطاقة AEI
+    // الرئيسية تحتها مباشرة — لنفس النشاط، نفس اللحظة، نفس PM10=1557.2 —
+    // عرضت مرة "قابل للتنفيذ مع مراقبة" برتقالي ومرة "بيئة العمل غير آمنة
+    // (مغلق)" أسود، بين تحميلين متتاليين لنفس الصفحة). السبب: mode لم تكن
+    // تُحسَب هنا إطلاقاً (buildFinalDecisionInput تثبت دائماً على الافتراضي
+    // LIVE_OPERATIONAL بصرف النظر عن توقيت النشاط الفعلي — نفس العلة
+    // الموثَّقة في computeUnifiedActivityDecision أدناه، لم تُصلَح هنا سابقاً)،
+    // وstoredRow (قرار final_decisions مخزَّن من دورة سابقة، قد تكون
+    // LIVE_OPERATIONAL محسوبة قبل أن يدخل النشاط PLANNING أو بعده) كان
+    // يُستخدَم مباشرة بلا أي فحص لتطابقه مع وضع النشاط الحالي — فيتذبذب
+    // العرض بين "حساب حي PLANNING صحيح" و"قرار مخزَّن قديم مختلف السياق"
+    // حسب توقيت الطلب فقط.
+    const mode = determineFinalDecisionMode(r.startIso);
+    const storedRow =
+      mode === 'PLANNING' || !r.activityGroupId
+        ? undefined
+        : finalDecisionsByGroup?.get(activityDecisionKey(projectId, r.activityGroupId));
+    let decision: Pick<FinalDecision, 'mode' | 'operationalDecision' | 'shortReasonAr' | 'decisionLabelAr' | 'pendingConfirmation' | 'mandatoryStop'>;
     if (storedRow) {
-      decision = storedRowToPartialFinalDecision(storedRow);
+      decision = { ...storedRowToPartialFinalDecision(storedRow), mode };
     } else {
       const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
-      const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, r.compliance ?? null, r.aei);
+      const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, r.compliance ?? null, r.aei, mode);
       decision = decideFinal(finalInput);
     }
     r.aei = applyFinalDecisionToAei(r.aei, decision as FinalDecision, r.compliance ?? null);
@@ -1429,9 +1914,9 @@ export function computePendingResumeSince(
 }
 
 export async function persistDustComplianceEvaluations(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string,
-  complianceResults: any[],
+  complianceResults: DustComplianceResultItem[],
   triggeredBy: string
 ): Promise<string[]> {
   const failedActivityIds: string[] = [];
@@ -1444,6 +1929,7 @@ export async function persistDustComplianceEvaluations(
         const { data: existing } = await supabaseAdmin
           .from('current_dust_compliance_decisions')
           .select('decision, updated_at, stopped_since, pending_resume_since')
+          .eq('project_id', projectId)
           .eq('activity_group_id', r.activityGroupId)
           .maybeSingle();
 
@@ -1468,7 +1954,7 @@ export async function persistDustComplianceEvaluations(
           .select('id')
           .single();
 
-        const evaluationId = (inserted as any)?.id;
+        const evaluationId = (inserted as { id: string } | null)?.id;
         if (!evaluationId) {
           failedActivityIds.push(r.activityId);
           if (insertError) console.error(`فشل حفظ تقييم امتثال الغبار للنشاط ${r.activityId}:`, insertError);
@@ -1503,6 +1989,7 @@ export async function persistDustComplianceEvaluations(
           await supabaseAdmin
             .from('current_dust_compliance_decisions')
             .update(complianceRow)
+            .eq('project_id', projectId)
             .eq('activity_group_id', r.activityGroupId)
             .eq('updated_at', existing.updated_at);
         } else {
@@ -1556,10 +2043,10 @@ export function determineFinalDecisionMode(
 }
 
 export async function persistFinalDecisions(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string,
-  dustResults: any[],
-  complianceResults: any[],
+  dustResults: DustResultItem[],
+  complianceResults: DustComplianceResultItem[],
   // activityId التي فشل حفظ DVI و/أو compliance الخاص بها في مرحلة سابقة
   // (persistDustEvaluations/persistDustComplianceEvaluations) — نقطة الفشل
   // المتسقة C-04: لا معنى لحفظ FinalDecision لنشاط فشلت مرحلته السابقة
@@ -1568,13 +2055,13 @@ export async function persistFinalDecisions(
   // final_decisions يشير ضمنياً إلى وجودهما). راجع تعليق evaluate/route.ts.
   skipActivityIds: Set<string> = new Set()
 ): Promise<string[]> {
-  const complianceByActivityId = new Map<string, any>(
-    (complianceResults || []).map((r: any) => [r.activityId, r])
+  const complianceByActivityId = new Map<string, DustComplianceResultItem>(
+    (complianceResults || []).map((r) => [r.activityId, r])
   );
   const failedActivityIds: string[] = [];
 
   await Promise.all(
-    (dustResults || []).map(async (r: any) => {
+    (dustResults || []).map(async (r) => {
       try {
         if (!r?.aei) return;
         if (skipActivityIds.has(r.activityId)) {
@@ -1651,32 +2138,63 @@ export interface ActivityDecisionPersistResult {
   conflict: boolean;
 }
 
+// القسم 20 (Definition of Done، بند 7) — بصمة SHA-256 حتمية لمدخلات
+// decideFinal الفعلية (dvi + compliance + mode) التي أنتجت هذا القرار
+// بالضبط — لا تعتمد على ترتيب مفاتيح الكائن (JSON.stringify(input, sortedKeys))
+// حتى تبقى نفس المدخلات تُنتج نفس البصمة دائماً بصرف النظر عن ترتيب بناء
+// الكائن في الكود. لا تُخزَّن المدخلات الكاملة هنا (موجودة أصلاً كـjsonb في
+// dust_evaluations/dust_compliance_evaluations) — فقط بصمة تسمح بإثبات
+// التطابق لاحقاً.
+export function computeInputSnapshotHash(dvi: DviEvaluationResult, compliance: DustComplianceResult | null, mode: string): string {
+  const sortedStringify = (value: unknown): string =>
+    JSON.stringify(value, (_key, val) => {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        return Object.keys(val)
+          .sort()
+          .reduce((acc: Record<string, unknown>, k) => {
+            acc[k] = (val as Record<string, unknown>)[k];
+            return acc;
+          }, {});
+      }
+      return val;
+    });
+  const snapshot = sortedStringify({ dvi, compliance, mode });
+  return createHash('sha256').update(snapshot).digest('hex');
+}
+
 export async function persistActivityDecisionsAtomic(
-  supabaseAdmin: any,
+  supabaseAdmin: SupabaseClient,
   projectId: string,
-  dustResults: any[],
-  complianceResults: any[],
+  dustResults: DustResultItem[],
+  complianceResults: DustComplianceResultItem[],
   dviTriggeredBy: string,
-  complianceTriggeredBy: string
+  complianceTriggeredBy: string,
+  // القسم 20، بند 7 — يُنسَخ حرفياً إلى final_decisions.evaluation_run_id
+  // وdecision_alert_outbox.evaluation_run_id لكل نشاط يُحفَظ في هذه الدورة
+  // (evaluateProject ينشئ صف evaluation_runs واحداً لكل دورة تقييم كاملة،
+  // راجع evaluateProject.ts). null للاستدعاءات القديمة/الاختبارات التي لا
+  // تُنشئ evaluation_runs بعد (توافقي، فشل آمن).
+  evaluationRunId: string | null = null
 ): Promise<ActivityDecisionPersistResult[]> {
-  const complianceByActivityId = new Map<string, any>(
-    (complianceResults || []).map((r: any) => [r.activityId, r])
+  const complianceByActivityId = new Map<string, DustComplianceResultItem>(
+    (complianceResults || []).map((r) => [r.activityId, r])
   );
 
   const results = await Promise.all(
-    (dustResults || []).map(async (r: any): Promise<ActivityDecisionPersistResult> => {
+    (dustResults || []).map(async (r): Promise<ActivityDecisionPersistResult> => {
       const base = { activityId: r.activityId, dviPersisted: false, compliancePersisted: false, finalDecisionPersisted: false, failed: false, conflict: false };
       try {
         // ------------------------------------------------------------
         // 1) DVI — نفس منطق shouldSkipPersist في persistDustEvaluations
         // ------------------------------------------------------------
         const worst = r.windowEval?.worst;
-        let dviPayload: { result: any; expectedUpdatedAt: string | null } | null = null;
+        let dviPayload: { result: DviEvaluationResult; expectedUpdatedAt: string | null } | null = null;
         if (worst) {
           const newDviDecision = worst.decisionCategory ?? 'UNKNOWN';
           const { data: existingDvi } = await supabaseAdmin
             .from('current_dust_decisions')
             .select('decision, updated_at')
+            .eq('project_id', projectId)
             .eq('activity_group_id', r.activityGroupId)
             .maybeSingle();
           const skipDvi = shouldSkipPersist(existingDvi?.decision, existingDvi?.updated_at, newDviDecision);
@@ -1691,7 +2209,7 @@ export async function persistActivityDecisionsAtomic(
         // ------------------------------------------------------------
         const complianceEntry = complianceByActivityId.get(r.activityId);
         let compliancePayload:
-          | { result: any; expectedUpdatedAt: string | null; stoppedSince: string | null; pendingResumeSince: string | null }
+          | { result: DustComplianceResult; expectedUpdatedAt: string | null; stoppedSince: string | null; pendingResumeSince: string | null }
           | null = null;
         if (complianceEntry) {
           const newComplianceDecision = complianceEntry.result?.decisionCategory ?? 'UNKNOWN';
@@ -1699,6 +2217,7 @@ export async function persistActivityDecisionsAtomic(
           const { data: existingCompliance } = await supabaseAdmin
             .from('current_dust_compliance_decisions')
             .select('decision, updated_at, stopped_since, pending_resume_since')
+            .eq('project_id', projectId)
             .eq('activity_group_id', r.activityGroupId)
             .maybeSingle();
 
@@ -1722,14 +2241,18 @@ export async function persistActivityDecisionsAtomic(
         // 3) FinalDecision — نفس منطق persistFinalDecisions، يُحسب فقط إن
         //    وُجد AEI (نفس شرط `if (!r?.aei) return;` الأصلي)
         // ------------------------------------------------------------
-        let finalDecisionPayload: { decision: FinalDecision; evaluatedAt: string } | null = null;
+        let finalDecisionPayload: { decision: FinalDecision; evaluatedAt: string; inputSnapshotHash: string } | null = null;
         if (r?.aei) {
           const compliance: DustComplianceResult | null = complianceEntry?.result ?? null;
           const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
           const mode = determineFinalDecisionMode(r.startIso);
           const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, compliance, r.aei, mode);
           const decision = decideFinal(finalInput);
-          finalDecisionPayload = { decision, evaluatedAt: finalInput.evaluatedAt };
+          finalDecisionPayload = {
+            decision,
+            evaluatedAt: finalInput.evaluatedAt,
+            inputSnapshotHash: computeInputSnapshotHash(dvi, compliance, mode),
+          };
         }
 
         if (!dviPayload && !compliancePayload && !finalDecisionPayload) return base;
@@ -1753,6 +2276,9 @@ export async function persistActivityDecisionsAtomic(
 
           p_final_decision: finalDecisionPayload?.decision ?? null,
           p_final_evaluated_at: finalDecisionPayload?.evaluatedAt ?? null,
+
+          p_evaluation_run_id: evaluationRunId,
+          p_input_snapshot_hash: finalDecisionPayload?.inputSnapshotHash ?? null,
         });
 
         if (error || !data?.[0]) {
@@ -1791,28 +2317,58 @@ export async function persistActivityDecisionsAtomic(
   return results;
 }
 
-// يجلب آخر قرار نهائي مخزَّن لكل activity_group_id مطلوب — القراءة
-// الموحَّدة الوحيدة التي يجب أن تستخدمها كل الواجهات (البانر، الخريطة
-// العامة، لوحة المراقب، مولّد التنبيهات) بدل إعادة استدعاء decideFinal
-// محلياً بمدخلات قد تختلف طفيفاً بين مسار وآخر. يُرجع خريطة فارغة بصمت عند
-// أي فشل استعلام (فشل آمن — المستدعي يتعامل مع الغياب كـ"لا قرار مخزَّن
-// بعد"، لا خطأً قاطعاً).
+// مفتاح مركّب (project_id:activity_group_id) — القسم 12.2 من "دليل الإصلاح
+// الجذري لمنظومة مرقاب": activity_group_id وحده غير كافٍ كمفتاح خريطة عبر
+// مشاريع متعددة (يقبله العميل، فيمكن أن يتكرر بين مشروعين). يُصدَّر لأن
+// المستدعيات (dashboard/global، viewer/dashboard، decisions/route.ts) تبني
+// نفس المفتاح بنفسها لقراءة الخريطة المُعادة.
+export function activityDecisionKey(projectId: string, activityGroupId: string): string {
+  return `${projectId}:${activityGroupId}`;
+}
+
+// يجلب آخر قرار نهائي مخزَّن لكل (project_id, activity_group_id) مطلوب —
+// القراءة الموحَّدة الوحيدة التي يجب أن تستخدمها كل الواجهات (البانر،
+// الخريطة العامة، لوحة المراقب، مولّد التنبيهات) بدل إعادة استدعاء
+// decideFinal محلياً بمدخلات قد تختلف طفيفاً بين مسار وآخر.
+//
+// خطأ أمني معماري مكتشَف ومُصلَح (القسم 5.7/12 من "دليل الإصلاح الجذري
+// لمنظومة مرقاب" — "العزل بين المشاريع غير مكتمل بعد المفتاح المركب"):
+// كانت هذه الدالة تفلتر بـ.in('activity_group_id', ids) وحده، بلا
+// .eq('project_id', ...) — فمشروعان يشتركان بنفس activity_group_id (قيمة
+// حرة من العميل، راجع api/dust-profiles/route.ts) كانا يمكن أن يتبادلا
+// قرار أحدهما ضمن خريطة الآخر لدى أي مستدعٍ متعدد المشاريع (dashboard/
+// global، viewer/dashboard، decisions/route.ts). الإصلاح: targets يحمل
+// (projectId, activityGroupId) صراحة لكل عنصر، والخريطة المُعادة مفتاحها
+// المركّب activityDecisionKey(projectId, activityGroupId) — لا يمكن لصف من
+// مشروع آخر أن يُقرأ أو يُخلَط تحت مفتاح نشاط لا يخصه.
+//
+// يُرجع خريطة فارغة بصمت عند أي فشل استعلام (فشل آمن — المستدعي يتعامل مع
+// الغياب كـ"لا قرار مخزَّن بعد"، لا خطأً قاطعاً).
 export async function fetchLatestFinalDecisions(
-  supabaseAdmin: any,
-  activityGroupIds: string[]
-): Promise<Map<string, any>> {
-  const map = new Map<string, any>();
-  const ids = Array.from(new Set((activityGroupIds || []).filter(Boolean)));
-  if (ids.length === 0) return map;
+  supabaseAdmin: SupabaseClient,
+  targets: { projectId: string; activityGroupId: string }[]
+): Promise<Map<string, StoredFinalDecisionRow>> {
+  const map = new Map<string, StoredFinalDecisionRow>();
+  const validTargets = (targets || []).filter((t) => t.projectId && t.activityGroupId);
+  if (validTargets.length === 0) return map;
+
+  const projectIds = Array.from(new Set(validTargets.map((t) => t.projectId)));
+  const groupIds = Array.from(new Set(validTargets.map((t) => t.activityGroupId)));
+  const wantedKeys = new Set(validTargets.map((t) => activityDecisionKey(t.projectId, t.activityGroupId)));
 
   try {
     const { data } = await supabaseAdmin
       .from('final_decisions')
       .select('*')
-      .in('activity_group_id', ids)
+      .in('project_id', projectIds)
+      .in('activity_group_id', groupIds)
       .order('created_at', { ascending: false });
-    for (const row of data || []) {
-      if (!map.has(row.activity_group_id)) map.set(row.activity_group_id, row);
+    for (const row of (data ?? []) as (StoredFinalDecisionRow & { activity_group_id: string; project_id: string })[]) {
+      const key = activityDecisionKey(row.project_id, row.activity_group_id);
+      // .in() على العمودين معاً هو تقاطع (OR منطقي بين قيم كل عمود على
+      // حدة، لا AND على الزوج) — التحقق من wantedKeys هنا يفرض تطابق
+      // الزوج (project_id, activity_group_id) فعلياً معاً، لا أي تقاطع.
+      if (wantedKeys.has(key) && !map.has(key)) map.set(key, row);
     }
   } catch {
     // فشل الاستعلام لا يُسقط المستدعي — نفس مبدأ resolveFreshProjectDevice.
@@ -1833,26 +2389,53 @@ export async function fetchLatestFinalDecisions(
 // requiredActions/triggeredRules).
 //
 // current_dust_compliance_decisions هو "current pointer" الفعلي (مفتاحه
-// الأساسي activity_group_id، صف واحد لكل نشاط) — أسرع من ترتيب
-// dust_compliance_evaluations بالكامل بـcreated_at، ونفس الصف الذي يقرأه
-// resolveResumeState/computeDustComplianceResults كـ"القرار السابق". يُرجع
-// خريطة فارغة بصمت عند أي فشل استعلام (فشل آمن — المستدعي يتعامل مع الغياب
-// كـ"لا قرار مخزَّن بعد"، لا خطأً قاطعاً — نفس مبدأ fetchLatestFinalDecisions).
+// الأساسي المركّب الآن project_id+activity_group_id، راجع 202608030006) —
+// أسرع من ترتيب dust_compliance_evaluations بالكامل بـcreated_at، ونفس
+// الصف الذي يقرأه resolveResumeState/computeDustComplianceResults كـ"القرار
+// السابق". يُرجع خريطة فارغة بصمت عند أي فشل استعلام (فشل آمن — المستدعي
+// يتعامل مع الغياب كـ"لا قرار مخزَّن بعد"، لا خطأً قاطعاً — نفس مبدأ
+// fetchLatestFinalDecisions).
+//
+// خطأ أمني معماري مكتشَف ومُصلَح (نفس ثغرة fetchLatestFinalDecisions
+// أعلاه بالضبط — القسم 5.7/12.2): targets يحمل (projectId, activityGroupId)
+// صراحة، والخريطة المُعادة مفتاحها المركّب activityDecisionKey.
+interface CurrentComplianceDecisionPointerRow {
+  project_id: string;
+  activity_group_id: string;
+  latest_evaluation_id: string | null;
+}
+
+interface DustComplianceEvaluationRow {
+  id: string;
+  result: DustComplianceResult;
+}
+
 export async function fetchLatestStoredCompliance(
-  supabaseAdmin: any,
-  activityGroupIds: string[]
+  supabaseAdmin: SupabaseClient,
+  targets: { projectId: string; activityGroupId: string }[]
 ): Promise<Map<string, DustComplianceResult>> {
   const map = new Map<string, DustComplianceResult>();
-  const ids = Array.from(new Set((activityGroupIds || []).filter(Boolean)));
-  if (ids.length === 0) return map;
+  const validTargets = (targets || []).filter((t) => t.projectId && t.activityGroupId);
+  if (validTargets.length === 0) return map;
+
+  const projectIds = Array.from(new Set(validTargets.map((t) => t.projectId)));
+  const groupIds = Array.from(new Set(validTargets.map((t) => t.activityGroupId)));
+  const wantedKeys = new Set(validTargets.map((t) => activityDecisionKey(t.projectId, t.activityGroupId)));
 
   try {
     const { data: currentRows } = await supabaseAdmin
       .from('current_dust_compliance_decisions')
-      .select('activity_group_id, latest_evaluation_id')
-      .in('activity_group_id', ids);
+      .select('project_id, activity_group_id, latest_evaluation_id')
+      .in('project_id', projectIds)
+      .in('activity_group_id', groupIds);
+    // .in() على عمودين معاً تقاطع (لا AND على الزوج) — نفس التحفظ الموثَّق
+    // في fetchLatestFinalDecisions أعلاه؛ الفلترة الفعلية بالزوج تحدث عبر
+    // wantedKeys أدناه.
+    const rows = ((currentRows ?? []) as CurrentComplianceDecisionPointerRow[]).filter((r) =>
+      wantedKeys.has(activityDecisionKey(r.project_id, r.activity_group_id))
+    );
     const evaluationIds = Array.from(
-      new Set((currentRows || []).map((r: any) => r.latest_evaluation_id).filter(Boolean))
+      new Set(rows.map((r) => r.latest_evaluation_id).filter((id): id is string => Boolean(id)))
     );
     if (evaluationIds.length === 0) return map;
 
@@ -1861,12 +2444,12 @@ export async function fetchLatestStoredCompliance(
       .select('id, result')
       .in('id', evaluationIds);
     const resultById = new Map<string, DustComplianceResult>(
-      (evalRows || []).map((r: any) => [r.id, r.result as DustComplianceResult])
+      ((evalRows ?? []) as DustComplianceEvaluationRow[]).map((r) => [r.id, r.result])
     );
 
-    for (const row of currentRows || []) {
-      const result = resultById.get(row.latest_evaluation_id);
-      if (result) map.set(row.activity_group_id, result);
+    for (const row of rows) {
+      const result = row.latest_evaluation_id ? resultById.get(row.latest_evaluation_id) : undefined;
+      if (result) map.set(activityDecisionKey(row.project_id, row.activity_group_id), result);
     }
   } catch {
     // فشل الاستعلام لا يُسقط المستدعي — نفس مبدأ fetchLatestFinalDecisions.

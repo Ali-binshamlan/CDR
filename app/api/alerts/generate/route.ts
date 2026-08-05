@@ -45,12 +45,12 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
-import type { DustEngineInput } from '@/app/utils/dust-engine/types';
+import type { DustEngineInput, ReceptorType, DistanceBand } from '@/app/utils/dust-engine/types';
 import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { evaluateDustCompliance, buildComplianceContext, buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
-import { resolveFreshProjectDevice, fetchPm10SustainedStatus, fetchLatestFinalDecisions, fetchLatestStoredCompliance, type FreshDeviceReading, type Pm10SustainedStatus } from '@/app/lib/dustEvaluation';
+import { resolveFreshProjectDevice, fetchPm10SustainedStatus, fetchLatestFinalDecisions, fetchLatestStoredCompliance, activityDecisionKey, type FreshDeviceReading, type Pm10SustainedStatus } from '@/app/lib/dustEvaluation';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
@@ -61,16 +61,45 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
+// حقول project_dust_profiles المقروءة فعلياً في buildDustEngineInputSrv —
+// نفس الصف الخام المُستعلَم في checkDustActivities أدناه (profiles!inner
+// أضافت أيضاً projects، غير مستخدَمة هنا).
+interface DustProfileRow {
+  activity_type?: string | null;
+  has_earthworks?: boolean | null;
+  internal_dirt_roads?: boolean | null;
+  heavy_equipment_movement?: boolean | null;
+  loose_materials?: boolean | null;
+  large_exposed_area?: boolean | null;
+  dry_surface?: boolean | null;
+  surface_wet?: boolean | null;
+  watering_available?: boolean | null;
+  stockpiles_covered?: boolean | null;
+  speed_limit_applied?: boolean | null;
+  wheel_wash_available?: boolean | null;
+  dust_screens_available?: boolean | null;
+  field_monitoring_available?: boolean | null;
+  receptor_type?: ReceptorType | null;
+  receptor_distance?: DistanceBand | null;
+  receptor_is_downwind?: boolean | null;
+  visible_dust_plume_reported?: boolean | null;
+  open_concrete_pour?: boolean | null;
+  onsite_visibility_m?: number | null;
+  onsite_pm10?: number | null;
+  onsite_pm25?: number | null;
+  device_id?: string | null;
+}
+
 // نفس دالة بناء مدخلات محرك الغبار المستخدمة في صفحة تفاصيل المشروع
 // (منسوخة هنا لضمان تطابق الحساب - يفضّل نقلها لملف مشترك لاحقاً).
 function buildDustEngineInputSrv(
-  dbProfile: any,
+  dbProfile: DustProfileRow,
   lat: number,
   lon: number,
   freshDevice?: FreshDeviceReading | null
 ): DustEngineInput {
   return {
-    activityType: (dbProfile.activity_type as any) || 'GENERAL_OUTDOOR_WORK',
+    activityType: (dbProfile.activity_type as DustEngineInput['activityType']) || 'GENERAL_OUTDOOR_WORK',
     latitude: lat,
     longitude: lon,
     site: {
@@ -87,8 +116,8 @@ function buildDustEngineInputSrv(
       wheelWashAvailable: Boolean(dbProfile.wheel_wash_available),
       dustScreensAvailable: Boolean(dbProfile.dust_screens_available),
       fieldMonitoringAvailable: Boolean(dbProfile.field_monitoring_available),
-      receptorType: (dbProfile.receptor_type as any) || 'NONE_NEARBY',
-      receptorDistance: (dbProfile.receptor_distance as any) || 'OVER_500M',
+      receptorType: dbProfile.receptor_type || 'NONE_NEARBY',
+      receptorDistance: dbProfile.receptor_distance || 'OVER_500M',
       receptorIsDownwind: Boolean(dbProfile.receptor_is_downwind),
       visibleDustPlumeReported: Boolean(dbProfile.visible_dust_plume_reported),
       openConcretePour: Boolean(dbProfile.open_concrete_pour),
@@ -132,7 +161,7 @@ function computeWindow(plannedDate: string | null, plannedTime: string | null, d
 // forBeforeAlerts=false → فقط غير المغلقة (DURING قد يُعاد فتحه لو
 //                          أُغلق سابقاً وتكرر تجاوز الحد لاحقاً)
 async function alertExists(activitySource: string, activityId: string, kind: string, onlyOpen: boolean) {
-  let query = supabaseAdmin
+  const query = supabaseAdmin
     .from('alerts')
     .select('id, state')
     .eq('activity_source', activitySource)
@@ -141,7 +170,7 @@ async function alertExists(activitySource: string, activityId: string, kind: str
   const { data } = await query;
   if (!data || data.length === 0) return false;
   if (!onlyOpen) return true;
-  return data.some((a: any) => a.state !== 'CLOSED');
+  return data.some((a: { state: string }) => a.state !== 'CLOSED');
 }
 
 // يُغلق تلقائياً أي تنبيه مفتوح من "أنواع القراءة الحية" (SAFETY_BREACH،
@@ -187,7 +216,7 @@ async function autoCloseResolvedAlerts(
   if (!openAlerts || openAlerts.length === 0) return;
 
   await supabaseAdmin.from('alert_state_events').insert(
-    openAlerts.map((a: any) => ({
+    openAlerts.map((a: { id: string; state: string }) => ({
       alert_id: a.id,
       previous_state: a.state,
       new_state: 'CLOSED',
@@ -454,20 +483,27 @@ export async function checkDustActivities(projectIds?: string[]) {
       // تقييم امتثال مخزَّن لهذا النشاط (أول تقييم قبل أي استدعاء GET/evaluate
       // سابق) — فشل آمن، لا يُسقِط التنبيه بأكمله. بمجرد وجود صف evaluate/
       // route.ts واحد، هذا الفرع لا يُستخدَم مرة أخرى لنفس النشاط.
-      const storedComplianceMap = profile.activity_group_id
-        ? await fetchLatestStoredCompliance(supabaseAdmin, [profile.activity_group_id])
-        : new Map<string, DustComplianceResult>();
-      const storedCompliance = profile.activity_group_id ? storedComplianceMap.get(profile.activity_group_id) : undefined;
+      const storedComplianceMap =
+        profile.activity_group_id && profile.project_id
+          ? await fetchLatestStoredCompliance(supabaseAdmin, [
+              { projectId: profile.project_id, activityGroupId: profile.activity_group_id },
+            ])
+          : new Map<string, DustComplianceResult>();
+      const storedCompliance =
+        profile.activity_group_id && profile.project_id
+          ? storedComplianceMap.get(activityDecisionKey(profile.project_id, profile.activity_group_id))
+          : undefined;
 
       let compliance: DustComplianceResult;
       if (storedCompliance) {
         compliance = storedCompliance;
       } else {
         let previousDecision: { decision: string; updated_at: string } | null = null;
-        if (profile.activity_group_id) {
+        if (profile.activity_group_id && profile.project_id) {
           const { data: prevRow } = await supabaseAdmin
             .from('current_dust_compliance_decisions')
             .select('decision, updated_at, stopped_since')
+            .eq('project_id', profile.project_id)
             .eq('activity_group_id', profile.activity_group_id)
             .maybeSingle();
           previousDecision = prevRow
@@ -496,8 +532,10 @@ export async function checkDustActivities(projectIds?: string[]) {
       // فقط إن لم يوجد بعد أي قرار مخزَّن لهذا النشاط (أول تقييم قبل أي
       // استدعاء GET/evaluate سابق) — فشل آمن، لا يُسقِط التنبيه بأكمله.
       const activityGroupId = profile.activity_group_id || `dust-${profile.id}`;
-      const storedFinalDecisions = await fetchLatestFinalDecisions(supabaseAdmin, [activityGroupId]);
-      const storedDecision = storedFinalDecisions.get(activityGroupId);
+      const storedFinalDecisions = await fetchLatestFinalDecisions(supabaseAdmin, [
+        { projectId: profile.project_id, activityGroupId },
+      ]);
+      const storedDecision = storedFinalDecisions.get(activityDecisionKey(profile.project_id, activityGroupId));
       const finalDecision = storedDecision
         ? {
             mandatoryStop: storedDecision.mandatory_stop as boolean,
@@ -522,7 +560,18 @@ export async function checkDustActivities(projectIds?: string[]) {
       const safetyBreachKind = isWorstRightNow ? 'SAFETY_BREACH' : 'FORECAST_WARNING';
       const dustKind = isWorstRightNow ? 'DUST' : 'FORECAST_WARNING';
 
-      if (finalDecision.mandatoryStop) {
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 6 (متابعة): "مساران
+      // متنافسان لإنشاء التنبيه: Outbox جديد ذرّي مع القرار، ومسار مباشر
+      // قديم عبر checkDustActivities يعيد استدعاء Open-Meteo"): SAFETY_BREACH
+      // الحيّة (isWorstRightNow=true فقط — لا FORECAST_WARNING، فرع مختلف
+      // تماماً بلا مقابل في Outbox) تُنشَأ الآن ذرّياً مع القرار نفسه عبر
+      // decision_alert_outbox/persist_activity_decision_atomic (202608040012/
+      // 202608040026) — بضمان idempotency حقيقي (unique index) وقفل عبر
+      // create_alert_atomic، لا alertExists/insertAlert المنفصلين هنا (سباق
+      // فعلي، بلا قفل ذرّي). إنشاؤها هنا أيضاً كان يعني مساراً منافساً قد
+      // ينتج نص/توقيت مختلفَين طفيفاً عن نفس الحالة بالضبط. لا تغيير على
+      // FORECAST_WARNING (توقّع مستقبلي، لا مقابل له في Outbox إطلاقاً).
+      if (finalDecision.mandatoryStop && !isWorstRightNow) {
         if (!(await alertExists('dust', profile.id, safetyBreachKind, true))) {
           await insertAlert({
             projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
@@ -532,7 +581,7 @@ export async function checkDustActivities(projectIds?: string[]) {
             recommendedAction: finalDecision.decisionLabelAr,
           });
         }
-      } else if (worst.score >= 65) {
+      } else if (!finalDecision.mandatoryStop && worst.score >= 65) {
         // نطاق "65 فأكثر" مطابق حرفياً لبداية نطاق RED في RISK_ZONES
         // المستخدم بنفس القيم داخل DustWidgetCard (65-84 = RED، 85-100 =
         // DARK_RED)، فيغطي "RED وما فوق" تماماً كما هو موصوف أعلى الملف.
@@ -615,7 +664,17 @@ export async function checkDustActivities(projectIds?: string[]) {
       if (complianceAlertKind) stillActiveKinds.add(complianceAlertKind);
       await autoCloseResolvedAlerts('dust', profile.id, stillActiveKinds);
 
-      if (complianceAlertKind) {
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 6 (متابعة): "مساران
+      // متنافسان لإنشاء التنبيه"): COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION
+      // تُنشآن الآن ذرّياً مع القرار عبر decision_alert_outbox (نفس منطق
+      // SAFETY_BREACH أعلاه بالضبط — راجع تعليقه) — لا insertAlert المنفصل
+      // هنا لهذين النوعين تحديداً. COMPLIANCE_ADVISORY يبقى بلا تغيير (تنبيه
+      // استباقي، لا مقابل له في Outbox — Outbox يُنشئ فقط عند SAFETY_BREACH/
+      // COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION الفعلية، لا الاحترازية).
+      // stillActiveKinds أعلاه يبقى يتضمن complianceAlertKind بصرف النظر —
+      // ضروري لمنع autoCloseResolvedAlerts من إغلاق تنبيه أنشأه Outbox خطأً
+      // لمجرد أن هذا المولّد لم يعد "ينشئه" بنفسه.
+      if (complianceAlertKind === 'COMPLIANCE_ADVISORY') {
         if (!(await alertExists('dust', profile.id, complianceAlertKind, true))) {
           // نص القاعدة المخالفة الفعلي مباشرة (shortReasonAr، مثال: "مخالفة
           // تنظيمية: تركيز PM10 (1665.2 ميكروجرام/م³) تجاوز حد المخالفة
@@ -625,20 +684,10 @@ export async function checkDustActivities(projectIds?: string[]) {
           // نص القاعدة (لا حقل رقمي منفصل موحّد عبر كل القواعد الـ44)،
           // فبطاقة "ما الذي حدث بالضبط" في alerts/page.tsx (تعرض alert.message
           // دائماً) تكفي وحدها بلا تكرار بطاقة مقياس فارغة/مضلِّلة بجانبها.
-          //
-          // viewerMessage: غلاف رسمي موحَّد لجهة الرصد تحديداً (طلب صريح من
-          // المستخدم) — فقط لـCOMPLIANCE_VIOLATION (المخالفة الفعلية)، لا
-          // COMPLIANCE_RESTRICTION/ADVISORY. نفس تفاصيل shortReasonAr الرقمية
-          // بلا تغيير، فقط بصياغة مختلفة عن نص صاحب المشروع التقني.
-          const viewerMessage =
-            complianceAlertKind === 'COMPLIANCE_VIOLATION'
-              ? `يُفيد هذا الإشعار بأنه تم رصد مخالفة تنظيمية في موقع ${profile.projects?.name || 'غير محدد'}.\nتفاصيل المخالفة: ${compliance.shortReasonAr}`
-              : undefined;
           await insertAlert({
             projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
             timing: 'DURING', kind: complianceAlertKind,
             message: compliance.shortReasonAr,
-            viewerMessage,
             recommendedAction: compliance.requiredActions.join('، ') || compliance.shortReasonAr,
           });
         }
@@ -671,7 +720,7 @@ export async function GET(request: Request) {
   try {
     await checkDustActivities();
     return NextResponse.json({ ok: true, checkedAt: new Date().toISOString() });
-  } catch (error: any) {
+  } catch (error) {
     return NextResponse.json({ ok: false, error: safeErrorResponse(error, 'alert generation failed') }, { status: 500 });
   }
 }

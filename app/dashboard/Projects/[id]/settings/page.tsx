@@ -7,8 +7,34 @@ import { toast } from 'react-hot-toast';
 import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar, Wifi } from 'lucide-react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
+import { useNow } from '@/app/lib/useNow';
 import { isValidPhoneNumber, parsePhoneNumberFromString } from 'libphonenumber-js';
 import ConnectProviderModal from './ConnectProviderModal';
+
+// تنقّل صلب حقيقي (يفرض تحميل الصفحة بالكامل من الصفر، لا Router Cache
+// جزئي — راجع تعليق الاستدعاء أدناه للسبب الكامل). دالة معرَّفة خارج
+// المكوّن عمداً: React Compiler يرفض التعديل المباشر على window.location
+// من كود داخل مكوّن/hook (يُعامله كقيمة خارجية غير قابلة للتعديل من هناك)؛
+// هذا الفصل يبقي التعديل الفعلي خارج نطاق تحليل المكوّن تماماً.
+function hardNavigate(href: string): void {
+  window.location.href = href;
+}
+
+// يستخرج رسالة خطأ آمنة للعرض من استجابة apiClient (axios) الفاشلة، أو من
+// أي خطأ JS عادي — بلا افتراض شكل any. نفس منطق app/login/page.tsx.
+function getApiErrorMessage(error: unknown): string | undefined {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    typeof (error as { response?: unknown }).response === 'object'
+  ) {
+    const response = (error as { response?: { data?: { error?: string } } }).response;
+    if (response?.data?.error) return response.data.error;
+  }
+  if (error instanceof Error) return error.message;
+  return undefined;
+}
 
 // أيام الأسبوع بمعرّفات ثابتة تطابق getDay() (0=الأحد ... 6=السبت)
 const WEEK_DAYS: { id: string; label: string }[] = [
@@ -54,6 +80,9 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
   const [mounted, setMounted] = useState(false);
+  // "الآن" لعرض عمر آخر قراءة جهاز (deviceReadingAgeLabel/isDeviceReadingStale
+  // أدناه) — تحديث كل دقيقة يكفي لهذا العرض التحذيري فقط.
+  const nowTs = useNow(60000);
   const [submitStage, setSubmitStage] = useState<string>('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // يصبح true بعد أول محاولة حفظ — يُستخدم لتلوين حدود الحقول الإلزامية
@@ -123,20 +152,22 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
   const fetchDevices = async () => {
     setDevicesLoading(true);
     try {
+      // خطأ أداء مكتشَف: كان يُطلَق طلب GET منفصل لكل جهاز (N+1) لجلب حالة
+      // اتصال المزوّد الخاص به — /devices الآن يُرجع connectionsByDeviceId
+      // مجمَّعة بطلب شبكة واحد إضافي فقط (راجع devices/route.ts).
       const { data } = await apiClient.get(`/projects/${projectId}/devices`);
       const list: ProjectDevice[] = data?.devices || [];
       setDevices(list);
 
-      // جلب حالة ربط مصدر بيانات خارجي لكل جهاز — فشل جهاز واحد لا يوقف
-      // عرض البقية (Promise.allSettled بدل Promise.all).
-      const results = await Promise.allSettled(
-        list.map((d) => apiClient.get(`/projects/${projectId}/devices/${d.id}/provider-connection`))
-      );
+      const connectionsByDeviceId: Record<
+        string,
+        { provider: string; vendor_station_name: string | null; last_pull_at: string | null; last_pull_success: boolean | null; last_pull_error: string | null }
+      > = data?.connectionsByDeviceId || {};
       const next: Record<string, ProviderConnectionInfo> = {};
-      results.forEach((r, i) => {
-        if (r.status === 'fulfilled' && r.value.data?.connection) {
-          const c = r.value.data.connection;
-          next[list[i].id] = {
+      for (const d of list) {
+        const c = connectionsByDeviceId[d.id];
+        if (c) {
+          next[d.id] = {
             provider: c.provider,
             vendorStationName: c.vendor_station_name,
             lastPullAt: c.last_pull_at,
@@ -144,7 +175,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
             lastPullError: c.last_pull_error,
           };
         }
-      });
+      }
       setConnections(next);
     } catch (error) {
       console.error('فشل جلب أجهزة الرصد:', error);
@@ -154,7 +185,11 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
   };
 
   useEffect(() => {
-    fetchDevices();
+    // جدولة عبر microtask بدل استدعاء fetchDevices مباشرة من جسم الـEffect —
+    // نفس الإصلاح المُطبَّق في بقية هذا الملف/الصفحات المشابهة.
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) fetchDevices(); });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -187,8 +222,8 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       setNewDeviceLng('');
       await fetchDevices();
       toast.success('تم إنشاء الجهاز بنجاح');
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'فشل إنشاء الجهاز');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل إنشاء الجهاز');
     } finally {
       setAddingDevice(false);
     }
@@ -199,8 +234,8 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       await apiClient.patch(`/projects/${projectId}/devices/${device.id}`, { is_active: !device.is_active });
       await fetchDevices();
       toast.success(device.is_active ? 'تم إلغاء الجهاز' : 'تم إعادة تفعيل الجهاز');
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'فشل تحديث حالة الجهاز');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل تحديث حالة الجهاز');
     }
   };
 
@@ -209,14 +244,14 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       await apiClient.delete(`/projects/${projectId}/devices/${device.id}`);
       await fetchDevices();
       toast.success('تم حذف الجهاز');
-    } catch (error: any) {
-      toast.error(error?.response?.data?.error || 'فشل حذف الجهاز');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل حذف الجهاز');
     }
   };
 
   const deviceReadingAgeLabel = (isoTime: string | null): string => {
     if (!isoTime) return 'لا توجد قراءات بعد';
-    const ageMinutes = Math.round((Date.now() - new Date(isoTime).getTime()) / 60000);
+    const ageMinutes = Math.round((nowTs - new Date(isoTime).getTime()) / 60000);
     if (ageMinutes < 1) return 'الآن';
     if (ageMinutes < 60) return `منذ ${ageMinutes} د`;
     const hours = Math.round(ageMinutes / 60);
@@ -226,7 +261,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
   // للعرض التحذيري فقط هنا (القيمة الفعلية المستخدمة في التقييم محسوبة في السيرفر).
   const isDeviceReadingStale = (isoTime: string | null): boolean => {
     if (!isoTime) return true;
-    return (Date.now() - new Date(isoTime).getTime()) / 60000 > 20;
+    return (nowTs - new Date(isoTime).getTime()) / 60000 > 20;
   };
 
   // ورديات عمل حقيقية (اختياري) — نفس بنية create/page.tsx بالضبط، لكن
@@ -311,16 +346,21 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
   });
 
   useEffect(() => {
-    setMounted(true);
+    // جدولة عبر microtask بدل استدعاء setMounted مباشرة من جسم الـEffect —
+    // تعديل حالة متزامن مباشر داخل Effect (راجع نفس الإصلاح في fetchHistory
+    // بصفحة readings/page.tsx وfetchDashboardData بصفحة [id]/page.tsx).
+    let cancelledMount = false;
+    void Promise.resolve().then(() => { if (!cancelledMount) setMounted(true); });
 
     // 1. جلب بيانات المشروع عبر الـ API
     const fetchProjectData = async () => {
       try {
-        // apiClient (axios) يرفق تلقائياً Authorization: Bearer <session
-        // token> — المسار يتطلب مصادقة وتحقق ملكية فعلياً (راجع GET في
-        // app/api/projects/[projectId]/route.ts)، بعكس fetch() الخام السابق
-        // الذي كان يعمل بلا أي هوية إطلاقاً.
-        const { data } = await apiClient.get(`/projects/${projectId}`);
+        // مسار خفيف مخصص (settings-summary، لا GET /projects/[projectId]
+        // الثقيل) — خطأ أداء مكتشَف: صفحة الإعدادات كانت تدفع تكلفة حساب
+        // DVI/امتثال/OSM الكاملة (المخصصة للوحة المشروع) رغم أنها لا تعرض
+        // أياً من تلك النتائج، فقط حقول نموذج بسيطة من صف projects الخام.
+        // راجع app/api/projects/[projectId]/settings-summary/route.ts.
+        const { data } = await apiClient.get(`/projects/${projectId}/settings-summary`);
         const projectData = data.project; // استخراج كائن المشروع من الاستجابة
 
         if (projectData) {
@@ -387,7 +427,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
           // project_shifts المنفصل، مرتّبة بـ sort_order أصلاً.
           if (Array.isArray(projectData.shifts)) {
             setShifts(
-              projectData.shifts.map((s: any) => ({
+              projectData.shifts.map((s: { id?: string; name?: string; start_time?: string; end_time?: string }) => ({
                 id: s.id,
                 name: s.name || '',
                 start_time: s.start_time ? String(s.start_time).slice(0, 5) : '',
@@ -407,7 +447,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
             circleRadiusM: zone.circleRadiusM,
           });
         }
-      } catch (error: any) {
+      } catch (error) {
         toast.error('حدث خطأ أثناء جلب بيانات المشروع');
         console.error(error);
       } finally {
@@ -416,7 +456,10 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     };
 
     fetchProjectData();
-    return () => setMounted(false);
+    return () => {
+      cancelledMount = true;
+      setMounted(false);
+    };
   }, [projectId]);
 
   const handleProjectChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -585,7 +628,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     setSubmitStage('جاري حفظ التعديلات...');
 
     try {
-      const updatePayload: Record<string, any> = {
+      const updatePayload: Record<string, unknown> = {
         ...projectForm,
         site_area_m2: projectForm.site_area_m2 === '' ? null : Number(projectForm.site_area_m2),
         daily_truck_movements: projectForm.daily_truck_movements === '' ? null : Number(projectForm.daily_truck_movements),
@@ -614,10 +657,23 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       await apiClient.patch(`/projects/${projectId}`, updatePayload);
 
       toast.success('تم تحديث بيانات المشروع بنجاح');
-      router.push(`/dashboard/Projects/${projectId}`);
+      // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — "ساعات العمل ما تنحفظ"، ثم
+      // تأكيد أن حتى اسم المشروع/العميل لا يتحدثان: المشكلة عامة لكل الحقول،
+      // لا خاصة بحقل واحد): هذه الصفحة "use client" بالكامل، وبيانات
+      // المشروع تُجلَب داخل useEffect بلا اعتماد على تغيّر projectId (mount
+      // واحد فقط). العودة لاحقاً لصفحة الإعدادات (بعد الانتقال لصفحة
+      // التفاصيل) كانت تُعيد استخدام Next.js Router Cache لنفس المكوّن بدل
+      // إعادة تركيبه (remount) وإعادة تنفيذ ذلك الـuseEffect من الصفر — فتظل
+      // القيم القديمة معروضة رغم نجاح الحفظ الفعلي بقاعدة البيانات.
+      // router.refresh() وحدها لا تكفي (تُبطل كاش Server Components فقط، لا
+      // تفرض remount على مكوّن client). الحل القاطع: تنقّل صلب حقيقي
+      // (window.location.href) يفرض تحميل الصفحة بالكامل من الصفر — لا mount
+      // جزئي، فتُجلب بيانات المشروع الطازجة دائماً عند أي عودة لاحقة.
+      hardNavigate(`/dashboard/Projects/${projectId}`);
+      return;
 
-    } catch (error: any) {
-      toast.error(`فشل التحديث: ${error?.response?.data?.error || error.message}`);
+    } catch (error) {
+      toast.error(`فشل التحديث: ${getApiErrorMessage(error) || 'خطأ غير متوقع'}`);
     } finally {
       setLoading(false);
       setSubmitStage('');
@@ -635,8 +691,8 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       await apiClient.delete(`/projects/${projectId}`);
       toast.success('تمت أرشفة المشروع بنجاح');
       router.push('/dashboard/Projects');
-    } catch (error: any) {
-      const message = error?.response?.data?.error || error?.message || 'فشل الأرشفة من الخادم';
+    } catch (error) {
+      const message = getApiErrorMessage(error) || 'فشل الأرشفة من الخادم';
       toast.error(`فشل الأرشفة: ${message}`);
       setLoading(false);
     }
@@ -786,7 +842,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                   <label className={labelClass}>حركة الشاحنات اليومية (رحلة/يوم)</label>
                   <input type="number" name="daily_truck_movements" placeholder="مثال: 20" value={projectForm.daily_truck_movements} onChange={handleComplianceFieldChange} className={complianceInputClass(projectForm.daily_truck_movements === '')} />
                   {attemptedSubmit && projectForm.daily_truck_movements === '' && (
-                    <p className="text-[10px] font-bold text-red-500 mt-1">حقل إلزامي تنظيمياً — تركه فارغاً يُبقي المشروع "غير مصنَّف".</p>
+                    <p className="text-[10px] font-bold text-red-500 mt-1">حقل إلزامي تنظيمياً — تركه فارغاً يُبقي المشروع &quot;غير مصنَّف&quot;.</p>
                   )}
                 </div>
                 <div>
@@ -1016,7 +1072,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                 <div className="mb-4 rounded-lg p-3 border bg-amber-50 border-amber-200">
                   <p className="text-[11px] font-bold text-amber-700 flex items-center gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5" />
-                    {stationCount} من {minStations} جهاز رصد نشط مطلوب لفئة هذا المشروع — لن يمكن حفظ حالة "جاري" حتى يكتمل العدد.
+                    {stationCount} من {minStations} جهاز رصد نشط مطلوب لفئة هذا المشروع — لن يمكن حفظ حالة &quot;جاري&quot; حتى يكتمل العدد.
                   </p>
                 </div>
               );

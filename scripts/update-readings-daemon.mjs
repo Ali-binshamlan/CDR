@@ -48,6 +48,9 @@ function wobble(base, amplitude, tickCount) {
 
 function buildPayload(tickCount) {
   return {
+    eventId: `daemon-${Date.now()}-${tickCount}`,
+    sequence: tickCount,
+    observedAt: new Date().toISOString(),
     windSpeedKmh: Math.max(0, wobble(12, 8, tickCount)),
     windGustKmh: Math.max(0, wobble(18, 10, tickCount)),
     windDirectionDeg: Math.round((180 + tickCount * 15) % 360),

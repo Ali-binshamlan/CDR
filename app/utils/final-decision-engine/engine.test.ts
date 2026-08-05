@@ -25,10 +25,32 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
     decisionLabelAr: 'تقييد النشاط وتفعيل أنظمة الرش',
     mandatoryStop: false,
     overridable: true,
-    channels: {} as any,
-    multipliers: {} as any,
+    stopBasis: 'NONE',
+    confirmationState: 'NOT_APPLICABLE',
+    channels: {
+      visibilityRisk: 0,
+      particulateRisk: 0,
+      windTransportRisk: 0,
+      dustForecastRisk: 0,
+      siteDustGenerationRisk: 0,
+      adjustedSiteDustGenerationRisk: 0,
+      externalHazard: 0,
+      internalDustHazard: 0,
+    },
+    multipliers: {
+      activitySensitivity: 0,
+      activitySensitivityMultiplier: 1,
+      receptorSensitivity: 0,
+      downwindAlignment: 0,
+      distanceFactor: 1,
+      receptorImpact: 0,
+      receptorSensitivityMultiplier: 1,
+      mitigationScore: 0,
+      mitigationReductionFactor: 1,
+    },
     visibilityKm: 5,
     effectiveWindKmh: 10,
+    visibilityDataMissing: false,
     visibilityConstraint: false,
     mandatoryVisibilityStop: false,
     respiratoryPPERequired: false,
@@ -123,13 +145,18 @@ describe('decideFinal — invariant: لا يجوز أن يكون mandatoryStop=t
 });
 
 describe('decideFinal — نقل سيناريوهات computeUnifiedActivityDecision القديمة', () => {
+  // dvi=ALLOW صراحة هنا (بدل baseDvi() الافتراضي RESTRICT) — هذا الاختبار
+  // يعزل مسار نص/قرار ALLOW_WITH_CONTROLS القادم من compliance وحده؛ القسم
+  // 18.1 يجعل DVI RESTRICT يفوز بترتيب أعلى من MONITOR لو تُرك الافتراضي،
+  // فيخفي ما يقيسه هذا الاختبار فعلياً.
   it('ALLOW_WITH_CONTROLS (PM10-EARLY-WARNING-007) يظهر نصه بدل نص DVI العام', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW' });
     const compliance = baseCompliance({
       decisionCategory: 'ALLOW_WITH_CONTROLS',
       decisionLabelAr: 'مسموح مع ضوابط تحكم إضافية',
       shortReasonAr: 'تنبيه استباقي: تركيز PM10 (300 ميكروجرام/م³) يقترب من حد المخالفة (340 ميكروجرام/م³)',
     });
-    const r = decideFinal(input({ compliance }));
+    const r = decideFinal(input({ dvi, compliance }));
     expect(r.shortReasonAr).toBe('تنبيه استباقي: تركيز PM10 (300 ميكروجرام/م³) يقترب من حد المخالفة (340 ميكروجرام/م³)');
     expect(r.decisionLabelAr).toBe('مسموح مع ضوابط تحكم إضافية');
     expect(r.mandatoryStop).toBe(false);
@@ -149,7 +176,11 @@ describe('decideFinal — نقل سيناريوهات computeUnifiedActivityDeci
     expect(r.operationalDecision).toBe('RESTRICT');
   });
 
-  it('FIELD_VERIFICATION_REQUIRED يظهر نصه الخاص → operationalDecision=MONITOR', () => {
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "التحقق الميداني ما زال يتحول
+  // إلى مراقبة"): FIELD_VERIFICATION_REQUIRED كان يُطابَق MONITOR (نفس
+  // مستوى الاحتراز العادي) رغم أن اسم الفئة نفسه يقول "يتطلب تحقق ميداني
+  // قبل الاستمرار" — نفس دلالة HOLD_FOR_VERIFICATION بالضبط.
+  it('FIELD_VERIFICATION_REQUIRED يظهر نصه الخاص → operationalDecision=HOLD_FOR_VERIFICATION وregulatoryFinding=NOT_DETERMINABLE', () => {
     const compliance = baseCompliance({
       decisionCategory: 'FIELD_VERIFICATION_REQUIRED',
       decisionLabelAr: 'يتطلب تحقق ميداني قبل الاستمرار',
@@ -158,34 +189,37 @@ describe('decideFinal — نقل سيناريوهات computeUnifiedActivityDeci
     const r = decideFinal(input({ compliance }));
     expect(r.shortReasonAr).toBe('لم يتم تحديد نقطة دخول المشروع على الخريطة');
     expect(r.decisionLabelAr).toBe('يتطلب تحقق ميداني قبل الاستمرار');
+    expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+    expect(r.regulatoryFinding).toBe('NOT_DETERMINABLE');
+    expect(r.mandatoryStop).toBe(false);
   });
 
-  it('امتثال ALLOW نظيف → يبقى نص DVI كما هو', () => {
+  // القسم 18.1 من "دليل الإصلاح الجذري لمنظومة مرقاب": DVI RESTRICT +
+  // Compliance ALLOW → RESTRICT مباشرة (لا MONITOR) — baseDvi() الافتراضي
+  // decisionCategory='RESTRICT' تحديداً.
+  it('امتثال ALLOW نظيف مع DVI RESTRICT → يبقى نص DVI كما هو وoperationalDecision=RESTRICT (القسم 18.1)', () => {
     const r = decideFinal(input());
     expect(r.shortReasonAr).toBe(baseDvi().shortReason);
     expect(r.decisionLabelAr).toBe(baseDvi().decisionLabelAr);
-    expect(r.operationalDecision).toBe('MONITOR'); // dvi.decisionCategory=RESTRICT هنا تحديداً
+    expect(r.operationalDecision).toBe('RESTRICT');
   });
 });
 
-// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "بعض قرارات DVI من نوع
-// STOP_DUST_GENERATING_ACTIVITIES أو STOP_VISIBILITY_DEPENDENT_ACTIVITIES
-// لا يغطيها تسلسل القرار بالكامل، وقد تسقط إلى ALLOW"): applyMandatoryGates
-// في dust-engine/engine.ts تبدأ decision=baseDecision (من baseDecisionFromLevel
-// عند level=RED/DARK_RED/BLACK لنشاط غبار/رؤية) — إن لم يُفعِّل أي فرع لاحق
-// mandatoryStop=true صراحة (ذلك يحدث فقط من بوابات صريحة كرؤية<0.5كم أو
-// PM10>340 أو رياح≥55)، فـdvi.mandatoryStop تبقى false بينما
-// dvi.decisionCategory='STOP_DUST_GENERATING_ACTIVITIES'/'STOP_VISIBILITY_
-// DEPENDENT_ACTIVITIES' فعلياً. فرع MONITOR في decideFinal كان يُعدِّد
-// dvi.decisionCategory بالاسم (ALLOW_WITH_MONITORING/RESTRICT/RESTRICT_SEVERE)
-// بلا هاتين الفئتين إطلاقاً — فتسقط النتيجة لـelse النهائي: operationalDecision
-// ='ALLOW' رغم أن DVI نفسه يقول "أوقف الأعمال المثيرة للغبار/المعتمدة على
-// الرؤية". الإصلاح: أُضيفت الفئتان لنفس فرع MONITOR بجانب RESTRICT_SEVERE —
-// aei-engine/tables.ts (AEI_CAPPING_DVI_DECISIONS) يضعهما فعلياً في نفس
-// مجموعة RESTRICT_SEVERE/RESTRICT (سقف AEI واحد للأربع)، فهذا يطابق تصنيفاً
-// موجوداً بالفعل في مكان آخر من النظام، لا اختراعاً جديداً.
+// القسم 18.1 من "دليل الإصلاح الجذري لمنظومة مرقاب" (مصفوفة اختبارات
+// القبول): STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPENDENT_
+// ACTIVITIES → PROTECTIVE_STOP (غير إلزامي)، لا MONITOR. الإصلاح الجزئي
+// السابق (مراجعة كود خبير خارجي — منع سقوطهما لـALLOW) كان يطابقهما
+// MONITOR وحده، معتمداً على محرك امتثال منفصل ليكتشف نفس الخطر الفيزيائي
+// الذي رصده DVI بالفعل قبل أن يُنتج تقييداً حقيقياً — تناقض مباشر مع جدول
+// 18.1 الذي يطلب PROTECTIVE_STOP مباشرة من DVI نفسه، بلا انتظار compliance.
+// applyMandatoryGates في dust-engine/engine.ts تبدأ decision=baseDecision
+// (من baseDecisionFromLevel عند level=RED/DARK_RED/BLACK لنشاط غبار/رؤية) —
+// إن لم يُفعِّل أي فرع لاحق mandatoryStop=true صراحة (ذلك يحدث فقط من بوابات
+// صريحة كرؤية<0.5كم أو PM10>340 أو رياح≥55)، فـdvi.mandatoryStop تبقى false
+// بينما dvi.decisionCategory تبقى STOP_* فعلياً — خطر فيزيائي حقيقي غير
+// إلزامي بعد، تماماً ما يصفه PROTECTIVE_STOP.
 describe('decideFinal — STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPENDENT_ACTIVITIES بلا mandatoryStop', () => {
-  it('dvi.decisionCategory=STOP_DUST_GENERATING_ACTIVITIES مع mandatoryStop=false + compliance=ALLOW → operationalDecision=MONITOR (لا ALLOW)', () => {
+  it('dvi.decisionCategory=STOP_DUST_GENERATING_ACTIVITIES مع mandatoryStop=false + compliance=ALLOW → operationalDecision=PROTECTIVE_STOP (القسم 18.1)', () => {
     const dvi = baseDvi({
       decisionCategory: 'STOP_DUST_GENERATING_ACTIVITIES',
       decisionLabelAr: 'إيقاف الأعمال المثيرة للغبار',
@@ -196,12 +230,12 @@ describe('decideFinal — STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPEND
     });
     const r = decideFinal(input({ dvi }));
 
-    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.operationalDecision).toBe('PROTECTIVE_STOP');
     expect(r.mandatoryStop).toBe(false);
     expect(r.operationalDecision).not.toBe('ALLOW');
   });
 
-  it('dvi.decisionCategory=STOP_VISIBILITY_DEPENDENT_ACTIVITIES مع mandatoryStop=false + compliance=ALLOW → operationalDecision=MONITOR (لا ALLOW)', () => {
+  it('dvi.decisionCategory=STOP_VISIBILITY_DEPENDENT_ACTIVITIES مع mandatoryStop=false + compliance=ALLOW → operationalDecision=PROTECTIVE_STOP (القسم 18.1)', () => {
     const dvi = baseDvi({
       decisionCategory: 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES',
       decisionLabelAr: 'إيقاف الأنشطة المعتمدة على الرؤية',
@@ -212,7 +246,7 @@ describe('decideFinal — STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPEND
     });
     const r = decideFinal(input({ dvi }));
 
-    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.operationalDecision).toBe('PROTECTIVE_STOP');
     expect(r.mandatoryStop).toBe(false);
     expect(r.operationalDecision).not.toBe('ALLOW');
   });
@@ -520,6 +554,48 @@ describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهم
     expect(r.mandatoryStop).toBe(true);
     expect(r.level).toBe('BLACK');
   });
+
+  // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "ليه ما يقول تنبيه استباقي
+  // الأجواء غير المناسبة... اتوقع انه يستثني قاعدة PM10". قبل هذا الإصلاح،
+  // dvi.decisionCategory=ALLOW (رياح/رؤية فيزيائية جيدة) كان يكفي وحده
+  // لإظهار "مسموح — تشغيل اعتيادي" في وضع PLANNING، حتى لو كان تركيز PM10
+  // المتوقّع (compliance.evidence.pm10UgM3) ضخماً جداً (أكبر من حد المخالفة
+  // 340 بأضعاف) — لا خاص بنشاط معيّن (محطة الخلط)، بل لكل الأنشطة في وضع
+  // PLANNING على حد سواء.
+  it('dvi.decisionCategory=ALLOW لكن compliance.evidence.pm10UgM3 مرتفع جداً + mode=PLANNING → "لا تصلح" أصفر، لا "مسموح" أخضر', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, pm10UgM3: 1315 },
+    });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance }));
+
+    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.level).toBe('YELLOW');
+    expect(r.decisionLabelAr).toBe('تنبيه: أجواء متوقعة غير مناسبة');
+    expect(r.shortReasonAr).toContain('1315');
+    expect(r.shortReasonAr).toContain('تركيز الغبار');
+    expect(r.mandatoryStop).toBe(false); // لا إيقاف إلزامي فعلي على تقدير، مهما بلغت القيمة
+  });
+
+  it('dvi.decisionCategory=ALLOW وpm10UgM3 تحت حد التحذير (251) + mode=PLANNING → يبقى "مسموح" أخضر', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, pm10UgM3: 100 },
+    });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance }));
+
+    expect(r.operationalDecision).toBe('ALLOW');
+    expect(r.level).toBe('GREEN');
+    expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+  });
+
+  it('compliance غائب تماماً (undefined) + dvi.decisionCategory=ALLOW → يبقى "مسموح" (فشل آمن، لا افتراض PM10 مرتفع بلا دليل)', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance: null }));
+
+    expect(r.operationalDecision).toBe('ALLOW');
+    expect(r.level).toBe('GREEN');
+  });
 });
 
 describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظيف يُخفي تنبيه مراقبة DVI مصدره الرياح فقط', () => {
@@ -559,7 +635,10 @@ describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظي
   // يكن مختبَراً، وهو بالضبط ما وصفه الخبير. الإصلاح: القمع الآن مقصور على
   // dvi.decisionCategory==='ALLOW_WITH_MONITORING' تحديداً (القصد الأصلي —
   // راجع عنوان describe أعلى هذا الملف)، لا أي قرار DVI آخر.
-  it('DVI=RESTRICT_SEVERE بسبب رؤية حرجة (لا رياح) + isEnclosedOperation=true وcompliance=ALLOW → لا يُقمَع، يبقى MONITOR', () => {
+  // القسم 18.1: RESTRICT_SEVERE → RESTRICT مباشرة (بدل MONITOR) بعد إصلاح
+  // dviCandidate — الاختبار يبقى يثبت "لا قمع" (ليس ALLOW)، فقط القيمة
+  // المتوقعة تغيّرت لتطابق 18.1.
+  it('DVI=RESTRICT_SEVERE بسبب رؤية حرجة (لا رياح) + isEnclosedOperation=true وcompliance=ALLOW → لا يُقمَع، يبقى RESTRICT (القسم 18.1)', () => {
     const compliance = baseCompliance({ decisionCategory: 'ALLOW', isEnclosedOperation: true });
     const dvi = baseDvi({
       decisionCategory: 'RESTRICT_SEVERE',
@@ -570,13 +649,13 @@ describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظي
     });
     const r = decideFinal(input({ dvi, compliance }));
 
-    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.operationalDecision).toBe('RESTRICT');
     expect(r.operationalDecision).not.toBe('ALLOW');
     expect(r.level).toBe('RED');
     expect(r.decisionLabelAr).toBe('تقييد شديد — رؤية حرجة');
   });
 
-  it('DVI=STOP_VISIBILITY_DEPENDENT_ACTIVITIES + isEnclosedOperation=true وcompliance=ALLOW → لا يُقمَع، يبقى MONITOR', () => {
+  it('DVI=STOP_VISIBILITY_DEPENDENT_ACTIVITIES + isEnclosedOperation=true وcompliance=ALLOW → لا يُقمَع، يبقى PROTECTIVE_STOP (القسم 18.1)', () => {
     const compliance = baseCompliance({ decisionCategory: 'ALLOW', isEnclosedOperation: true });
     const dvi = baseDvi({
       decisionCategory: 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES',
@@ -587,7 +666,7 @@ describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظي
     });
     const r = decideFinal(input({ dvi, compliance }));
 
-    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.operationalDecision).toBe('PROTECTIVE_STOP');
     expect(r.operationalDecision).not.toBe('ALLOW');
     expect(r.level).toBe('RED');
   });
@@ -602,6 +681,50 @@ describe('decideFinal — PRECAUTION يرفع الحد الأدنى للون د�
     const r = decideFinal(input({ dvi: baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW' }), compliance }));
     expect(r.level).toBe('YELLOW');
     expect(r.operationalDecision).toBe('MONITOR');
+  });
+});
+
+// خطأ مكتشَف (مراجعة خبير خارجي — البند 2: "سبب القرار المعروض لا يرتبط
+// دائمًا بالمرشح الفائز"): complianceIsDecisive كان يعتمد فقط على
+// compliance.decisionCategory !== 'ALLOW' بصرف النظر تماماً عن أي مرشح فعلاً
+// فاز (winner.source). لو فاز DVI بقرار أشد (PROTECTIVE_STOP، رتبة 4) بينما
+// compliance في نفس اللحظة غير-ALLOW لكن أضعف (PRECAUTION → MONITOR، رتبة 1
+// فقط)، كان النص/العنوان المعروضان يُؤخَذان من compliance الأضعف رغم أن
+// القرار التشغيلي الفعلي (PROTECTIVE_STOP) مصدره DVI بالكامل — يفسد قابلية
+// التدقيق (يعرض للمستخدم سبباً لا يفسر شدة القرار الفعلي).
+describe('decideFinal — نص/عنوان القرار يجب أن يطابق المرشح الفائز فعلياً لا أي فحص منفصل', () => {
+  it('DVI يفوز بـPROTECTIVE_STOP بينما compliance=PRECAUTION (أضعف، MONITOR) → النص/العنوان من DVI لا compliance', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES',
+      level: 'RED',
+      decisionLabelAr: 'إيقاف الأنشطة المعتمدة على الرؤية',
+      mandatoryStop: false,
+      shortReason: 'إيقاف الأنشطة المعتمدة على الرؤية حتى تحسن الظروف',
+    });
+    const compliance = baseCompliance({
+      decisionCategory: 'PRECAUTION',
+      decisionLabelAr: 'حالة احتراز',
+      shortReasonAr: 'حالة احتراز: تركيز PM10 ضمن نطاق الإنذار المبكر',
+    });
+    const r = decideFinal(input({ dvi, compliance }));
+
+    expect(r.operationalDecision).toBe('PROTECTIVE_STOP');
+    expect(r.shortReasonAr).toBe('إيقاف الأنشطة المعتمدة على الرؤية حتى تحسن الظروف');
+    expect(r.decisionLabelAr).toBe('إيقاف الأنشطة المعتمدة على الرؤية');
+  });
+
+  it('compliance يفوز فعلاً بـRESTRICT_ACTIVITY بينما DVI أضعف (MONITOR عبر ALLOW_WITH_MONITORING) → النص/العنوان من compliance', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW_WITH_MONITORING', level: 'YELLOW' });
+    const compliance = baseCompliance({
+      decisionCategory: 'RESTRICT_ACTIVITY',
+      decisionLabelAr: 'تقييد النشاط',
+      shortReasonAr: 'سرعة الطرق غير المسفلتة (15 كم/س) تتجاوز الحد (10 كم/س)',
+    });
+    const r = decideFinal(input({ dvi, compliance }));
+
+    expect(r.operationalDecision).toBe('RESTRICT');
+    expect(r.shortReasonAr).toBe('سرعة الطرق غير المسفلتة (15 كم/س) تتجاوز الحد (10 كم/س)');
+    expect(r.decisionLabelAr).toBe('تقييد النشاط');
   });
 });
 

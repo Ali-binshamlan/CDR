@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { Wind, Plus, Trash2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { DUST_FORM_DEFAULTS, getInputClass, labelClass, sectionTitleClass, REGULATORY_ACTIVITY_LABEL_AR } from './constants';
 import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem } from './constants';
@@ -15,26 +15,26 @@ interface DustStepProps {
   project: ProjectLite;
   isMounted: boolean;
   dustForm: DustForm;
-  updateDustField: (field: keyof DustForm, value: any) => void;
+  updateDustField: <K extends keyof DustForm>(field: K, value: DustForm[K]) => void;
   dustLoading: boolean;
   onSubmit: (e: React.FormEvent) => void;
   regulatoryActivities: RegulatoryActivityItem[];
   expandedActivityIds: Set<string>;
   toggleRegulatoryActivityExpanded: (itemId: string) => void;
   removeRegulatoryActivity: (itemId: string) => void;
-  updateRegulatoryActivityField: (itemId: string, field: keyof RegulatoryActivityFields, value: any) => void;
+  updateRegulatoryActivityField: <K extends keyof RegulatoryActivityFields>(itemId: string, field: K, value: RegulatoryActivityFields[K]) => void;
   updateRegulatoryActivityLocation: (itemId: string, lat: number | null, lng: number | null) => void;
   projectDevices: ProjectDeviceLite[];
   updateRegulatoryActivityTiming: (itemId: string, field: 'startDate' | 'endDate' | 'customStartTime' | 'customEndTime', value: string) => void;
   updateRegulatoryActivityTimingMode: (itemId: string, timingMode: 'shift' | 'custom') => void;
   updateRegulatoryActivityShift: (itemId: string, shiftId: string | null) => void;
-  updateBatchingUnit: (itemId: string, index: number, field: keyof BatchingUnit, value: any) => void;
+  updateBatchingUnit: <K extends keyof BatchingUnit>(itemId: string, index: number, field: K, value: BatchingUnit[K]) => void;
   addBatchingUnit: (itemId: string) => void;
   removeBatchingUnit: (itemId: string, index: number) => void;
-  updateIdleSurfaceUnit: (itemId: string, index: number, field: keyof IdleSurfaceUnit, value: any) => void;
+  updateIdleSurfaceUnit: <K extends keyof IdleSurfaceUnit>(itemId: string, index: number, field: K, value: IdleSurfaceUnit[K]) => void;
   addIdleSurfaceUnit: (itemId: string) => void;
   removeIdleSurfaceUnit: (itemId: string, index: number) => void;
-  updateCrusherUnit: (itemId: string, index: number, field: keyof CrusherUnit, value: any) => void;
+  updateCrusherUnit: <K extends keyof CrusherUnit>(itemId: string, index: number, field: K, value: CrusherUnit[K]) => void;
   addCrusherUnit: (itemId: string) => void;
   removeCrusherUnit: (itemId: string, index: number) => void;
 }
@@ -143,7 +143,7 @@ export function DustStep({
 }: DustStepProps) {
   const mapCenterLat = project.latitude || 24.7136;
   const mapCenterLng = project.longitude || 46.6753;
-  const projectZone = useMemo(() => buildProjectZoneFromRow(project as any), [project]);
+  const projectZone = useMemo(() => buildProjectZoneFromRow(project), [project]);
   const projectShifts = Array.isArray(project.shifts) ? project.shifts : [];
 
   // النقطة النشِطة حالياً على الخريطة الموحدة (نشاط عادي، أو وحدة
@@ -151,13 +151,13 @@ export function DustStep({
   // تبدأ بأول نقطة متاحة، وتتبع أي تغيير في قائمة النقاط إن لم تعد النقطة
   // الحالية موجودة (نشاط/وحدة حُذفت).
   const mapPoints = buildMapPoints(regulatoryActivities);
-  const [activeMapPointId, setActiveMapPointId] = useState<string | null>(mapPoints[0]?.id ?? null);
-  useEffect(() => {
-    if (!mapPoints.some((p) => p.id === activeMapPointId)) {
-      setActiveMapPointId(mapPoints[0]?.id ?? null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [regulatoryActivities.length, activeMapPointId]);
+  const [selectedMapPointId, setActiveMapPointId] = useState<string | null>(mapPoints[0]?.id ?? null);
+  // النقطة المحدَّدة فعلياً تُشتق أثناء الـrender نفسه (لا مزامنة عبر Effect)
+  // — لو selectedMapPointId لم يعد موجوداً ضمن mapPoints الحالية (نشاط/وحدة
+  // حُذفت)، نرجع فوراً لأول نقطة متاحة بلا انتظار دورة render إضافية.
+  const activeMapPointId = mapPoints.some((p) => p.id === selectedMapPointId)
+    ? selectedMapPointId
+    : (mapPoints[0]?.id ?? null);
 
   const handlePointLocationChange = (point: MapPoint, lat: number, lng: number) => {
     const idParts = point.id.split(':');
@@ -377,7 +377,7 @@ export function DustStep({
                               className={getInputClass(false)}
                             >
                               <option value="">اختر وردية...</option>
-                              {projectShifts.map((s: any) => (
+                              {projectShifts.map((s) => (
                                 <option key={s.id} value={s.id}>
                                   {s.name} ({s.start_time.slice(0, 5)} – {s.end_time.slice(0, 5)})
                                 </option>
@@ -472,7 +472,7 @@ export function DustStep({
                           const daily =
                             item.timingMode === 'shift'
                               ? (() => {
-                                  const s = projectShifts.find((sh: any) => sh.id === item.shiftId);
+                                  const s = projectShifts.find((sh) => sh.id === item.shiftId);
                                   return s ? { start: s.start_time.slice(0, 5), end: s.end_time.slice(0, 5) } : null;
                                 })()
                               : item.customStartTime && item.customEndTime

@@ -42,14 +42,15 @@ export async function PATCH(
     .eq('id', alertId)
     .single();
 
-  const ownerId = (alertRow as any)?.projects?.user_id;
-  if (!alertRow || ownerId !== auth.userId) {
+  const alertOwner = alertRow as { id: string; project_id: string; state: string; projects: { user_id: string } | null } | null;
+  const ownerId = alertOwner?.projects?.user_id;
+  if (!alertOwner || ownerId !== auth.userId) {
     return NextResponse.json({ error: 'لا تملك هذا التنبيه' }, { status: 403 });
   }
 
   const { error } = await supabaseAdmin.from('alert_state_events').insert({
     alert_id: alertId,
-    previous_state: (alertRow as any).state ?? null,
+    previous_state: alertOwner.state ?? null,
     new_state: state,
     actor_user_id: auth.userId,
   });

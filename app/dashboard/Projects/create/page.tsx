@@ -1,7 +1,8 @@
 // app/dashboard/Projects/create/page.tsx
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useHasMounted } from '@/app/lib/useHasMounted';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/app/lib/supabase';
 import { apiClient } from '@/app/lib/apiClient';
@@ -49,7 +50,7 @@ function isValidInternationalPhone(value: string): boolean {
 export default function CreateProjectPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const mounted = useHasMounted();
   const [submitStage, setSubmitStage] = useState<string>('');
   // يصبح true بعد أول محاولة حفظ — يُستخدم لتلوين حدود الحقول الإلزامية
   // الفارغة بالأحمر دون إزعاج المستخدم بها قبل أن يحاول الحفظ فعلياً
@@ -266,11 +267,6 @@ export default function CreateProjectPage() {
       return { ...prev, work_days_list: ordered, work_days: arabic };
     });
   };
-
-  useEffect(() => {
-    setMounted(true);
-    return () => setMounted(false);
-  }, []);
 
   const handleProjectChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
@@ -576,9 +572,10 @@ export default function CreateProjectPage() {
       }
       router.push(`/dashboard/Projects/${insertedProject.id}`);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('🚨 خطأ أثناء التنفيذ:', error);
-      toast.error(`حدث خطأ: ${error?.response?.data?.error || error?.message || 'مشكلة برمجية غير متوقعة'}`);
+      const err = error as { response?: { data?: { error?: string } }; message?: string };
+      toast.error(`حدث خطأ: ${err?.response?.data?.error || err?.message || 'مشكلة برمجية غير متوقعة'}`);
     } finally {
       setLoading(false);
       setSubmitStage('');
@@ -603,7 +600,7 @@ export default function CreateProjectPage() {
             <h1 className="text-2xl font-black text-[#061B40]">تأسيس مشروع جديد</h1>
             <p className="text-xs text-[#061B40]/60 mt-1">
               أدخل البيانات الأساسية فقط الآن. بعد إنشاء المشروع، يمكنك إضافة الرافعات وبيانات الغبار والتأثير البيئي
-              من خلال زر <span className="font-bold text-[#3995FF]">"إضافة أنشطة"</span> داخل صفحة المشروع.
+              من خلال زر <span className="font-bold text-[#3995FF]">&quot;إضافة أنشطة&quot;</span> داخل صفحة المشروع.
             </p>
           </div>
 
@@ -772,7 +769,7 @@ export default function CreateProjectPage() {
             {projectForm.dmp_approval_status === 'APPROVED' && (
               <p className="text-[11px] font-bold text-[#061B40]/50 bg-[#F4F7FB] border border-dashed border-[#061B40]/15 rounded-lg p-3">
                 سجّل أجهزة الرصد الفعلية بعد إنشاء المشروع، من صفحة الإعدادات
-                ← قسم "أجهزة الرصد الحية". كل جهاز يُنشأ بمفتاح API خاص يُستخدم
+                ← قسم &quot;أجهزة الرصد الحية&quot;. كل جهاز يُنشأ بمفتاح API خاص يُستخدم
                 لإرسال قراءات حية (رياح، PM10، PM2.5) تحل محل بيانات الطقس
                 التقديرية.
               </p>
@@ -837,7 +834,7 @@ export default function CreateProjectPage() {
                   className={`${inputClass} ${projectForm.project_status === 'not_started' ? 'opacity-50 cursor-not-allowed' : ''}`}
                 />
                 {projectForm.project_status === 'not_started' && (
-                  <p className="text-[10px] font-bold text-[#061B40]/40 mt-1">يُفعَّل بعد اختيار حالة المشروع "جاري".</p>
+                  <p className="text-[10px] font-bold text-[#061B40]/40 mt-1">يُفعَّل بعد اختيار حالة المشروع &quot;جاري&quot;.</p>
                 )}
               </div>
               <div>
@@ -851,7 +848,7 @@ export default function CreateProjectPage() {
                   className={`${inputClass} ${projectForm.project_status === 'not_started' ? 'opacity-50 cursor-not-allowed' : ''}`}
                 />
                 {projectForm.project_status === 'not_started' && (
-                  <p className="text-[10px] font-bold text-[#061B40]/40 mt-1">يُفعَّل بعد اختيار حالة المشروع "جاري".</p>
+                  <p className="text-[10px] font-bold text-[#061B40]/40 mt-1">يُفعَّل بعد اختيار حالة المشروع &quot;جاري&quot;.</p>
                 )}
               </div>
               <div className="col-span-2">

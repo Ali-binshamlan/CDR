@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { applyComplianceGatesToDustAei } from './dustEvaluation';
+import { applyComplianceGatesToDustAei, activityDecisionKey, NEUTRAL_DVI_FALLBACK } from './dustEvaluation';
+import type { StoredFinalDecisionRow } from './dustEvaluation';
 import { isRegulatoryWindGateActive } from '@/app/utils/dust-compliance-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
+import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import type { DviEvaluationResult } from '@/app/utils/dust-engine/types';
+
+function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationResult {
+  return { ...NEUTRAL_DVI_FALLBACK, ...overrides };
+}
 
 // =====================================================================
 // اختبارات تناغم AEI ("قابلية التنفيذ") وبوابة الرياح الساعية مع قرار
@@ -32,12 +39,67 @@ function baseAei(overrides: Partial<AeiEvaluationResult> = {}): AeiEvaluationRes
   };
 }
 
+// شكل امتثال كامل صالح — الحقول التي لا يقرأها applyFinalDecisionToAei/
+// decideFinal فعلياً في هذه الاختبارات تحمل قيماً محايدة ثابتة، وكل اختبار
+// يُجاوِز الحقول ذات الصلة فقط (decisionCategory/shortReasonAr/evidence/إلخ)
+// عبر overrides — نفس نمط baseAei أعلاه بالضبط.
+const NEUTRAL_COMPLIANCE_EVIDENCE: DustComplianceResult['evidence'] = {
+  dviScore: 0,
+  dviDecision: 'ALLOW',
+  dviMandatoryStop: false,
+  windSpeedKmh: null,
+  windGustKmh: null,
+  windDirectionDeg: null,
+  pm10UgM3: null,
+  pm25UgM3: null,
+  relativeHumidityPercent: null,
+  temperatureC: null,
+  visibilityM: null,
+};
+
+function baseCompliance(
+  overrides: Partial<Omit<DustComplianceResult, 'evidence'>> & { evidence?: Partial<DustComplianceResult['evidence']> } = {}
+): DustComplianceResult {
+  return {
+    engineType: 'RIYADH_DUST_COMPLIANCE',
+    engineVersion: '1.0',
+    rulebookVersion: 'test',
+    regulatoryActivity: 'OTHER',
+    regulatoryActivityLabelAr: 'أخرى',
+    riskClass: 'CATEGORY_I_LOW',
+    riskClassReasonAr: '',
+    windBand: 'BELOW_15',
+    isEnclosedOperation: false,
+    decisionCategory: 'ALLOW',
+    decisionLabelAr: 'مسموح',
+    mandatoryStop: false,
+    canOverride: true,
+    shortReasonAr: '',
+    pendingConfirmation: false,
+    decidingRuleCode: null,
+    decidingRuleMessageAr: null,
+    evaluatedAt: new Date().toISOString(),
+    triggeredRules: [],
+    requiredActions: [],
+    restartConditions: [],
+    missingCriticalInputs: [],
+    monitoringObligations: [],
+    confidenceScore: 100,
+    confidenceLabelAr: 'عالية',
+    validUntil: new Date().toISOString(),
+    caveatsAr: [],
+    resumeHoldApplied: false,
+    ...overrides,
+    evidence: { ...NEUTRAL_COMPLIANCE_EVIDENCE, ...overrides.evidence },
+  };
+}
+
 describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظيمي', () => {
   it('يقص AEI إلى CLOSED/0 عندما يوقف الامتثال النشاط (MANDATORY_STOP)', () => {
     const dustResults = [
-      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'MANDATORY_STOP', shortReasonAr: 'رياح تتجاوز الحد' } },
+      { activityId: '1', aei: baseAei(), compliance: baseCompliance({ decisionCategory: 'MANDATORY_STOP', shortReasonAr: 'رياح تتجاوز الحد' }) },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('CLOSED');
     expect(dustResults[0].aei.score).toBe(0);
     expect(dustResults[0].aei.color).toBe('BLACK');
@@ -46,9 +108,9 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
 
   it('يقص AEI عند STOP_AFFECTED_ACTIVITY أيضاً', () => {
     const dustResults = [
-      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'STOP_AFFECTED_ACTIVITY', shortReasonAr: 'إيقاف النشاط المتأثر' } },
+      { activityId: '1', aei: baseAei(), compliance: baseCompliance({ decisionCategory: 'STOP_AFFECTED_ACTIVITY', shortReasonAr: 'إيقاف النشاط المتأثر' }) },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('CLOSED');
   });
 
@@ -57,14 +119,14 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'ALLOW',
           shortReasonAr: 'لا مخالفات',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('ALLOW');
     expect(dustResults[0].aei.score).toBe(94.6);
   });
@@ -78,7 +140,7 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
   // UNAVAILABLE، فيُقصّ AEI فعلياً بدل تركه بلا مساس.
   it('compliance = null في LIVE_OPERATIONAL → يُقيَّد AEI (بانتظار تحقق ميداني)، لا يبقى بلا مساس', () => {
     const dustResults = [{ activityId: '1', aei: baseAei(), compliance: null }];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.isHoldForVerification).toBe(true);
   });
@@ -107,20 +169,20 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
         activityId: '1',
         aei: baseAei(),
         windowEval: {
-          worst: {
+          worst: baseDvi({
             mandatoryStop: false,
             decisionCategory: 'ALLOW_WITH_MONITORING',
-          },
+          }),
         },
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'RESTRICT_ACTIVITY',
           shortReasonAr: 'مؤشر جودة الهواء يقترب من الحد التنظيمي',
           missingCriticalInputs: [],
           evidence: {}, // لا جهاز مرتبط
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.color).toBe('ORANGE');
     expect(dustResults[0].aei.closedByGate).toBe(false);
@@ -131,9 +193,9 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
   it('لا يكرر الإغلاق إن كان AEI مغلقاً أصلاً من بوابة DVI (closedByGate=true)', () => {
     const dvClosed = baseAei({ status: 'CLOSED', score: 0, closedByGate: true, gateReasonAr: 'إيقاف DVI' });
     const dustResults = [
-      { activityId: '1', aei: dvClosed, compliance: { decisionCategory: 'MANDATORY_STOP', shortReasonAr: 'إيقاف تنظيمي' } },
+      { activityId: '1', aei: dvClosed, compliance: baseCompliance({ decisionCategory: 'MANDATORY_STOP', shortReasonAr: 'إيقاف تنظيمي' }) },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     // يبقى سبب الإغلاق الأصلي (DVI) دون استبداله بسبب الامتثال
     expect(dustResults[0].aei.gateReasonAr).toBe('إيقاف DVI');
   });
@@ -148,15 +210,15 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei({ score: 93.4, safetyScore: 93.4, qualityScore: 96, baseScore: 93.4 }),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'RESTRICT_ACTIVITY',
           decisionLabelAr: 'تقييد النشاط',
           shortReasonAr: 'لا توجد شبكة/حاجز غبار حول موقع الهدم',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.score).toBeLessThan(93.4);
     expect(dustResults[0].aei.score).toBe(59);
@@ -173,10 +235,10 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei({ score: 40, status: 'RESTRICT', color: 'RED' }),
-        compliance: { decisionCategory: 'RESTRICT_ACTIVITY', decisionLabelAr: 'تقييد النشاط', shortReasonAr: 'سبب ما' },
+        compliance: baseCompliance({ decisionCategory: 'RESTRICT_ACTIVITY', decisionLabelAr: 'تقييد النشاط', shortReasonAr: 'سبب ما' }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.score).toBe(40);
   });
 
@@ -189,15 +251,15 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'STOP_AFFECTED_ACTIVITY',
           pendingConfirmation: true,
           shortReasonAr: 'تعليق مؤقت (معلَّق): تركيز PM10 (345) تجاوز حد المخالفة (340) — بانتظار استمرار القراءة أكثر من دقيقتين',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.color).toBe('RED');
     expect(dustResults[0].aei.closedByGate).toBeFalsy();
@@ -210,23 +272,23 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'MANDATORY_STOP',
           pendingConfirmation: true,
           shortReasonAr: 'حالة معلَّقة افتراضية للاختبار',
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.closedByGate).toBeFalsy();
   });
 
   it('pendingConfirmation=false (أو غائب) مع STOP_AFFECTED_ACTIVITY → يبقى CLOSED كالسابق تماماً', () => {
     const dustResults = [
-      { activityId: '1', aei: baseAei(), compliance: { decisionCategory: 'STOP_AFFECTED_ACTIVITY', shortReasonAr: 'مسافة الكسارة غير كافية' } },
+      { activityId: '1', aei: baseAei(), compliance: baseCompliance({ decisionCategory: 'STOP_AFFECTED_ACTIVITY', shortReasonAr: 'مسافة الكسارة غير كافية' }) },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('CLOSED');
     expect(dustResults[0].aei.color).toBe('BLACK');
     expect(dustResults[0].aei.closedByGate).toBe(true);
@@ -243,15 +305,15 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'PRECAUTION',
           decisionLabelAr: 'احتراز — زيادة المراقبة',
           shortReasonAr: 'حالة احتراز: تركيز PM10 (200 ميكروجرام/م³) ضمن نطاق الإنذار المبكر (150–250 ميكروجرام/م³)',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('MONITOR');
     expect(dustResults[0].aei.color).toBe('YELLOW');
     expect(dustResults[0].aei.statusLabelAr).toBe('احتراز — زيادة المراقبة');
@@ -276,15 +338,15 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'RESTRICT_ACTIVITY',
           shortReasonAr: 'تركيز PM10 يتجاوز حد التحذير',
           missingCriticalInputs: [],
           evidence: {}, // لا deviceLastReadingAt إطلاقاً — لا جهاز مرتبط
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.color).toBe('ORANGE');
     expect(dustResults[0].aei.closedByGate).toBe(false);
@@ -297,15 +359,15 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
       {
         activityId: '1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'RESTRICT_ACTIVITY',
           shortReasonAr: 'تركيز PM10 يتجاوز حد التحذير',
           missingCriticalInputs: [],
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.isHoldForVerification).toBe(false);
   });
 
@@ -320,15 +382,15 @@ describe('applyComplianceGatesToDustAei — قص AEI عند إيقاف تنظي�
         // أصلاً" (راجع deriveEvidenceQuality بعد طلب المستخدم "دايماً يحتاج
         // قراءة حقيقية من الجهاز") فيسقط القرار لـHOLD_FOR_VERIFICATION بدل
         // المسار المقصود فعلياً هنا (RESTRICT عبر floorLevel).
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'FIELD_VERIFICATION_REQUIRED',
           decisionLabelAr: 'يتطلب تحقق ميداني',
           shortReasonAr: 'بيانات ناقصة',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('RESTRICT');
     expect(dustResults[0].aei.score).toBe(59);
   });
@@ -357,25 +419,28 @@ describe('applyComplianceGatesToDustAei — القراءة من final_decisions 
         activityId: '1',
         activityGroupId: 'group-1',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'MANDATORY_STOP',
           shortReasonAr: 'نص محلي لو أُعيد الحساب هنا',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    const finalDecisionsByGroup = new Map([
+    const finalDecisionsByGroup = new Map<string, StoredFinalDecisionRow>([
       [
-        'group-1',
+        activityDecisionKey('project-1', 'group-1'),
         {
+          activity_group_id: 'group-1',
+          level: 'BLACK',
           operational_decision: 'MANDATORY_STOP',
           short_reason_ar: 'إيقاف إلزامي مخزَّن من evaluate/route.ts',
           decision_label_ar: 'إيقاف إلزامي نظامي',
           pending_confirmation: false,
+          mandatory_stop: true,
         },
       ],
     ]);
-    applyComplianceGatesToDustAei(dustResults, finalDecisionsByGroup);
+    applyComplianceGatesToDustAei(dustResults, 'project-1', finalDecisionsByGroup);
     expect(dustResults[0].aei.status).toBe('CLOSED');
     expect(dustResults[0].aei.score).toBe(0);
     // النص المعروض هو نص الصف المخزَّن تحديداً، لا "نص محلي لو أُعيد الحساب
@@ -390,14 +455,14 @@ describe('applyComplianceGatesToDustAei — القراءة من final_decisions 
         activityId: '1',
         activityGroupId: 'group-no-stored-row',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'MANDATORY_STOP',
           shortReasonAr: 'إيقاف محلي',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults, new Map());
+    applyComplianceGatesToDustAei(dustResults, 'project-1', new Map());
     expect(dustResults[0].aei.status).toBe('CLOSED');
     expect(dustResults[0].aei.shortReasonAr).toBe('إيقاف محلي');
   });
@@ -408,16 +473,62 @@ describe('applyComplianceGatesToDustAei — القراءة من final_decisions 
         activityId: '1',
         activityGroupId: 'group-x',
         aei: baseAei(),
-        compliance: {
+        compliance: baseCompliance({
           decisionCategory: 'MANDATORY_STOP',
           shortReasonAr: 'إيقاف محلي بلا خريطة',
           evidence: { deviceLastReadingAt: new Date().toISOString() },
-        },
+        }),
       },
     ];
-    applyComplianceGatesToDustAei(dustResults);
+    applyComplianceGatesToDustAei(dustResults, 'project-1');
     expect(dustResults[0].aei.status).toBe('CLOSED');
     expect(dustResults[0].aei.shortReasonAr).toBe('إيقاف محلي بلا خريطة');
+  });
+
+  // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "شوف الفرق" (نشاط محطة خلط
+  // PLANNING عرض مرة "قابل للتنفيذ مع مراقبة" ومرة "بيئة العمل غير آمنة
+  // (مغلق)" لنفس اللحظة ونفس البيانات، بين تحميلين متتاليين). السبب: mode
+  // لم تكن تُحسَب من startIso إطلاقاً هنا (تثبت دائماً LIVE_OPERATIONAL)،
+  // وstoredRow قديم (قد يكون محسوباً بوضع LIVE_OPERATIONAL من دورة سابقة
+  // مختلفة السياق) كان يُستخدَم مباشرة بلا أي فحص لتطابقه مع PLANNING.
+  it('نشاط PLANNING (startIso بعيد) مع storedRow قديم "مغلق" → يتجاهل الصف المخزَّن ويحسب PLANNING محلياً بدل عرض إيقاف قديم', () => {
+    const farFutureIso = new Date(Date.now() + 5 * 3600000).toISOString(); // بعد 5 ساعات — خارج هامش الساعتين
+    const dustResults = [
+      {
+        activityId: '1',
+        activityGroupId: 'group-batching',
+        startIso: farFutureIso,
+        aei: baseAei(),
+        windowEval: { worst: baseDvi({ decisionCategory: 'ALLOW' }) },
+        compliance: baseCompliance({
+          decisionCategory: 'MANDATORY_STOP',
+          shortReasonAr: 'لن تُقرأ — compliance المحلي غير ALLOW لكن mode=PLANNING يمنع أي تصعيد',
+          evidence: { deviceLastReadingAt: null, pm10UgM3: 1557.2 },
+        }),
+      },
+    ];
+    // صف قديم مخزَّن يقول "إيقاف إلزامي مغلق" — من دورة LIVE_OPERATIONAL
+    // سابقة، غير ذي صلة بلحظة PLANNING الحالية.
+    const finalDecisionsByGroup = new Map<string, StoredFinalDecisionRow>([
+      [
+        activityDecisionKey('project-1', 'group-batching'),
+        {
+          activity_group_id: 'group-batching',
+          level: 'BLACK',
+          operational_decision: 'MANDATORY_STOP',
+          short_reason_ar: 'إيقاف إلزامي مخزَّن من دورة سابقة',
+          decision_label_ar: 'إيقاف إلزامي نظامي',
+          pending_confirmation: false,
+          mandatory_stop: true,
+        },
+      ],
+    ]);
+    applyComplianceGatesToDustAei(dustResults, 'project-1', finalDecisionsByGroup);
+
+    // لا يجوز أن يظهر "مغلق/CLOSED" من الصف القديم — mode=PLANNING يمنع أي
+    // إيقاف إلزامي حقيقي، بصرف النظر عن أي مصدر (قديم مخزَّن أو محلي).
+    expect(dustResults[0].aei.status).not.toBe('CLOSED');
+    expect(dustResults[0].aei.closedByGate).toBe(false);
   });
 });
 

@@ -43,8 +43,8 @@ export default function AdminRulesPage() {
         if (!admin) {
           router.replace('/dashboard');
         }
-      } catch (error: any) {
-        if (error?.response?.status === 403) setAccessDenied(true);
+      } catch (error: unknown) {
+        if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
       }
     };
     check();

@@ -52,7 +52,7 @@ export function __clearWeatherCacheForTests(): void {
   weatherCache.clear();
 }
 
-async function fetchJson(url: string): Promise<unknown | null> {
+async function fetchJson(url: string, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<unknown | null> {
   const cached = weatherCache.get(url);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.data;
@@ -64,7 +64,7 @@ async function fetchJson(url: string): Promise<unknown | null> {
     try {
       const response = await fetch(url, {
         cache: 'no-store',
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
         headers: { accept: 'application/json' },
       });
 
@@ -170,17 +170,15 @@ const AirQualityResponseSchema = z.object({
   hourly: AirQualityHourlySchema.nullish(),
 }).partial();
 
-type ForecastResponse = z.infer<typeof ForecastResponseSchema>;
-type AirQualityResponse = z.infer<typeof AirQualityResponseSchema>;
-
 // يجلب ويتحقق من استجابة عبر schema مُعطى — يُرجع null صراحة عند فشل الجلب
 // (بعد retries) أو فشل التحقق من الشكل (يُسجَّل بالتفصيل)، بدل تمرير بيانات
 // غير موثوقة الشكل (any) لبقية محرك DVI.
 async function fetchValidated<T extends z.ZodTypeAny>(
   url: string,
-  schema: T
+  schema: T,
+  timeoutMs?: number
 ): Promise<z.infer<T> | null> {
-  const json = await fetchJson(url);
+  const json = await fetchJson(url, timeoutMs);
   if (json === null) return null;
 
   const result = schema.safeParse(json);
@@ -325,7 +323,7 @@ export async function fetchDustWeather(latitude: number, longitude: number): Pro
       // الآن نُعلِم صراحة أن التوقع غير كامل عندما تغيب بيانات جودة الهواء.
       isForecastStale: airData === null,
     };
-  } catch (err) {
+  } catch {
     return {
       visibilityM: null,
       weatherCode: null,
@@ -358,7 +356,17 @@ export async function fetchDustWeatherHourly(
   // وقت بداية النشاط الفعلي (ISO) — إذا مُرِّر، تُجلب بيانات الطقس لنطاق
   // التاريخ المطابق فعليًا لهذا الوقت (قد يكون يومًا مستقبليًا)، بدل
   // افتراض "اليوم وبكرة" دائمًا مع البدء من "الآن".
-  anchorIso?: string
+  anchorIso?: string,
+  // خطأ تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المسار التشغيلي الحي ما
+  // زال ينتظر Open-Meteo". لنشاط حي بجهاز مرتبط، mergeDustReading تتجاهل
+  // بيانات هذه الشبكة كلياً لحساب worst (راجع isDeviceApplicableToSample
+  // في engine.ts) — القرار الحي لا يعتمد عليها إطلاقاً، فلا مبرر لانتظار
+  // مهلة الشبكة الكاملة (FETCH_TIMEOUT_MS + إعادة محاولة، حتى ~14 ثانية)
+  // قبل أن يصل evaluateDustVisibilityWindow لمسارها البديل الآمن من الجهاز.
+  // liveTimeoutMs (اختياري) يُقصّر المهلة لهذه الحالة تحديداً فقط — hourly/
+  // bestWindowWorst/avoidWindowWorst (الشبكة التوقعية الفعلية، غير مرتبطة
+  // بالقرار الحي) تبقى بمهلتها الطبيعية الكاملة في كل الاستدعاءات الأخرى.
+  liveTimeoutMs?: number
 ): Promise<DustHourlySample[]> {
   const anchor = anchorIso ? new Date(anchorIso) : new Date();
   const anchorMs = anchor.getTime();
@@ -382,8 +390,8 @@ export async function fetchDustWeatherHourly(
 
   try {
     const [forecastData, airData] = await Promise.all([
-      fetchValidated(forecastUrl, ForecastResponseSchema),
-      fetchValidated(airQualityUrl, AirQualityResponseSchema),
+      fetchValidated(forecastUrl, ForecastResponseSchema, liveTimeoutMs),
+      fetchValidated(airQualityUrl, AirQualityResponseSchema, liveTimeoutMs),
     ]);
 
     if (!forecastData || !forecastData.hourly || !Array.isArray(forecastData.hourly.time)) {
@@ -471,7 +479,7 @@ export async function fetchDustWeatherHourly(
     }
 
     return samples;
-  } catch (err) {
+  } catch {
     return [];
   }
 }

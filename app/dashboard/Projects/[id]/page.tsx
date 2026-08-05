@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { Inbox } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 import { supabase } from '@/app/lib/supabase';
+import { useNow } from '@/app/lib/useNow';
 
 import ProjectHeader from '@/app/components/dashborad/Projects/[id]/components/ProjectHeader';
 import DashboardFilters from '@/app/components/dashborad/Projects/[id]/components/DashboardFilters';
@@ -15,6 +16,7 @@ import MultiIndicatorActivityBox, {
 } from '@/app/components/dashborad/projectdashborad/MultiIndicatorActivityBox';
 import DustWidgetCard from '@/app/components/dashborad/projectdashborad/Dustwidgetcard';
 import ComplianceWidgetCard from '@/app/components/dashborad/projectdashborad/Compliancewidgetcard';
+import type { ProjectRow } from '@/app/lib/dustEvaluation';
 
 // ---------------------------------------------------------------------
 // عقد البيانات المتوقّع من الـ API لكل نشاط مُجمّع (activity group).
@@ -33,6 +35,22 @@ interface RecentActivityItem {
   windowStartIso?: string;
   windowEndIso?: string;
   durationMinutes?: number;
+}
+
+// عنصر مصفوفة dustResults المُعادة من GET — يطابق dustResultsGrouped في
+// app/api/projects/[projectId]/route.ts، بشكل مبسَّط هنا (props فعلية
+// تحتاجها DustWidgetCard/ComplianceWidgetCard فقط) بدل استيراد الأنواع
+// الكاملة من dustEvaluation.ts (ملف خادم فقط) داخل حزمة العميل.
+interface DustResultDisplayItem {
+  activityId: string;
+  activityGroupId: string;
+  activityType: string;
+  windowEval: React.ComponentProps<typeof DustWidgetCard>['windowEval'];
+  aei: React.ComponentProps<typeof DustWidgetCard>['aei'];
+  hourlyForecasts?: React.ComponentProps<typeof DustWidgetCard>['hourlyForecasts'];
+  complianceList?: React.ComponentProps<typeof ComplianceWidgetCard>['complianceList'];
+  complianceHourly?: React.ComponentProps<typeof ComplianceWidgetCard>['complianceHourly'];
+  unitReceptors?: React.ComponentProps<typeof ComplianceWidgetCard>['unitReceptors'];
 }
 
 // المسار الأساسي والموثوق للتحديث اللايف: polling كل 3 ثوانٍ — بعد فصل
@@ -57,16 +75,19 @@ export default function ProjectDetailsPage({
   // روابط DashboardFilters التي تكتب ?status=... ، وليس حسب نوع المؤشر
   const activeStatus = searchParams.get('status') || 'all';
 
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<{ project: ProjectRow & { id: string; name: string; city?: string | null }; nearbySensitiveReceptors?: React.ComponentProps<typeof ComplianceWidgetCard>['nearbySensitiveReceptors'] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // "الآن" لتصنيف حالة كل نشاط (لم تبدأ/جارية/منتهية) أدناه — يكفي تحديث كل
+  // 30 ثانية، أسرع بكثير أصلاً بفضل تحديث recentActivities الدوري (polling).
+  const nowTs = useNow(30000);
 
   // نسخة محلية قابلة للتعديل من الأنشطة، حتى نقدر نحذف عنصر من الواجهة
   // فور نجاح الحذف داخل MultiIndicatorActivityBox دون الحاجة لإعادة جلب الصفحة كاملة
   const [recentActivities, setRecentActivities] = useState<RecentActivityItem[]>([]);
   // نتائج محرك الغبار الحي لكل نشاط، القادمة من الـ API، تُغذّي بطاقات
   // التفاصيل الدقيقة داخل كل نشاط موحّد
-  const [dustResults, setDustResults] = useState<any[]>([]);
+  const [dustResults, setDustResults] = useState<DustResultDisplayItem[]>([]);
 
   // silent=true للتحديث الدوري التلقائي: لا نُظهر شاشة تحميل كاملة أو نمسح
   // البيانات المعروضة حالياً أثناء إعادة الجلب الخلفية — فقط الجلب الأول
@@ -89,6 +110,9 @@ export default function ProjectDetailsPage({
   // القرارات الجديدة أصلاً؛ الـpolling السريع هنا مسؤوليته الوحيدة عرض
   // آخر ما كُتب، لا إعادة حسابه.
   const fetchDashboardData = async (silent = false, waitForEvaluate = false, skipEvaluate = false) => {
+    // await فوري (microtask) قبل أول setState — يفصل الاستدعاء المباشر من
+    // جسم الـEffect عن أول تعديل حالة متزامن، بلا تأخير محسوس.
+    await Promise.resolve();
     try {
       if (!silent) setLoading(true);
 
@@ -114,10 +138,11 @@ export default function ProjectDetailsPage({
       // غير waitForEvaluate: fire-and-forget عمداً كما كان — فشل الكتابة لا
       // يجوز أن يمنع عرض البيانات المقروءة أصلاً بنجاح.
       if (!waitForEvaluate) evaluatePromise?.catch(() => {});
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (silent) return; // فشل التحديث الخلفي الصامت لا يُظهر شاشة خطأ فوق بيانات معروضة بنجاح
-      if (err?.response?.status === 404) { notFound(); return; }
-      setError(err?.response?.data?.error || 'حدث خطأ أثناء جلب بيانات المشروع');
+      const e = err as { response?: { status?: number; data?: { error?: string } } };
+      if (e?.response?.status === 404) { notFound(); return; }
+      setError(e?.response?.data?.error || 'حدث خطأ أثناء جلب بيانات المشروع');
     } finally {
       if (!silent) setLoading(false);
     }
@@ -127,7 +152,23 @@ export default function ProjectDetailsPage({
     if (!id) return;
 
     let cancelled = false;
-    fetchDashboardData();
+    // خطأ أداء مكتشَف: الدخول الأول لهذه الصفحة كان يُطلق POST /evaluate
+    // (ثقيل جداً — يعيد حساب DVI+Compliance+FinalDecision ويكتب 5 جداول
+    // عبر RPC لكل نشاط) بالتوازي مع GET (ثقيل بذاته أيضاً، ويبني نفس
+    // dustResults/compliance من الصفر لعرض البطاقات). كلا الطلبين يحسبان
+    // نفس الشيء تقريباً بشكل مستقل ومتزامن، فيُضاعف زمن التحميل الأول بلا
+    // فائدة فعلية: GET يقرأ current_dust_decisions/current_dust_compliance_
+    // decisions/final_decisions الفعلية من القاعدة وقت الطلب على أي حال،
+    // وscheduler-tick الجديد (كل دقيقتين، راجع app/api/cron/scheduler-tick/
+    // route.ts) يكتب قرارات جديدة في الخلفية باستمرار بصرف النظر عن هذه
+    // الصفحة. skipEvaluate=true هنا يكتفي بـGET وحده للتحميل الأول (أسرع
+    // بمقدار الحساب المكرر) — evaluate يبقى يعمل عند الطلب اليدوي الفعلي
+    // (handleEdited بعد تعديل نشاط، handleCountdownElapsed بعد انتهاء
+    // مهلة عدّاد PM10) حيث تغيّر حقيقي في المدخلات يستدعي إعادة حساب فورية.
+    //
+    // جدولة عبر microtask بدل استدعاء fetchDashboardData مباشرة من جسم
+    // الـEffect — نفس السبب الموثَّق أعلى الدالة (تعديل حالة متزامن داخل Effect).
+    void Promise.resolve().then(() => { if (!cancelled) fetchDashboardData(false, false, true); });
 
     const intervalId = window.setInterval(() => {
       if (!cancelled) fetchDashboardData(true, false, true);
@@ -137,6 +178,10 @@ export default function ProjectDetailsPage({
       cancelled = true;
       window.clearInterval(intervalId);
     };
+    // fetchDashboardData عمداً خارج القائمة — دالة عادية مُعاد إنشاؤها كل
+    // render، تعتمد فقط على id ضمن نطاقها؛ إدراجها كان سيعيد تركيب
+    // setInterval بلا داعٍ في كل تحديث حالة.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   // تحديث لايف فوري: اشتراك Supabase Realtime على final_decisions (نفس
@@ -199,6 +244,9 @@ export default function ProjectDetailsPage({
       authListener.subscription.unsubscribe();
       if (channel) supabase.removeChannel(channel);
     };
+    // fetchDashboardData عمداً خارج القائمة — نفس السبب أعلاه (إعادة إنشاء
+    // القناة/الاشتراك بلا داعٍ في كل render لو أُدرجت).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   // يُستدعى من ComplianceWidgetCard بالضبط في لحظة انتهاء عدّاد PM10 (تأكيد
@@ -250,11 +298,10 @@ export default function ProjectDetailsPage({
   // حالة النشاط من نافذته الزمنية: لم تبدأ / جارية / منتهية.
   // نشاط بلا جدول زمني معروف يُعامل كـ "جارٍ" حتى لا يختفي من كل الفلاتر.
   const activityStatusOf = (a: RecentActivityItem): 'started' | 'scheduled' | 'ended' => {
-    const now = Date.now();
     const start = a.windowStartIso ? new Date(a.windowStartIso).getTime() : null;
     const end = a.windowEndIso ? new Date(a.windowEndIso).getTime() : null;
-    if (start !== null && now < start) return 'scheduled';
-    if (end !== null && now > end) return 'ended';
+    if (start !== null && nowTs < start) return 'scheduled';
+    if (end !== null && nowTs > end) return 'ended';
     return 'started';
   };
 
@@ -304,6 +351,8 @@ export default function ProjectDetailsPage({
                   windowStartIso={activity.windowStartIso}
                   windowEndIso={activity.windowEndIso}
                   durationMinutes={activity.durationMinutes}
+                  workHoursStart={project.work_hours_start as string | null | undefined}
+                  workHoursEnd={project.work_hours_end as string | null | undefined}
                   onEdited={handleEdited}
                   onDeleted={() => handleDeleted(activity.activityGroupId)}
                 >
@@ -355,7 +404,7 @@ export default function ProjectDetailsPage({
                             <ComplianceWidgetCard
                               key={`dust-compliance-${r.activityId}`}
                               activityType={r.activityType}
-                              complianceList={r.complianceList}
+                              complianceList={r.complianceList ?? []}
                               complianceHourly={r.complianceHourly}
                               aei={r.aei}
                               nearbySensitiveReceptors={data.nearbySensitiveReceptors}
@@ -382,7 +431,7 @@ export default function ProjectDetailsPage({
               <Inbox className="w-14 h-14 text-[#3995FF]/40 mb-4" />
               <h3 className="text-lg font-black text-[#061B40]">لا توجد أنشطة لعرضها</h3>
               <p className="text-sm text-slate-500 mt-2 max-w-sm">
-                لم يتم إضافة أي أنشطة لهذا المشروع بعد. استخدم زر "إضافة أنشطة" باللون الأزرق في الأعلى للبدء.
+                لم يتم إضافة أي أنشطة لهذا المشروع بعد. استخدم زر &quot;إضافة أنشطة&quot; باللون الأزرق في الأعلى للبدء.
               </p>
             </div>
           )}

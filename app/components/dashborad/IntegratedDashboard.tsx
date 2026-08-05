@@ -28,13 +28,47 @@ const ProjectsMap = dynamic(() => import('./ProjectsMap'), {
 // alerts مفلترة state != CLOSED، dustActivities مفلترة planned_date=اليوم،
 // liveActivityByProjectId) موجودة فيه فعلاً. GlobalDashboard.tsx يبقى بلا
 // تغيير لأنه يُستخدم أيضاً في /dashboard/viewer (خريطة فقط بتصميم مقصود).
+interface DashboardProjectRow {
+  id: string;
+  name: string;
+  city?: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  project_status?: string | null;
+  [key: string]: unknown;
+}
+
+interface DashboardActivityRow {
+  id: string;
+  project_id: string;
+  planned_time?: string | null;
+  regulatory_activity?: string | null;
+  activity_type?: string | null;
+  [key: string]: unknown;
+}
+
+interface DashboardAlertRow {
+  id: string;
+  project_id: string;
+  kind: string;
+  created_at: string;
+  [key: string]: unknown;
+}
+
+interface LiveActivitySummary {
+  decisionLabelAr: string;
+  shortReason: string;
+  level: string;
+  mandatoryStop: boolean;
+}
+
 export default function IntegratedDashboard() {
   const router = useRouter();
 
-  const [projects, setProjects] = useState<any[]>([]);
-  const [todayActivities, setTodayActivities] = useState<any[]>([]);
-  const [alerts, setAlerts] = useState<any[]>([]);
-  const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, any>>({});
+  const [projects, setProjects] = useState<DashboardProjectRow[]>([]);
+  const [todayActivities, setTodayActivities] = useState<DashboardActivityRow[]>([]);
+  const [alerts, setAlerts] = useState<DashboardAlertRow[]>([]);
+  const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, LiveActivitySummary>>({});
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -85,9 +119,9 @@ export default function IntegratedDashboard() {
         return {
           id: p.id,
           name: p.name,
-          city: p.city,
-          latitude: p.latitude,
-          longitude: p.longitude,
+          city: p.city ?? undefined,
+          latitude: p.latitude as number,
+          longitude: p.longitude as number,
           decision: liveActivity ? dviLevelToDecision(liveActivity.level, liveActivity.mandatoryStop) : null,
           projectStatus: p.project_status,
           todayActivitiesCount,

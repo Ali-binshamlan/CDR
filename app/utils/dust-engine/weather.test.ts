@@ -9,7 +9,7 @@ import { fetchDustWeatherHourly, fetchDustWeather, __clearWeatherCacheForTests }
 // وتتأكد أن PM10/PM2.5/dust يُدمجان بمطابقة الوقت الفعلي، لا بالمؤشر.
 // =====================================================================
 
-function mockFetchResponses(forecastBody: any, airBody: any) {
+function mockFetchResponses(forecastBody: unknown, airBody: unknown) {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const isAirQuality = url.includes('air-quality-api');
     return {
@@ -352,5 +352,39 @@ describe('rainfallLast24hMm — نافذة متحركة 24 ساعة من hourly.
 
     const samples = await fetchDustWeatherHourly(24.7, 46.7, 1, '2026-07-29T06:00:00Z');
     expect(samples[0].rainfallLast24hMm).toBeNull();
+  });
+});
+
+// =====================================================================
+// خطأ تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المسار التشغيلي الحي ما زال
+// ينتظر Open-Meteo". fetchDustWeatherHourly(..., liveTimeoutMs) يجب أن يمرر
+// المهلة المختصرة فعلياً إلى AbortSignal.timeout المستخدَم في fetch (راجع
+// weatherTimeoutMs في engine.ts) — بلا هذا التمرير، evaluateDustVisibilityWindow
+// كانت ستحسب isLiveNow بلا أي أثر فعلي على مهلة الشبكة.
+// =====================================================================
+describe('fetchDustWeatherHourly — تمرير مهلة مختصرة لنشاط حي بجهاز مرتبط', () => {
+  it('يستخدم AbortSignal.timeout بالقيمة المُمرَّرة عبر liveTimeoutMs', async () => {
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockFetchResponses(
+      { hourly: { time: [], visibility: [], weather_code: [], wind_speed_10m: [], wind_gusts_10m: [], wind_direction_10m: [], relative_humidity_2m: [], temperature_2m: [] }, daily: { precipitation_sum: [] } },
+      { hourly: { time: [], pm10: [], pm2_5: [], dust: [] } }
+    );
+
+    await fetchDustWeatherHourly(24.7, 46.7, 1, '2026-07-29T06:00:00Z', 3000);
+
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(3000);
+  });
+
+  it('يستخدم المهلة الافتراضية الكاملة عند عدم تمرير liveTimeoutMs', async () => {
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockFetchResponses(
+      { hourly: { time: [], visibility: [], weather_code: [], wind_speed_10m: [], wind_gusts_10m: [], wind_direction_10m: [], relative_humidity_2m: [], temperature_2m: [] }, daily: { precipitation_sum: [] } },
+      { hourly: { time: [], pm10: [], pm2_5: [], dust: [] } }
+    );
+
+    await fetchDustWeatherHourly(24.7, 46.7, 1, '2026-07-29T06:00:00Z');
+
+    expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);
   });
 });

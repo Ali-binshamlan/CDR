@@ -5,14 +5,13 @@ import { yupResolver } from "@hookform/resolvers/yup";
 import * as Yup from "yup";
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { toast, Toaster } from "react-hot-toast";
 import { supabase } from '@/app/lib/supabase';
 import {
   Mail,
   Lock,
   TrendingUp,
-  ArrowRight,
   ShieldCheck,
   CloudSun,
   LogIn,
@@ -34,12 +33,7 @@ const loginSchema = Yup.object({
 
 export default function LoginPage() {
   const router = useRouter();
-  const [isClient, setIsClient] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
 
   const methods = useForm<LoginFormData>({
     resolver: yupResolver(loginSchema),
@@ -62,7 +56,7 @@ const onSubmit = async (data: LoginFormData) => {
 
   try {
     // تسجيل الدخول مباشرة من المتصفح لضمان حفظ الجلسة
-    const { data: authData, error } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signInWithPassword({
       email: data.email,
       password: data.password,
     });
@@ -83,16 +77,16 @@ const onSubmit = async (data: LoginFormData) => {
     // توجيه المستخدم للداشبورد
     setTimeout(() => router.push("/dashboard"), 1000);
 
-  } catch (error: any) {
+  } catch (error) {
     // إظهار رسالة الخطأ
-    toast.error(error.message || "حدث خطأ غير متوقع", {
+    const message = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+    toast.error(message, {
       id: loadingToast,
     });
   } finally {
     setIsSubmitting(false);
   }
 };
-  if (!isClient) return null;
 
   return (
     <div

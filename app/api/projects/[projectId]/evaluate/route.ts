@@ -35,7 +35,7 @@ export async function POST(
     const owns = await verifyProjectOwnership(projectId, auth.userId);
     if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
-    const result = await evaluateProject(projectId);
+    const result = await evaluateProject(projectId, 'user_refresh');
 
     if (!result.success && result.error === 'المشروع غير موجود') {
       return NextResponse.json({ error: result.error }, { status: 404 });

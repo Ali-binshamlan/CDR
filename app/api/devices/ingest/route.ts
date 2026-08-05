@@ -52,20 +52,27 @@ export async function POST(request: NextRequest) {
 
   // عقد حدث الجهاز (خطأ معماري مكتشَف ومُصلَح — مراجعة كود خبير خارجي —
   // C-03: "عقد أحداث الجهاز غير منفذ"): eventId/sequence/observedAt جميعها
-  // اختيارية (أجهزة/سكربتات قديمة لا ترسلها بعد تستمر بالعمل بلا كسر
-  // توافقي)، لكن عند وجودها تُتحقَّق وتُستخدَم فعلياً بدل تجاهلها. راجع
-  // supabase/migrations/202607290005_device_event_contract.sql للأعمدة/القيد.
+  // إلزامية الآن (طلب صريح — إلزام كامل فوري، لا فترة سماح): أي جهاز/سكربت
+  // لا يرسل الحقول الثلاثة يُرفَض بـ400 صراحة بدل قبوله بصمت بلا عقد حدث.
+  // راجع supabase/migrations/202607290005_device_event_contract.sql للأعمدة/القيد.
   const rawEventId = (body as Record<string, unknown>).eventId;
-  if (rawEventId !== undefined && rawEventId !== null && typeof rawEventId !== 'string') {
-    return NextResponse.json({ error: 'eventId يجب أن يكون نصاً' }, { status: 400 });
+  if (typeof rawEventId !== 'string' || !rawEventId.trim()) {
+    return NextResponse.json({ error: 'eventId إلزامي ويجب أن يكون نصاً غير فارغ' }, { status: 400 });
   }
-  const eventId = typeof rawEventId === 'string' && rawEventId.trim() ? rawEventId.trim() : null;
+  const eventId = rawEventId.trim();
 
+  // sequence: رقم صحيح غير سالب فقط — يُرفَض السالب/الكسري صراحة (كان
+  // مسموحاً سابقاً رغم عدم منطقيته: تسلسل حدث لا يكون سالباً أو كسرياً).
   const rawSequence = (body as Record<string, unknown>).sequence;
-  if (rawSequence !== undefined && rawSequence !== null && (typeof rawSequence !== 'number' || !Number.isFinite(rawSequence))) {
-    return NextResponse.json({ error: 'sequence يجب أن يكون رقماً' }, { status: 400 });
+  if (
+    typeof rawSequence !== 'number' ||
+    !Number.isFinite(rawSequence) ||
+    !Number.isInteger(rawSequence) ||
+    rawSequence < 0
+  ) {
+    return NextResponse.json({ error: 'sequence إلزامي ويجب أن يكون رقماً صحيحاً غير سالب' }, { status: 400 });
   }
-  const sequence = typeof rawSequence === 'number' ? rawSequence : null;
+  const sequence = rawSequence;
 
   // observedAt: وقت رصد القراءة الفعلي من الجهاز نفسه، مستقل عن وقت وصول
   // الخادم (receivedAt أدناه) — بلا هذا، جهاز يعيد إرسال حمولة قديمة محفوظة
@@ -75,29 +82,25 @@ export async function POST(request: NextRequest) {
   // قراءة بوقت مستقبلي أو أقدم من نافذة الاستمرار الزمنية القصوى (40 دقيقة،
   // PM10_SUSPENSION_MINUTES+10) تُرفض صراحة بدل قبولها كدليل صالح.
   const rawObservedAt = (body as Record<string, unknown>).observedAt;
-  let observedAtIso: string | null = null;
-  if (rawObservedAt !== undefined && rawObservedAt !== null) {
-    if (typeof rawObservedAt !== 'string') {
-      return NextResponse.json({ error: 'observedAt يجب أن يكون نصاً بصيغة ISO' }, { status: 400 });
-    }
-    const observedMs = new Date(rawObservedAt).getTime();
-    if (Number.isNaN(observedMs)) {
-      return NextResponse.json({ error: 'observedAt ليس تاريخاً صالحاً' }, { status: 400 });
-    }
-    const nowMs = Date.now();
-    const CLOCK_SKEW_TOLERANCE_MS = 2 * 60_000;
-    if (observedMs > nowMs + CLOCK_SKEW_TOLERANCE_MS) {
-      return NextResponse.json({ error: 'observedAt في المستقبل — تحقق من ساعة الجهاز' }, { status: 400 });
-    }
-    const MAX_OBSERVED_AGE_MS = 40 * 60_000;
-    if (observedMs < nowMs - MAX_OBSERVED_AGE_MS) {
-      return NextResponse.json({ error: 'observedAt قديم جداً — القراءة مرفوضة كدليل حالي' }, { status: 400 });
-    }
-    observedAtIso = new Date(observedMs).toISOString();
+  if (typeof rawObservedAt !== 'string' || !rawObservedAt.trim()) {
+    return NextResponse.json({ error: 'observedAt إلزامي ويجب أن يكون نصاً بصيغة ISO' }, { status: 400 });
   }
+  const observedMs = new Date(rawObservedAt).getTime();
+  if (Number.isNaN(observedMs)) {
+    return NextResponse.json({ error: 'observedAt ليس تاريخاً صالحاً' }, { status: 400 });
+  }
+  const nowMs = Date.now();
+  const CLOCK_SKEW_TOLERANCE_MS = 2 * 60_000;
+  if (observedMs > nowMs + CLOCK_SKEW_TOLERANCE_MS) {
+    return NextResponse.json({ error: 'observedAt في المستقبل — تحقق من ساعة الجهاز' }, { status: 400 });
+  }
+  const MAX_OBSERVED_AGE_MS = 40 * 60_000;
+  if (observedMs < nowMs - MAX_OBSERVED_AGE_MS) {
+    return NextResponse.json({ error: 'observedAt قديم جداً — القراءة مرفوضة كدليل حالي' }, { status: 400 });
+  }
+  const observedAtIso = new Date(observedMs).toISOString();
 
-  const reading: Partial<NormalizedReading> = {};
-  if (observedAtIso) reading.observedAtIso = observedAtIso;
+  const reading: Partial<NormalizedReading> = { observedAtIso };
   for (const field of MEASUREMENT_FIELDS) {
     const value = (body as Record<string, unknown>)[field];
     if (value === undefined || value === null) continue;
@@ -129,7 +132,7 @@ export async function POST(request: NextRequest) {
   // بلا await ليس مضموناً أن يكتمل. فشل إعادة التقييم لا يُسقِط نجاح
   // الكتابة نفسها (القراءة محفوظة فعلاً بغض النظر) — يُسجَّل فقط، نفس مبدأ
   // معالجة الفشل الجزئي في provider-pull/route.ts.
-  const evalResult = await evaluateProject(auth.projectId).catch((err) => {
+  const evalResult = await evaluateProject(auth.projectId, 'device_ingest').catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`ingest: evaluateProject failed for project ${auth.projectId}:`, message);
     return { success: false as const, persisted: 0, error: message };

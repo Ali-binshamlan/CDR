@@ -1,10 +1,12 @@
 import Link from 'next/link';
-import { MapPin, Settings, ArrowRight, LineChart } from 'lucide-react';
+import { MapPin, Settings, ArrowRight } from 'lucide-react';
 // تأكدي من صحة مسار مكون AddActivityModal حسب هيكلة مشروعك
 import AddActivityModal from '@/app/components/AddActivityModal';
+import type { ProjectLite } from '@/app/components/AddActivityModal/types';
+import type { ProjectRow } from '@/app/lib/dustEvaluation';
 
 interface ProjectHeaderProps {
-  project: any;
+  project: ProjectRow & { id: string; name: string; city?: string | null };
   onActivityCreated?: () => void;
 }
 
@@ -46,25 +48,25 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
             id: project.id,
             latitude: lat,
             longitude: lon,
-            terrain_type: project.terrain_type || 'suburban',
-            dust_causing_activities: project.dust_causing_activities,
-            exposed_dust_area_size: project.exposed_dust_area_size,
+            terrain_type: (project.terrain_type as string | null) || 'suburban',
+            dust_causing_activities: project.dust_causing_activities as ProjectLite['dust_causing_activities'],
+            exposed_dust_area_size: project.exposed_dust_area_size as ProjectLite['exposed_dust_area_size'],
             unpaved_roads_length: project.unpaved_roads_length,
             heavy_machinery_count: project.heavy_machinery_count,
             trucks_per_day: project.trucks_per_day,
             is_near_public_road: project.is_near_public_road,
             is_near_sensitive_areas: project.is_near_sensitive_areas,
-            dust_mitigation_measures: project.dust_mitigation_measures,
+            dust_mitigation_measures: project.dust_mitigation_measures as ProjectLite['dust_mitigation_measures'],
             has_concrete_curing_plan: project.has_concrete_curing_plan,
             can_advance_pouring_time: project.can_advance_pouring_time,
-            work_hours_start: project.work_hours_start,
-            work_hours_end: project.work_hours_end,
-            shifts: project.shifts,
-            work_days_list: project.work_days_list,
+            work_hours_start: project.work_hours_start as ProjectLite['work_hours_start'],
+            work_hours_end: project.work_hours_end as ProjectLite['work_hours_end'],
+            shifts: project.shifts as ProjectLite['shifts'],
+            work_days_list: project.work_days_list as ProjectLite['work_days_list'],
             // منطقة المشروع الكاملة (zone) — تُستخدم لقصّ موقع الرافعة داخلها
-            zone_type: project.zone_type,
-            zone_polygon: project.zone_polygon,
-            zone_radius_m: project.zone_radius_m,
+            zone_type: project.zone_type as ProjectLite['zone_type'],
+            zone_polygon: project.zone_polygon as ProjectLite['zone_polygon'],
+            zone_radius_m: project.zone_radius_m as ProjectLite['zone_radius_m'],
           }}
           onActivityCreated={onActivityCreated}
         />
