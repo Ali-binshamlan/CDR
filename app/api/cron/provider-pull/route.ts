@@ -297,10 +297,27 @@ export async function GET(request: Request) {
   // بصرف النظر عن عدد المحطات المرتبطة به التي نجحت بهذه الدورة. فشل تقييم
   // مشروع واحد لا يوقف تقييم الباقي (نفس مبدأ حلقة السحب أعلاه)، ولا يُسقِط
   // نجاح السحب نفسه (القراءة محفوظة فعلاً بغض النظر عن نتيجة إعادة التقييم).
+  // حادثة إنتاج فعلية (2026-08-08): evaluateProject لا تحمل أي حد زمني
+  // داخلي — لو أي استعلام بداخلها تعطّل، تنتظر بلا حدود حتى يقطعها Vercel
+  // نفسه عند 60 ثانية (maxDuration أعلاه)، والقطع القسري لا يُغلق اتصال
+  // قاعدة البيانات المفتوح داخلها دائماً بشكل نظيف — يتراكم كاتصال "ميت"
+  // يستهلك مكاناً في connection pool حتى statement_timeout (30s، على
+  // مستوى الـrole، migration 202608081001) يكتشفه من طرف قاعدة البيانات.
+  // EVAL_TIMEOUT_MS هنا يجعل provider-pull يتوقف عن الانتظار وينتقل
+  // للمشروع التالي/الاستجابة النهائية بسرعة بدل الاعتماد فقط على قطع
+  // Vercel القسري في نهاية الدالة كاملةً.
+  const EVAL_TIMEOUT_MS = 20_000;
+  function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} تجاوز ${ms}ms`)), ms)),
+    ]);
+  }
+
   const evaluationResults: Array<{ projectId: string; ok: boolean; error?: string }> = [];
   for (const projectId of affectedProjectIds) {
     try {
-      const evalResult = await evaluateProject(projectId, 'provider_pull');
+      const evalResult = await withTimeout(evaluateProject(projectId, 'provider_pull'), EVAL_TIMEOUT_MS, `evaluateProject(${projectId})`);
       evaluationResults.push({ projectId, ok: evalResult.success, error: evalResult.error });
       // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا مهمة إعادة محاولة
       // مضمونة تربط القراءة المحفوظة بنجاح بالتقييم الفاشل بعدها") — راجع
