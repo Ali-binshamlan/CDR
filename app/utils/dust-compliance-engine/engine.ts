@@ -454,8 +454,8 @@ export function evaluateDustCompliance(
       {
         code: 'GATE-WIND-ABOVE-25-004',
         severity: 'STOP_AFFECTED_ACTIVITY',
-        messageAr: `إيقاف الأنشطة المكشوفة المولّدة للغبار: سرعة الرياح تتجاوز ${windGateStopKmh} كم/س `,
-        actionAr: `أوقف الأنشطة المكشوفة وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون ${windGateStopKmh} كم/س`,
+        messageAr: `إيقاف الأنشطة المولّدة للغبار: سرعة الرياح تتجاوز ${windGateStopKmh} كم/س `,
+        actionAr: `أوقف النشاط وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون ${windGateStopKmh} كم/س`,
         overridable: false,
       }
     );

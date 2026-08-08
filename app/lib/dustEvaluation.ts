@@ -969,7 +969,15 @@ export async function computeDustResults(
         // التنظيمية حتى تتماشى شبكة "توقعات الطقس طوال فترة الدوام" مع
         // قرار الامتثال، بدل الاعتماد فقط على عتبات DVI الفيزيائي المختلفة.
         const isDustGenerating = row.is_dust_generating ?? true;
-        const isEnclosedOperation = isBatchingPm10Exempt ? true : (row.is_enclosed_operation ?? false);
+        // خطأ مكتشَف ومُصلَح: كان row.is_enclosed_operation الخام يُمرَّر مباشرة
+        // لأي نشاط غير محطة خلط، فتظهر شارة "بوابة الرياح غير مفعّلة" لأي
+        // نشاط مغلق (هدم، حفر، إلخ) — نفس التناقض الموثَّق أعلاه، لكن بالاتجاه
+        // المعاكس، بعد أن أصبح isEnclosedExemptFromHighWind في engine.ts
+        // يقتصر الإعفاء فعلياً على محطة الخلط وحدها. isEnclosedOperation هنا
+        // (اسم المتغيّر مضلِّل تاريخياً — فعلياً "هل معفى من بوابة الرياح؟")
+        // الآن false لأي نشاط ليس محطة خلط معفاة، بصرف النظر عن إغلاقه
+        // الفيزيائي، ليطابق قرار الامتثال الفعلي تماماً.
+        const isEnclosedOperation = isBatchingPm10Exempt;
         const annotatedWindowEval: DustWindowEvaluation = {
           ...windowEval,
           worst: annotateHourWithRegulatoryGate(windowEval.worst, isDustGenerating, isEnclosedOperation),
