@@ -508,27 +508,6 @@ export default function ComplianceWidgetCard({
   // يعتمدها الخادم (PM10_LAST_READING_FRESHNESS_MINUTES) لكن لم تصل بعد لحد
   // STALE الكامل — نطاق ضيق لكنه حقيقي.
   const devicePm10LastReadingAt = worst?.evidence?.devicePm10LastReadingAt;
-
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم أثناء تجربة حية — "خفيها من
-  // امام المستخدم فقط، بس اترك القانون"): PM10 مستثنى عمداً من بوابة
-  // الحداثة العامة (freshOrNull في dust-engine/engine.ts) على مستوى القرار
-  // نفسه — قرار مدروس ومؤكَّد (راجع تعليق devicePm25At في dust-engine/types.ts):
-  // إخفاؤه هناك كان سيُسقِط آلية أدق موجودة مسبقاً (pm10ReadingIsFreshEnoughForImmediateStop)
-  // تُبقي قراءة PM10 قديمة مؤثرة بدرجة احترازية أضعف بدل تجاهلها بالكامل —
-  // فشل آمن نحو الاحتراز، لا نحو "لا بيانات تفتح الباب لـALLOW". لكن هذا
-  // يعني بقية الحقول هنا (رياح/رؤية/رطوبة/حرارة/PM2.5) تختفي فعلياً كـ"—"
-  // بعد 4 دقائق (لأن worst.evidence.X نفسه يصير null من مصدره)، بينما PM10
-  // وحده يبقى ظاهراً بقيمته الخام القديمة — عدم اتساق بصري في هذه البطاقة
-  // تحديداً. الإصلاح مقصور على طبقة العرض هنا فقط: displayPm10UgM3 تُخفي
-  // القيمة (null) في الواجهة إن كانت أقدم من نفس عتبة الحداثة (4 دقائق)
-  // المستخدمة لبقية الحقول — worst.evidence.pm10UgM3 نفسه (والقرار المبني
-  // عليه) يبقيان بلا أي تغيير.
-  const isPm10Stale =
-    devicePm10LastReadingAt !== undefined &&
-    devicePm10LastReadingAt !== null &&
-    (now - new Date(devicePm10LastReadingAt).getTime()) / 60000 > PM10_LAST_READING_FRESHNESS_MINUTES;
-  const displayPm10UgM3 = isPm10Stale ? null : worst?.evidence?.pm10UgM3 ?? null;
-
   const isDeviceStalledDuringPending =
     !isEnded &&
     !isAwaitingVerification &&
@@ -748,7 +727,7 @@ export default function ComplianceWidgetCard({
             <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
               <Gauge className="w-4 h-4 text-violet-500 mb-1.5" />
               <span className="text-xs font-black text-slate-800" dir="ltr">
-                {fmt2(displayPm10UgM3)}
+                {fmt2(worst.evidence.pm10UgM3)}
               </span>
               <span className="text-[8px] font-bold text-slate-400">PM10</span>
             </div>
@@ -886,7 +865,7 @@ export default function ComplianceWidgetCard({
                   </div>
                   <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
                     <div className="text-xs text-slate-400">PM10 / PM2.5</div>
-                    <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(displayPm10UgM3)} / {fmt2(worst.evidence.pm25UgM3)}</div>
+                    <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(worst.evidence.pm10UgM3)} / {fmt2(worst.evidence.pm25UgM3)}</div>
                   </div>
                   <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
                     <div className="text-xs text-slate-400">الرطوبة النسبية</div>

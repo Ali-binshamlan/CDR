@@ -564,7 +564,7 @@ export function evaluateDustCompliance(
   //
   // غياب previousDecisionCategory (أول تقييم لنشاط، أو لم يُمرَّر من
   // المستدعي) يعني عدم تطبيق أي قيد — سلوك المحرك بلا تغيير.
-  const RESUME_STABILITY_MINUTES = 10;
+  const RESUME_STABILITY_MINUTES = 3;
   const previousWasStopped =
     ctx.previousDecisionCategory === 'MANDATORY_STOP' ||
     ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';

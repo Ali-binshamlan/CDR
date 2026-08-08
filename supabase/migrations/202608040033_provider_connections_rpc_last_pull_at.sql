@@ -10,6 +10,8 @@
 -- تُرجع عمود last_pull_at إطلاقاً.
 -- =====================================================================
 
+drop function if exists public.list_active_provider_connections();
+
 create or replace function public.list_active_provider_connections()
 returns table (
   id uuid,

@@ -2,7 +2,6 @@
 // الأصلي في مرقاب، مقتصرة على الدوال الخاصة بالغبار (DVI)/الامتثال
 // التنظيمي/AEI فقط. لا رافعات ولا حرارة في DCR إطلاقاً.
 import { createHash } from 'node:crypto';
-import { withSupabaseRetry } from '@/app/lib/supabaseRetry';
 import {
   evaluateDustVisibilityWindow,
   evaluateDustVisibilityWorkDayHourly,
@@ -2311,31 +2310,29 @@ export async function persistActivityDecisionsAtomic(
 
         if (!dviPayload && !compliancePayload && !finalDecisionPayload) return base;
 
-        const { data, error } = await withSupabaseRetry(() =>
-          supabaseAdmin.rpc('persist_activity_decision_atomic', {
-            p_project_id: projectId,
-            p_activity_group_id: r.activityGroupId,
-            p_activity_id: r.activityId,
+        const { data, error } = await supabaseAdmin.rpc('persist_activity_decision_atomic', {
+          p_project_id: projectId,
+          p_activity_group_id: r.activityGroupId,
+          p_activity_id: r.activityId,
 
-            p_dvi_result: dviPayload?.result ?? null,
-            p_dvi_triggered_by: dviTriggeredBy,
-            p_dvi_expected_updated_at: dviPayload?.expectedUpdatedAt ?? null,
+          p_dvi_result: dviPayload?.result ?? null,
+          p_dvi_triggered_by: dviTriggeredBy,
+          p_dvi_expected_updated_at: dviPayload?.expectedUpdatedAt ?? null,
 
-            p_compliance_result: compliancePayload?.result ?? null,
-            p_compliance_rulebook_version: compliancePayload?.result?.rulebookVersion ?? null,
-            p_compliance_triggered_by: complianceTriggeredBy,
-            p_compliance_expected_updated_at: compliancePayload?.expectedUpdatedAt ?? null,
-            p_compliance_dust_profile_id: complianceEntry?.dustProfileId ?? null,
-            p_compliance_stopped_since: compliancePayload?.stoppedSince ?? null,
-            p_compliance_pending_resume_since: compliancePayload?.pendingResumeSince ?? null,
+          p_compliance_result: compliancePayload?.result ?? null,
+          p_compliance_rulebook_version: compliancePayload?.result?.rulebookVersion ?? null,
+          p_compliance_triggered_by: complianceTriggeredBy,
+          p_compliance_expected_updated_at: compliancePayload?.expectedUpdatedAt ?? null,
+          p_compliance_dust_profile_id: complianceEntry?.dustProfileId ?? null,
+          p_compliance_stopped_since: compliancePayload?.stoppedSince ?? null,
+          p_compliance_pending_resume_since: compliancePayload?.pendingResumeSince ?? null,
 
-            p_final_decision: finalDecisionPayload?.decision ?? null,
-            p_final_evaluated_at: finalDecisionPayload?.evaluatedAt ?? null,
+          p_final_decision: finalDecisionPayload?.decision ?? null,
+          p_final_evaluated_at: finalDecisionPayload?.evaluatedAt ?? null,
 
-            p_evaluation_run_id: evaluationRunId,
-            p_input_snapshot_hash: finalDecisionPayload?.inputSnapshotHash ?? null,
-          })
-        );
+          p_evaluation_run_id: evaluationRunId,
+          p_input_snapshot_hash: finalDecisionPayload?.inputSnapshotHash ?? null,
+        });
 
         if (error || !data?.[0]) {
           // كود 40001 (serialization_failure) يصل حصراً من فحص CAS داخل
