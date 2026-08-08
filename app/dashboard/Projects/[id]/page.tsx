@@ -7,9 +7,12 @@ import { Inbox } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 import { supabase } from '@/app/lib/supabase';
 import { useNow } from '@/app/lib/useNow';
+import { isLiveDataV2Enabled } from '@/app/lib/liveData/featureFlag';
+import { useLiveDeviceData } from '@/app/lib/liveData/useLiveDeviceData';
 
 import ProjectHeader from '@/app/components/dashborad/Projects/[id]/components/ProjectHeader';
 import DashboardFilters from '@/app/components/dashborad/Projects/[id]/components/DashboardFilters';
+import LiveDataIndicator from '@/app/components/dashborad/Projects/[id]/components/LiveDataIndicator';
 import MultiIndicatorActivityBox, {
   IndicatorSummary,
   UnifiedDecisionTarget,
@@ -81,6 +84,19 @@ export default function ProjectDetailsPage({
   // "الآن" لتصنيف حالة كل نشاط (لم تبدأ/جارية/منتهية) أدناه — يكفي تحديث كل
   // 30 ثانية، أسرع بكثير أصلاً بفضل تحديث recentActivities الدوري (polling).
   const nowTs = useNow(30000);
+  // "الآن" بدقة أعلى (كل ثانية) لمؤشر LiveDataIndicator وحده — عرض "منذ N
+  // ثانية" الحي يحتاج تحديثاً أسرع من 30 ثانية، بمعزل عن nowTs أعلاه (لا
+  // تغيير على منطق تصنيف حالة النشاط الحالي).
+  const liveIndicatorNowTs = useNow(1000);
+
+  // Live Data Layer (2026-08-08) — خلف Feature Flag فقط، بلا أي أثر على
+  // fetchDashboardData/polling/Realtime أدناه إن كانت الراية مطفأة (القيمة
+  // الافتراضية). projectId يُمرَّر null صراحة عند إطفاء الراية بدل تخطي
+  // استدعاء الـhook — قواعد React تمنع استدعاء hooks بشكل شرطي.
+  const liveDataV2Enabled = isLiveDataV2Enabled();
+  const { snapshots: liveSnapshots, connectionStatus: liveConnectionStatus } = useLiveDeviceData(
+    liveDataV2Enabled ? id : null
+  );
 
   // نسخة محلية قابلة للتعديل من الأنشطة، حتى نقدر نحذف عنصر من الواجهة
   // فور نجاح الحذف داخل MultiIndicatorActivityBox دون الحاجة لإعادة جلب الصفحة كاملة
@@ -327,6 +343,14 @@ export default function ProjectDetailsPage({
     <div className="min-h-screen bg-[#F4F7FB] p-6 lg:p-8 font-sans" dir="rtl">
       <div className="max-w-[1440px] mx-auto space-y-8">
         <ProjectHeader project={project} onActivityCreated={handleEdited} />
+
+        {liveDataV2Enabled && (
+          <LiveDataIndicator
+            connectionStatus={liveConnectionStatus}
+            snapshots={liveSnapshots}
+            nowTs={liveIndicatorNowTs}
+          />
+        )}
 
         <DashboardFilters activeStatus={activeStatus} />
 
