@@ -4,12 +4,13 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'react-hot-toast';
-import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar, Wifi } from 'lucide-react';
+import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar, Wifi, Compass } from 'lucide-react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { useNow } from '@/app/lib/useNow';
 import { isValidPhoneNumber, parsePhoneNumberFromString } from 'libphonenumber-js';
 import ConnectProviderModal from './ConnectProviderModal';
+import TrueNorthCalibrationModal from './TrueNorthCalibrationModal';
 
 // تنقّل صلب حقيقي (يفرض تحميل الصفحة بالكامل من الصفر، لا Router Cache
 // جزئي — راجع تعليق الاستدعاء أدناه للسبب الكامل). دالة معرَّفة خارج
@@ -120,9 +121,20 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     last_pm10: number | null;
     last_pm25: number | null;
     last_visibility_m: number | null;
+    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي مرتبط
+    // بكل محطة"): راجع migration 202608060001_device_true_north_calibration.sql
+    // وTrueNorthCalibrationModal.tsx للسياق الكامل.
+    true_north_alignment_documented: boolean | null;
+    true_north_alignment_type: 'TRUE_NORTH' | 'MAGNETIC_NORTH' | null;
+    true_north_verification_method: string | null;
+    true_north_verified_by: string | null;
+    true_north_verified_at: string | null;
+    true_north_deviation_deg: number | null;
+    true_north_evidence_url: string | null;
   }
   const [devices, setDevices] = useState<ProjectDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(true);
+  const [trueNorthModalDeviceId, setTrueNorthModalDeviceId] = useState<string | null>(null);
 
   // حالة ربط مصدر بيانات خارجي (provider_connections) لكل جهاز — خريطة
   // deviceId → معلومات الربط (أو undefined إن لم يُربط بعد). تُملأ بعد
@@ -1203,7 +1215,18 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                         {device.last_pm10 != null && <div>PM10: {device.last_pm10}</div>}
                         {device.last_pm25 != null && <div>PM2.5: {device.last_pm25}</div>}
                       </div>
-                      <div className="flex gap-2 shrink-0">
+                      <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setTrueNorthModalDeviceId(device.id)}
+                          className={`text-[11px] font-bold hover:underline px-2 py-1 flex items-center gap-1 ${
+                            device.true_north_alignment_documented ? 'text-emerald-600' : 'text-amber-600'
+                          }`}
+                          title="توثيق معايرة الشمال الحقيقي لهذا الجهاز"
+                        >
+                          <Compass className="w-3 h-3" />
+                          {device.true_north_alignment_documented ? 'معايَر' : 'غير معايَر'}
+                        </button>
                         <button
                           type="button"
                           onClick={() => setConnectModalDeviceId(device.id)}
@@ -1242,6 +1265,29 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               onConnected={fetchDevices}
             />
           )}
+
+          {trueNorthModalDeviceId && (() => {
+            const device = devices.find((d) => d.id === trueNorthModalDeviceId);
+            if (!device) return null;
+            return (
+              <TrueNorthCalibrationModal
+                projectId={projectId}
+                deviceId={device.id}
+                deviceName={device.name}
+                current={{
+                  true_north_alignment_documented: device.true_north_alignment_documented,
+                  true_north_alignment_type: device.true_north_alignment_type,
+                  true_north_verification_method: device.true_north_verification_method,
+                  true_north_verified_by: device.true_north_verified_by,
+                  true_north_verified_at: device.true_north_verified_at,
+                  true_north_deviation_deg: device.true_north_deviation_deg,
+                  true_north_evidence_url: device.true_north_evidence_url,
+                }}
+                onClose={() => setTrueNorthModalDeviceId(null)}
+                onSaved={fetchDevices}
+              />
+            );
+          })()}
             {/* إقرار المستخدم بصحة البيانات وتحمّل المسؤولية الكاملة عنها —
                 إلزامي، يمنع الحفظ حتى يُفعَّل (راجع validateBasicFields)،
                 نفس create/page.tsx تماماً. */}

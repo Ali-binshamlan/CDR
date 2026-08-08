@@ -528,9 +528,16 @@ function buildDeviceMergedReading(input: DustEngineInput, nowMs: number = Date.n
   const freshWindGustKmh = freshOrNull(input.deviceWindGustKmh, input.deviceWindGustAt, nowMs);
   const freshWindDirectionDeg = freshOrNull(input.deviceWindDirectionDeg, input.deviceWindDirectionAt, nowMs);
   const freshVisibilityM = freshOrNull(input.deviceVisibilityM, input.deviceVisibilityAt, nowMs);
-  // تعميم البوابة (راجع تعليق devicePm25At/deviceRelativeHumidityAt/
-  // deviceTemperatureAt في types.ts) — PM10 مستثنى عمداً، له آلية حداثة/
-  // استمرار مستقلة في dustEvaluation.ts.
+  // طلب صريح من المستخدم أثناء تجربة حية — "خليها تختفي معهم" (توحيد PM10
+  // مع بقية الحقول عند انقطاع الجهاز). تم فحص هذا: PM10 له آلية أدق موجودة
+  // مسبقاً (pm10ReadingIsFreshEnoughForImmediateStop أدناه في applyMandatoryGates)
+  // تمنع قراءة قديمة من إنتاج MANDATORY_STOP قطعي، لكنها تُبقيها مؤثرة
+  // بدرجة أضعف (STOP_DUST_GENERATING_ACTIVITIES احترازي) — فشل آمن نحو
+  // الاحتراز، لا نحو "تجاهل تام يفتح الباب لقرار مسموح" كما يعنيه null
+  // الكامل هنا. توحيد PM10 عبر freshOrNull كان سيُسقِط هذه الدرجة الوسيطة
+  // ويُضعِف السلامة التنظيمية (نقص بيانات يفتح المجال لـALLOW بدل الإبقاء
+  // على احتراز) — أُبقي PM10 كما هو (بلا freshOrNull هنا)، والآلية الدقيقة
+  // المنفصلة أدناه تبقى هي الحارس الفعلي لحداثته.
   const freshPm25 = freshOrNull(input.devicePm25, input.devicePm25At, nowMs);
   const freshRelativeHumidityPercent = freshOrNull(input.deviceRelativeHumidityPercent, input.deviceRelativeHumidityAt, nowMs);
   const freshTemperatureC = freshOrNull(input.deviceTemperatureC, input.deviceTemperatureAt, nowMs);

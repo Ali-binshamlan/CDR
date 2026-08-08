@@ -68,12 +68,14 @@ export interface DustProjectComplianceProfile {
   cameraRetentionDays: number | null;
   sensitivityMapPrepared: boolean | null;
 
-  // MRQ-DATA-TRUE-NORTH-111: هل محطة الرصد معايَرة فعلياً على الشمال
-  // الحقيقي (لا مغناطيسي/تقريبي)؟ null تعني "غير موثّق" — يُعامَل معاملة
-  // "غير صالح" (نفس false)، لأن غياب التوثيق لا يعني الصلاحية ضمناً. شرط
-  // مسبق لاستخدام windDirectionDeg في أي قاعدة اتجاه رياح (راجع
-  // MRQ-RECEPTOR-DOWNWIND-120 في rulebook.ts).
-  trueNorthAlignmentDocumented: boolean | null;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي موضوع على
+  // مستوى المشروع، بينما يجب أن يكون مرتبطاً بكل محطة أو حساس اتجاه رياح"):
+  // trueNorthAlignmentDocumented (boolean واحد هنا على مستوى المشروع كله)
+  // أُزيل من هذا الملف الشخصي — لا يميّز بين محطتين مختلفتين لنفس المشروع.
+  // المصدر الفعلي الآن هو DeviceTrueNorthCalibration (adapters.ts)، مبني
+  // على project_devices.true_north_* (راجع migration
+  // 202608060001_device_true_north_calibration.sql) — كل جهاز يحمل توثيق
+  // معايرته الخاص، لا حقلاً واحداً مشتركاً لكل أجهزة المشروع.
 }
 
 // أدلة ضوابط التحكم الفعلية المتوفرة فعلياً على النشاط (وليس المطلوبة نظرياً).
@@ -276,6 +278,19 @@ export interface DustActivityComplianceProfile {
   isActiveOrPlanned: boolean;
   controls: DustControlEvidence;
   measurements: DustActivityMeasurements;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "المستقبلات الحساسة: عند عدم
+  // وجود مستقبلات حساسة، يحوّل النظام المسافة إلى Infinity ويعامل الحالة
+  // كأنها آمنة؛ لكن القائمة الفارغة قد تعني أن بيانات المستقبلات لم تُدخل
+  // أصلاً — يجب التفريق بين 'لا توجد مستقبلات بعد مسح مكتمل' و'لم يتم إدخال
+  // بيانات المستقبلات'"): nearestReceptorDistancesM (geo.ts) تُرجع Infinity
+  // في كلتا الحالتين (لا وسيلة تقنية للتمييز بينهما داخل تلك الدالة نفسها —
+  // تستهلك فقط مصفوفة المستقبِلات، لا تعرف سياق "هل النظام كله فارغ؟").
+  // هذا الحقل يحمل تلك المعلومة صراحة من مصدر الجلب الفعلي (عدد صفوف
+  // sensitive_receptors عالمياً في قاعدة البيانات، لا فقط ضمن نطاق موقع
+  // النشاط) — false يعني "لا يوجد أي مستقبِل حساس مسجَّل في النظام كله بعد"،
+  // فأي Infinity ناتجة حينها لا تصلح دليلاً على أمان فعلي، بل نقص بيانات.
+  // راجع استهلاكها في crusherRules/batchingPlantRules (rulebook.ts).
+  sensitiveReceptorsDataAvailable: boolean;
 }
 
 // مستقبِل حساس (مدرسة/مستشفى/سكني/مسجد) بإحداثياته — يُستخدم لحساب مسافة
@@ -385,6 +400,17 @@ export interface DustComplianceResult {
   // جهاز/قراءة مرتبطة، أو فشل الاستعلام) — الواجهة تُخفي العدّاد حينها.
   pm10SustainedMinutesAbove340?: number;
   pm10SustainedMinutesAbove250?: number;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة: القرار
+  // المخزَّن لا يحمل معرّفات القراءات الفعلية التي أثبتت الاستمرار"):
+  // معرّفات صفوف pm10_readings_history (id) المكوِّنة فعلياً لسلسلة
+  // الاستمرار التي بنت isConfirmedViolation340/isSuspended250For30Min —
+  // راجع evidenceReadingIds في Pm10SustainedStatus (dustEvaluation.ts)
+  // للتفصيل الكامل. يُخزَّن هذا الكائن كاملاً بصيغة jsonb في
+  // dust_compliance_evaluations.result، فلا حاجة لعمود قاعدة بيانات جديد؛
+  // القرار المخزَّن يحمل الآن معرّفات الأدلة الدقيقة، لا فقط القيمة
+  // المجمَّعة النهائية. فارغة/undefined إن لم توجد سلسلة استمرار مُثبَتة.
+  pm10EvidenceReadingIds?: string[];
 
   // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "ليش التايمر ينعاد إذا سويت تحديث
   // للصفحة"): العدّاد التنازلي في Compliancewidgetcard.tsx كان يفترض أن
@@ -597,4 +623,14 @@ export interface DustComplianceContext {
   // undefined = لا بيانات استمرار متاحة (نفس فشل آمن الحقلين أعلاه).
   pm10ConfirmedViolation340?: boolean;
   pm10Suspended250For30Min?: boolean;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة: القرار
+  // المخزَّن لا يحمل معرّفات القراءات الفعلية التي أثبتت الاستمرار، فقط
+  // القيم المجمَّعة"): معرّفات صفوف pm10_readings_history المكوِّنة فعلياً
+  // لسلسلة الاستمرار وراء pm10ConfirmedViolation340/pm10Suspended250For30Min
+  // أعلاه — راجع evidenceReadingIds في Pm10SustainedStatus (dustEvaluation.ts)
+  // لمصدرها الفعلي. تُنسَخ كما هي إلى DustComplianceResult.pm10EvidenceReadingIds
+  // (يُخزَّن ضمن jsonb، لا عمود جديد) — القرار المخزَّن يحمل الآن دليلاً
+  // قابلاً للتتبع لصفوف محددة، لا فقط رقماً مجمَّعاً.
+  pm10EvidenceReadingIds?: string[];
 }

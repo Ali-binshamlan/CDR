@@ -1,9 +1,11 @@
 // سيناريو اختبار مبسّط لنفس جهاز ThingsBoard: PM10 يبدأ بمرحلة مخالفة
 // مؤكَّدة (فوق حد 340) لمدة ثابتة، ثم ينزل لنطاق "مسموح" (ALLOW نظيف، تحت
-// 200) ويستمر بالإرسال حتى يتجاوز مهلة استقرار الاستئناف الكاملة
-// (RESUME_STABILITY_MINUTES=10 في dust-compliance-engine/engine.ts) بهامش
-// أمان — أي لا يتوقف السكربت عند أول قراءة نظيفة، بل يستمر حتى يضمن وصول
-// القرار الفعلي لحالة "مسموح" وليس فقط "بانتظار استقرار".
+// حد normalMaxInclusive=200 في RIYADH_DUST_2026_2 — راجع
+// app/utils/rule-bundles/riyadh-dust-2026.3.ts) ويستمر بالإرسال حتى يتجاوز
+// مهلة استقرار الاستئناف الكاملة (RESUME_STABILITY_MINUTES=10 في
+// dust-compliance-engine/engine.ts) بهامش أمان — أي لا يتوقف السكربت عند
+// أول قراءة نظيفة، بل يستمر حتى يضمن وصول القرار الفعلي لحالة "مسموح"
+// وليس فقط "بانتظار استقرار".
 // الرؤية ثابتة على 1000م طوال السيناريو (طلب صريح) — لا تتداخل مع اختبار PM10.
 // سكربت اختباري محلي فقط — لا علاقة له بكود التطبيق، لا يُشغَّل بالإنتاج.
 //
@@ -11,7 +13,8 @@
 //   1) VIOLATION — PM10 بين 350-450 (5 دقائق) — فوق حد المخالفة 340؛ "معلَّق"
 //      (STOP_AFFECTED_ACTIVITY) أول أكثر من دقيقتين، ثم "مؤكَّد" (MANDATORY_STOP)
 //      — راجع PM10_VIOLATION_CONFIRM_MINUTES في app/lib/dustEvaluation.ts.
-//   2) ALLOW     — PM10 بين 50-150 (ALLOW_MINUTES دقيقة، افتراضياً 12 =
+//   2) ALLOW     — PM10 بين 150-200 (طلب صريح: يقترب من الحد الأعلى الفعلي
+//      للسماح 200 بدل قيم منخفضة جداً)، (ALLOW_MINUTES دقيقة، افتراضياً 12 =
 //      RESUME_STABILITY_MINUTES=10 + هامش دقيقتين) — يضمن وصول القرار
 //      الفعلي لحالة "مسموح" لا مجرد "بانتظار استقرار".
 //
@@ -29,7 +32,7 @@ const FIXED_VISIBILITY_M = Number(process.env.VISIBILITY_M) || 1000;
 
 const STAGES = [
   { name: 'VIOLATION (تجاوز حد المخالفة 340)', minutes: 5, pm10Min: 350, pm10Max: 450 },
-  { name: 'ALLOW (نطاق مسموح نظيف تحت 200، يتجاوز استقرار 10 دقائق)', minutes: Number(process.env.ALLOW_MINUTES) || 12, pm10Min: 50, pm10Max: 150 },
+  { name: 'ALLOW (نطاق مسموح قريب من الحد الأعلى 200، يتجاوز استقرار 10 دقائق)', minutes: Number(process.env.ALLOW_MINUTES) || 12, pm10Min: 150, pm10Max: 200 },
 ];
 
 if (!DEVICE_TOKEN) {

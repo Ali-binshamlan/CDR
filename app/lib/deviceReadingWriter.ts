@@ -61,7 +61,17 @@ export interface WriteDeviceReadingParams {
   sequence?: number | null;
 }
 
-export type WriteDeviceReadingResult = { success: true; duplicate?: boolean } | { success: false; error: string };
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "القراءات المتأخرة أكثر من 40
+// دقيقة تُرفض بالكامل؛ الأفضل: حفظها في السجل التاريخي، تعليمها LATE، منعها
+// من تغيير الحالة التشغيلية الحالية، الاحتفاظ بها للتدقيق"): كان ingest/route.ts
+// يرفض (400) أي observedAt أقدم من هذه النافذة رفضاً كاملاً بلا أي كتابة.
+// نفس النافذة (40 دقيقة) تُستخدَم الآن هنا لتصنيف القراءة late بدل رفضها —
+// راجع migration 202608060002_late_reading_history_no_state_mutation.sql.
+const MAX_LIVE_OBSERVED_AGE_MS = 40 * 60_000;
+
+export type WriteDeviceReadingResult =
+  | { success: true; duplicate?: boolean; late?: boolean }
+  | { success: false; error: string };
 
 export async function writeDeviceReading(params: WriteDeviceReadingParams): Promise<WriteDeviceReadingResult> {
   const { deviceId, projectId, reading, externalEventId = null, sequence: sequenceParam = null } = params;
@@ -110,6 +120,14 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
   // فقط الفرادة).
   const sequence = sequenceParam ?? observedAt.getTime();
 
+  // القراءة "متأخرة" إن كانت observedAt أقدم من نافذة القبول الحية وقت
+  // الوصول الفعلي (receivedAt) — لا وقت التنفيذ الحالي لاحقاً. تُكتَب رغم
+  // ذلك في device_readings_history/pm10_readings_history للتدقيق، بوسم
+  // is_late=true، لكن الـRPC يتجاهر عندها تحديث project_devices.last_*/
+  // device_metric_latest (القرار الحي) بالكامل — راجع تعليق p_is_late في
+  // ingest_device_reading_and_event_atomic.
+  const isLate = receivedAt.getTime() - observedAt.getTime() > MAX_LIVE_OBSERVED_AGE_MS;
+
   // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "ThingsBoard ما زال يعيد تأريخ
   // PM10 القديم كقراءة حديثة"): observedAt أعلاه هو الوقت المشترك للحمولة
   // كلها (أحدث حقل — راجع fetchLatestReading في thingsboardConnector.ts)،
@@ -154,9 +172,10 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
     p_measurements: measurements,
     p_pm10_observed_at: pm10ObservedAtIso,
     p_measurements_v2: measurementsV2,
+    p_is_late: isLate,
   });
 
   if (error) return { success: false, error: error.message };
 
-  return { success: true, duplicate: Boolean(data?.[0]?.is_duplicate) };
+  return { success: true, duplicate: Boolean(data?.[0]?.is_duplicate), late: isLate };
 }

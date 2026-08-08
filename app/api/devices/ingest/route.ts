@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { requireDeviceApiKey } from '@/app/lib/apiAuth';
 import { checkRateLimit } from '@/app/lib/rateLimit';
 import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
-import { evaluateProject } from '@/app/lib/evaluateProject';
+import { evaluateProject, enqueueEvaluationRetryJob } from '@/app/lib/evaluateProject';
 import type { NormalizedReading } from '@/app/lib/providers/types';
 
 // حد معدّل الإرسال لكل جهاز — دورة الإرسال التصميمية دقيقتان، فـ30 طلباً
@@ -94,10 +94,16 @@ export async function POST(request: NextRequest) {
   if (observedMs > nowMs + CLOCK_SKEW_TOLERANCE_MS) {
     return NextResponse.json({ error: 'observedAt في المستقبل — تحقق من ساعة الجهاز' }, { status: 400 });
   }
-  const MAX_OBSERVED_AGE_MS = 40 * 60_000;
-  if (observedMs < nowMs - MAX_OBSERVED_AGE_MS) {
-    return NextResponse.json({ error: 'observedAt قديم جداً — القراءة مرفوضة كدليل حالي' }, { status: 400 });
-  }
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "القراءات المتأخرة أكثر من 40
+  // دقيقة تُرفض بالكامل؛ الأفضل: حفظها في السجل التاريخي، تعليمها LATE،
+  // منعها من تغيير الحالة التشغيلية الحالية، الاحتفاظ بها للتدقيق"): كان
+  // هذا الشرط يرفض (400) القراءة بالكامل بلا أي كتابة — جهاز يرسل فعلياً
+  // لكن بتأخر شبكة/إعادة اتصال كانت قراءته تختفي بلا أثر. الآن writeDeviceReading
+  // (deviceReadingWriter.ts) يحسب نفس هذه النافذة ويُمرِّر p_is_late=true
+  // للـRPC — القراءة تُسجَّل في device_readings_history/pm10_readings_history
+  // بوسم is_late للتدقيق، لكن project_devices.last_*/device_metric_latest
+  // (القرار الحي) لا تتأثر إطلاقاً. راجع migration
+  // 202608060002_late_reading_history_no_state_mutation.sql.
   const observedAtIso = new Date(observedMs).toISOString();
 
   const reading: Partial<NormalizedReading> = { observedAtIso };
@@ -122,6 +128,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, duplicate: true, receivedAt: new Date().toISOString() });
   }
 
+  // قراءة late لم تُغيّر أي حالة حية (RPC تجاهر project_devices.last_*/
+  // device_metric_latest بالكامل عند is_late=true) — إعادة تقييم المشروع هنا
+  // عمل ضائع محض (لا مدخل تغيّر فعلياً)، فتُستبعَد صراحة.
+  if (result.late) {
+    return NextResponse.json({ success: true, late: true, receivedAt: new Date().toISOString() });
+  }
+
   // خطأ مكتشَف (مراجعة تصحيح خارجية — "القرار الحي يعتمد على متصفح مفتوح"):
   // مسار push هذا لم يكن يُطلق إعادة تقييم للمشروع بعد كتابة قراءة جديدة
   // بنجاح إطلاقاً — فقط app/api/cron/provider-pull/route.ts (مصادر pull)
@@ -139,6 +152,12 @@ export async function POST(request: NextRequest) {
   });
   if (!evalResult.success) {
     console.error(`ingest: evaluateProject unsuccessful for project ${auth.projectId}:`, evalResult.error);
+    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا مهمة إعادة محاولة مضمونة
+    // تربط القراءة المحفوظة بنجاح بالتقييم الفاشل بعدها"): راجع تعليق
+    // enqueueEvaluationRetryJob في evaluateProject.ts — تضمن مهمة صريحة في
+    // نفس طابور project_evaluation_jobs الذي يعالجه scheduler-worker، بدل
+    // الاعتماد فقط على console.error ودورة scheduler-tick العامة القادمة.
+    await enqueueEvaluationRetryJob(auth.projectId, 'DEVICE_EVENT', evalResult.error ?? 'فشل تقييم غير محدَّد');
   }
 
   return NextResponse.json({ success: true, receivedAt: new Date().toISOString() });

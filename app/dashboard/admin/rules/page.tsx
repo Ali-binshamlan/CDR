@@ -6,6 +6,7 @@ import { apiClient } from '@/app/lib/apiClient';
 import { DUST_RULES_CATALOG, SEVERITY_LABEL_AR, RULEBOOK_VERSION } from '@/app/utils/dust-compliance-engine/rulesCatalog';
 import type { DustComplianceDecisionCategory } from '@/app/utils/dust-compliance-engine/types';
 import { Loader2, ShieldAlert, Scale, Search } from 'lucide-react';
+import RuleParametersPanel from './RuleParametersPanel';
 
 const SEVERITY_STYLE: Record<DustComplianceDecisionCategory, { bg: string; border: string; text: string; dot: string }> = {
   ALLOW: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', dot: 'bg-emerald-500' },
@@ -104,6 +105,8 @@ export default function AdminRulesPage() {
             كل القواعد النصية المفعّلة فعلياً في محرك الامتثال ({totalRulesCount} قاعدة) — إصدار الدليل: {RULEBOOK_VERSION}
           </p>
         </div>
+
+        <RuleParametersPanel />
 
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col sm:flex-row gap-3 sticky top-4 z-10">
           <div className="relative flex-1">

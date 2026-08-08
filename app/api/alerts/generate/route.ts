@@ -48,9 +48,7 @@ import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
 import type { DustEngineInput, ReceptorType, DistanceBand } from '@/app/utils/dust-engine/types';
 import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
-import { evaluateDustCompliance, buildComplianceContext, buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
-import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
-import { resolveFreshProjectDevice, fetchPm10SustainedStatus, fetchLatestFinalDecisions, fetchLatestStoredCompliance, activityDecisionKey, type FreshDeviceReading, type Pm10SustainedStatus } from '@/app/lib/dustEvaluation';
+import { resolveFreshProjectDevice, fetchLatestFinalDecisions, fetchLatestStoredCompliance, activityDecisionKey, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
@@ -338,25 +336,11 @@ export async function checkDustActivities(projectIds?: string[]) {
   if (projectIds && projectIds.length > 0) q = q.in('project_id', projectIds);
   const { data: profiles } = await q;
 
-  // مستقبِلات حساسة يدوية — نفس مصدر [projectId]/route.ts، مطلوبة لمحرك
-  // الامتثال (مسافة الكسارة/الأكوام) حتى يطابق تنبيه COMPLIANCE_VIOLATION
-  // هنا بالضبط قرار "القرار الموحد للنشاط" المعروض في صفحة المشروع لنفس
-  // النشاط. استعلام واحد لكل تشغيل cron، لا لكل نشاط.
-  //
-  // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "فشل استعلام المستقبلات
-  // الحساسة يتحول إلى مصفوفة فارغة ثم Infinity؛ قد يظهر الموقع آمناً عند
-  // تعطل البيانات"): فشل هذا الاستعلام هنا كان يعني معالجة *كل* أنشطة *كل*
-  // المشاريع في هذه الدورة بقائمة مستقبِلات فارغة (مسافة Infinity، آمنة
-  // زوراً) — لا COMPLIANCE_VIOLATION واحد يُطلَق لمخالفة مسافة كسارة حقيقية
-  // طوال فشل الاستعلام. يرمي استثناءً الآن بدل المتابعة بأمان زائف — GET
-  // أدناه يُرجع 500 صريحاً بدل "success" كاذب.
-  const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
-    .from('sensitive_receptors')
-    .select('id, name, receptor_type, lat, lng');
-  if (sensitiveReceptorsError) {
-    throw new Error(`sensitive_receptors fetch failed: ${sensitiveReceptorsError.message}`);
-  }
-  const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 4: "checkDustActivities
+  // يعيد Open-Meteo إلى دورة القرار"): استعلام sensitive_receptors كان
+  // مطلوباً فقط لتغذية buildComplianceContext في الـfallback المحلي المحذوف
+  // أدناه (راجع تعليق الحارس داخل الحلقة) — لم يعد له أي مستهلك بعد إزالة
+  // ذلك الفرع، فحُذف بالكامل بدل إبقائه استعلاماً ميتاً.
 
   for (const profile of profiles || []) {
     // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "مولّد التنبيهات يستخدم
@@ -479,74 +463,55 @@ export async function checkDustActivities(projectIds?: string[]) {
         }
       }
 
-      // fallback إلى evaluateDustCompliance المحلي فقط إن لم يوجد بعد أي
-      // تقييم امتثال مخزَّن لهذا النشاط (أول تقييم قبل أي استدعاء GET/evaluate
-      // سابق) — فشل آمن، لا يُسقِط التنبيه بأكمله. بمجرد وجود صف evaluate/
-      // route.ts واحد، هذا الفرع لا يُستخدَم مرة أخرى لنفس النشاط.
-      const storedComplianceMap =
-        profile.activity_group_id && profile.project_id
-          ? await fetchLatestStoredCompliance(supabaseAdmin, [
-              { projectId: profile.project_id, activityGroupId: profile.activity_group_id },
-            ])
-          : new Map<string, DustComplianceResult>();
-      const storedCompliance =
-        profile.activity_group_id && profile.project_id
-          ? storedComplianceMap.get(activityDecisionKey(profile.project_id, profile.activity_group_id))
-          : undefined;
-
-      let compliance: DustComplianceResult;
-      if (storedCompliance) {
-        compliance = storedCompliance;
-      } else {
-        let previousDecision: { decision: string; updated_at: string } | null = null;
-        if (profile.activity_group_id && profile.project_id) {
-          const { data: prevRow } = await supabaseAdmin
-            .from('current_dust_compliance_decisions')
-            .select('decision, updated_at, stopped_since')
-            .eq('project_id', profile.project_id)
-            .eq('activity_group_id', profile.activity_group_id)
-            .maybeSingle();
-          previousDecision = prevRow
-            ? { decision: prevRow.decision, updated_at: prevRow.stopped_since ?? prevRow.updated_at }
-            : null;
-        }
-        const pm10Sustained: Pm10SustainedStatus | null =
-          profile.activity_group_id && profile.project_id
-            ? await fetchPm10SustainedStatus(supabaseAdmin, profile.project_id, profile.activity_group_id, profile.device_id ?? null)
-            : null;
-        const complianceCtx = buildComplianceContext(profile.projects, profile, worst, sensitiveReceptors, previousDecision, pm10Sustained);
-        compliance = evaluateDustCompliance(complianceCtx);
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي، القسم 4:
+      // "checkDustActivities يعيد Open-Meteo إلى دورة القرار"): كان fallback
+      // محلي هنا (evaluateDustCompliance/decideFinal مبسَّط مبني على worst
+      // الحي من Open-Meteo) يُستخدَم كلما غاب تقييم/قرار مخزَّن لنشاط ما — لكن
+      // هذا الـfallback هو بالضبط المسار الذي يُعيد بيانات Open-Meteo لدورة
+      // القرار الفعلية (مصدر compliance/finalDecision المستخدَم لاحقاً في بناء
+      // stillActiveKinds وتنبيهات SAFETY_BREACH/DUST/PM10_APPROACHING). بما أن
+      // evaluateProject.ts يستدعي checkDustActivities مباشرة بعد كل حفظ قرار
+      // (راجع تعليق evaluateProject.ts)، صف مخزَّن يكون موجوداً عملياً في كل
+      // استدعاء لاحق لنفس النشاط — الفرع المتبقي (أول تقييم قبل أي evaluate
+      // سابق) نادر جداً ولا يستحق فتح مسار قرار موازٍ يعتمد على تقدير طقس.
+      // الإصلاح: لا fallback محلي بعد الآن — نشاط بلا تقييم/قرار مخزَّن بعد
+      // يُتخطّى بالكامل هذه الدورة (نفس معاملة غياب الإحداثيات أعلاه)، لا
+      // يُحسَب من Open-Meteo محلياً. القرار المخزَّن سيُنشأ قريباً عبر
+      // evaluate/route.ts أو evaluateProject.ts (تأخير دورة واحدة فقط، لا
+      // فقدان بيانات) — حينها يُعالَج هذا النشاط بأول استدعاء لاحق يجد الصف.
+      if (!profile.activity_group_id || !profile.project_id) {
+        // بلا activity_group_id/project_id لا يمكن أصلاً قراءة أي تقييم/قرار
+        // مخزَّن (المفتاح غير موجود) — نفس معاملة "لا صف مخزَّن بعد" أدناه.
+        await autoCloseResolvedAlerts('dust', profile.id, new Set());
+        continue;
+      }
+      const activityGroupId = profile.activity_group_id;
+      const decisionKey = activityDecisionKey(profile.project_id, activityGroupId);
+      const [storedComplianceMap, storedFinalDecisions] = await Promise.all([
+        fetchLatestStoredCompliance(supabaseAdmin, [{ projectId: profile.project_id, activityGroupId }]),
+        fetchLatestFinalDecisions(supabaseAdmin, [{ projectId: profile.project_id, activityGroupId }]),
+      ]);
+      const compliance = storedComplianceMap.get(decisionKey);
+      const storedDecision = storedFinalDecisions.get(decisionKey);
+      if (!compliance || !storedDecision) {
+        await autoCloseResolvedAlerts('dust', profile.id, new Set());
+        continue;
       }
 
-      // القرار النهائي الموحَّد — يُقرَأ الآن من final_decisions (كتبه
-      // evaluate/route.ts، نقطة الحساب الوحيدة لـdecideFinal) بدل استدعاء
-      // decideFinal محلياً هنا بمعزل — خطأ معماري مكتشَف ومُصلَح (مراجعة كود
-      // مدير — "FinalDecisionEngine ليس المصدر التشغيلي الوحيد فعلياً"):
-      // كان كل مسار (البانر، الخريطة، مولّد التنبيهات هذا) يُعيد بناء
-      // dvi/compliance ويستدعي decideFinal بنفسه، بمدخلات قد تختلف طفيفاً
-      // (توقيت جلب مختلف، aei=null دائماً هنا) عن ما يُعرض فعلياً في صفحة
-      // المشروع لنفس النشاط، بلا decisionId موحَّد يربطهما. الآن هذا المسار
-      // يقرأ آخر قرار مخزَّن فعلياً لنفس activity_group_id — نفس القرار
-      // بالضبط المعروض في البطاقة/الخريطة، لا نسخة مُعاد حسابها محلياً.
-      // fallback إلى decision محلي مبسَّط (mandatoryStop من compliance وحده)
-      // فقط إن لم يوجد بعد أي قرار مخزَّن لهذا النشاط (أول تقييم قبل أي
-      // استدعاء GET/evaluate سابق) — فشل آمن، لا يُسقِط التنبيه بأكمله.
-      const activityGroupId = profile.activity_group_id || `dust-${profile.id}`;
-      const storedFinalDecisions = await fetchLatestFinalDecisions(supabaseAdmin, [
-        { projectId: profile.project_id, activityGroupId },
-      ]);
-      const storedDecision = storedFinalDecisions.get(activityDecisionKey(profile.project_id, activityGroupId));
-      const finalDecision = storedDecision
-        ? {
-            mandatoryStop: storedDecision.mandatory_stop as boolean,
-            operationalDecision: storedDecision.operational_decision as string,
-            decisionLabelAr: storedDecision.decision_label_ar as string,
-          }
-        : {
-            mandatoryStop: compliance.decisionCategory === 'MANDATORY_STOP' || worst.mandatoryStop === true,
-            operationalDecision: compliance.decisionCategory === 'MANDATORY_STOP' || worst.mandatoryStop === true ? 'MANDATORY_STOP' : 'ALLOW',
-            decisionLabelAr: compliance.decisionLabelAr,
-          };
+      // القرار النهائي الموحَّد — يُقرَأ حصرياً من final_decisions (كتبه
+      // evaluate/route.ts، نقطة الحساب الوحيدة لـdecideFinal) — خطأ معماري
+      // مكتشَف ومُصلَح (مراجعة كود مدير — "FinalDecisionEngine ليس المصدر
+      // التشغيلي الوحيد فعلياً"): كان كل مسار (البانر، الخريطة، مولّد
+      // التنبيهات هذا) يُعيد بناء dvi/compliance ويستدعي decideFinal بنفسه،
+      // بمدخلات قد تختلف طفيفاً عن ما يُعرض فعلياً في صفحة المشروع لنفس
+      // النشاط. الآن هذا المسار يقرأ آخر قرار مخزَّن فعلياً لنفس
+      // activity_group_id — نفس القرار بالضبط المعروض في البطاقة/الخريطة، لا
+      // نسخة مُعاد حسابها محلياً من Open-Meteo (راجع تعليق الحارس أعلاه).
+      const finalDecision = {
+        mandatoryStop: storedDecision.mandatory_stop as boolean,
+        operationalDecision: storedDecision.operational_decision as string,
+        decisionLabelAr: storedDecision.decision_label_ar as string,
+      };
 
       // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — بند 7: "أسوأ ساعة مستقبلية
       // قد تنتج تنبيهًا حيًا بدل FORECAST_WARNING"): worst قد يمثّل ساعة لا

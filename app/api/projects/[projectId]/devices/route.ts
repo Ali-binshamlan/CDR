@@ -9,7 +9,7 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 // عبر مفتاح الجهاز نفسه (ذاك مسار منفصل: POST /api/devices/ingest).
 
 const DEVICE_LIST_COLUMNS =
-  'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at';
+  'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url';
 
 // أعمدة آمنة للعرض — credentials مُستبعَد دائماً عمداً (نفس فلسفة
 // api_key_hash أعلاه)، يطابق CONNECTION_SAFE_COLUMNS في provider-connection/route.ts.

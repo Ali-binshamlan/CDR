@@ -3,6 +3,7 @@ import { decideFinal, pickWorstDecision } from './engine';
 import type { FinalDecision, FinalDecisionInput } from './types';
 import type { DviEvaluationResult } from '@/app/utils/dust-engine/types';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 
 // =====================================================================
 // اختبارات decideFinal — المحرك النهائي الوحيد المسموح له بدمج DVI +
@@ -725,6 +726,120 @@ describe('decideFinal — نص/عنوان القرار يجب أن يطابق ا
     expect(r.operationalDecision).toBe('RESTRICT');
     expect(r.shortReasonAr).toBe('سرعة الطرق غير المسفلتة (15 كم/س) تتجاوز الحد (10 كم/س)');
     expect(r.decisionLabelAr).toBe('تقييد النشاط');
+  });
+});
+
+function baseAei(overrides: Partial<AeiEvaluationResult> = {}): AeiEvaluationResult {
+  return {
+    indicatorType: 'AEI',
+    activityLabelAr: 'أعمال الحفر والترابية',
+    status: 'ALLOW',
+    statusLabelAr: 'قابل للتنفيذ',
+    color: 'GREEN',
+    score: 100,
+    safetyScore: 100,
+    qualityScore: 100,
+    baseScore: 100,
+    closedByGate: false,
+    cappedByGate: false,
+    gateReasonAr: null,
+    isHoldForVerification: false,
+    shortReasonAr: '',
+    recommendationAr: '',
+    sources: [],
+    ...overrides,
+  };
+}
+
+// خطأ معماري حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "القرار المعروض قد
+// يختلف عن القرار المحفوظ": decideFinal كانت تستقبل input.aei صراحة عبر
+// FinalDecisionInput لكن لا تقرأه إطلاقاً — الدمج الفعلي (AEI أشد يستبدل
+// level/النص) كان يحدث فقط في computeUnifiedActivityDecision (dustEvaluation.ts)
+// حياً وقت العرض، بلا أي انعكاس على النتيجة المخزَّنة فعلياً عبر
+// persistFinalDecisions → decideFinal مباشرة. هذا يختبر decideFinal نفسها
+// (لا الغلاف) لضمان أن أي مسار يستدعيها مباشرة (مسار الحفظ ضمناً) يحصل على
+// نفس نتيجة الدمج التي كانت تظهر فقط حياً سابقاً — راجع
+// dustEvaluation.unifiedDecision.test.ts لتغطية شاملة إضافية عبر الغلاف.
+describe('decideFinal — يدمج input.aei داخلياً (لا طبقة خارجية منفصلة بعد الآن)', () => {
+  it('DVI وامتثال كلاهما ALLOW نظيف، لكن aei يحذّر (MONITOR/YELLOW) → النتيجة المُرجَعة من decideFinal نفسها تعكس تحذير aei', () => {
+    const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', decisionLabelAr: 'مسموح — تشغيل اعتيادي', mandatoryStop: false, overridable: true });
+    const compliance = baseCompliance({ decisionCategory: 'ALLOW', decisionLabelAr: 'مسموح — تشغيل اعتيادي' });
+    const aei = baseAei({ status: 'MONITOR', statusLabelAr: 'قابل للتنفيذ مع مراقبة', color: 'YELLOW', shortReasonAr: 'انخفاض مستوى الأمان للعمال بسبب الغبار.' });
+
+    const r = decideFinal(input({ dvi, compliance, aei }));
+
+    expect(r.level).toBe('YELLOW');
+    expect(r.decisionLabelAr).toBe('قابل للتنفيذ مع مراقبة');
+    expect(r.shortReasonAr).toBe('انخفاض مستوى الأمان للعمال بسبب الغبار.');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('mandatoryStop=true → aei لا يُستبدَل به مهما كان لونه (BLACK يبقى الأعلى دائماً)', () => {
+    const dvi = baseDvi({ level: 'BLACK', mandatoryStop: true, overridable: false, decisionLabelAr: 'إيقاف إلزامي نظامي' });
+    const compliance = baseCompliance({ decisionCategory: 'ALLOW' });
+    const aei = baseAei({ status: 'ALLOW', statusLabelAr: 'قابل للتنفيذ', color: 'GREEN' });
+
+    const r = decideFinal(input({ dvi, compliance, aei }));
+
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.level).toBe('BLACK');
+    expect(r.decisionLabelAr).toBe('إيقاف إلزامي نظامي');
+  });
+
+  it('pendingConfirmation=true (معلَّق بانتظار تأكيد) → aei لا يُستبدَل به (يبقى RED/معلَّق كما هو)', () => {
+    const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', mandatoryStop: false });
+    const compliance = baseCompliance({
+      decisionCategory: 'STOP_AFFECTED_ACTIVITY',
+      pendingConfirmation: true,
+      decisionLabelAr: 'إيقاف النشاط المتأثر',
+      shortReasonAr: 'تعليق مؤقت (معلَّق): بانتظار استمرار القراءة',
+    });
+    const aei = baseAei({ status: 'ALLOW', statusLabelAr: 'قابل للتنفيذ', color: 'GREEN' });
+
+    const r = decideFinal(input({ dvi, compliance, aei }));
+
+    expect(r.pendingConfirmation).toBe(true);
+    expect(r.level).toBe('RED');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('aei أخف من الفائز الفعلي (compliance يحذّر بشدة أعلى) → لا يُستبدَل، نتيجة decideFinal الأشد تبقى كما هي', () => {
+    const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', mandatoryStop: false });
+    const compliance = baseCompliance({ decisionCategory: 'RESTRICT_ACTIVITY', decisionLabelAr: 'تقييد النشاط', shortReasonAr: 'مخالفة مسافة الكسارة' });
+    const aei = baseAei({ status: 'ALLOW', statusLabelAr: 'قابل للتنفيذ', color: 'GREEN' });
+
+    const r = decideFinal(input({ dvi, compliance, aei }));
+
+    expect(r.level).toBe('RED');
+    expect(r.decisionLabelAr).toBe('تقييد النشاط');
+  });
+
+  it('aei=null (غياب تام) → سلوك decideFinal بلا تغيير (توافق خلفي لمستهلكين لا يمررون aei)', () => {
+    const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', decisionLabelAr: 'مسموح — تشغيل اعتيادي', mandatoryStop: false });
+    const compliance = baseCompliance({ decisionCategory: 'ALLOW', decisionLabelAr: 'مسموح — تشغيل اعتيادي' });
+
+    const r = decideFinal(input({ dvi, compliance, aei: null }));
+
+    expect(r.level).toBe('GREEN');
+    expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+  });
+
+  it('mode=PLANNING + aei.color=BLACK → aei لا يُستهلَك إطلاقاً (الفرع المبكر لـPLANNING يعيد قبل الوصول لمنطق الدمج)', () => {
+    const dvi = baseDvi({
+      level: 'BLACK',
+      decisionCategory: 'MANDATORY_STOP',
+      decisionLabelAr: 'إيقاف إلزامي نظامي',
+      mandatoryStop: true,
+      overridable: false,
+    });
+    const compliance = baseCompliance({ decisionCategory: 'MANDATORY_STOP', decisionLabelAr: 'إيقاف إلزامي نظامي' });
+    const aei = baseAei({ status: 'CLOSED', statusLabelAr: 'بيئة العمل غير آمنة (مغلق)', color: 'BLACK', score: 0 });
+
+    const r = decideFinal(input({ dvi, compliance, aei, mode: 'PLANNING' }));
+
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.level).toBe('YELLOW');
+    expect(r.decisionLabelAr).toBe('تنبيه: أجواء متوقعة غير مناسبة');
   });
 });
 

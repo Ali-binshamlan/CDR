@@ -26,7 +26,7 @@ interface FieldRow {
 const EVENT_CONTRACT_FIELDS: FieldRow[] = [
   { field: 'eventId', unit: '—', type: 'نص', range: 'غير فارغ، فريد لكل قراءة' },
   { field: 'sequence', unit: '—', type: 'رقم صحيح', range: '≥ 0، تصاعدي لكل جهاز' },
-  { field: 'observedAt', unit: 'تاريخ/وقت ISO 8601', type: 'نص', range: 'ليس بالمستقبل، وعمره أقل من ٤٠ دقيقة' },
+  { field: 'observedAt', unit: 'تاريخ/وقت ISO 8601', type: 'نص', range: 'ليس بالمستقبل' },
 ];
 
 const FIELDS: FieldRow[] = [
@@ -63,7 +63,6 @@ const ERRORS: ErrorRow[] = [
   { status: '400', cause: 'observedAt غائب أو ليس نصاً', body: '{ "error": "observedAt إلزامي ويجب أن يكون نصاً بصيغة ISO" }' },
   { status: '400', cause: 'observedAt بصيغة غير صالحة', body: '{ "error": "observedAt ليس تاريخاً صالحاً" }' },
   { status: '400', cause: 'observedAt في المستقبل (فارق ساعة الجهاز)', body: '{ "error": "observedAt في المستقبل — تحقق من ساعة الجهاز" }' },
-  { status: '400', cause: 'observedAt أقدم من ٤٠ دقيقة', body: '{ "error": "observedAt قديم جداً — القراءة مرفوضة كدليل حالي" }' },
   {
     status: '400',
     cause: 'قيمة حقل قياس خارج النطاق المسموح أو ليست رقماً (يتوقف عند أول حقل فاشل)',
@@ -194,6 +193,15 @@ export default function DeviceIngestApiDocsPage() {
           <p className="text-[13px] text-[#061B40]/70">استجابة النجاح:</p>
           <code className={codeBlockClass} dir="ltr">
 {`{ "success": true, "receivedAt": "2026-07-26T09:02:50.807Z" }`}
+          </code>
+          <p className="text-[13px] text-[#061B40]/70 leading-relaxed">
+            إن وصلت <span className={inlineCodeClass} dir="ltr">observedAt</span> بعمر أكبر من ٤٠ دقيقة وقت
+            الاستلام الفعلي، تُقبَل القراءة ولا تُرفض — لكنها تُسجَّل في السجل التاريخي فقط لأغراض التدقيق/التحليل،
+            بلا أي تأثير على الحالة التشغيلية الحية (آخر قراءة معروضة، حساب استمرار مخالفة PM10، إلخ). الاستجابة
+            في هذه الحالة:
+          </p>
+          <code className={codeBlockClass} dir="ltr">
+{`{ "success": true, "late": true, "receivedAt": "2026-07-26T09:02:50.807Z" }`}
           </code>
         </section>
 

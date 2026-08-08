@@ -184,6 +184,17 @@ export interface DustEngineInput {
   // مستقلة تماماً (computeSustainedPm10Status في dustEvaluation.ts تقرأ من
   // تاريخ القراءات، لا من قيمة لحظية واحدة)، فتطبيق freshOrNull عليه هنا
   // يتعارض مع ذلك المنطق المصمَّم عمداً بعتبة/سلوك مختلفَين.
+  //
+  // خطأ مُحتمَل نُظِر فيه ورُفِض (طلب مستخدم أثناء تجربة حية — "خليها تختفي
+  // معهم"، توحيد PM10 مع بقية الحقول عبر freshOrNull هنا): جُرِّب فعلياً،
+  // ثم اتضح أنه يُسقِط آلية أدق موجودة مسبقاً خاصة بـPM10 تحديداً
+  // (pm10ReadingIsFreshEnoughForImmediateStop في applyMandatoryGates،
+  // engine.ts) — تلك الآلية تمنع قراءة PM10 قديمة (>4 دقائق) من إنتاج
+  // MANDATORY_STOP قطعي، لكنها تُبقيها مؤثرة بدرجة أضعف (STOP_DUST_
+  // GENERATING_ACTIVITIES احترازي)، فشل آمن نحو الاحتراز. تطبيق freshOrNull
+  // هنا كان سيُحوِّل pm10 بالكامل إلى null عند التقادم، فيُسقِط ذلك التمييز
+  // الدقيق ويفتح المجال لقرار ALLOW عند مجرد انقطاع اتصال قصير — أضعف
+  // للسلامة التنظيمية من الوضع الحالي، لا أقوى. الاستثناء هنا يبقى مقصوداً.
   devicePm25At?: string | null;
   deviceRelativeHumidityAt?: string | null;
   deviceTemperatureAt?: string | null;

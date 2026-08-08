@@ -12,6 +12,7 @@ import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
 import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT } from '@/app/utils/dust-compliance-engine';
+import type { DeviceTrueNorthCalibration } from '@/app/utils/dust-compliance-engine';
 import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
 import { LIVE_FIELD_FRESHNESS_MS, DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
@@ -412,6 +413,15 @@ export interface Pm10SustainedStatus {
   isConfirmedViolation340: boolean; // ≥340 لأكثر من دقيقتين متتاليتين، بمصدر جهاز فقط
   isPendingViolation340: boolean;   // ≥340 الآن لكن أقل من دقيقتين بعد، أو مصدرها غير جهاز
   isSuspended250For30Min: boolean;  // ≥250 لمدة 30 دقيقة متواصلة أو أكثر، بمصدر جهاز فقط
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة: القرار
+  // المخزَّن لا يحمل معرّفات القراءات الفعلية التي أثبتت الاستمرار — فقط
+  // القيم المجمَّعة (الدقائق/الحالة المنطقية)"): evidenceReadingIds تحمل
+  // معرّفات صفوف pm10_readings_history (id عمود، لا external_event_id)
+  // المكوِّنة فعلياً للسلسلة التي أنتجت sustainedMinutesAbove340 — تسمح
+  // لاحقاً بإثبات "هذه القراءات بالذات، بهذا الترتيب، أنتجت هذا القرار"
+  // بدل الاكتفاء بالقيمة المجمَّعة النهائية. فارغة إن لم تُثبَت أي سلسلة
+  // (sampleCount<2 في streakMinutesAbove، راجع تعليقها).
+  evidenceReadingIds: string[];
 }
 
 const PM10_SUSTAINED_VIOLATION_THRESHOLD = 340;
@@ -466,7 +476,7 @@ const PM10_LAST_READING_FRESHNESS_MINUTES = LIVE_FIELD_FRESHNESS_MS / 60_000;
 // weather_forecasts (راجع computeDustComplianceResults أدناه) — تبقى في
 // النوع دفاعياً فقط لأي صف قديم قد يبقى قبل تطبيق migration الترحيل.
 export function computeSustainedPm10Status(
-  readings: { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo' }[],
+  readings: { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo'; id?: string }[],
   now: number = Date.now()
 ): Pm10SustainedStatus {
   if (readings.length === 0) {
@@ -477,6 +487,7 @@ export function computeSustainedPm10Status(
       isConfirmedViolation340: false,
       isPendingViolation340: false,
       isSuspended250For30Min: false,
+      evidenceReadingIds: [],
     };
   }
 
@@ -543,12 +554,13 @@ export function computeSustainedPm10Status(
   // — أي قراءة تساوي العتبة بالضبط تُعامَل كأنها لم تتجاوزها، فتقطع السلسلة
   // تماماً كأي قراءة أقل منها. يُمرَّر false صراحة فقط لعتبة 250 (حيث
   // المساواة تُحتسب ضمن النطاق فعلاً حسب النص التنظيمي).
-  function streakMinutesAbove(threshold: number, strict: boolean = true): number {
+  function streakMinutesAbove(threshold: number, strict: boolean = true): { minutes: number; ids: string[] } {
     const isBelow = (value: number) => (strict ? value <= threshold : value < threshold);
-    if (isBelow(sorted[0].pm10UgM3)) return 0;
+    if (isBelow(sorted[0].pm10UgM3)) return { minutes: 0, ids: [] };
     let streakStartMs = new Date(sorted[0].recordedAt).getTime();
     const streakEndMs = streakStartMs;
     let sampleCount = 0;
+    const streakIds: string[] = [];
     for (let i = 0; i < sorted.length; i++) {
       if (isBelow(sorted[i].pm10UgM3)) break;
       if ((sorted[i].source ?? 'open-meteo') !== currentSource) break;
@@ -560,15 +572,18 @@ export function computeSustainedPm10Status(
       }
       streakStartMs = currentMs;
       sampleCount++;
+      if (sorted[i].id) streakIds.push(sorted[i].id as string);
     }
     // عينة واحدة فقط بالسلسلة = لا استمرار مُثبَت بين عينتين فعليتين، بصرف
     // النظر عن قِدمها — فشل آمن نحو "صفر" لا "منذ وصولها وحتى الآن".
-    if (sampleCount < 2) return 0;
-    return (streakEndMs - streakStartMs) / 60000;
+    if (sampleCount < 2) return { minutes: 0, ids: [] };
+    return { minutes: (streakEndMs - streakStartMs) / 60000, ids: streakIds };
   }
 
-  const sustainedMinutesAbove340 = streakMinutesAbove(PM10_SUSTAINED_VIOLATION_THRESHOLD, true);
-  const sustainedMinutesAbove250 = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD, false);
+  const above340Streak = streakMinutesAbove(PM10_SUSTAINED_VIOLATION_THRESHOLD, true);
+  const above250Streak = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD, false);
+  const sustainedMinutesAbove340 = above340Streak.minutes;
+  const sustainedMinutesAbove250 = above250Streak.minutes;
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "حد PM10 ما زال خاطئاً"): كان
   // isAbove340Now يستخدم `>=` بينما النص التنظيمي يقول "تجاوز 340"
@@ -600,6 +615,15 @@ export function computeSustainedPm10Status(
     isLatestReadingFresh &&
     isCurrentSourceDevice;
 
+  // أولوية سلسلة 340 (الأخطر تنظيمياً — مخالفة مؤكَّدة) على سلسلة 250
+  // (تعليق) عند وجود كلتيهما — قرار الإيقاف الإلزامي يُثبَت بأدلة 340 أولاً
+  // إن تحققت شروطها، وإلا فبأدلة 250 التي أثبتت التعليق بدلاً منها.
+  const evidenceReadingIds = isConfirmedViolation340
+    ? above340Streak.ids
+    : isSuspended250For30Min
+      ? above250Streak.ids
+      : [];
+
   return {
     currentReadingUgM3,
     sustainedMinutesAbove340,
@@ -607,6 +631,7 @@ export function computeSustainedPm10Status(
     isConfirmedViolation340,
     isPendingViolation340,
     isSuspended250For30Min,
+    evidenceReadingIds,
   };
 }
 
@@ -635,19 +660,27 @@ export async function fetchPm10SustainedStatus(
   try {
     const { data } = await supabaseAdmin
       .from('pm10_readings_history')
-      .select('pm10_ug_m3, recorded_at, activity_group_id, source, device_id')
+      .select('id, pm10_ug_m3, recorded_at, activity_group_id, source, device_id, is_late')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
       .order('recorded_at', { ascending: false });
 
     type Pm10HistoryRow = {
+      id: string;
       pm10_ug_m3: number;
       recorded_at: string;
       activity_group_id: string | null;
       source?: 'device' | 'manual' | 'open-meteo';
       device_id: string | null;
+      is_late?: boolean | null;
     };
     const relevant = ((data as Pm10HistoryRow[]) || []).filter((row) => {
+      // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "القراءات المتأخرة يجب أن
+      // تُمنَع من تغيير الحالة التشغيلية الحالية"): قراءة وصلت متأخرة بأكثر
+      // من نافذة القبول الحية (is_late=true، راجع deviceReadingWriter.ts)
+      // لا يجوز أن "تُثبت" استمرار مخالفة/تعليق — قد لا تعكس الوضع الفعلي
+      // الآن إطلاقاً رغم بقائها في السجل التاريخي للتدقيق.
+      if (row.is_late) return false;
       if (row.activity_group_id === activityGroupId) return true;
       // قراءة جهاز على مستوى المشروع (activity_group_id=null): تخص هذا
       // النشاط فقط لو device_id يطابق جهازه المحدد فعلياً — لا أي جهاز آخر.
@@ -658,6 +691,7 @@ export async function fetchPm10SustainedStatus(
       pm10UgM3: Number(row.pm10_ug_m3),
       recordedAt: row.recorded_at,
       source: row.source,
+      id: row.id,
     }));
     return computeSustainedPm10Status(readings);
   } catch {
@@ -726,6 +760,32 @@ async function resolveProjectDeviceMap(
       last_pm25_at: metricLatest.last_pm25_at ?? null,
       last_relative_humidity_at: metricLatest.last_relative_humidity_at ?? null,
       last_temperature_at: metricLatest.last_temperature_at ?? null,
+    });
+  }
+  return map;
+}
+
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي موضوع على
+// مستوى المشروع، بينما يجب أن يكون مرتبطاً بكل محطة أو حساس اتجاه رياح"):
+// يجلب توثيق معايرة الشمال الحقيقي لكل أجهزة المشروع دفعة واحدة (نفس مبدأ
+// resolveProjectDeviceMap أعلاه) من project_devices.true_north_* (راجع
+// migration 202608060001_device_true_north_calibration.sql) — كل جهاز
+// يحمل توثيقه الخاص، لا حقلاً واحداً مشتركاً على المشروع كله.
+async function resolveDeviceTrueNorthCalibrationMap(
+  supabaseAdmin: SupabaseClient,
+  projectId: string
+): Promise<Map<string, DeviceTrueNorthCalibration>> {
+  const map = new Map<string, DeviceTrueNorthCalibration>();
+  const { data } = await supabaseAdmin
+    .from('project_devices')
+    .select('id, true_north_alignment_documented, true_north_deviation_deg')
+    .eq('project_id', projectId);
+
+  type DeviceCalibrationRow = { id: string; true_north_alignment_documented: boolean | null; true_north_deviation_deg: number | null };
+  for (const row of (data as DeviceCalibrationRow[]) || []) {
+    map.set(row.id, {
+      documented: row.true_north_alignment_documented ?? null,
+      deviationDeg: row.true_north_deviation_deg ?? null,
     });
   }
   return map;
@@ -856,7 +916,7 @@ export async function computeDustResults(
           (row.regulatory_activity ?? 'OTHER') === 'BATCHING_PLANT' &&
           row.silos_sealed === true &&
           typeof row.pm10_filter_efficiency_percent === 'number' &&
-          row.pm10_filter_efficiency_percent >= BATCHING_PM10_FILTER_MIN_PERCENT;
+          row.pm10_filter_efficiency_percent >= BATCHING_PM10_FILTER_MIN_PERCENT();
 
         const input = buildDustInput(row, project, freshDevice);
         if (isBatchingPm10Exempt) input.isEnclosedDustExempt = true;
@@ -1179,6 +1239,22 @@ export async function computeDustComplianceResults(
 ): Promise<DustComplianceResultItem[]> {
   const rowsById = new Map<string, DustActivityRow>((dustRows || []).map((row) => [String(row.id), row]));
 
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا نظام إدارة قواعد حقيقي؛ لا
+  // نشر، لا rollback"): getRuleParameters() (ruleParameters.ts) يُحدَّث مرة
+  // واحدة فقط في بداية evaluateProject.ts (لا هنا أيضاً — قبل computeDustResults
+  // وcomputeDustComplianceResults معاً، حتى لا يتباعد DVI عن Compliance في
+  // نفس دورة التقييم). مسارات مستقلة تستدعي هذه الدالة مباشرة بلا المرور
+  // عبر evaluateProject (نادرة، إن وُجدت) تعتمد على آخر قيم مُحدَّثة سابقاً
+  // أو الافتراضي — نفس فشل آمن معتاد في هذا الملف.
+
+  // توثيق معايرة الشمال الحقيقي لكل جهاز — راجع تعليق
+  // resolveDeviceTrueNorthCalibrationMap الكامل. غيابه (لا supabaseAdmin،
+  // أو فشل الاستعلام) يعني معاملة كل نشاط كـ"لا توثيق" (فشل آمن نحو تجاهل
+  // اتجاه الرياح في قاعدة المستقبِل باتجاه الريح، لا كسر).
+  const deviceTrueNorthMap = supabaseAdmin && project?.id
+    ? await resolveDeviceTrueNorthCalibrationMap(supabaseAdmin, project.id).catch(() => new Map<string, DeviceTrueNorthCalibration>())
+    : new Map<string, DeviceTrueNorthCalibration>();
+
   // جلب مجمَّع لآخر قرار مسجَّل لكل activity_group_id ذي صلة — نداء واحد
   // بدل نداء لكل نشاط، بنفس روح تجميع resolveFreshProjectDevice. يُستخدم
   // فقط لتغذية منع الاستئناف التلقائي الفوري بعد إيقاف في engine.ts —
@@ -1245,6 +1321,11 @@ export async function computeDustComplianceResults(
         const dviResult = r.windowEval?.worst;
         if (!row || !dviResult) return null;
 
+        // توثيق معايرة الجهاز الفعلي المرتبط بهذا النشاط تحديداً (لا
+        // المشروع كله) — null إن لم يكن النشاط مرتبطاً بجهاز، أو لم يوجد
+        // توثيق مسجَّل له بعد (فشل آمن نحو تجاهل اتجاه الرياح في القاعدة).
+        const deviceTrueNorthCalibration = row.device_id ? deviceTrueNorthMap.get(row.device_id) ?? null : null;
+
         // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
         // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts)
         // لا يجوز أن تُطبَّق عليه قاعدة RESUME-STABILITY-HOLD (استقرار 10
@@ -1262,7 +1343,7 @@ export async function computeDustComplianceResults(
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
-        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision);
+        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, deviceTrueNorthCalibration);
 
         // تسجيل قراءة PM10 — يُستخدم لحساب استمرار القراءة (دقيقتين/30
         // دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
@@ -1344,7 +1425,7 @@ export async function computeDustComplianceResults(
           pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, project.id, r.activityGroupId, row.device_id ?? null);
         }
 
-        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained);
+        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration);
         // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
         // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
         // تصلح" (راجع buildPlanningForecastResult في engine.ts).
@@ -1783,39 +1864,22 @@ export interface UnifiedActivityDecision {
   pendingConfirmation: boolean;
 }
 
-// ترتيب شدة موحَّد بين FinalDecision.level (6 درجات) وAeiColor (5 درجات،
-// بلا DARK_RED) — يسمح بمقارنة مباشرة "أيهما أشد" بين المصدرين.
-const UNIFIED_LEVEL_WEIGHT: Record<string, number> = {
-  GREEN: 0,
-  YELLOW: 1,
-  ORANGE: 2,
-  RED: 3,
-  DARK_RED: 4,
-  BLACK: 5,
-};
-
+// خطأ معماري حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "القرار المعروض قد
+// يختلف عن القرار المحفوظ"): كان الدمج بين decideFinal وaei ("الأشد يحكم"
+// على level/النص) يحدث هنا فقط، حياً وقت العرض — بلا أي انعكاس على النتيجة
+// المخزَّنة في final_decisions (persistFinalDecisions يستدعي decideFinal
+// مباشرة بلا هذه الطبقة). فيبقى المخزَّن (وأي مسار يقرأه مباشرة —
+// fetchLatestFinalDecisions، summaryFromStoredDecision، dashboard/global،
+// alerts/generate) أخفّ دائماً مما تعرضه أي شاشة تستدعي هذه الدالة حياً لنفس
+// النشاط في نفس اللحظة (مثال فعلي: ALLOW/GREEN محفوظ مقابل MONITOR/YELLOW
+// معروض). الإصلاح: نفس منطق الدمج بالضبط نُقل إلى decideFinal نفسها (المصدر
+// الوحيد المسموح له بإنتاج قرار، راجع types.ts) — decideFinal الآن تقرأ
+// input.aei فعلياً وتُطبِّق "الأشد يحكم" داخلياً قبل إرجاع النتيجة، فتُحفَظ
+// نتيجة الدمج نفسها في final_decisions ولا تختلف عن أي عرض حي لاحق. هذه
+// الدالة أصبحت غلافاً رقيقاً بلا أي دمج AEI خاص بها.
 export function computeUnifiedActivityDecision(
   dviWorst: DviEvaluationResult,
   compliance: DustComplianceResult | null,
-  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "تناقض بين البطاقات التي تصدر
-  // قرارات: فوق تشغيل اعتيادي وتحت مع مراقبة"): decideFinal تبني level/
-  // decisionLabelAr من dvi.level/dvi.decisionLabelAr مباشرة (لا aei إطلاقاً
-  // — aei لا تُستهلَك داخل decideFinal نفسها). لكن evaluateAei (aei-engine)
-  // تحسب safetyScore/qualityScore من dvi.score الرقمي المستمر بمعزل عن
-  // dvi.decisionCategory الثنائي — فنشاط قد يكون DVI فيه 'ALLOW' نصياً
-  // (decisionLabelAr='مسموح — تشغيل اعتيادي') بينما dvi.score>0 يكفي لخفض
-  // AEI إلى MONITOR/'قابل للتنفيذ مع مراقبة' فعلياً. العنوان الأعلى
-  // ("القرار الموحد للنشاط"، عبر summaryFromDust في route.ts) كان يعرض نص
-  // decideFinal وحده بلا اطّلاع على aei، فيظهر "مسموح" أخضر فوق بطاقة AEI
-  // "مع مراقبة" صفراء لنفس النشاط مباشرة — تناقض ظاهري صريح بين "بطاقتين
-  // تصدران قرارات" رغم أن كليهما صحيح فعلياً من منظوره الخاص (تنظيمي مقابل
-  // تشغيلي فيزيائي دقيق).
-  //
-  // الإصلاح: aei معامل ثالث اختياري — عند توفره، "الأشد يحكم" يُطبَّق بين
-  // level النهائي من decideFinal وaei.color معاً (لا decideFinal وحدها)،
-  // ونص/سبب aei يحل محل نص decideFinal إن كان aei هو الأشد فعلياً. غياب aei
-  // (استدعاءات قديمة: dashboard/global، viewer/dashboard) يبقي السلوك بلا
-  // تغيير تماماً — فشل آمن نحو الاعتماد على decideFinal وحدها كما كان.
   aei?: AeiEvaluationResult | null,
   // خطأ مكتشَف ومُصلَح (طلب مستخدم — "نشاط سيبدأ بعد 10 ساعات يظهر له
   // 'تعذّر اعتماد قرار واثق: بيانات قديمة'، رغم أن هذا متوقّع تماماً لنشاط
@@ -1834,33 +1898,6 @@ export function computeUnifiedActivityDecision(
 ): UnifiedActivityDecision {
   const mode = determineFinalDecisionMode(startIso);
   const decision = decideFinal(buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null, mode));
-
-  // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — نشاط PLANNING استمر يظهر "بيئة
-  // العمل غير آمنة (مغلق)" أسود رغم أن decideFinal يُرجع ALLOW/GREEN محايداً
-  // بشكل صحيح تماماً لـmode=PLANNING): محرك AEI مستقل تماماً عن decideFinal
-  // ولا يعرف مفهوم PLANNING إطلاقاً — لا يزال يحسب aei.color من dvi.score
-  // الخام (مبني على قيم توقّعية قد تكون مرتفعة/غير واقعية)، فتفوز قاعدة
-  // "الأشد يحكم" أدناه بلون AEI الأسود فوق قرار decideFinal الأخضر الصحيح.
-  // نفس فلسفة الفرع المبكر في decideFinal بالضبط: توقّع مستقبلي بعيد لا
-  // يستحق أي تصعيد فيزيائي/تشغيلي حي، بصرف النظر عن مصدره (DVI، امتثال، أو
-  // AEI هنا). تعطيل هذا الدمج بالكامل لـPLANNING أبسط وأضمن من تعديل محرك
-  // AEI نفسه (محرك ثالث مستقل بمنطقه الخاص).
-  if (
-    mode !== 'PLANNING' &&
-    aei &&
-    !decision.mandatoryStop &&
-    !decision.pendingConfirmation &&
-    UNIFIED_LEVEL_WEIGHT[aei.color] > UNIFIED_LEVEL_WEIGHT[decision.level]
-  ) {
-    return {
-      decisionLabelAr: aei.statusLabelAr,
-      shortReason: aei.shortReasonAr,
-      level: aei.color,
-      mandatoryStop: decision.mandatoryStop,
-      overridable: decision.overridable,
-      pendingConfirmation: decision.pendingConfirmation,
-    };
-  }
 
   return {
     decisionLabelAr: decision.decisionLabelAr,
@@ -2139,13 +2176,29 @@ export interface ActivityDecisionPersistResult {
 }
 
 // القسم 20 (Definition of Done، بند 7) — بصمة SHA-256 حتمية لمدخلات
-// decideFinal الفعلية (dvi + compliance + mode) التي أنتجت هذا القرار
+// decideFinal الفعلية (dvi + compliance + aei + mode) التي أنتجت هذا القرار
 // بالضبط — لا تعتمد على ترتيب مفاتيح الكائن (JSON.stringify(input, sortedKeys))
 // حتى تبقى نفس المدخلات تُنتج نفس البصمة دائماً بصرف النظر عن ترتيب بناء
 // الكائن في الكود. لا تُخزَّن المدخلات الكاملة هنا (موجودة أصلاً كـjsonb في
 // dust_evaluations/dust_compliance_evaluations) — فقط بصمة تسمح بإثبات
 // التطابق لاحقاً.
-export function computeInputSnapshotHash(dvi: DviEvaluationResult, compliance: DustComplianceResult | null, mode: string): string {
+//
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "بصمة القرار لا تشمل AEI رغم أن
+// AEI قد يغير القرار المعروض؛ قد يتغير القرار دون أن تتغير البصمة"): بعد
+// دمج AEI داخل decideFinal نفسها (راجع تعليق aeiIsMoreSevere في
+// final-decision-engine/engine.ts)، أصبح aei قادراً فعلياً على تغيير
+// level/decisionLabelAr/shortReasonAr المخزَّنة في final_decisions — فكانت
+// هذه البصمة (dvi+compliance+mode فقط) قد تبقى مطابقة تماماً بين تقييمَين
+// نتج عنهما قراران مختلفان فعلياً (تغيّر aei وحده)، مبطلة الغرض الكامل من
+// البصمة (إثبات "نفس المدخلات تنتج نفس القرار"). aei معامل رابع اختياري
+// (لا يكسر أي استدعاء قديم) — تمريره الآن إلزامي عملياً من نقطة الاستدعاء
+// الوحيدة الفعلية (persistActivityDecisionsAtomic أدناه).
+export function computeInputSnapshotHash(
+  dvi: DviEvaluationResult,
+  compliance: DustComplianceResult | null,
+  mode: string,
+  aei: AeiEvaluationResult | null = null
+): string {
   const sortedStringify = (value: unknown): string =>
     JSON.stringify(value, (_key, val) => {
       if (val && typeof val === 'object' && !Array.isArray(val)) {
@@ -2158,7 +2211,7 @@ export function computeInputSnapshotHash(dvi: DviEvaluationResult, compliance: D
       }
       return val;
     });
-  const snapshot = sortedStringify({ dvi, compliance, mode });
+  const snapshot = sortedStringify({ dvi, compliance, aei, mode });
   return createHash('sha256').update(snapshot).digest('hex');
 }
 
@@ -2251,7 +2304,7 @@ export async function persistActivityDecisionsAtomic(
           finalDecisionPayload = {
             decision,
             evaluatedAt: finalInput.evaluatedAt,
-            inputSnapshotHash: computeInputSnapshotHash(dvi, compliance, mode),
+            inputSnapshotHash: computeInputSnapshotHash(dvi, compliance, mode, r.aei),
           };
         }
 

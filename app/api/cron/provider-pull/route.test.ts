@@ -45,8 +45,10 @@ vi.mock('@/app/lib/timingSafe', () => ({
   timingSafeStringEqual: (a: string, b: string) => a === b,
 }));
 
+const enqueueEvaluationRetryJobMock = vi.fn(async (..._args: unknown[]) => {});
 vi.mock('@/app/lib/evaluateProject', () => ({
   evaluateProject: vi.fn(async (projectId: string) => ({ success: true, persisted: 1, projectId })),
+  enqueueEvaluationRetryJob: (...args: unknown[]) => enqueueEvaluationRetryJobMock(...args),
 }));
 
 vi.mock('@/app/lib/credentialsEncryption', () => ({
@@ -102,6 +104,7 @@ describe('GET /api/cron/provider-pull', () => {
     writeDeviceReadingMock.mockResolvedValue({ success: true });
     fetchLatestReadingMock.mockReset();
     fetchReadingsSinceMock.mockReset();
+    enqueueEvaluationRetryJobMock.mockClear();
     delete rpcResponses['list_active_provider_connections'];
   });
 
@@ -202,5 +205,32 @@ describe('GET /api/cron/provider-pull', () => {
     const lastUpdate = updateCalls[updateCalls.length - 1];
     expect(lastUpdate.values.last_pull_success).toBe(false);
     expect(lastUpdate.values.last_pull_error).toBe('boom');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا مهمة إعادة محاولة مضمونة
+  // تربط القراءة المحفوظة بنجاح بالتقييم الفاشل بعدها"): فشل evaluateProject
+  // بعد سحب ناجح يجب أن يُنشئ مهمة صريحة في طابور project_evaluation_jobs
+  // (عبر enqueueEvaluationRetryJob)، لا مجرد console.error صامت.
+  it('فشل evaluateProject بعد سحب ناجح → enqueueEvaluationRetryJob يُستدعى بـPROVIDER_PULL ورسالة الخطأ', async () => {
+    rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+    fetchReadingsSinceMock.mockResolvedValue([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }]);
+
+    const { evaluateProject } = await import('@/app/lib/evaluateProject');
+    vi.mocked(evaluateProject).mockResolvedValueOnce({ success: false, persisted: 0, error: 'boom-eval' } as never);
+
+    const { GET } = await import('./route');
+    await GET(makeRequest());
+
+    expect(enqueueEvaluationRetryJobMock).toHaveBeenCalledWith('project-1', 'PROVIDER_PULL', 'boom-eval');
+  });
+
+  it('نجاح evaluateProject → enqueueEvaluationRetryJob لا يُستدعى إطلاقاً', async () => {
+    rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+    fetchReadingsSinceMock.mockResolvedValue([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }]);
+
+    const { GET } = await import('./route');
+    await GET(makeRequest());
+
+    expect(enqueueEvaluationRetryJobMock).not.toHaveBeenCalled();
   });
 });

@@ -50,3 +50,12 @@ next-env.d.ts
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# سكربتات فحص/تشخيص مؤقتة بجذر المشروع — أدوات محلية لا جزء من التطبيق
+/check-*.mjs
+/disable-*.mjs
+/list-devices.mjs
+/ping-db.mjs
+
+# ملاحظات/تقارير شخصية بجذر المشروع — لا جزء من الكود
+/تقرير*.md

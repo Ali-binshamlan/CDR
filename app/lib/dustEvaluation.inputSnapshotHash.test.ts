@@ -2,6 +2,29 @@ import { describe, it, expect } from 'vitest';
 import { computeInputSnapshotHash } from './dustEvaluation';
 import type { DviEvaluationResult } from '@/app/utils/dust-engine/types';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
+
+function minimalAei(overrides: Partial<AeiEvaluationResult> = {}): AeiEvaluationResult {
+  return {
+    indicatorType: 'AEI',
+    activityLabelAr: 'test',
+    status: 'ALLOW',
+    statusLabelAr: 'قابل للتنفيذ',
+    color: 'GREEN',
+    score: 100,
+    safetyScore: 100,
+    qualityScore: 100,
+    baseScore: 100,
+    closedByGate: false,
+    cappedByGate: false,
+    gateReasonAr: null,
+    isHoldForVerification: false,
+    shortReasonAr: '',
+    recommendationAr: '',
+    sources: [],
+    ...overrides,
+  };
+}
 
 // القسم 20 (Definition of Done، بند 7) من "دليل الإصلاح الجذري لمنظومة
 // مرقاب" — "القرار والتنبيه يحملان input_snapshot_hash نفسها". يختبر هذا
@@ -108,5 +131,43 @@ describe('computeInputSnapshotHash', () => {
   it('البصمة بصيغة hex SHA-256 (64 حرفاً)', () => {
     const hash = computeInputSnapshotHash(minimalDvi(), null, 'LIVE_OPERATIONAL');
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "بصمة القرار لا تشمل AEI رغم أن
+  // AEI قد يغير القرار المعروض؛ قد يتغير القرار دون أن تتغير البصمة"): بعد
+  // دمج AEI داخل decideFinal (راجع aeiIsMoreSevere في
+  // final-decision-engine/engine.ts)، aei أصبح قادراً فعلياً على تغيير
+  // level/decisionLabelAr المخزَّنة — فيجب أن يغيّر تغيّره وحده البصمة أيضاً،
+  // وإلا يبقى "نفس البصمة، قرار مختلف فعلياً" ممكناً.
+  describe('aei يؤثر على البصمة (خطأ مكتشَف ومُصلَح)', () => {
+    it('aei موجود مقابل aei=null (بقية المدخلات مطابقة) → بصمة مختلفة', () => {
+      const dvi = minimalDvi();
+      const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null);
+      const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', minimalAei());
+      expect(a).not.toBe(b);
+    });
+
+    it('تغيّر aei.color وحده (بقية المدخلات مطابقة تماماً) → بصمة مختلفة', () => {
+      const dvi = minimalDvi();
+      const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', minimalAei({ color: 'GREEN', status: 'ALLOW' }));
+      const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', minimalAei({ color: 'YELLOW', status: 'MONITOR' }));
+      expect(a).not.toBe(b);
+    });
+
+    it('aei غير مُمرَّر إطلاقاً (افتراضي) يساوي تمرير aei=null صراحة (توافق خلفي)', () => {
+      const dvi = minimalDvi();
+      const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL');
+      const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null);
+      expect(a).toBe(b);
+    });
+
+    it('نفس aei بترتيب مفاتيح مختلف (كائن مُعاد بناؤه) → نفس البصمة (حتمية الفرز تشمل aei أيضاً)', () => {
+      const dvi = minimalDvi();
+      const aei1 = minimalAei();
+      const aei2 = { ...aei1, sources: [...aei1.sources] };
+      const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', aei1);
+      const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', aei2);
+      expect(a).toBe(b);
+    });
   });
 });

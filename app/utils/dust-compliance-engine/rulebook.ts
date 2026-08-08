@@ -15,6 +15,7 @@ import type {
   DustWindBand,
 } from './types';
 import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
+import { getRuleParameters } from './ruleParameters';
 
 export const RULEBOOK_VERSION = ACTIVE_RULE_BUNDLE.id;
 
@@ -40,36 +41,45 @@ export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = {
 // 3.5، تخزين المواد) و500م في موضع آخر (القسم 3.8، مناطق الكسارات تحديداً).
 // نطبّق الحد الأكثر تحفظاً (500م) للكسارة تحديداً حتى يصدر تفسير رسمي من
 // الجهة — راجع ملاحظة "مرقاب" القسم 9.5.
-const CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M = 500;
-const CRUSHER_GENERAL_RECEPTOR_DISTANCE_M = 200;
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا نظام إدارة قواعد حقيقي: لا
+// نسخ، لا نشر، لا rollback"): العتبات أدناه لم تعد ثوابت TypeScript صرفة —
+// تُقرأ الآن حية من getRuleParameters() (ruleParameters.ts)، القيمة
+// المنشورة فعلياً حالياً (أو الافتراضي المطابق لما كان هنا قبل هذا التغيير
+// إن لم يُنشَر أي شيء بعد). دوال getter صغيرة بدل استبدال كل استخدام مباشرة
+// بـgetRuleParameters().X المطوَّل — الأسماء والدلالة تبقيان كما هما تماماً
+// في بقية الملف، فقط القراءة تحوّلت من حرفي ثابت إلى حالة حية قابلة للنشر.
+const CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M = () => getRuleParameters().CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M;
+const CRUSHER_GENERAL_RECEPTOR_DISTANCE_M = () => getRuleParameters().CRUSHER_GENERAL_RECEPTOR_DISTANCE_M;
 // حد مساحة الفئة الأولى (منخفضة المخاطر) — يُستخدم في classifyProject فقط
 // لتصنيف فئة المشروع حسب المساحة (القسم 6). لا علاقة له بأهلية تشغيل
 // الكسارة؛ أهلية الكسارة تُحدَّد حصراً عبر riskClass النهائي في crusherRules
 // (CRUSHER-CATEGORY-001)، الذي يسمح للفئة الثالثة بصرف النظر عن سبب وصول
 // المشروع إليها (مساحة كبيرة، أو حركة شاحنات، أو تصريح صريح بوجود كسارة).
+// مُستبعَدة عمداً من نظام النسخ (raise the bar): تُحدِّد الفئة التنظيمية
+// الأساسية للمشروع كاملاً، لا عتبة قاعدة مفردة — تبقى ثابتاً برمجياً.
 const CATEGORY_I_MAX_AREA_M2 = 2000;
-const STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M = 200;
-const DEMOLITION_MAX_AREA_M2 = 100;
-const IDLE_SURFACE_MAX_DAYS = 5;
-const UNPAVED_SPEED_LIMIT_KMH = 10;
-const PAVED_SPEED_LIMIT_KMH = 20;
-const SPILL_CLEANUP_LIMIT_MIN = 15;
-const DROP_HEIGHT_NORMAL_LIMIT_M = 1.5;
-const DROP_HEIGHT_HIGH_WIND_LIMIT_M = 1;
-const DEBRIS_PILE_MAX_HEIGHT_M = 3;
-const IMMERSION_ZONE_MIN_LENGTH_M = 8;
-const WHEEL_WASH_CYCLE_MIN_SEC = 20;
-const STONE_CUTTING_WIND_STOP_KMH = 15;
+const STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M = () => getRuleParameters().STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M;
+const DEMOLITION_MAX_AREA_M2 = () => getRuleParameters().DEMOLITION_MAX_AREA_M2;
+const IDLE_SURFACE_MAX_DAYS = () => getRuleParameters().IDLE_SURFACE_MAX_DAYS;
+const UNPAVED_SPEED_LIMIT_KMH = () => getRuleParameters().UNPAVED_SPEED_LIMIT_KMH;
+const PAVED_SPEED_LIMIT_KMH = () => getRuleParameters().PAVED_SPEED_LIMIT_KMH;
+const SPILL_CLEANUP_LIMIT_MIN = () => getRuleParameters().SPILL_CLEANUP_LIMIT_MIN;
+const DROP_HEIGHT_NORMAL_LIMIT_M = () => getRuleParameters().DROP_HEIGHT_NORMAL_LIMIT_M;
+const DROP_HEIGHT_HIGH_WIND_LIMIT_M = () => getRuleParameters().DROP_HEIGHT_HIGH_WIND_LIMIT_M;
+const DEBRIS_PILE_MAX_HEIGHT_M = () => getRuleParameters().DEBRIS_PILE_MAX_HEIGHT_M;
+const IMMERSION_ZONE_MIN_LENGTH_M = () => getRuleParameters().IMMERSION_ZONE_MIN_LENGTH_M;
+const WHEEL_WASH_CYCLE_MIN_SEC = () => getRuleParameters().WHEEL_WASH_CYCLE_MIN_SEC;
+const STONE_CUTTING_WIND_STOP_KMH = () => getRuleParameters().STONE_CUTTING_WIND_STOP_KMH;
 // A6 — كفاءة فلاتر PM10 الدنيا في الصوامع ومحطات الخلط المغلقة (القسم
 // الرابع، الفقرة "ب"؛ "الاستخراج التنظيمي من المرفق" القسم 6 — الحد المعتمد
 // للاستمرار أثناء إيقاف الرياح فوق 25 كم/س).
 // مصدَّرة (لا محلية فقط) لأن engine.ts يحتاجها أيضاً لربط استثناء البيتشنج
 // المغلق ببوابة إيقاف الرياح >25 كم/س (GATE-WIND-ABOVE-25-004)، لا فقط
 // لقاعدة BATCHING-FILTER-002 المحلية هنا.
-export const BATCHING_PM10_FILTER_MIN_PERCENT = 99;
+export const BATCHING_PM10_FILTER_MIN_PERCENT = () => getRuleParameters().BATCHING_PM10_FILTER_MIN_PERCENT;
 // A4 — سرعة الرياح التي تستوجب فحص أغطية الأسطح غير النشطة وإصلاحها فوراً
 // (مختلفة عن عتبات 15/25 كم/س العامة — خاصة بحالة الأغطية تحديداً).
-const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = 20;
+const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = () => getRuleParameters().IDLE_SURFACE_COVER_INSPECTION_WIND_KMH;
 
 // حدود PM10 التشغيلية — من حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE، القسم
 // 5.2-5.3 من "دليل الإصلاح الجذري"): النطاق التشغيلي لمرقاب منفصل عن الحكم
@@ -138,8 +148,9 @@ export function classifyProject(profile: DustProjectComplianceProfile): {
 // -----------------------------------------------------------------------
 export function classifyWind(windSpeedKmh: number | null): DustWindBand {
   if (windSpeedKmh === null || windSpeedKmh === undefined) return 'UNKNOWN';
-  if (windSpeedKmh < 15) return 'BELOW_15';
-  if (windSpeedKmh <= 25) return 'FROM_15_TO_25';
+  const { WIND_GATE_ENHANCED_MIN_KMH, WIND_GATE_STOP_KMH } = getRuleParameters();
+  if (windSpeedKmh < WIND_GATE_ENHANCED_MIN_KMH) return 'BELOW_15';
+  if (windSpeedKmh <= WIND_GATE_STOP_KMH) return 'FROM_15_TO_25';
   return 'ABOVE_25';
 }
 
@@ -258,17 +269,18 @@ export function enhancedSuppressionRule(
 // 30 مثلاً لا تستحق أي إجراء إضافي فوق ما تفرضه سرعة الرياح المستدامة
 // نفسها؛ فقط هبات شديدة الخطورة فعلياً (قريبة من عتبة DVI-WIND-LOOSE-
 // MATERIAL-005 الفيزيائية في dust-engine/engine.ts) تستحق تنبيهاً منفصلاً.
-const WIND_GUST_SAFETY_THRESHOLD_KMH = 50;
+const WIND_GUST_SAFETY_THRESHOLD_KMH = () => getRuleParameters().WIND_GUST_SAFETY_THRESHOLD_KMH;
 
 export function windGustSafetyRule(
   isDustGenerating: boolean,
   isEnclosedOperation: boolean,
   windGustKmh: number | null
 ): DustRuleHit[] {
+  const windGustSafetyThresholdKmh = WIND_GUST_SAFETY_THRESHOLD_KMH();
   if (
     windGustKmh === null ||
     windGustKmh === undefined ||
-    windGustKmh < WIND_GUST_SAFETY_THRESHOLD_KMH ||
+    windGustKmh < windGustSafetyThresholdKmh ||
     !isDustGenerating ||
     isEnclosedOperation
   ) {
@@ -422,24 +434,26 @@ function earthworksRules(
 ): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
 
+  const dropHeightHighWindLimitM = DROP_HEIGHT_HIGH_WIND_LIMIT_M();
+  const dropHeightNormalLimitM = DROP_HEIGHT_NORMAL_LIMIT_M();
   const dropHeight = activity.measurements.dropHeightM;
   if (dropHeight !== null && dropHeight !== undefined) {
-    if (windBand !== 'BELOW_15' && dropHeight > DROP_HEIGHT_HIGH_WIND_LIMIT_M) {
+    if (windBand !== 'BELOW_15' && dropHeight > dropHeightHighWindLimitM) {
       hits.push(
         ruleHit(
           'EARTHWORKS-DROP-002',
           'STOP_AFFECTED_ACTIVITY',
-          `ارتفاع تفريغ التربة (${dropHeight} م) يتجاوز الحد المسموح أثناء الرياح النشطة (${DROP_HEIGHT_HIGH_WIND_LIMIT_M} م)`,
-          `خفّض ارتفاع تفريغ التربة إلى ${DROP_HEIGHT_HIGH_WIND_LIMIT_M} م أو أقل طوال فترة الرياح النشطة`
+          `ارتفاع تفريغ التربة (${dropHeight} م) يتجاوز الحد المسموح أثناء الرياح النشطة (${dropHeightHighWindLimitM} م)`,
+          `خفّض ارتفاع تفريغ التربة إلى ${dropHeightHighWindLimitM} م أو أقل طوال فترة الرياح النشطة`
         )
       );
-    } else if (dropHeight > DROP_HEIGHT_NORMAL_LIMIT_M) {
+    } else if (dropHeight > dropHeightNormalLimitM) {
       hits.push(
         ruleHit(
           'EARTHWORKS-DROP-003',
           'STOP_AFFECTED_ACTIVITY',
-          `ارتفاع تفريغ التربة (${dropHeight} م) يتجاوز الحد الاعتيادي (${DROP_HEIGHT_NORMAL_LIMIT_M} م)`,
-          `خفّض ارتفاع تفريغ التربة إلى ${DROP_HEIGHT_NORMAL_LIMIT_M} م أو أقل`
+          `ارتفاع تفريغ التربة (${dropHeight} م) يتجاوز الحد الاعتيادي (${dropHeightNormalLimitM} م)`,
+          `خفّض ارتفاع تفريغ التربة إلى ${dropHeightNormalLimitM} م أو أقل`
         )
       );
     }
@@ -462,24 +476,26 @@ function demolitionRules(
   const isExposed = !activity.isEnclosedOperation;
 
   if (isExposed && (windBand === 'FROM_15_TO_25' || windBand === 'ABOVE_25')) {
+    const windGateEnhancedMinKmh = getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH;
     hits.push(
       ruleHit(
         'DEMO-WIND-STOP-001',
         'MANDATORY_STOP',
-        'إيقاف إلزامي: أعمال هدم مكشوفة أثناء رياح ≥15 كم/س (الحد الأقصى التنظيمي 15 كم/س لأعمال الهدم)',
-        'أوقف أعمال الهدم المكشوفة فوراً حتى تنخفض سرعة الرياح إلى ما دون 15 كم/س، أو حوّلها لعملية مغلقة'
+        `إيقاف إلزامي: أعمال هدم مكشوفة أثناء رياح ≥${windGateEnhancedMinKmh} كم/س (الحد الأقصى التنظيمي ${windGateEnhancedMinKmh} كم/س لأعمال الهدم)`,
+        `أوقف أعمال الهدم المكشوفة فوراً حتى تنخفض سرعة الرياح إلى ما دون ${windGateEnhancedMinKmh} كم/س، أو حوّلها لعملية مغلقة`
       )
     );
   }
 
   const activeArea = activity.measurements.demolitionActiveAreaM2;
-  if (activeArea !== null && activeArea !== undefined && activeArea > DEMOLITION_MAX_AREA_M2) {
+  const demolitionMaxAreaM2 = DEMOLITION_MAX_AREA_M2();
+  if (activeArea !== null && activeArea !== undefined && activeArea > demolitionMaxAreaM2) {
     hits.push(
       ruleHit(
         'DEMO-AREA-002',
         'STOP_AFFECTED_ACTIVITY',
-        `مساحة الهدم النشطة (${activeArea} م²) تتجاوز الحد المسموح (${DEMOLITION_MAX_AREA_M2} م² في المرة الواحدة)`,
-        `قسّم أعمال الهدم إلى مراحل بحيث لا تتجاوز المساحة النشطة ${DEMOLITION_MAX_AREA_M2} م² في المرة الواحدة`
+        `مساحة الهدم النشطة (${activeArea} م²) تتجاوز الحد المسموح (${demolitionMaxAreaM2} م² في المرة الواحدة)`,
+        `قسّم أعمال الهدم إلى مراحل بحيث لا تتجاوز المساحة النشطة ${demolitionMaxAreaM2} م² في المرة الواحدة`
       )
     );
   }
@@ -514,26 +530,52 @@ function crusherRules(
   const autoResidential = activity.measurements.crusherDistanceToResidentialReceptorAutoM;
   const manualDistance = activity.measurements.crusherDistanceToReceptorM;
 
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "المستقبلات الحساسة: القائمة
+  // الفارغة قد تعني أن بيانات المستقبلات لم تُدخل أصلاً؛ يجب التفريق بين
+  // 'لا توجد مستقبلات بعد مسح مكتمل' و'لم يتم إدخال بيانات المستقبلات' —
+  // الحالة الثانية يجب أن تنتج FIELD_VERIFICATION_REQUIRED"): إحداثيات
+  // الكسارة موجودة فعلياً (autoAny !== null، أي nearestReceptorDistancesM
+  // حسبت شيئاً لا "لا إحداثيات") لكن النتيجة Infinity (لا مستقبِل ضمن
+  // المصفوفة الممرَّرة) — إن كانت تلك المصفوفة فارغة أصلاً على مستوى النظام
+  // كله (sensitiveReceptorsDataAvailable=false)، فـInfinity هنا لا تصلح
+  // دليل أمان (لم يُجرَ أي مسح فعلي بعد)، بخلاف نفس Infinity حين تتوفر بيانات
+  // مستقبلات حقيقية لمشاريع أخرى في النظام لكن لا شيء قريب من هذا الموقع
+  // تحديداً (حالة آمنة فعلياً، تبقى بلا تغيير). لا تتكرر مع بوابة المسافة
+  // اليدوية (manualDistance) أدناه — تُفحَص فقط حين المصدر هو الحساب التلقائي.
+  if (autoAny === Infinity && activity.sensitiveReceptorsDataAvailable === false) {
+    hits.push(
+      ruleHit(
+        'CRUSHER-RECEPTORS-DATA-MISSING',
+        'FIELD_VERIFICATION_REQUIRED',
+        'تعذر التحقق من مسافة الكسارة عن أقرب مستقبل حساس: لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد (لا يوجد مسح مكتمل يثبت غياب مستقبلات قريبة)',
+        'أدخِل بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام، أو أثبت مسافة الكسارة يدوياً حتى يتم التحقق التلقائي'
+      )
+    );
+  }
+
+  const crusherGeneralReceptorDistanceM = CRUSHER_GENERAL_RECEPTOR_DISTANCE_M();
+  const crusherSensitiveReceptorDistanceM = CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M();
+
   const generalDistance = autoAny ?? manualDistance;
-  if (generalDistance !== null && generalDistance !== undefined && generalDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
+  if (generalDistance !== null && generalDistance !== undefined && generalDistance < crusherGeneralReceptorDistanceM) {
     hits.push(
       ruleHit(
         'CRUSHER-DISTANCE-200-002B',
         'MANDATORY_STOP',
-        `مسافة الكسارة عن أقرب مستقبل حساس (${autoAny !== null && autoAny !== undefined ? 'محسوبة تلقائياً: ' : ''}${generalDistance} م) أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`,
-        `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م عن أقرب مستقبل حساس`
+        `مسافة الكسارة عن أقرب مستقبل حساس (${autoAny !== null && autoAny !== undefined ? 'محسوبة تلقائياً: ' : ''}${generalDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م)`,
+        `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبل حساس`
       )
     );
   }
 
   const residentialDistance = autoResidential ?? manualDistance;
-  if (residentialDistance !== null && residentialDistance !== undefined && residentialDistance < CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M) {
+  if (residentialDistance !== null && residentialDistance !== undefined && residentialDistance < crusherSensitiveReceptorDistanceM) {
     hits.push(
       ruleHit(
         'CRUSHER-DISTANCE-500-002C',
         'MANDATORY_STOP',
-        `مسافة الكسارة عن سكني/مدارس/مستشفيات (${autoResidential !== null && autoResidential !== undefined ? 'محسوبة تلقائياً: ' : ''}${residentialDistance} م) أقل من الحد الأدنى (${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م)`,
-        `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م عن أقرب منطقة سكنية/مدرسة/مستشفى`
+        `مسافة الكسارة عن سكني/مدارس/مستشفيات (${autoResidential !== null && autoResidential !== undefined ? 'محسوبة تلقائياً: ' : ''}${residentialDistance} م) أقل من الحد الأدنى (${crusherSensitiveReceptorDistanceM} م)`,
+        `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${crusherSensitiveReceptorDistanceM} م عن أقرب منطقة سكنية/مدرسة/مستشفى`
       )
     );
   }
@@ -550,7 +592,7 @@ function crusherRules(
   if (
     downwindDistance !== null &&
     downwindDistance !== undefined &&
-    downwindDistance < CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M
+    downwindDistance < crusherSensitiveReceptorDistanceM
   ) {
     hits.push(
       ruleHit(
@@ -583,16 +625,17 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
   }
 
   const filterEfficiency = activity.controls.pm10FilterEfficiencyPercent;
+  const batchingPm10FilterMinPercent = BATCHING_PM10_FILTER_MIN_PERCENT();
   if (
     filterEfficiency !== null && filterEfficiency !== undefined &&
-    filterEfficiency < BATCHING_PM10_FILTER_MIN_PERCENT
+    filterEfficiency < batchingPm10FilterMinPercent
   ) {
     hits.push(
       ruleHit(
         'BATCHING-FILTER-002',
         'MANDATORY_STOP',
-        `كفاءة فلتر الجسيمات العالقة (${filterEfficiency}%) أقل من الحد الأدنى (${BATCHING_PM10_FILTER_MIN_PERCENT}%)`,
-        `استبدل أو اصلح فلتر الجسيمات العالقة حتى تصل كفاءته إلى ${BATCHING_PM10_FILTER_MIN_PERCENT}% على الأقل`
+        `كفاءة فلتر الجسيمات العالقة (${filterEfficiency}%) أقل من الحد الأدنى (${batchingPm10FilterMinPercent}%)`,
+        `استبدل أو اصلح فلتر الجسيمات العالقة حتى تصل كفاءته إلى ${batchingPm10FilterMinPercent}% على الأقل`
       )
     );
   }
@@ -632,6 +675,10 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
   // crusherDistanceToReceptorM)، فـFIELD_VERIFICATION_REQUIRED هنا يمنع
   // فقط قرار ALLOW نظيف بلا أي إثبات موقع، بدل تمرير القاعدة بصمت.
   const batchingDistance = activity.measurements.batchingDistanceToNearestReceptorAutoM;
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — نفس تعليق CRUSHER-RECEPTORS-DATA-
+  // MISSING أعلاه بالضبط): إحداثيات محطة الخلط موجودة (batchingDistance
+  // !== null) لكن Infinity لأن جدول sensitive_receptors فارغ كلياً في
+  // النظام (لا لأن مسحاً فعلياً أثبت غياب مستقبلات قريبة).
   if (batchingDistance === null) {
     hits.push(
       ruleHit(
@@ -641,13 +688,23 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
         'حدّد موقع محطة الخلط على الخريطة للتحقق التلقائي من مسافتها عن أقرب مستقبِل حساس'
       )
     );
-  } else if (batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
+  } else if (batchingDistance === Infinity && activity.sensitiveReceptorsDataAvailable === false) {
+    hits.push(
+      ruleHit(
+        'BATCHING-RECEPTORS-DATA-MISSING',
+        'FIELD_VERIFICATION_REQUIRED',
+        'تعذر التحقق من مسافة محطة الخلط عن أقرب مستقبل حساس: لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد',
+        'أدخِل بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام للتحقق التلقائي من المسافة'
+      )
+    );
+  } else if (batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M()) {
+    const crusherGeneralReceptorDistanceM = CRUSHER_GENERAL_RECEPTOR_DISTANCE_M();
     hits.push(
       ruleHit(
         'BATCHING-DISTANCE-200',
         'MANDATORY_STOP',
-        `مسافة محطة الخلط عن أقرب مستقبل حساس (محسوبة تلقائياً: ${batchingDistance} م) أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`,
-        `أوقف تشغيل محطة الخلط أو انقلها لمسافة لا تقل عن ${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)`
+        `مسافة محطة الخلط عن أقرب مستقبل حساس (محسوبة تلقائياً: ${batchingDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م)`,
+        `أوقف تشغيل محطة الخلط أو انقلها لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)`
       )
     );
   }
@@ -675,12 +732,13 @@ function stoneCuttingRules(
   // demolitionRules، لأعمال القطع المكشوفة فقط.
   const isExposed = !activity.isEnclosedOperation;
   if (isExposed && (windBand === 'FROM_15_TO_25' || windBand === 'ABOVE_25')) {
+    const stoneCuttingWindStopKmh = STONE_CUTTING_WIND_STOP_KMH();
     hits.push(
       ruleHit(
         'STONECUT-WIND-STOP-003',
         'MANDATORY_STOP',
-        `إيقاف إلزامي: قطع أحجار مكشوف أثناء رياح تتجاوز الحد المسموح (${STONE_CUTTING_WIND_STOP_KMH} كم/س)`,
-        `أوقف القطع المكشوف فوراً حتى تنخفض سرعة الرياح إلى ما دون ${STONE_CUTTING_WIND_STOP_KMH} كم/س، أو حوّله لتشغيل مغلق`
+        `إيقاف إلزامي: قطع أحجار مكشوف أثناء رياح تتجاوز الحد المسموح (${stoneCuttingWindStopKmh} كم/س)`,
+        `أوقف القطع المكشوف فوراً حتى تنخفض سرعة الرياح إلى ما دون ${stoneCuttingWindStopKmh} كم/س، أو حوّله لتشغيل مغلق`
       )
     );
   }
@@ -728,7 +786,8 @@ function entryExitRules(
       hits.push(ruleHit('ENTRY-OILSEP-008', 'RESTRICT_ACTIVITY', 'لا يوجد فاصل زيوت في وحدة غسيل الإطارات', 'ركّب فاصل زيوت في وحدة غسيل الإطارات'));
     }
     if (activity.controls.washCycleDurationAdequate === false) {
-      hits.push(ruleHit('ENTRY-WASHCYCLE-009', 'RESTRICT_ACTIVITY', `مدة دورة غسيل الإطارات أقل من ${WHEEL_WASH_CYCLE_MIN_SEC} ثانية لكل محور`, `اضبط مدة دورة الغسيل على ${WHEEL_WASH_CYCLE_MIN_SEC} ثانية على الأقل لكل محور`));
+      const wheelWashCycleMinSec = WHEEL_WASH_CYCLE_MIN_SEC();
+      hits.push(ruleHit('ENTRY-WASHCYCLE-009', 'RESTRICT_ACTIVITY', `مدة دورة غسيل الإطارات أقل من ${wheelWashCycleMinSec} ثانية لكل محور`, `اضبط مدة دورة الغسيل على ${wheelWashCycleMinSec} ثانية على الأقل لكل محور`));
     }
     if (activity.controls.washWaterReused === false) {
       hits.push(ruleHit('ENTRY-WASHREUSE-010', 'ALLOW_WITH_CONTROLS', 'يُفضَّل إعادة استخدام مياه غسيل الإطارات', 'أضف نظام إعادة استخدام لمياه غسيل الإطارات'));
@@ -741,7 +800,8 @@ function entryExitRules(
       hits.push(ruleHit('ENTRY-IMMERSION-MESH-011', 'RESTRICT_ACTIVITY', 'لا توجد شبكة مانعة للانزلاق في منطقة غمر الإطارات', 'ركّب شبكة مانعة للانزلاق في منطقة غمر الإطارات'));
     }
     if (activity.controls.immersionZoneLengthAdequate === false) {
-      hits.push(ruleHit('ENTRY-IMMERSION-LENGTH-012', 'RESTRICT_ACTIVITY', `طول منطقة غمر الإطارات أقل من ${IMMERSION_ZONE_MIN_LENGTH_M} أمتار`, `وسّع منطقة غمر الإطارات إلى ${IMMERSION_ZONE_MIN_LENGTH_M} أمتار على الأقل`));
+      const immersionZoneMinLengthM = IMMERSION_ZONE_MIN_LENGTH_M();
+      hits.push(ruleHit('ENTRY-IMMERSION-LENGTH-012', 'RESTRICT_ACTIVITY', `طول منطقة غمر الإطارات أقل من ${immersionZoneMinLengthM} أمتار`, `وسّع منطقة غمر الإطارات إلى ${immersionZoneMinLengthM} أمتار على الأقل`));
     }
     if (activity.controls.collectionBasinPresent === false) {
       hits.push(ruleHit('ENTRY-BASIN-013', 'RESTRICT_ACTIVITY', 'لا يوجد حوض سفلي لتجميع مخلفات غمر الإطارات', 'أنشئ حوضاً سفلياً لتجميع مخلفات غمر الإطارات'));
@@ -783,16 +843,19 @@ function siteTrafficRules(
   }
 
   const unpaved = activity.measurements.unpavedSpeedKmh;
-  if (unpaved !== null && unpaved !== undefined && unpaved > UNPAVED_SPEED_LIMIT_KMH) {
-    hits.push(ruleHit('TRAFFIC-UNPAVED-002', 'RESTRICT_ACTIVITY', `سرعة الطرق غير المسفلتة (${unpaved} كم/س) تتجاوز الحد (${UNPAVED_SPEED_LIMIT_KMH} كم/س)`, `اخفض السرعة على الطرق غير المسفلتة إلى ${UNPAVED_SPEED_LIMIT_KMH} كم/س أو أقل`));
+  const unpavedSpeedLimitKmh = UNPAVED_SPEED_LIMIT_KMH();
+  if (unpaved !== null && unpaved !== undefined && unpaved > unpavedSpeedLimitKmh) {
+    hits.push(ruleHit('TRAFFIC-UNPAVED-002', 'RESTRICT_ACTIVITY', `سرعة الطرق غير المسفلتة (${unpaved} كم/س) تتجاوز الحد (${unpavedSpeedLimitKmh} كم/س)`, `اخفض السرعة على الطرق غير المسفلتة إلى ${unpavedSpeedLimitKmh} كم/س أو أقل`));
   }
   const paved = activity.measurements.pavedSpeedKmh;
-  if (paved !== null && paved !== undefined && paved > PAVED_SPEED_LIMIT_KMH) {
-    hits.push(ruleHit('TRAFFIC-PAVED-003', 'RESTRICT_ACTIVITY', `سرعة الطرق المسفلتة (${paved} كم/س) تتجاوز الحد (${PAVED_SPEED_LIMIT_KMH} كم/س)`, `اخفض السرعة على الطرق المسفلتة إلى ${PAVED_SPEED_LIMIT_KMH} كم/س أو أقل`));
+  const pavedSpeedLimitKmh = PAVED_SPEED_LIMIT_KMH();
+  if (paved !== null && paved !== undefined && paved > pavedSpeedLimitKmh) {
+    hits.push(ruleHit('TRAFFIC-PAVED-003', 'RESTRICT_ACTIVITY', `سرعة الطرق المسفلتة (${paved} كم/س) تتجاوز الحد (${pavedSpeedLimitKmh} كم/س)`, `اخفض السرعة على الطرق المسفلتة إلى ${pavedSpeedLimitKmh} كم/س أو أقل`));
   }
   const spillMin = activity.measurements.spillCleanupMinutes;
-  if (spillMin !== null && spillMin !== undefined && spillMin > SPILL_CLEANUP_LIMIT_MIN) {
-    hits.push(ruleHit('TRAFFIC-SPILL-005', 'RESTRICT_ACTIVITY', `تنظيف المواد المنسكبة تجاوز الحد الزمني (${SPILL_CLEANUP_LIMIT_MIN} دقيقة)`, `قلّص زمن تنظيف المواد المنسكبة إلى ${SPILL_CLEANUP_LIMIT_MIN} دقيقة أو أقل`));
+  const spillCleanupLimitMin = SPILL_CLEANUP_LIMIT_MIN();
+  if (spillMin !== null && spillMin !== undefined && spillMin > spillCleanupLimitMin) {
+    hits.push(ruleHit('TRAFFIC-SPILL-005', 'RESTRICT_ACTIVITY', `تنظيف المواد المنسكبة تجاوز الحد الزمني (${spillCleanupLimitMin} دقيقة)`, `قلّص زمن تنظيف المواد المنسكبة إلى ${spillCleanupLimitMin} دقيقة أو أقل`));
   }
 
   return hits;
@@ -805,8 +868,9 @@ function cdWasteTransportRules(activity: DustActivityComplianceProfile): DustRul
   const hits: DustRuleHit[] = [];
 
   const pileHeight = activity.measurements.debrisPileHeightM;
-  if (pileHeight !== null && pileHeight !== undefined && pileHeight > DEBRIS_PILE_MAX_HEIGHT_M) {
-    hits.push(ruleHit('CDWASTE-PILEHEIGHT-003', 'RESTRICT_ACTIVITY', `ارتفاع أكوام المخلفات (${pileHeight} م) يتجاوز الحد (${DEBRIS_PILE_MAX_HEIGHT_M} م)`, `اخفض ارتفاع أكوام المخلفات إلى ${DEBRIS_PILE_MAX_HEIGHT_M} م أو أقل`));
+  const debrisPileMaxHeightM = DEBRIS_PILE_MAX_HEIGHT_M();
+  if (pileHeight !== null && pileHeight !== undefined && pileHeight > debrisPileMaxHeightM) {
+    hits.push(ruleHit('CDWASTE-PILEHEIGHT-003', 'RESTRICT_ACTIVITY', `ارتفاع أكوام المخلفات (${pileHeight} م) يتجاوز الحد (${debrisPileMaxHeightM} م)`, `اخفض ارتفاع أكوام المخلفات إلى ${debrisPileMaxHeightM} م أو أقل`));
   }
 
   return hits;
@@ -831,13 +895,14 @@ function stockpileRules(
   // يجوز أن يعتمد قرار المطابقة على تصريح المستخدم وحده بأن لا مستقبل
   // حساس قريب، لأنه قد يخطئ أو يتجاهل وجود منشأة فعلياً.
   const distance = activity.measurements.stockpileDistanceToNearestReceptorAutoM ?? activity.measurements.stockpileBatchingDistanceToReceptorM;
-  if (distance !== null && distance !== undefined && distance < STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M) {
+  const stockpileSensitiveReceptorDistanceM = STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M();
+  if (distance !== null && distance !== undefined && distance < stockpileSensitiveReceptorDistanceM) {
     hits.push(
       ruleHit(
         'STOCKPILE-DISTANCE-002',
         'STOP_AFFECTED_ACTIVITY',
-        `مسافة الأكوام/محطة الخلط من المستقبِل الحساس (${activity.measurements.stockpileDistanceToNearestReceptorAutoM !== null && activity.measurements.stockpileDistanceToNearestReceptorAutoM !== undefined ? 'محسوبة تلقائياً: ' : ''}${distance} م) أقل من ${STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M} م`,
-        `انقل الأكوام/محطة الخلط إلى مسافة لا تقل عن ${STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M} م عن أقرب مستقبل حساس`
+        `مسافة الأكوام/محطة الخلط من المستقبِل الحساس (${activity.measurements.stockpileDistanceToNearestReceptorAutoM !== null && activity.measurements.stockpileDistanceToNearestReceptorAutoM !== undefined ? 'محسوبة تلقائياً: ' : ''}${distance} م) أقل من ${stockpileSensitiveReceptorDistanceM} م`,
+        `انقل الأكوام/محطة الخلط إلى مسافة لا تقل عن ${stockpileSensitiveReceptorDistanceM} م عن أقرب مستقبل حساس`
       )
     );
   }
@@ -845,11 +910,13 @@ function stockpileRules(
   // ضوابط التغطية/الرش/الشكل/الحواجز/السيور تحوّلت إلى تنبيهات نصية عامة —
   // حُذف تأثيرها من القرار. ارتفاع التفريغ يبقى قاعدة فعلية (قياس رقمي).
   const dropHeight = activity.measurements.dropHeightM;
+  const dropHeightHighWindLimitM = DROP_HEIGHT_HIGH_WIND_LIMIT_M();
+  const dropHeightNormalLimitM = DROP_HEIGHT_NORMAL_LIMIT_M();
   if (dropHeight !== null && dropHeight !== undefined) {
-    if (windBand !== 'BELOW_15' && dropHeight > DROP_HEIGHT_HIGH_WIND_LIMIT_M) {
-      hits.push(ruleHit('STOCKPILE-DROP-004', 'STOP_AFFECTED_ACTIVITY', `ارتفاع تفريغ المواد (${dropHeight} م) يتجاوز الحد المسموح أثناء الرياح النشطة (${DROP_HEIGHT_HIGH_WIND_LIMIT_M} م)`, `خفّض ارتفاع تفريغ المواد إلى ${DROP_HEIGHT_HIGH_WIND_LIMIT_M} م أو أقل طوال فترة الرياح النشطة`));
-    } else if (dropHeight > DROP_HEIGHT_NORMAL_LIMIT_M) {
-      hits.push(ruleHit('STOCKPILE-DROP-005', 'STOP_AFFECTED_ACTIVITY', `ارتفاع تفريغ المواد (${dropHeight} م) يتجاوز الحد الاعتيادي (${DROP_HEIGHT_NORMAL_LIMIT_M} م)`, `خفّض ارتفاع تفريغ المواد إلى ${DROP_HEIGHT_NORMAL_LIMIT_M} م أو أقل`));
+    if (windBand !== 'BELOW_15' && dropHeight > dropHeightHighWindLimitM) {
+      hits.push(ruleHit('STOCKPILE-DROP-004', 'STOP_AFFECTED_ACTIVITY', `ارتفاع تفريغ المواد (${dropHeight} م) يتجاوز الحد المسموح أثناء الرياح النشطة (${dropHeightHighWindLimitM} م)`, `خفّض ارتفاع تفريغ المواد إلى ${dropHeightHighWindLimitM} م أو أقل طوال فترة الرياح النشطة`));
+    } else if (dropHeight > dropHeightNormalLimitM) {
+      hits.push(ruleHit('STOCKPILE-DROP-005', 'STOP_AFFECTED_ACTIVITY', `ارتفاع تفريغ المواد (${dropHeight} م) يتجاوز الحد الاعتيادي (${dropHeightNormalLimitM} م)`, `خفّض ارتفاع تفريغ المواد إلى ${dropHeightNormalLimitM} م أو أقل`));
     }
   }
 
@@ -864,16 +931,17 @@ function idleSurfaceRules(
 ): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
   const idleDays = activity.measurements.idleDays;
+  const idleSurfaceMaxDays = IDLE_SURFACE_MAX_DAYS();
 
   if (
-    idleDays !== null && idleDays !== undefined && idleDays > IDLE_SURFACE_MAX_DAYS &&
+    idleDays !== null && idleDays !== undefined && idleDays > idleSurfaceMaxDays &&
     activity.controls.idleSurfaceStabilized === false
   ) {
     hits.push(
       ruleHit(
         'IDLE-STABILIZE-001',
         'RESTRICT_ACTIVITY',
-        `سطح غير نشط لأكثر من ${IDLE_SURFACE_MAX_DAYS} أيام دون تثبيت`,
+        `سطح غير نشط لأكثر من ${idleSurfaceMaxDays} أيام دون تثبيت`,
         'ثبّت السطح غير النشط بمواد تثبيت أو أغطية واقية'
       )
     );
@@ -888,16 +956,17 @@ function idleSurfaceRules(
 
   // فحص الأغطية إلزامي بعد رياح >20 كم/س — حالة الغطاء مجهولة عند هذه
   // السرعة تُعامَل كمخالفة محتملة (نفس مبدأ عدم إصدار قرار أخضر مع نقص بيانات)
+  const idleSurfaceCoverInspectionWindKmh = IDLE_SURFACE_COVER_INSPECTION_WIND_KMH();
   if (
     windSpeedKmh !== null && windSpeedKmh !== undefined &&
-    windSpeedKmh > IDLE_SURFACE_COVER_INSPECTION_WIND_KMH &&
+    windSpeedKmh > idleSurfaceCoverInspectionWindKmh &&
     (activity.controls.idleSurfaceCoverIntact === false || activity.controls.idleSurfaceCoverIntact === null)
   ) {
     hits.push(
       ruleHit(
         'IDLE-COVER-WIND-003',
         'FIELD_VERIFICATION_REQUIRED',
-        `رياح تجاوزت ${IDLE_SURFACE_COVER_INSPECTION_WIND_KMH} كم/س — يلزم فحص أغطية الأسطح غير النشطة وإصلاحها فوراً`,
+        `رياح تجاوزت ${idleSurfaceCoverInspectionWindKmh} كم/س — يلزم فحص أغطية الأسطح غير النشطة وإصلاحها فوراً`,
         'انزل للموقع وافحص أغطية الأسطح غير النشطة الآن، وأصلح أي غطاء تضرر من الرياح'
       )
     );

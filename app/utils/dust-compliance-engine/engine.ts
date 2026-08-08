@@ -21,6 +21,7 @@ import {
   PM10_WARNING_UG_M3,
   ruleHit,
 } from './rulebook';
+import { getRuleParameters } from './ruleParameters';
 import type {
   DustComplianceContext,
   DustComplianceDecisionCategory,
@@ -42,7 +43,7 @@ const DECISION_LABEL_AR: Record<DustComplianceDecisionCategory, string> = {
   MANDATORY_STOP: 'إيقاف إلزامي غير قابل للتجاوز',
 };
 
-const CONFIDENCE_MIN_FOR_ALLOW = 70;
+const CONFIDENCE_MIN_FOR_ALLOW = () => getRuleParameters().CONFIDENCE_MIN_FOR_ALLOW;
 // القسم الرابع، ثالثاً (الفئة الثانية) — حفظ تسجيلات كاميرات الدخول/الخروج
 // لمدة لا تقل عن 90 يوماً.
 const CAMERA_RETENTION_MIN_DAYS = 90;
@@ -129,6 +130,7 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
 
     pm10SustainedMinutesAbove340: undefined,
     pm10SustainedMinutesAbove250: undefined,
+    pm10EvidenceReadingIds: undefined,
     evaluatedAt: new Date(now).toISOString(),
 
     triggeredRules: [],
@@ -443,16 +445,17 @@ export function evaluateDustCompliance(
       ? ctx.activity.controls.silosSealed === true &&
         ctx.activity.controls.pm10FilterEfficiencyPercent !== null &&
         ctx.activity.controls.pm10FilterEfficiencyPercent !== undefined &&
-        ctx.activity.controls.pm10FilterEfficiencyPercent >= BATCHING_PM10_FILTER_MIN_PERCENT
+        ctx.activity.controls.pm10FilterEfficiencyPercent >= BATCHING_PM10_FILTER_MIN_PERCENT()
       : ctx.activity.isEnclosedOperation;
 
   if (windBand === 'ABOVE_25' && ctx.activity.isDustGenerating && !isEnclosedExemptFromHighWind) {
+    const windGateStopKmh = getRuleParameters().WIND_GATE_STOP_KMH;
     ruleHits.push(
       {
         code: 'GATE-WIND-ABOVE-25-004',
         severity: 'STOP_AFFECTED_ACTIVITY',
-        messageAr: 'إيقاف الأنشطة المكشوفة المولّدة للغبار: سرعة الرياح تتجاوز 25 كم/س ',
-        actionAr: 'أوقف الأنشطة المكشوفة وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون 25 كم/س',
+        messageAr: `إيقاف الأنشطة المكشوفة المولّدة للغبار: سرعة الرياح تتجاوز ${windGateStopKmh} كم/س `,
+        actionAr: `أوقف الأنشطة المكشوفة وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون ${windGateStopKmh} كم/س`,
         overridable: false,
       }
     );
@@ -528,18 +531,19 @@ export function evaluateDustCompliance(
   // العامة) هو الدليل الصحيح على أن السبب كان بوابة الرياح تحديداً — راجع
   // تعليق previousDecidingRuleCode في types.ts لسبب استبعاد فئة القرار وحدها.
   const previousStopWasWindGate = ctx.previousDecidingRuleCode === 'GATE-WIND-ABOVE-25-004';
+  const windGateStopKmhForResume = getRuleParameters().WIND_GATE_STOP_KMH;
   if (
     previousStopWasWindGate &&
     windBand !== 'ABOVE_25' &&
     ctx.windSpeedKmh !== null &&
-    ctx.windSpeedKmh >= 25
+    ctx.windSpeedKmh >= windGateStopKmhForResume
   ) {
     ruleHits.push(
       ruleHit(
         'GATE-WIND-ABOVE-25-RESUME-HOLD',
         'STOP_AFFECTED_ACTIVITY',
-        'الإيقاف السابق كان بسبب رياح تجاوزت 25 كم/س — الاستئناف يتطلب انخفاضها إلى ما دون 25 كم/س صراحة، لا مجرد العودة إلى 25 بالضبط',
-        'انتظر انخفاض سرعة الرياح إلى ما دون 25 كم/س صراحة قبل الاستئناف',
+        `الإيقاف السابق كان بسبب رياح تجاوزت ${windGateStopKmhForResume} كم/س — الاستئناف يتطلب انخفاضها إلى ما دون ${windGateStopKmhForResume} كم/س صراحة، لا مجرد العودة إلى ${windGateStopKmhForResume} بالضبط`,
+        `انتظر انخفاض سرعة الرياح إلى ما دون ${windGateStopKmhForResume} كم/س صراحة قبل الاستئناف`,
         false
       )
     );
@@ -575,7 +579,7 @@ export function evaluateDustCompliance(
         ruleHit(
           'RESUME-STABILITY-HOLD',
           'STOP_AFFECTED_ACTIVITY',
-          'الظروف تحسّنت لكن لم يمضِ وقت كافٍ على استقرارها بعد آخر إيقاف — بانتظار استقرار القراءة (10 دقائق) قبل الاستئناف',
+          `الظروف تحسّنت لكن لم يمضِ وقت كافٍ على استقرارها بعد آخر إيقاف — بانتظار استقرار القراءة (${RESUME_STABILITY_MINUTES} دقائق) قبل الاستئناف`,
           `أبقِ النشاط موقوفاً حتى تستقر القراءة الجيدة لمدة ${RESUME_STABILITY_MINUTES} دقائق متواصلة قبل الاستئناف`,
           true
         )
@@ -610,13 +614,14 @@ export function evaluateDustCompliance(
 
   const confidenceScore = calculateComplianceConfidence(ctx, missingCriticalInputs);
 
-  // منع قرار ALLOW مع ثقة أقل من 70 — يتحول تلقائياً لتحقق ميداني.
-  if (decisionCategory === 'ALLOW' && confidenceScore < CONFIDENCE_MIN_FOR_ALLOW) {
+  // منع قرار ALLOW مع ثقة أقل من الحد الأدنى — يتحول تلقائياً لتحقق ميداني.
+  const confidenceMinForAllow = CONFIDENCE_MIN_FOR_ALLOW();
+  if (decisionCategory === 'ALLOW' && confidenceScore < confidenceMinForAllow) {
     ruleHits.push(
       ruleHit(
         'LOW-CONFIDENCE-VERIFICATION',
         'FIELD_VERIFICATION_REQUIRED',
-        `مستوى الثقة في القرار (${confidenceScore}) أقل من الحد الأدنى المطلوب للسماح التلقائي (${CONFIDENCE_MIN_FOR_ALLOW})`,
+        `مستوى الثقة في القرار (${confidenceScore}) أقل من الحد الأدنى المطلوب للسماح التلقائي (${confidenceMinForAllow})`,
         'راجع البيانات الناقصة/غير المؤكدة ميدانياً قبل اعتماد القرار كسماح كامل',
         true
       )
@@ -726,9 +731,9 @@ export function evaluateDustCompliance(
   const restartConditions: string[] = [];
   if (mandatoryStop || decisionCategory === 'STOP_AFFECTED_ACTIVITY') {
     if (requiresWindBelow15) {
-      restartConditions.push('انخفاض سرعة الرياح إلى ما دون 15 كم/س');
+      restartConditions.push(`انخفاض سرعة الرياح إلى ما دون ${getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH} كم/س`);
     } else if (requiresWindBelow25) {
-      restartConditions.push('انخفاض سرعة الرياح إلى ما دون 25 كم/س');
+      restartConditions.push(`انخفاض سرعة الرياح إلى ما دون ${getRuleParameters().WIND_GATE_STOP_KMH} كم/س`);
     }
     if (dmpExplicitlyBlocksActivity) {
       restartConditions.push('اعتماد خطة إدارة الغبار (DMP) رسمياً من الجهة المختصة');
@@ -773,6 +778,7 @@ export function evaluateDustCompliance(
 
     pm10SustainedMinutesAbove340: ctx.pm10SustainedMinutesAbove340,
     pm10SustainedMinutesAbove250: ctx.pm10SustainedMinutesAbove250,
+    pm10EvidenceReadingIds: ctx.pm10EvidenceReadingIds,
     evaluatedAt: new Date(now).toISOString(),
 
     triggeredRules: displayedRuleHits,

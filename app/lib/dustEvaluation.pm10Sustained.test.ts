@@ -12,12 +12,13 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 function readingsBackFromNow(
   now: number,
-  values: { minutesAgo: number; pm10: number; source?: 'device' | 'manual' | 'open-meteo' }[]
-): { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo' }[] {
+  values: { minutesAgo: number; pm10: number; source?: 'device' | 'manual' | 'open-meteo'; id?: string }[]
+): { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo'; id?: string }[] {
   return values.map((v) => ({
     pm10UgM3: v.pm10,
     recordedAt: new Date(now - v.minutesAgo * 60000).toISOString(),
     source: v.source,
+    id: v.id,
   }));
 }
 
@@ -86,6 +87,58 @@ describe('computeSustainedPm10Status', () => {
     expect(r.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
     expect(r.isConfirmedViolation340).toBe(true);
     expect(r.isPendingViolation340).toBe(false);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة: القرار
+  // المخزَّن لا يحمل معرّفات القراءات الفعلية التي أثبتت الاستمرار"):
+  // evidenceReadingIds يجب أن تحمل بالضبط معرّفات القراءات المكوِّنة لسلسلة
+  // الاستمرار المؤكَّدة، لا كل القراءات المُمرَّرة ولا فارغة.
+  describe('evidenceReadingIds — معرّفات القراءات المُثبِتة للاستمرار', () => {
+    it('مخالفة مؤكَّدة (>340 لأكثر من دقيقتين) → evidenceReadingIds تحمل معرّفات السلسلة كاملة', () => {
+      const readings = readingsBackFromNow(NOW, [
+        { minutesAgo: 3, pm10: 350, source: 'device', id: 'r1' },
+        { minutesAgo: 2, pm10: 345, source: 'device', id: 'r2' },
+        { minutesAgo: 1, pm10: 355, source: 'device', id: 'r3' },
+        { minutesAgo: 0, pm10: 342, source: 'device', id: 'r4' },
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isConfirmedViolation340).toBe(true);
+      expect(r.evidenceReadingIds.sort()).toEqual(['r1', 'r2', 'r3', 'r4'].sort());
+    });
+
+    it('معلَّق فقط (أقل من دقيقتين) → evidenceReadingIds فارغة (لا دليل مؤكَّد بعد)', () => {
+      const readings = readingsBackFromNow(NOW, [{ minutesAgo: 0, pm10: 350, source: 'device', id: 'r1' }]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isConfirmedViolation340).toBe(false);
+      expect(r.evidenceReadingIds).toEqual([]);
+    });
+
+    it('قراءة معزولة خارج الفجوة المسموحة (>90 ثانية) لا تدخل evidenceReadingIds', () => {
+      const readings = readingsBackFromNow(NOW, [
+        { minutesAgo: 40, pm10: 350, source: 'device', id: 'isolated' },
+        { minutesAgo: 1, pm10: 345, source: 'device', id: 'r1' },
+        { minutesAgo: 0, pm10: 350, source: 'device', id: 'r2' },
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.evidenceReadingIds).not.toContain('isolated');
+    });
+
+    it('تعليق 250 لمدة 30 دقيقة → evidenceReadingIds تحمل معرّفات سلسلة الـ250 (لا 340)', () => {
+      const readings = readingsBackFromNow(
+        NOW,
+        Array.from({ length: 31 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 255, source: 'device' as const, id: `r${i}` }))
+      );
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isSuspended250For30Min).toBe(true);
+      expect(r.isConfirmedViolation340).toBe(false);
+      expect(r.evidenceReadingIds.length).toBe(31);
+    });
+
+    it('لا مخالفة مؤكَّدة ولا تعليق (ALLOW عادي) → evidenceReadingIds فارغة', () => {
+      const readings = readingsBackFromNow(NOW, [{ minutesAgo: 0, pm10: 50, source: 'device', id: 'r1' }]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.evidenceReadingIds).toEqual([]);
+    });
   });
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "حد PM10 ما زال خاطئاً"):
@@ -365,13 +418,23 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
   }
 
   const NOW = Date.now();
-  function readingRow(minutesAgo: number, pm10: number, deviceId: string | null, activityGroupId: string | null = null, source: 'device' | 'manual' | 'open-meteo' = 'device') {
+  function readingRow(
+    minutesAgo: number,
+    pm10: number,
+    deviceId: string | null,
+    activityGroupId: string | null = null,
+    source: 'device' | 'manual' | 'open-meteo' = 'device',
+    isLate = false,
+    id?: string
+  ) {
     return {
+      id: id ?? `row-${minutesAgo}-${pm10}`,
       pm10_ug_m3: pm10,
       recorded_at: new Date(NOW - minutesAgo * 60000).toISOString(),
       activity_group_id: activityGroupId,
       source,
       device_id: deviceId,
+      is_late: isLate,
     };
   }
 
@@ -424,6 +487,25 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     });
   });
 
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة"):
+  // fetchPm10SustainedStatus يجب أن يجلب عمود id من pm10_readings_history
+  // ويُمرِّره كما هو إلى computeSustainedPm10Status — evidenceReadingIds في
+  // النتيجة النهائية يجب أن تحمل معرّفات صفوف قاعدة البيانات الفعلية، لا
+  // معرّفات مصطنعة أو فارغة.
+  it('evidenceReadingIds في النتيجة النهائية تحمل معرّفات صفوف pm10_readings_history الفعلية (id)', () => {
+    const rows = [
+      readingRow(3, 350, 'device-A', null, 'device', false, 'db-id-1'),
+      readingRow(2, 345, 'device-A', null, 'device', false, 'db-id-2'),
+      readingRow(1, 355, 'device-A', null, 'device', false, 'db-id-3'),
+      readingRow(0, 342, 'device-A', null, 'device', false, 'db-id-4'),
+    ];
+    const supabase = mockSupabase(rows);
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      expect(r.isConfirmedViolation340).toBe(true);
+      expect(r.evidenceReadingIds.sort()).toEqual(['db-id-1', 'db-id-2', 'db-id-3', 'db-id-4'].sort());
+    });
+  });
+
   it('نشاط مرتبط بجهاز A، وسلسلة كاملة متجانسة من A فقط (لا خلط) → تُحتسب صح مع تجاهل قراءات B المتخللة', () => {
     const rows = [
       readingRow(3, 345, 'device-A'),
@@ -438,6 +520,40 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       // maxContinuityGapMs)، فتُحسب سلسلة متصلة بمعزل عن B.
       expect(r.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
       expect(r.isConfirmedViolation340).toBe(true);
+    });
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "القراءات المتأخرة يجب أن تُمنَع
+  // من تغيير الحالة التشغيلية الحالية"): قراءة is_late=true (وصلت للخادم
+  // بعد أكثر من 40 دقيقة من observed_at الفعلي — راجع deviceReadingWriter.ts)
+  // لا يجوز أن "تُثبت" استمرار مخالفة رغم بقائها في الجدول التاريخي للتدقيق.
+  it('قراءة is_late=true لا تُحتسب ضمن استمرار المخالفة رغم قيمتها العالية وحداثة توقيتها الظاهري', () => {
+    const rows = [
+      readingRow(3, 350, 'device-A', null, 'device', false),
+      readingRow(2, 355, 'device-A', null, 'device', true), // متأخرة — يجب استبعادها
+      readingRow(1.5, 350, 'device-A', null, 'device', false),
+      readingRow(0, 342, 'device-A', null, 'device', false),
+    ];
+    const supabase = mockSupabase(rows);
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      // القراءة المتأخرة استُبعدت تماماً — الاستمرار يُحسب فقط من القراءات
+      // الثلاث غير المتأخرة (3، 1.5، 0 دقائق)، لا من كل الأربع.
+      expect(r.currentReadingUgM3).toBe(342);
+      expect(r.isConfirmedViolation340).toBe(true);
+    });
+  });
+
+  it('كل القراءات is_late=true → لا استمرار إطلاقاً (كأن لا قراءات وصلت)', () => {
+    const rows = [
+      readingRow(2, 350, 'device-A', null, 'device', true),
+      readingRow(1, 355, 'device-A', null, 'device', true),
+      readingRow(0, 360, 'device-A', null, 'device', true),
+    ];
+    const supabase = mockSupabase(rows);
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      expect(r.currentReadingUgM3).toBeNull();
+      expect(r.isConfirmedViolation340).toBe(false);
+      expect(r.isPendingViolation340).toBe(false);
     });
   });
 });

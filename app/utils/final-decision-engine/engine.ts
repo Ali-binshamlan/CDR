@@ -378,6 +378,27 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   if (compliance) reasonCodes.push(...(compliance.triggeredRules ?? []).map((rule) => rule.code));
   if (evidenceUnavailable) reasonCodes.push('DATA_STALE_OR_UNAVAILABLE');
 
+  // خطأ معماري حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "القرار المعروض قد
+  // يختلف عن القرار المحفوظ": decideFinal تستقبل input.aei صراحة لكن لم تكن
+  // تقرأه إطلاقاً — الدمج الفعلي (AEI أشد من DVI/الامتثال يستبدل level/نص
+  // العرض) كان يحدث فقط في computeUnifiedActivityDecision (dustEvaluation.ts)
+  // حياً وقت العرض، بلا أي انعكاس على النتيجة المخزَّنة في final_decisions
+  // عبر persistFinalDecisions. فيبقى المخزَّن (وأي مسار يقرأه مباشرة —
+  // fetchLatestFinalDecisions، summaryFromStoredDecision، dashboard/global،
+  // alerts/generate) أخفّ دائماً مما تعرضه أي شاشة تحسب computeUnifiedActivityDecision
+  // حياً لنفس النشاط في نفس اللحظة — بالضبط التناقض الذي وصفه التقرير
+  // (ALLOW/GREEN محفوظ مقابل MONITOR/YELLOW معروض). الإصلاح: نفس منطق الدمج
+  // بالضبط (لا تغيير سلوكي) يُنقَل إلى هنا — المصدر الوحيد — بدل طبقة لاحقة
+  // منفصلة؛ computeUnifiedActivityDecision تُبسَّط لاحقاً لتصبح غلافاً رقيقاً
+  // بلا أي دمج AEI خاص بها (راجع تعليقها).
+  //
+  // نفس الاستثناءات المطبَّقة سابقاً هناك بالضبط: PLANNING مستبعدة أصلاً
+  // (فرع مبكر منفصل أعلى الدالة، aei لا يصل هذه النقطة في وضعها)، وmandatoryStop/
+  // pendingConfirmation يبقيان الأولوية القصوى بصرف النظر عن AEI (خطر فيزيائي
+  // مؤكَّد أو إيقاف امتثال معلَّق لا يجوز أن "يُخفَّفا" بتقييم AEI الإرشادي).
+  const aeiIsMoreSevere =
+    !!input.aei && !mandatoryStop && !pendingAffectedStop && LEVEL_WEIGHT[input.aei.color] > LEVEL_WEIGHT[level];
+
   const result: FinalDecision = {
     snapshotId: input.snapshotId,
     mode,
@@ -385,9 +406,9 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     regulatoryFinding,
     mandatoryStop,
     overridable,
-    shortReasonAr,
-    decisionLabelAr,
-    level,
+    shortReasonAr: aeiIsMoreSevere ? input.aei!.shortReasonAr : shortReasonAr,
+    decisionLabelAr: aeiIsMoreSevere ? input.aei!.statusLabelAr : decisionLabelAr,
+    level: aeiIsMoreSevere ? input.aei!.color : level,
     pendingConfirmation: pendingAffectedStop,
     reasonCodes: Object.freeze(reasonCodes),
     evidenceQuality,

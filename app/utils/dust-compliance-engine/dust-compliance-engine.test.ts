@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { evaluateDustCompliance } from './engine';
 import { classifyProject, classifyWind } from './rulebook';
 import { buildActivityComplianceProfile, buildComplianceContext } from './adapters';
+import { resetRuleParametersForTests, setRuleParametersForTests } from './ruleParameters';
 import { haversineDistanceM, nearestReceptorDistancesM, receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from './geo';
 import { computeUnitReceptors } from '@/app/lib/dustEvaluation';
 import type {
@@ -34,7 +35,6 @@ function projectProfile(overrides: Partial<DustProjectComplianceProfile> = {}): 
     entryExitCamerasInstalled: true,
     cameraRetentionDays: 90,
     sensitivityMapPrepared: true,
-    trueNorthAlignmentDocumented: null,
     ...overrides,
   };
 }
@@ -197,6 +197,12 @@ function activityProfile(overrides: Partial<DustActivityComplianceProfile> = {})
 
       debrisPileHeightM: null,
     },
+    // افتراضي true (بيانات مستقبلات متوفرة في النظام) — يطابق سلوك كل
+    // اختبارات هذا الملف قبل إضافة الحقل (Infinity/null كانتا تُفسَّران كما
+    // هما، بلا بوابة FIELD_VERIFICATION_REQUIRED إضافية). اختبارات الفجوة
+    // الجديدة (dust-compliance-engine.sensitiveReceptorsMissing.test.ts)
+    // تمرر false صراحة.
+    sensitiveReceptorsDataAvailable: true,
     ...overrides,
   };
 }
@@ -282,6 +288,31 @@ describe('محرك امتثال الغبار — تصنيف الرياح', () =>
   });
   it('غير معروف عند غياب القيمة', () => {
     expect(classifyWind(null)).toBe('UNKNOWN');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
+  // لا يوجد نظام حقيقي يدعم النشر"): classifyWind يجب أن يقرأ العتبات حياً
+  // من getRuleParameters() (ruleParameters.ts)، لا ثوابت TypeScript مجمَّدة
+  // — نشر قيمة جديدة لـWIND_GATE_ENHANCED_MIN_KMH/WIND_GATE_STOP_KMH يجب أن
+  // يغيّر نتيجة classifyWind فوراً بلا إعادة نشر كود.
+  describe('classifyWind يقرأ العتبات حياً من getRuleParameters (نظام إدارة القواعد)', () => {
+    afterEach(() => {
+      resetRuleParametersForTests();
+    });
+
+    it('تعديل WIND_GATE_ENHANCED_MIN_KMH يغيّر عتبة BELOW_15/FROM_15_TO_25 فوراً', () => {
+      resetRuleParametersForTests();
+      expect(classifyWind(12)).toBe('BELOW_15');
+      setRuleParametersForTests({ WIND_GATE_ENHANCED_MIN_KMH: 10 });
+      expect(classifyWind(12)).toBe('FROM_15_TO_25');
+    });
+
+    it('تعديل WIND_GATE_STOP_KMH يغيّر عتبة FROM_15_TO_25/ABOVE_25 فوراً', () => {
+      resetRuleParametersForTests();
+      expect(classifyWind(22)).toBe('FROM_15_TO_25');
+      setRuleParametersForTests({ WIND_GATE_STOP_KMH: 20 });
+      expect(classifyWind(22)).toBe('ABOVE_25');
+    });
   });
 });
 
@@ -1725,24 +1756,39 @@ describe('محرك امتثال الغبار — حساب مسافة الكسا�
   });
 });
 
-describe('محرك امتثال الغبار — MRQ-DATA-TRUE-NORTH-111 (صلاحية اتجاه الرياح)', () => {
+describe('محرك امتثال الغبار — MRQ-DATA-TRUE-NORTH-111 (صلاحية اتجاه الرياح، معايرة الجهاز)', () => {
   const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
   const northReceptor: SensitiveReceptor[] = [
     { id: 'r1', name: 'سكني شمالي قريب', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
   ];
 
-  it('محاذاة الشمال الحقيقي غير موثّقة (null) → crusherDistanceToDownwindReceptorAutoM يبقى null بصرف النظر عن اتجاه الرياح', () => {
+  it('لا توثيق معايرة للجهاز إطلاقاً (null) → crusherDistanceToDownwindReceptorAutoM يبقى null بصرف النظر عن اتجاه الرياح', () => {
     const profile = buildActivityComplianceProfile(row, northReceptor, 180, null);
     expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
   });
 
-  it('محاذاة الشمال الحقيقي موثّقة صراحة كـ false (غير معايَرة) → يبقى null أيضاً', () => {
-    const profile = buildActivityComplianceProfile(row, northReceptor, 180, false);
+  it('معايرة الجهاز موثّقة صراحة كـ documented=false (غير معايَر) → يبقى null أيضاً', () => {
+    const profile = buildActivityComplianceProfile(row, northReceptor, 180, { documented: false, deviationDeg: null });
     expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
   });
 
-  it('محاذاة الشمال الحقيقي موثّقة (true) → يُحسب اتجاه الريح فعلياً ويجد المستقبِل باتجاه الريح', () => {
-    const profile = buildActivityComplianceProfile(row, northReceptor, 180, true);
+  it('معايرة الجهاز موثّقة (documented=true) → يُحسب اتجاه الريح فعلياً ويجد المستقبِل باتجاه الريح', () => {
+    const profile = buildActivityComplianceProfile(row, northReceptor, 180, { documented: true, deviationDeg: null });
+    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
+    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeLessThan(1000);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — نفس البند: "الانحراف المطبق"
+  // يجب أن يُصحِّح الاتجاه الخام فعلياً، لا مجرد علم وجود/غياب توثيق):
+  // انحراف مغناطيسي موثَّق (deviationDeg) يُصحَّح به windDirectionDeg قبل
+  // البحث عن المستقبِل باتجاه الريح — جهاز يقرأ 180° مغناطيسياً بانحراف
+  // موثَّق +5° يعني اتجاهاً حقيقياً فعلياً 185°، لا 180° الخام.
+  it('معايرة موثّقة بانحراف مغناطيسي (deviationDeg) → يُصحَّح الاتجاه الخام قبل البحث عن المستقبِل باتجاه الريح', () => {
+    // northReceptor يقع شمال الكسارة — "باتجاه الريح" فقط إذا الريح قادمة
+    // من الجنوب (windDirectionDeg=180 بمعيار "من أين تهب"، راجع الاختبار
+    // أعلاه). اتجاه خام=90 (شرقي، لا يضع المستقبِل باتجاه الريح) + انحراف
+    // موثَّق +90° يصحّحه فعلياً إلى 180° فيجد المستقبِل.
+    const profile = buildActivityComplianceProfile(row, northReceptor, 90, { documented: true, deviationDeg: 90 });
     expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
     expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeLessThan(1000);
   });
@@ -1793,6 +1839,86 @@ describe('محرك امتثال الغبار — MRQ-RECEPTOR-DOWNWIND-120 (تص
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(false);
+  });
+});
+
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "المستقبلات الحساسة: القائمة
+// الفارغة قد تعني أن بيانات المستقبلات لم تُدخل أصلاً؛ يجب التفريق بين 'لا
+// توجد مستقبلات بعد مسح مكتمل' و'لم يتم إدخال بيانات المستقبلات' — الحالة
+// الثانية يجب أن تنتج FIELD_VERIFICATION_REQUIRED"): sensitiveReceptorsDataAvailable
+// (adapters.ts، مشتق من طول مصفوفة sensitive_receptors العالمية) يميّز
+// الآن الحالتين، بدل السماح لـInfinity وحدها بإخفاء نقص البيانات.
+describe('محرك امتثال الغبار — تمييز "لا مستقبلات في النظام كله" عن "لا مستقبل قريب فعلياً"', () => {
+  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً (sensitiveReceptorsDataAvailable=false) → FIELD_VERIFICATION_REQUIRED، لا ALLOW صامت', () => {
+    const r = evaluateDustCompliance(
+      context({
+        project: projectProfile({ hasOnsiteCrusher: true }), // CATEGORY_III_HIGH — يعزل CRUSHER-CATEGORY-001
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          sensitiveReceptorsDataAvailable: false,
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToNearestReceptorAutoM: Infinity,
+            crusherDistanceToResidentialReceptorAutoM: Infinity,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(true);
+    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+  });
+
+  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors يحتوي بيانات حقيقية لكن Infinity لهذا الموقع تحديداً (sensitiveReceptorsDataAvailable=true) → لا FIELD_VERIFICATION_REQUIRED، Infinity تبقى آمنة كما كانت', () => {
+    const r = evaluateDustCompliance(
+      context({
+        project: projectProfile({ hasOnsiteCrusher: true }),
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          sensitiveReceptorsDataAvailable: true,
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToNearestReceptorAutoM: Infinity,
+            crusherDistanceToResidentialReceptorAutoM: Infinity,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(false);
+  });
+
+  it('محطة خلط بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً → FIELD_VERIFICATION_REQUIRED', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          sensitiveReceptorsDataAvailable: false,
+          measurements: {
+            ...activityProfile().measurements,
+            batchingDistanceToNearestReceptorAutoM: Infinity,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-RECEPTORS-DATA-MISSING')).toBe(true);
+    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+  });
+
+  it('كسارة بلا إحداثيات مُدخلة أصلاً (null، لا Infinity) + جدول فارغ → لا يُخلَط بين البابين، تبقى بوابة "لا إحداثيات" اليدوية وحدها إن وُجدت', () => {
+    const r = evaluateDustCompliance(
+      context({
+        project: projectProfile({ hasOnsiteCrusher: true }),
+        activity: activityProfile({
+          regulatoryActivity: 'CRUSHER',
+          sensitiveReceptorsDataAvailable: false,
+          measurements: {
+            ...activityProfile().measurements,
+            crusherDistanceToNearestReceptorAutoM: null,
+            crusherDistanceToResidentialReceptorAutoM: null,
+          },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(false);
   });
 });
 
@@ -2526,8 +2652,15 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
     };
     const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
-    const project = { true_north_alignment_documented: true };
-    const ctx = buildComplianceContext(project, row, dviHourly, receptorNorthOfCrusher);
+    const ctx = buildComplianceContext(
+      {},
+      row,
+      dviHourly,
+      receptorNorthOfCrusher,
+      undefined,
+      undefined,
+      { documented: true, deviationDeg: null }
+    );
     // الدليل المعروض يعكس اتجاه الجهاز (180)، ونفس الاتجاه هو ما استُخدم
     // فعلياً لحساب المستقبِل باتجاه الريح — فيجده (ليس Infinity).
     expect(ctx.windDirectionDeg).toBe(180);

@@ -4,7 +4,7 @@ import {
   computeDustComplianceResults,
   persistActivityDecisionsAtomic,
 } from '@/app/lib/dustEvaluation';
-import { buildSensitiveReceptor } from '@/app/utils/dust-compliance-engine';
+import { buildSensitiveReceptor, refreshRuleParameters } from '@/app/utils/dust-compliance-engine';
 import { checkDustActivities } from '@/app/api/alerts/generate/route';
 
 // منطق إعادة تقييم مشروع كامل (DVI + Compliance + FinalDecision) — مُستخرَج
@@ -61,6 +61,15 @@ export async function evaluateProject(
     if (project.archived_at) {
       return { success: true, persisted: 0 };
     }
+
+    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا نظام إدارة قواعد حقيقي؛ لا
+    // نشر، لا rollback"): يُحدَّث getRuleParameters() هنا أولاً، قبل
+    // computeDustResults (DVI، يستهلك BATCHING_PM10_FILTER_MIN_PERCENT()
+    // مباشرة) وcomputeDustComplianceResults كليهما — لا فقط الثاني — حتى لا
+    // يُقرأ DVI بقيمة افتراضية/قديمة بينما Compliance يُقرأ بأحدث نسخة
+    // منشورة في نفس دورة التقييم الواحدة (كانا سيتباعدان لو تأخر التحديث
+    // لبداية computeDustComplianceResults وحدها).
+    await refreshRuleParameters(supabaseAdmin);
 
     // القسم 11.2 — Evaluation Run: يربط كل دورة تقييم فعلية بمعرّف واحد،
     // بصرف النظر عن مصدر التحفيز. as_of هو لحظة بداية هذه الدورة تحديداً
@@ -183,6 +192,42 @@ export async function evaluateProject(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, persisted: 0, error: message };
+  }
+}
+
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "إن نجح حفظ القراءة لكن فشل
+// التقييم بعدها، يُسجَّل خطأ فقط وتبقى الاستجابة للجهاز ناجحة — لا مهمة
+// إعادة محاولة مضمونة تربط القراءة بالتقييم الفاشل"): devices/ingest/route.ts
+// وcron/provider-pull/route.ts يستدعيان evaluateProject مباشرة (استدعاء
+// inline متزامن)، لا عبر طابور project_evaluation_jobs — فشل هذا الاستدعاء
+// كان يُسجَّل بـconsole.error فقط، معتمداً ضمنياً على scheduler-tick (كل
+// دقيقتين) ليلتقط المشروع لاحقاً بلا أي ضمان صريح ولا تتبع محاولات/أخطاء.
+// enqueueEvaluationRetryJob تُستدعى من كلا المسارين عند فشل/رمي evaluateProject
+// المباشر — تُدرج مهمة في نفس طابور project_evaluation_jobs الذي يعالجه
+// scheduler-worker (claim_evaluation_jobs/fail_evaluation_job، Backoff أُسّي
+// حتى DEAD)، فيصبح لكل فشل تقييم بعد قراءة ناجحة مساراً صريحاً ومتتبَّعاً
+// للمحاولة مجدداً، لا اعتماداً على "الدورة القادمة قد تلتقطه صدفة".
+//
+// dedupe_key فريد لكل استدعاء (لا نافذة زمنية ثابتة كـscheduler-tick) —
+// فشل تقييم فعلي يستحق مهمة خاصة به فوراً، لا انتظار مشاركة نافذة دقيقتين
+// مع مهمة scheduled محتملة قد لا تُنشأ إلا لاحقاً.
+export async function enqueueEvaluationRetryJob(
+  projectId: string,
+  triggerType: 'DEVICE_EVENT' | 'PROVIDER_PULL',
+  error: string
+): Promise<void> {
+  try {
+    await supabaseAdmin.from('project_evaluation_jobs').insert({
+      project_id: projectId,
+      dedupe_key: `retry:${triggerType}:${crypto.randomUUID()}`,
+      trigger_type: triggerType,
+      last_error: error,
+    });
+  } catch (err) {
+    // فشل إنشاء مهمة إعادة المحاولة نفسه لا يجوز أن يُسقِط استجابة الاستدعاء
+    // الأصلي (القراءة محفوظة فعلاً بغض النظر) — يُسجَّل فقط. المشروع يبقى
+    // مغطى بالحد الأدنى عبر scheduler-tick الدوري حتى لو فشل هذا الإدراج.
+    console.error(`enqueueEvaluationRetryJob: فشل إدراج مهمة إعادة محاولة لمشروع ${projectId}:`, err);
   }
 }
 

@@ -216,7 +216,7 @@ describe('writeDeviceReading', () => {
       reading: { pm10: 30 },
       externalEventId: 'evt-1',
     });
-    expect(result).toEqual({ success: true, duplicate: true });
+    expect(result).toEqual({ success: true, duplicate: true, late: false });
   });
 
   // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "الكتابتان ليستا عملية واحدة
@@ -258,5 +258,49 @@ describe('writeDeviceReading', () => {
       reading: { pm10: 30 },
     });
     expect(rpcCalls[0].args.p_observed_at).toBe(rpcCalls[0].args.p_received_at);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "القراءات المتأخرة أكثر من 40
+  // دقيقة تُرفض بالكامل؛ الأفضل: حفظها في السجل التاريخي، تعليمها LATE،
+  // منعها من تغيير الحالة التشغيلية الحالية"): observedAtIso أقدم من نافذة
+  // القبول الحية (40 دقيقة) لم يعد يُسقِط الطلب بالكامل — بل يُمرَّر
+  // p_is_late=true للـRPC (الذي يتولى منع تحديث project_devices.last_*/
+  // device_metric_latest)، وتبقى القراءة نفسها تُكتَب في السجل التاريخي.
+  it('observedAtIso أقدم من 40 دقيقة → p_is_late=true، ونجاح لا رفض', async () => {
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    const observedAtIso = new Date(Date.now() - 41 * 60_000).toISOString();
+    const result = await writeDeviceReading({
+      deviceId: 'd1',
+      projectId: 'p1',
+      reading: { pm10: 30, observedAtIso },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.late).toBe(true);
+    expect(rpcCalls[0].args.p_is_late).toBe(true);
+  });
+
+  it('observedAtIso أحدث من 40 دقيقة → p_is_late=false', async () => {
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    const observedAtIso = new Date(Date.now() - 5 * 60_000).toISOString();
+    const result = await writeDeviceReading({
+      deviceId: 'd1',
+      projectId: 'p1',
+      reading: { pm10: 30, observedAtIso },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.late).toBe(false);
+    expect(rpcCalls[0].args.p_is_late).toBe(false);
+  });
+
+  it('observedAtIso غائب (يُستخدَم وقت الآن) → p_is_late=false دائماً', async () => {
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    const result = await writeDeviceReading({
+      deviceId: 'd1',
+      projectId: 'p1',
+      reading: { pm10: 30 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.late).toBe(false);
+    expect(rpcCalls[0].args.p_is_late).toBe(false);
   });
 });

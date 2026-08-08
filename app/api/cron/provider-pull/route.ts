@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { getConnector } from '@/app/lib/providers/registry';
 import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
-import { evaluateProject } from '@/app/lib/evaluateProject';
+import { evaluateProject, enqueueEvaluationRetryJob } from '@/app/lib/evaluateProject';
 import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
 import type { NormalizedReading } from '@/app/lib/providers/types';
 
@@ -265,10 +265,17 @@ export async function GET(request: Request) {
     try {
       const evalResult = await evaluateProject(projectId, 'provider_pull');
       evaluationResults.push({ projectId, ok: evalResult.success, error: evalResult.error });
+      // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا مهمة إعادة محاولة
+      // مضمونة تربط القراءة المحفوظة بنجاح بالتقييم الفاشل بعدها") — راجع
+      // تعليق enqueueEvaluationRetryJob في evaluateProject.ts.
+      if (!evalResult.success) {
+        await enqueueEvaluationRetryJob(projectId, 'PROVIDER_PULL', evalResult.error ?? 'فشل تقييم غير محدَّد');
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`provider-pull: evaluateProject failed for project ${projectId}:`, message);
       evaluationResults.push({ projectId, ok: false, error: message });
+      await enqueueEvaluationRetryJob(projectId, 'PROVIDER_PULL', message);
     }
   }
 

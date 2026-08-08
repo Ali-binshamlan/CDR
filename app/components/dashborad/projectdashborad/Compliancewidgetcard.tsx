@@ -508,6 +508,27 @@ export default function ComplianceWidgetCard({
   // يعتمدها الخادم (PM10_LAST_READING_FRESHNESS_MINUTES) لكن لم تصل بعد لحد
   // STALE الكامل — نطاق ضيق لكنه حقيقي.
   const devicePm10LastReadingAt = worst?.evidence?.devicePm10LastReadingAt;
+
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم أثناء تجربة حية — "خفيها من
+  // امام المستخدم فقط، بس اترك القانون"): PM10 مستثنى عمداً من بوابة
+  // الحداثة العامة (freshOrNull في dust-engine/engine.ts) على مستوى القرار
+  // نفسه — قرار مدروس ومؤكَّد (راجع تعليق devicePm25At في dust-engine/types.ts):
+  // إخفاؤه هناك كان سيُسقِط آلية أدق موجودة مسبقاً (pm10ReadingIsFreshEnoughForImmediateStop)
+  // تُبقي قراءة PM10 قديمة مؤثرة بدرجة احترازية أضعف بدل تجاهلها بالكامل —
+  // فشل آمن نحو الاحتراز، لا نحو "لا بيانات تفتح الباب لـALLOW". لكن هذا
+  // يعني بقية الحقول هنا (رياح/رؤية/رطوبة/حرارة/PM2.5) تختفي فعلياً كـ"—"
+  // بعد 4 دقائق (لأن worst.evidence.X نفسه يصير null من مصدره)، بينما PM10
+  // وحده يبقى ظاهراً بقيمته الخام القديمة — عدم اتساق بصري في هذه البطاقة
+  // تحديداً. الإصلاح مقصور على طبقة العرض هنا فقط: displayPm10UgM3 تُخفي
+  // القيمة (null) في الواجهة إن كانت أقدم من نفس عتبة الحداثة (4 دقائق)
+  // المستخدمة لبقية الحقول — worst.evidence.pm10UgM3 نفسه (والقرار المبني
+  // عليه) يبقيان بلا أي تغيير.
+  const isPm10Stale =
+    devicePm10LastReadingAt !== undefined &&
+    devicePm10LastReadingAt !== null &&
+    (now - new Date(devicePm10LastReadingAt).getTime()) / 60000 > PM10_LAST_READING_FRESHNESS_MINUTES;
+  const displayPm10UgM3 = isPm10Stale ? null : worst?.evidence?.pm10UgM3 ?? null;
+
   const isDeviceStalledDuringPending =
     !isEnded &&
     !isAwaitingVerification &&
@@ -546,11 +567,21 @@ export default function ComplianceWidgetCard({
   const alreadyStopped = aei
     ? aei.closedByGate
     : worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
+  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "تناقض": عدّاد "تعليق 250" كان يظهر
+  // حتى عندما تكون القراءة أصلاً معلَّقة بانتظار تأكيد حد المخالفة الأشد
+  // (340، worst.pendingConfirmation=true عبر MRQ-PM10-BLACK-PENDING-104) —
+  // alreadyStopped وحدها لا تلتقط هذه الحالة (لم يتأكَّد الإيقاف الإلزامي
+  // بعد، فقط معلَّق). النتيجة: عدّادان متزامنان لعتبتين مختلفتين (250 و340)
+  // لنفس القراءة، فيظن المستخدم أن العتبة الحرجة القادمة هي 250 (أضعف) بينما
+  // القراءة أصلاً تجاوزت 340 (الأشد) وتنتظر تأكيدها الخاص. الإصلاح: استبعاد
+  // عدّاد 250 أيضاً أثناء pendingConfirmation نشطة — عدّاد 340 الأشد يبقى
+  // وحده الظاهر حينها (نفس مبدأ useCountdownRemainingSeconds الأول أعلاه).
   const showSuspensionCountdown =
     !isEnded &&
     !isAwaitingVerification &&
     !!worst &&
     !alreadyStopped &&
+    worst.pendingConfirmation !== true &&
     worst.evidence.pm10UgM3 !== null &&
     worst.evidence.pm10UgM3 >= 250 &&
     sustained250 !== undefined &&
@@ -717,7 +748,7 @@ export default function ComplianceWidgetCard({
             <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
               <Gauge className="w-4 h-4 text-violet-500 mb-1.5" />
               <span className="text-xs font-black text-slate-800" dir="ltr">
-                {fmt2(worst.evidence.pm10UgM3)}
+                {fmt2(displayPm10UgM3)}
               </span>
               <span className="text-[8px] font-bold text-slate-400">PM10</span>
             </div>
@@ -855,7 +886,7 @@ export default function ComplianceWidgetCard({
                   </div>
                   <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
                     <div className="text-xs text-slate-400">PM10 / PM2.5</div>
-                    <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(worst.evidence.pm10UgM3)} / {fmt2(worst.evidence.pm25UgM3)}</div>
+                    <div className="font-bold text-[#061B40]" dir="ltr">{fmt2(displayPm10UgM3)} / {fmt2(worst.evidence.pm25UgM3)}</div>
                   </div>
                   <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
                     <div className="text-xs text-slate-400">الرطوبة النسبية</div>
@@ -1017,11 +1048,25 @@ export default function ComplianceWidgetCard({
                             )}
                           </h4>
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-[#061B40]/70">
-                            {/* pendingConfirmation (مثال: MRQ-PM10-BLACK-PENDING-104) يعني
-                                القرار موقوف مؤقتاً بانتظار تأكيد، لا "إيقاف النشاط المتأثر"
-                                الثابتة — يجب أن يطابق نص هذه الشارة نص بطاقة AEI أعلاه
-                                (نفس التوصية بلغة واحدة موحَّدة، لا نسختين مختلفتين). */}
-                            {compliance.pendingConfirmation ? 'معلَّق مؤقتاً — بانتظار تأكيد' : compliance.decisionLabelAr}
+                            {/* خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "النص متناقض": هذه الشارة
+                                كانت تعرض compliance.pendingConfirmation الخام بمعزل تام عن
+                                القرار النهائي الموحَّد المعروض أعلاه (aei.statusLabelAr/
+                                worst.decisionLabelAr عبر computeUnifiedActivityDecision) —
+                                فحين يفوز DVI بقرار MANDATORY_STOP فوراً (قراءة PM10 لحظية
+                                طازجة فوق 340، راجع pm10ReadingIsFreshEnoughForImmediateStop
+                                في dust-engine/engine.ts) بينما الامتثال التنظيمي بمفرده لم
+                                يتجاوز بعد شرط الاستمرار (دقيقتين)، كان العنوان الأعلى يقول
+                                "إيقاف إلزامي نظامي" بينما هذه الشارة تقول "معلَّق مؤقتاً —
+                                بانتظار تأكيد" لنفس النشاط في نفس اللحظة — تناقض ظاهري مباشر.
+                                الإصلاح: "معلَّق مؤقتاً" لا تُعرَض إطلاقاً إن كان القرار النهائي
+                                (alreadyStopped، نفس الإشارة المعتمَدة أصلاً في showSuspensionCountdown
+                                أعلاه لعكس FinalDecision.mandatoryStop عبر aei.closedByGate) قد
+                                أصبح إيقافاً إلزامياً بالفعل من أي مصدر — القرار الحاسم يُعرض
+                                حينها فقط (compliance.decisionLabelAr)، لا حالة الامتثال الخام
+                                المعزولة عن نفس اللحظة. */}
+                            {compliance.pendingConfirmation && !alreadyStopped
+                              ? 'معلَّق مؤقتاً — بانتظار تأكيد'
+                              : compliance.decisionLabelAr}
                           </span>
                         </div>
 

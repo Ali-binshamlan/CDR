@@ -43,9 +43,20 @@ export function buildProjectComplianceProfile(project: Record<string, unknown> |
     entryExitCamerasInstalled: toNullableBoolean(project?.entry_exit_cameras_installed),
     cameraRetentionDays: toNullableNumber(project?.camera_retention_days),
     sensitivityMapPrepared: toNullableBoolean(project?.sensitivity_map_prepared),
-
-    trueNorthAlignmentDocumented: toNullableBoolean(project?.true_north_alignment_documented),
   };
+}
+
+// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي موضوع على
+// مستوى المشروع، بينما يجب أن يكون مرتبطاً بكل محطة أو حساس اتجاه رياح"):
+// كان trueNorthAlignmentDocumented معاملاً boolean فرداً مصدره
+// projects.true_north_alignment_documented (عمود واحد لكل المشروع). الآن
+// كائن كامل مصدره project_devices (الجهاز الفعلي المرتبط بالنشاط تحديداً،
+// راجع migration 202608060001) — كل جهاز يحمل توثيقه الخاص، ويحمل أيضاً
+// deviationDeg (الانحراف بين الشمال المغناطيسي المقروء والحقيقي) ليُطبَّق
+// على windDirectionDeg الخام قبل استخدامه، لا فقط علم وجود/غياب.
+export interface DeviceTrueNorthCalibration {
+  documented: boolean | null;
+  deviationDeg: number | null;
 }
 
 export function buildActivityComplianceProfile(
@@ -53,20 +64,28 @@ export function buildActivityComplianceProfile(
   sensitiveReceptors: SensitiveReceptor[] = [],
   // اتجاه الرياح الفعلي المُدمَج (بعد أولوية جهاز > طقس > onsite — نفس
   // الاتجاه المعروض فعلياً للمستخدم في evidence.windDirectionDeg، لا عينة
-  // الطقس الخام قبل الدمج) وحالة توثيق محاذاة الشمال الحقيقي — تُستخدمان
-  // فقط لحساب crusherDistanceToDownwindReceptorAutoM (MRQ-RECEPTOR-DOWNWIND-
-  // 120). windDirectionDeg يُتجاهَل كلياً إن لم تُوثَّق المحاذاة (فشل آمن نحو
-  // "غير صالح"، راجع MRQ-DATA-TRUE-NORTH-111) — بلا ذلك يُبنى قرار تنظيمي
-  // على اتجاه رياح قد يكون غير معايَر أصلاً (شمال مغناطيسي/تقريبي).
+  // الطقس الخام قبل الدمج) وتوثيق معايرة الشمال الحقيقي للجهاز المرتبط —
+  // تُستخدمان فقط لحساب crusherDistanceToDownwindReceptorAutoM
+  // (MRQ-RECEPTOR-DOWNWIND-120). windDirectionDeg يُتجاهَل كلياً إن لم تُوثَّق
+  // معايرة الجهاز (فشل آمن نحو "غير صالح"، راجع MRQ-DATA-TRUE-NORTH-111) —
+  // بلا ذلك يُبنى قرار تنظيمي على اتجاه رياح قد يكون غير معايَر أصلاً (شمال
+  // مغناطيسي/تقريبي). deviationDeg (إن وُجد) يُصحَّح به الاتجاه الخام قبل
+  // الاستخدام — انحراف مغناطيسي موثَّق يبقى صالحاً للاستخدام بعد تصحيحه، لا
+  // "غير صالح" بالكامل كما كانت الحالة الثنائية القديمة تفرضه ضمنياً.
   windDirectionDeg: number | null = null,
-  trueNorthAlignmentDocumented: boolean | null = null
+  deviceTrueNorthCalibration: DeviceTrueNorthCalibration | null = null
 ): DustActivityComplianceProfile {
   const regulatoryActivity: RegulatoryDustActivity = (row?.regulatory_activity as RegulatoryDustActivity) ?? 'OTHER';
 
   const crusherLat = toNullableNumber(row?.crusher_lat);
   const crusherLng = toNullableNumber(row?.crusher_lng);
   const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(crusherLat, crusherLng, sensitiveReceptors);
-  const validWindDirectionDeg = trueNorthAlignmentDocumented === true ? windDirectionDeg : null;
+  const isAlignmentDocumented = deviceTrueNorthCalibration?.documented === true;
+  const correctedWindDirectionDeg =
+    windDirectionDeg !== null && deviceTrueNorthCalibration?.deviationDeg
+      ? ((windDirectionDeg + deviceTrueNorthCalibration.deviationDeg) % 360 + 360) % 360
+      : windDirectionDeg;
+  const validWindDirectionDeg = isAlignmentDocumented ? correctedWindDirectionDeg : null;
   const crusherDownwindM = nearestDownwindReceptorDistanceM(crusherLat, crusherLng, validWindDirectionDeg, sensitiveReceptors);
 
   const stockpileLat = toNullableNumber(row?.stockpile_lat);
@@ -235,6 +254,13 @@ export function buildActivityComplianceProfile(
 
       debrisPileHeightM: toNullableNumber(row?.debris_pile_height_m),
     },
+    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — راجع تعليق الحقل الكامل في
+    // types.ts): مشتق من طول المصفوفة العالمية الممرَّرة فعلياً من مصدر
+    // الجلب (sensitive_receptors كاملاً، لا مُصفّاة حسب موقع النشاط بعد —
+    // nearestReceptorDistancesM/nearestDownwindReceptorDistanceM أعلاه هما
+    // من يُصفّيان حسب المسافة). طول صفر هنا يعني "لا يوجد أي مستقبِل حساس
+    // مسجَّل في النظام كله بعد"، لا "لا مستقبِل قريب من هذا الموقع تحديداً".
+    sensitiveReceptorsDataAvailable: sensitiveReceptors.length > 0,
   };
 }
 
@@ -267,7 +293,13 @@ export function buildComplianceContext(
     sustainedMinutesAbove250: number;
     isConfirmedViolation340: boolean;
     isSuspended250For30Min: boolean;
-  } | null
+    evidenceReadingIds?: string[];
+  } | null,
+  // توثيق معايرة الشمال الحقيقي للجهاز الفعلي المرتبط بهذا النشاط (لا
+  // المشروع كله — راجع تعليق buildActivityComplianceProfile الكامل).
+  // اختياري: undefined/null يعني "لا جهاز مرتبط أو لا توثيق مسجَّل"، فيُعامَل
+  // اتجاه الرياح كغير صالح لقاعدة المستقبِل باتجاه الريح (فشل آمن).
+  deviceTrueNorthCalibration?: DeviceTrueNorthCalibration | null
 ): DustComplianceContext {
   // القراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite — راجع
   // mergeDustReading في dust-engine/engine.ts) متوفرة فقط إن كان dviResult
@@ -299,7 +331,6 @@ export function buildComplianceContext(
   // ذات صلة أصلاً — راجع evaluateLiveOperationalDecision).
   const isForecastStale = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample?.isForecastStale === true;
   const mergedWindDirectionDeg = toNullableNumber(merged?.windDirectionDeg);
-  const trueNorthAlignmentDocumented = toNullableBoolean(project?.true_north_alignment_documented);
 
   // dataSource للعرض فقط: أعلى مصدر فاز فعلياً عبر أي حقل من حقول
   // mergedReading.sources، بترتيب device > open-meteo > onsite > none. لا
@@ -320,7 +351,7 @@ export function buildComplianceContext(
       activityRow,
       sensitiveReceptors,
       mergedWindDirectionDeg,
-      trueNorthAlignmentDocumented
+      deviceTrueNorthCalibration ?? null
     ),
     isForecastStale,
     dviScore: dviResult.score,
@@ -374,6 +405,7 @@ export function buildComplianceContext(
     pm10SustainedMinutesAbove250: pm10Sustained?.sustainedMinutesAbove250,
     pm10ConfirmedViolation340: pm10Sustained?.isConfirmedViolation340,
     pm10Suspended250For30Min: pm10Sustained?.isSuspended250For30Min,
+    pm10EvidenceReadingIds: pm10Sustained?.evidenceReadingIds,
   };
 }
 
