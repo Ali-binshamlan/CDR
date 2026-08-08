@@ -428,25 +428,25 @@ export function evaluateDustCompliance(
     );
   }
 
-  // بروتوكول الملحق أ — أعلى من 25 كم/س: تُوقف كل الأنشطة المكشوفة
-  // المولّدة للغبار عموماً (وليس فقط الهدم)؛ العمليات المغلقة فقط تستمر.
-  // استثناء محطة الخلط (BATCHING_PLANT) تحديداً: لا يُشترط isEnclosedOperation
-  // إطلاقاً (قد تكون المحطة فعلياً مكشوفة هيكلياً) — يكفي إحكام إغلاق
-  // الصوامع (silosSealed، مدخل حقيقي لكل وحدة خلط) + كفاءة فلتر PM10 لا
-  // تقل عن الحد الأدنى (نفس حد BATCHING-FILTER-002 في rulebook.ts) معاً —
+  // بروتوكول الملحق أ — أعلى من 25 كم/س: تُوقف كل الأنشطة المولّدة للغبار
+  // عموماً، مكشوفة أو مغلقة على حد سواء. الإعفاء الوحيد من بوابتي الرياح
+  // (>25 و15-25) هو محطة الخلط (BATCHING_PLANT) تحديداً، بشرطيها معاً: إحكام
+  // إغلاق الصوامع (silosSealed، مدخل حقيقي لكل وحدة خلط) + كفاءة فلتر PM10
+  // لا تقل عن الحد الأدنى (نفس حد BATCHING-FILTER-002 في rulebook.ts) —
   // هذا هو الإعفاء التنظيمي الموثَّق فعلياً في "الاستخراج التنظيمي من
   // المرفق" (القسم الرابع/السادس، راجع BATCHING_PM10_FILTER_MIN_PERCENT في
   // rulebook.ts): "الحد المعتمد للاستمرار أثناء إيقاف الرياح فوق 25 كم/س"
   // — مقصور على بوابة الرياح تحديداً، لا قواعد PM10 المستقلة (راجع تعليق
-  // مصلَح أدناه). بقية الأنشطة المغلقة (هدم مغلق، قطع أحجار مغلق) تستمر
-  // بإعفاء isEnclosedOperation وحده كما كان دائماً.
+  // مصلَح أدناه). خطأ مكتشَف ومُصلَح: كان isEnclosedOperation وحده يُعفي أي
+  // نشاط مغلق (هدم مغلق، حفر مغلق، إلخ) من بوابتي الرياح كلياً — لا سند
+  // تنظيمي موثَّق لهذا التعميم؛ الإغلاق الفيزيائي وحده لا يمنع تأثر النشاط
+  // بسرعة رياح متجاوزة للحد دون ضوابط محطة الخلط المحدَّدة (صوامع + فلتر).
   const isEnclosedExemptFromHighWind =
-    ctx.activity.regulatoryActivity === 'BATCHING_PLANT'
-      ? ctx.activity.controls.silosSealed === true &&
-        ctx.activity.controls.pm10FilterEfficiencyPercent !== null &&
-        ctx.activity.controls.pm10FilterEfficiencyPercent !== undefined &&
-        ctx.activity.controls.pm10FilterEfficiencyPercent >= BATCHING_PM10_FILTER_MIN_PERCENT()
-      : ctx.activity.isEnclosedOperation;
+    ctx.activity.regulatoryActivity === 'BATCHING_PLANT' &&
+    ctx.activity.controls.silosSealed === true &&
+    ctx.activity.controls.pm10FilterEfficiencyPercent !== null &&
+    ctx.activity.controls.pm10FilterEfficiencyPercent !== undefined &&
+    ctx.activity.controls.pm10FilterEfficiencyPercent >= BATCHING_PM10_FILTER_MIN_PERCENT();
 
   if (windBand === 'ABOVE_25' && ctx.activity.isDustGenerating && !isEnclosedExemptFromHighWind) {
     const windGateStopKmh = getRuleParameters().WIND_GATE_STOP_KMH;
@@ -564,7 +564,7 @@ export function evaluateDustCompliance(
   //
   // غياب previousDecisionCategory (أول تقييم لنشاط، أو لم يُمرَّر من
   // المستدعي) يعني عدم تطبيق أي قيد — سلوك المحرك بلا تغيير.
-  const RESUME_STABILITY_MINUTES = 3;
+  const RESUME_STABILITY_MINUTES = 10;
   const previousWasStopped =
     ctx.previousDecisionCategory === 'MANDATORY_STOP' ||
     ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';

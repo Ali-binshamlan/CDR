@@ -492,11 +492,15 @@ describe('محرك امتثال الغبار — تثبيط معزز عام (15-
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
   });
 
-  it('نشاط مغلق (isEnclosedOperation) عند رياح 18 كم/س → لا تثبيط معزز', () => {
+  // خطأ مكتشَف ومُصلَح: isEnclosedOperation وحده لم يعد يُعفي من بوابتي
+  // الرياح — الإعفاء الوحيد محصور بمحطة الخلط (BATCHING_PLANT) بشرطيها
+  // (صوامع مغلقة + فلتر PM10 كافٍ). نشاط مغلق آخر (هدم، حفر، إلخ) يتأثر
+  // ببوابة 15-25 مثل أي نشاط مكشوف تماماً.
+  it('نشاط مغلق (isEnclosedOperation، ليس محطة خلط) عند رياح 18 كم/س → تثبيط معزز يُطبَّق أيضاً', () => {
     const r = evaluateDustCompliance(
       context({ windSpeedKmh: 18, activity: activityProfile({ isEnclosedOperation: true }) })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
   });
 
   it('رياح هادئة (10 كم/س) → لا تثبيط معزز', () => {
@@ -764,10 +768,11 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).not.toBe('ALLOW');
   });
 
-  it('عملية مغلقة (isEnclosedOperation=true) مستثناة من بوابة إيقاف الرياح فوق 25', () => {
-    // سيناريو حقيقي رصده المستخدم: نشاط هدم مغلق برياح 39.78 كم/س ظهر
-    // "مسموح" رغم أن نطاق الرياح ABOVE_25 — سلوك صحيح لأن الإغلاق يمنع
-    // تطاير الغبار فيُستثنى تنظيمياً من بوابة GATE-WIND-ABOVE-25-004.
+  // خطأ مكتشَف ومُصلَح — سيناريو حقيقي رصده المستخدم: نشاط هدم مغلق برياح
+  // 39.78 كم/س ظهر "مسموح" رغم أن نطاق الرياح ABOVE_25، رغم عدم وجود سند
+  // تنظيمي موثَّق يُعفي أي نشاط مغلق (خلاف محطة الخلط بشرطيها) من بوابة
+  // الرياح — isEnclosedOperation وحده لم يعد كافياً للإعفاء.
+  it('عملية مغلقة (isEnclosedOperation=true، ليست محطة خلط) لا تُستثنى من بوابة إيقاف الرياح فوق 25', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 39.78,
@@ -786,7 +791,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     );
     expect(r.windBand).toBe('ABOVE_25');
     expect(r.isEnclosedOperation).toBe(true);
-    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
   });
 
   it('النتيجة تحمل isEnclosedOperation=false افتراضياً لنشاط مكشوف', () => {
@@ -828,7 +833,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
       expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(false);
     });
 
-    it('عملية مغلقة (isEnclosedOperation=true) مستثناة من احتراز الهبات أيضاً', () => {
+    it('عملية مغلقة (isEnclosedOperation=true، ليست محطة خلط) لا تُستثنى من احتراز الهبات', () => {
       const r = evaluateDustCompliance(
         context({
           windSpeedKmh: 10,
@@ -836,7 +841,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
           activity: activityProfile({ isEnclosedOperation: true }),
         })
       );
-      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(false);
+      expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-GUST-SAFETY')).toBe(true);
     });
 
     it('هبة قوية بلا نشاط مولّد للغبار (isDustGenerating=false) → لا تُفعَّل', () => {
@@ -909,7 +914,10 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
   });
 
-  it('نشاط هدم مغلق يبقى مستثنى من بوابة إيقاف الرياح بلا أي شرط كفاءة فلتر (بلا تأثر بإضافة البيتشنج)', () => {
+  // الإعفاء من بوابة الرياح مقصور على محطة الخلط (BATCHING_PLANT) بشرطيها
+  // فقط — نشاط هدم مغلق لا يستفيد من أي إعفاء بصرف النظر عن ضوابطه الأخرى
+  // (رش مستمر، مدافع رش، شاشات غبار)، لأن isEnclosedOperation وحده لا يعفي.
+  it('نشاط هدم مغلق (ليس محطة خلط) يتأثر ببوابة إيقاف الرياح رغم توفر كل ضوابط الهدم الأخرى', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 30,
@@ -926,7 +934,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
         }),
       })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
   });
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
@@ -2786,18 +2794,21 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
   // تحت 15 يُضاف حتى لقرار سببه PM10/مسافة/DMP"): كان restartConditions
   // يضيف "انخفاض سرعة الرياح إلى ما دون 15 كم/س" بفحص windBand الحالي وحده
   // (windBand !== 'BELOW_15')، بصرف النظر عن كون الرياح سبب الإيقاف الفعلي.
-  // نشاط موقوف بسبب مخالفة مسافة كسارة (لا علاقة له بالرياح) بينما الرياح
-  // مرتفعة صدفةً في نفس اللحظة كان يعرض شرط استئناف مضلِّل. الآن الشرط
-  // يُضاف فقط إن كانت قاعدة رياح فعلية (بوابة >25، هدم/قطع أحجار مكشوف) هي
-  // القاعدة الفائزة فعلياً.
-  it('H-06.2: إيقاف بسبب مسافة كسارة (لا رياح) + رياح مرتفعة صدفةً في نفس اللحظة → لا يُضاف شرط "انخفاض الرياح" لأنه ليس سبب الإيقاف الفعلي', () => {
+  // نشاط موقوف بسبب مخالفة مسافة كسارة (لا علاقة له بالرياح) كان يعرض شرط
+  // استئناف مضلِّل لو الرياح مرتفعة صدفةً بنفس اللحظة. الآن الشرط يُضاف فقط
+  // إن كانت قاعدة رياح فعلية (بوابة >25، هدم/قطع أحجار مكشوف) هي القاعدة
+  // الفائزة فعلياً. رياح هادئة هنا (10 كم/س، تحت 15) تعزل السيناريو تماماً
+  // عن بوابة الرياح — isEnclosedOperation لم يعد يُعفي منها أصلاً (خلاف
+  // محطة الخلط بشرطيها)، فرياح مرتفعة كانت ستُفعِّل GATE-WIND-ABOVE-25-004
+  // فعلياً وتُبطل نية هذا الاختبار (عزل مسافة الكسارة عن الرياح).
+  it('H-06.2: إيقاف بسبب مسافة كسارة (لا رياح، رياح هادئة) → لا يُضاف شرط "انخفاض الرياح" لأنه ليس سبب الإيقاف الفعلي', () => {
     const r = evaluateDustCompliance(
       context({
-        windSpeedKmh: 30, // مرتفعة صدفةً، لكن ليست سبب الإيقاف هنا
+        windSpeedKmh: 10, // هادئة عمداً — تعزل السيناريو عن بوابة الرياح تماماً
         project: projectProfile({ hasOnsiteCrusher: true }),
         activity: activityProfile({
           regulatoryActivity: 'CRUSHER',
-          isEnclosedOperation: true, // يُعفي من بوابة الرياح >25 كم/س صراحة
+          isEnclosedOperation: true,
           measurements: { ...activityProfile().measurements, crusherDistanceToReceptorM: 300 },
         }),
       })
