@@ -7,6 +7,13 @@ import { evaluateProject, enqueueEvaluationRetryJob } from '@/app/lib/evaluatePr
 import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
 import type { NormalizedReading } from '@/app/lib/providers/types';
 
+// حد أقصى 60 ثانية لتنفيذ الدالة كاملةً (خطة Vercel Hobby تسمح بحد أقصى
+// 60s على الدوال المحدَّدة صراحة، بدل الافتراضي 10s) — خط دفاع أخير: لو
+// تعطّلت الدورة لأي سبب رغم lock_timeout الجديد على مستوى الـrole (راجع
+// migration 202608081001) وprovider_pull_run_lock (202608081002)، Vercel
+// نفسه يقطعها بدل تركها معلَّقة إلى أن يقطعها المستخدم/cron-job.org يدوياً.
+export const maxDuration = 60;
+
 // نتيجة list_active_provider_connections (RPC، 202608040032) — راجع
 // تعليق الاستدعاء أدناه لسبب استخدام RPC بدل .select() مباشر.
 interface ActiveProviderConnectionRow {
@@ -43,6 +50,18 @@ export async function GET(request: Request) {
   const authHeader = request.headers.get('authorization') || '';
   if (!timingSafeStringEqual(authHeader, `Bearer ${process.env.PROVIDER_PULL_CRON_SECRET}`)) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  }
+
+  // حادثة إنتاج فعلية (2026-08-08): استدعاءات cron-job.org كل دقيقة تتراكم
+  // فوق دورة سابقة لم تكتمل بعد (حلقة تسلسلية بطيئة تحت حمل)، تستنزف
+  // connection pool بالكامل (راجع migration 202608081002 لتفاصيل الحادثة).
+  // قفل بنافذة 60 ثانية عبر قيد PRIMARY KEY (نفس نمط scheduler_locks) —
+  // يفشل فوراً بدل الانتظار، فترجع هذه الدورة 200 فوراً بلا أي عمل إضافي
+  // بدل إضافة حمل فوق حمل قائم.
+  const runBucket = Math.floor(Date.now() / 60_000);
+  const { error: lockError } = await supabaseAdmin.from('provider_pull_run_lock').insert({ run_bucket: runBucket });
+  if (lockError) {
+    return NextResponse.json({ ok: true, skipped: true, reason: 'دورة سابقة لا تزال قيد التنفيذ لنفس النافذة الزمنية' }, { status: 200 });
   }
 
   // خطأ أمني/تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المشروع المؤرشف يمكن
@@ -124,14 +143,30 @@ export async function GET(request: Request) {
   // لهذا الاستدعاء التلقائي هنا.
   const affectedProjectIds = new Set<string>();
 
-  // تسلسلي عمداً (لا Promise.all) — يبسّط تتبع الفشل الجزئي ويتفادى إغراق
-  // أي شركة حقيقية لاحقاً بطلبات متزامنة من نفس دورة السحب.
-  for (const conn of connections || []) {
+  // خطأ أداء مكتشَف ومُصلَح (حادثة إنتاج 2026-08-08، راجع migration
+  // 202608081001/202608081002): حلقة تسلسلية بالكامل (زمن كل اتصال × عدد
+  // الاتصالات) كانت تتجاوز maxDuration/نافذة provider_pull_run_lock بسرعة
+  // مع عدد محطات واقعي (حتى 15-20 محطة تحت شبكة بطيئة تكفي لتجاوز 60
+  // ثانية) — الدورة تُقطَع منتصفها، والمحطات المتبقية في نفس الدورة لا
+  // تُعالَج إطلاقاً. معالجة بدفعات متوازية (CONCURRENCY لكل دفعة) تقلّل
+  // الزمن الإجمالي تقريباً بعامل CONCURRENCY، مع إبقاء ترتيب الكتابة
+  // التصاعدي (observedAt) سليماً *داخل* كل اتصال (الحلقة الداخلية على
+  // readings تبقى تسلسلية أدناه) — فقط الاتصالات المختلفة عن بعضها تعمل
+  // بالتوازي، لا قراءات نفس الاتصال. عدد محدود (لا Promise.all غير مقيَّد)
+  // يتفادى إغراق أي شركة حقيقية بعشرات الطلبات المتزامنة دفعة واحدة.
+  const CONCURRENCY = 8;
+  const connectionsToProcess = connections || [];
+  for (let batchStart = 0; batchStart < connectionsToProcess.length; batchStart += CONCURRENCY) {
+    const batch = connectionsToProcess.slice(batchStart, batchStart + CONCURRENCY);
+    await Promise.all(batch.map((conn) => processConnection(conn)));
+  }
+
+  async function processConnection(conn: (typeof connectionsToProcess)[number]) {
     try {
       const connector = getConnector(conn.provider);
       if (!connector) {
         results.push({ connectionId: conn.id, provider: conn.provider, ok: false, error: `provider غير مسجَّل: ${conn.provider}` });
-        continue;
+        return;
       }
 
       // خطأ أمني مكتشَف ومُصلَح (القسم 15.1): إن كان الـConnector يتطلب
@@ -148,14 +183,14 @@ export async function GET(request: Request) {
             .from('provider_connections')
             .update({ last_pull_at: new Date().toISOString(), last_pull_success: false, last_pull_error: 'المنصة المرتبطة لم تعد معتمدة/نشطة', updated_at: new Date().toISOString() })
             .eq('id', conn.id);
-          continue;
+          return;
         }
         origin = instance.origin;
       }
 
       if (!conn.credentials_ciphertext || !conn.credentials_key_version) {
         results.push({ connectionId: conn.id, provider: conn.provider, ok: false, error: 'بيانات اعتماد الاتصال غير مُرحَّلة لصيغة enc:v2' });
-        continue;
+        return;
       }
       const credentials = decryptCredentialsV2(conn.credentials_ciphertext, conn.credentials_key_version, {
         connectionId: conn.id,
@@ -196,7 +231,7 @@ export async function GET(request: Request) {
           .from('provider_connections')
           .update({ last_pull_at: new Date().toISOString(), last_pull_success: true, last_pull_error: null, updated_at: new Date().toISOString() })
           .eq('id', conn.id);
-        continue;
+        return;
       }
 
       // تسلسلي عمداً (لا Promise.all) — نفس مبدأ حلقة الاتصالات الخارجية
@@ -256,7 +291,9 @@ export async function GET(request: Request) {
     }
   }
 
-  // إعادة تقييم كل مشروع تلقّى قراءة جديدة فعلياً — مرة واحدة لكل مشروع
+  // إعادة تقييم كل مشروع تلقّى قراءة جديدة فعلياً — مرة واحدة لكل مشروع بعد
+  // اكتمال كل دفعات السحب أعلاه (لا أثناءها)، حتى لا يُعاد تقييم مشروع
+  // بمعزل عن قراءة وصلت لتوّها من دفعة لاحقة.
   // بصرف النظر عن عدد المحطات المرتبطة به التي نجحت بهذه الدورة. فشل تقييم
   // مشروع واحد لا يوقف تقييم الباقي (نفس مبدأ حلقة السحب أعلاه)، ولا يُسقِط
   // نجاح السحب نفسه (القراءة محفوظة فعلاً بغض النظر عن نتيجة إعادة التقييم).

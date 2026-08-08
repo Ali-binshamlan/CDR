@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const rpcResponses: Record<string, unknown> = {};
 const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 const updateCalls: Array<{ table: string; values: Record<string, unknown> }> = [];
+let runLockShouldFail = false;
 
 // نموّه supabaseAdmin بمنشئ استعلام سلسلي عام — provider-pull يستدعي
 // .from('projects').select(...).in(...) و.from('provider_instances').
@@ -37,6 +38,10 @@ vi.mock('@/app/lib/supabaseAdmin', () => ({
           return { data: null, error: null };
         },
       }),
+      insert: async () =>
+        runLockShouldFail
+          ? { data: null, error: { message: 'duplicate key value violates unique constraint', code: '23505' } }
+          : { data: null, error: null },
     }),
   },
 }));
@@ -106,6 +111,23 @@ describe('GET /api/cron/provider-pull', () => {
     fetchReadingsSinceMock.mockReset();
     enqueueEvaluationRetryJobMock.mockClear();
     delete rpcResponses['list_active_provider_connections'];
+    runLockShouldFail = false;
+  });
+
+  it('دورة سابقة لا تزال قيد التنفيذ (قفل النافذة الزمنية يفشل) → يتخطى فوراً بلا أي عمل، 200', async () => {
+    runLockShouldFail = true;
+    rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.skipped).toBe(true);
+    expect(rpcCalls.length).toBe(0);
+    expect(fetchReadingsSinceMock).not.toHaveBeenCalled();
+    expect(fetchLatestReadingMock).not.toHaveBeenCalled();
   });
 
   it('يرفض بلا سر مُعرَّف بالخادم', async () => {
@@ -205,6 +227,28 @@ describe('GET /api/cron/provider-pull', () => {
     const lastUpdate = updateCalls[updateCalls.length - 1];
     expect(lastUpdate.values.last_pull_success).toBe(false);
     expect(lastUpdate.values.last_pull_error).toBe('boom');
+  });
+
+  it('10 اتصالات (أكثر من دفعة توازي واحدة، CONCURRENCY=8) → كلها تُعالَج رغم فشل واحد منها في المنتصف', async () => {
+    const rows = Array.from({ length: 10 }, (_, i) => connectionRow({ id: `conn-${i}`, project_id: `project-${i}` }));
+    rpcResponses['list_active_provider_connections'] = { data: rows, error: null };
+    // الاستدعاء الرابع (ترتيب وصول، لا بالضرورة conn-3 بسبب التوازي) يفشل
+    // بخطأ مرمي (لا مرفوض فقط) — يجب ألا يوقف بقية الدفعة أو الدفعات التالية.
+    let callIndex = 0;
+    fetchReadingsSinceMock.mockImplementation(async () => {
+      const current = callIndex++;
+      if (current === 3) throw new Error('محطة معطوبة');
+      return [{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 100 }];
+    });
+
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(fetchReadingsSinceMock).toHaveBeenCalledTimes(10);
+    expect(body.total).toBe(10);
+    expect(body.failed).toBe(1);
+    expect(body.results.filter((r: { ok: boolean }) => r.ok)).toHaveLength(9);
   });
 
   // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا مهمة إعادة محاولة مضمونة
