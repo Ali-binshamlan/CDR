@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { liveDataStore } from './liveData/inMemoryStore';
 
 // نموّه supabaseAdmin.rpc — الكتابة الفعلية بالكامل (device_readings_history/
 // pm10_readings_history/project_devices.last_*/device_events/device_
@@ -76,6 +77,45 @@ describe('writeDeviceReading', () => {
     expect(rpcCalls[0].args.p_device_id).toBe('d1');
     expect(rpcCalls[0].args.p_project_id).toBe('p1');
     expect(rpcCalls[0].args.p_measurements).toEqual({ pm10: 50 });
+  });
+
+  // Live Data Layer (2026-08-08): تحديث liveDataStore يجب أن يحدث فوراً
+  // بعد التحقق المحلي، *قبل* أي انتظار لنتيجة RPC — راجع app/lib/liveData/
+  // types.ts. هذا الاختبار يثبت التكامل الفعلي بين الملفين، لا فقط أن كل
+  // ملف يعمل بمعزل عن الآخر.
+  it('يحدّث liveDataStore بالقيم الصحيحة عند نجاح الكتابة', async () => {
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    await writeDeviceReading({
+      deviceId: 'device-live-1',
+      projectId: 'project-live-1',
+      reading: { pm10: 285, windSpeedKmh: 6.4, observedAtIso: '2026-01-01T00:00:00.000Z' },
+    });
+
+    const snapshot = liveDataStore.getSnapshot('device-live-1');
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.projectId).toBe('project-live-1');
+    expect(snapshot?.pm10).toBe(285);
+    expect(snapshot?.windSpeedKmh).toBe(6.4);
+    expect(snapshot?.observedAtIso).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('يحدّث liveDataStore حتى لو فشلت RPC لاحقاً (Live لا ينتظر Supabase)', async () => {
+    vi.useFakeTimers();
+    rpcError = { code: '500', message: 'Supabase متعطّل مؤقتاً' };
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    const resultPromise = writeDeviceReading({
+      deviceId: 'device-live-2',
+      projectId: 'project-live-2',
+      reading: { pm10: 100 },
+    });
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    expect(result.success).toBe(false);
+    const snapshot = liveDataStore.getSnapshot('device-live-2');
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.pm10).toBe(100);
   });
 
   it('يُضمِّن p_measurements_v2 بصيغة {value, observedAtIso} لكل حقل يملك fields مستقلة', async () => {
@@ -223,17 +263,27 @@ describe('writeDeviceReading', () => {
   // ذرية"): بما أن كل الكتابات الآن داخل استدعاء واحد ذرّي، فشل أي جزء منه
   // (بما فيه ما كان سابقاً "الكتابة الثانية" V2) يُفشل العملية كاملة فوراً —
   // لا console.error صامتاً، لا نجاح جزئي.
-  it('يرجع فشلاً برسالة الخطأ حين تفشل RPC الموحَّدة — لا نجاح جزئي، ولا استدعاء إضافي', async () => {
+  //
+  // تحديث (2026-08-08 — retryWithBackoff): فشل RPC المستمر يُعاد الآن حتى
+  // 3 مرات (exponential backoff) قبل إرجاع الفشل النهائي — راجع
+  // app/lib/retryWithBackoff.ts. fake timers هنا تُسرّع الانتظار الفعلي
+  // بين المحاولات (500ms/1s) بدل إبطاء الاختبار حقيقياً.
+  it('يعيد محاولة RPC حتى 3 مرات عند فشل مستمر، ثم يرجع فشلاً نهائياً برسالة الخطأ', async () => {
+    vi.useFakeTimers();
     rpcError = { code: '42501', message: 'device not found, revoked, or project mismatch' };
     const { writeDeviceReading } = await import('./deviceReadingWriter');
-    const result = await writeDeviceReading({
+    const resultPromise = writeDeviceReading({
       deviceId: 'd1',
       projectId: 'p1',
       reading: { pm10: 30 },
     });
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain('device not found');
-    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls).toHaveLength(3);
   });
 
   it('يستخدم observedAtIso كـp_observed_at عند وجوده، لا وقت الآن', async () => {

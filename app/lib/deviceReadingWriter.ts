@@ -1,5 +1,7 @@
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import type { NormalizedReading } from '@/app/lib/providers/types';
+import { retryWithBackoff } from '@/app/lib/retryWithBackoff';
+import { liveDataStore } from '@/app/lib/liveData/inMemoryStore';
 
 // منطق الكتابة المشترك لأي قراءة جهاز/محطة — مُستخرَج من
 // app/api/devices/ingest/route.ts (مسار push) ليُستخدَم أيضاً من مسار
@@ -154,6 +156,31 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
     }
   }
 
+  // Live Data Layer (2026-08-08 — راجع app/lib/liveData/types.ts للسياق
+  // الكامل): تحديث الحالة الحيّة يحدث هنا فوراً، *قبل* استدعاء Supabase —
+  // لا بعده ولا بالتوازي معه — لأن الواجهة يجب ألا تنتظر اكتمال أي عملية
+  // Supabase لعرض آخر قراءة (طلب صريح: "لا تجعل تحديث الواجهة ينتظر انتهاء
+  // عملية Supabase"). القيمة المكتوبة هنا مبنية فقط من قيم مُتحقَّق منها
+  // محلياً أعلاه (measurements) — لا تعتمد على نتيجة RPC إطلاقاً. خطر
+  // القراءة المكررة النادر جداً (idempotency الحقيقي يبقى على مستوى RPC/DB
+  // فقط، لا فحص هنا) مقبول: قراءة مكررة تُعرض للحظة على الـLive State لا
+  // تُغيّر أي قرار امتثال (القرار الفعلي يبقى من current_dust_*_decisions
+  // في Supabase، لا من هذا الـcache).
+  liveDataStore.setSnapshot({
+    deviceId,
+    projectId,
+    windSpeedKmh: measurements.windSpeedKmh ?? null,
+    windGustKmh: measurements.windGustKmh ?? null,
+    windDirectionDeg: measurements.windDirectionDeg ?? null,
+    pm10: measurements.pm10 ?? null,
+    pm25: measurements.pm25 ?? null,
+    visibilityM: measurements.visibilityM ?? null,
+    relativeHumidityPercent: measurements.relativeHumidityPercent ?? null,
+    temperatureC: measurements.temperatureC ?? null,
+    observedAtIso: observedAt.toISOString(),
+    updatedAtIso: new Date().toISOString(),
+  });
+
   // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "الكتابتان ليستا عملية واحدة
   // ذرية؛ فشل V2 لا يُفشل العملية كلها، يُسجَّل في console فقط"): كان هذا
   // استدعاءين شبكة منفصلين (ingest_device_reading_atomic ثم ingest_device_
@@ -162,20 +189,33 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
   // (القرار الحي) بصمت. استدعاء واحد الآن (ingest_device_reading_and_event_
   // atomic، 202608040027) يدمج كل الكتابات في معاملة SQL واحدة — تنجح معاً
   // أو تفشل معاً، بلا احتمال تناقض بين المصدرين.
-  const { data, error } = await supabaseAdmin.rpc('ingest_device_reading_and_event_atomic', {
-    p_project_id: projectId,
-    p_device_id: deviceId,
-    p_external_event_id: externalEventId,
-    p_sequence_no: sequence,
-    p_observed_at: observedAt.toISOString(),
-    p_received_at: receivedAt.toISOString(),
-    p_measurements: measurements,
-    p_pm10_observed_at: pm10ObservedAtIso,
-    p_measurements_v2: measurementsV2,
-    p_is_late: isLate,
+  //
+  // retryWithBackoff (2026-08-08): 3 محاولات كحد أقصى بـexponential backoff
+  // (500ms/1s/2s) — يتحمّل انقطاعاً عابراً قصيراً في Supabase بلا حاجة
+  // لقائمة/queue خارجية (Vercel serverless بلا ذاكرة مشتركة دائمة بين
+  // الطلبات تجعل أي queue داخل memory غير موثوقة أصلاً — راجع نقاش القيد
+  // الموثَّق في المحادثة؛ الحل المقبول هنا هو retry محدود لا queue وهمية).
+  // لا retry لا نهائي — فشل نهائي يُرجَع للمستدعي كخطأ عادي (نفس السلوك
+  // السابق تماماً)، لا صمت ولا تعليق.
+  const rpcResult = await retryWithBackoff(async () => {
+    const { data, error } = await supabaseAdmin.rpc('ingest_device_reading_and_event_atomic', {
+      p_project_id: projectId,
+      p_device_id: deviceId,
+      p_external_event_id: externalEventId,
+      p_sequence_no: sequence,
+      p_observed_at: observedAt.toISOString(),
+      p_received_at: receivedAt.toISOString(),
+      p_measurements: measurements,
+      p_pm10_observed_at: pm10ObservedAtIso,
+      p_measurements_v2: measurementsV2,
+      p_is_late: isLate,
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, value: data };
   });
 
-  if (error) return { success: false, error: error.message };
+  if (!rpcResult.ok) return { success: false, error: rpcResult.error };
 
+  const data = rpcResult.value as { is_duplicate?: boolean }[] | null;
   return { success: true, duplicate: Boolean(data?.[0]?.is_duplicate), late: isLate };
 }
