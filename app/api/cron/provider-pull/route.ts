@@ -5,6 +5,7 @@ import { getConnector } from '@/app/lib/providers/registry';
 import { writeDeviceReading } from '@/app/lib/deviceReadingWriter';
 import { evaluateProject, enqueueEvaluationRetryJob } from '@/app/lib/evaluateProject';
 import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
+import { withSupabaseRetry } from '@/app/lib/supabaseRetry';
 import type { NormalizedReading } from '@/app/lib/providers/types';
 
 // نتيجة list_active_provider_connections (RPC، 202608040032) — راجع
@@ -75,10 +76,12 @@ export async function GET(request: Request) {
   // connections (RPC، 202608040032) يتجاوز هذا كلياً — استدعاء RPC يُنفَّذ
   // داخل قاعدة البيانات مباشرة (execute function)، لا عبر آلية "قراءة قائمة
   // أعمدة الجدول عبر PostgREST" المتأثرة بالخلل.
-  const { data: rawConnections, error: fetchError } = await supabaseAdmin.rpc('list_active_provider_connections') as {
-    data: ActiveProviderConnectionRow[] | null;
-    error: { message: string } | null;
-  };
+  const { data: rawConnections, error: fetchError } = await withSupabaseRetry(() =>
+    supabaseAdmin.rpc('list_active_provider_connections') as PromiseLike<{
+      data: ActiveProviderConnectionRow[] | null;
+      error: { code?: string; message: string } | null;
+    }>
+  );
 
   if (fetchError) {
     return NextResponse.json({ ok: false, error: fetchError.message }, { status: 500 });
@@ -90,10 +93,10 @@ export async function GET(request: Request) {
 
   const [{ data: projectRows, error: projectsError }, { data: instanceRows, error: instancesError }] = await Promise.all([
     projectIdsToCheck.length > 0
-      ? supabaseAdmin.from('projects').select('id, archived_at').in('id', projectIdsToCheck)
+      ? withSupabaseRetry(() => supabaseAdmin.from('projects').select('id, archived_at').in('id', projectIdsToCheck))
       : Promise.resolve({ data: [] as { id: string; archived_at: string | null }[], error: null }),
     providerInstanceIdsToCheck.length > 0
-      ? supabaseAdmin.from('provider_instances').select('id, origin, is_approved, is_active').in('id', providerInstanceIdsToCheck)
+      ? withSupabaseRetry(() => supabaseAdmin.from('provider_instances').select('id, origin, is_approved, is_active').in('id', providerInstanceIdsToCheck))
       : Promise.resolve({ data: [] as { id: string; origin: string; is_approved: boolean; is_active: boolean }[], error: null }),
   ]);
 

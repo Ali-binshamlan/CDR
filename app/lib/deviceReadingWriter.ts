@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
+import { withSupabaseRetry } from '@/app/lib/supabaseRetry';
 import type { NormalizedReading } from '@/app/lib/providers/types';
 
 // منطق الكتابة المشترك لأي قراءة جهاز/محطة — مُستخرَج من
@@ -162,18 +163,20 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
   // (القرار الحي) بصمت. استدعاء واحد الآن (ingest_device_reading_and_event_
   // atomic، 202608040027) يدمج كل الكتابات في معاملة SQL واحدة — تنجح معاً
   // أو تفشل معاً، بلا احتمال تناقض بين المصدرين.
-  const { data, error } = await supabaseAdmin.rpc('ingest_device_reading_and_event_atomic', {
-    p_project_id: projectId,
-    p_device_id: deviceId,
-    p_external_event_id: externalEventId,
-    p_sequence_no: sequence,
-    p_observed_at: observedAt.toISOString(),
-    p_received_at: receivedAt.toISOString(),
-    p_measurements: measurements,
-    p_pm10_observed_at: pm10ObservedAtIso,
-    p_measurements_v2: measurementsV2,
-    p_is_late: isLate,
-  });
+  const { data, error } = await withSupabaseRetry(() =>
+    supabaseAdmin.rpc('ingest_device_reading_and_event_atomic', {
+      p_project_id: projectId,
+      p_device_id: deviceId,
+      p_external_event_id: externalEventId,
+      p_sequence_no: sequence,
+      p_observed_at: observedAt.toISOString(),
+      p_received_at: receivedAt.toISOString(),
+      p_measurements: measurements,
+      p_pm10_observed_at: pm10ObservedAtIso,
+      p_measurements_v2: measurementsV2,
+      p_is_late: isLate,
+    })
+  );
 
   if (error) return { success: false, error: error.message };
 

@@ -1555,6 +1555,7 @@ returns void
 language plpgsql
 security invoker
 set search_path = pg_catalog, public
+set lock_timeout = '8s'
 as $$
 begin
   perform pg_advisory_xact_lock(
@@ -1632,6 +1633,7 @@ returns table (
   final_decision_persisted boolean
 )
 language plpgsql
+set lock_timeout = '8s'
 as $$
 declare
   v_dvi_evaluation_id uuid;
@@ -1918,6 +1920,7 @@ returns table (is_duplicate boolean, event_row_id uuid)
 language plpgsql
 security invoker
 set search_path = pg_catalog, public
+set lock_timeout = '8s'
 as $$
 declare
   v_event_row_id uuid;
@@ -2113,6 +2116,7 @@ returns table (is_duplicate boolean, event_row_id uuid)
 language plpgsql
 security invoker
 set search_path = pg_catalog, public
+set lock_timeout = '8s'
 as $$
 declare
   v_event_row_id uuid;
@@ -2268,6 +2272,7 @@ returns table (is_duplicate boolean, event_row_id uuid)
 language plpgsql
 security invoker
 set search_path = pg_catalog, public
+set lock_timeout = '8s'
 as $$
 declare
   v_event_row_id uuid;
