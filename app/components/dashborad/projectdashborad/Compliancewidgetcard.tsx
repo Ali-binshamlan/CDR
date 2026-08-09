@@ -546,6 +546,13 @@ export default function ComplianceWidgetCard({
   const alreadyStopped = aei
     ? aei.closedByGate
     : worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
+  // طلب صريح من المستخدم: بعد أن يتجاوز التعليق (pendingConfirmation) مهلة
+  // التأكيد (أكثر من دقيقتين متتاليتين ≥340)، يُعرَض تنبيه صريح "تم تسجيل
+  // مخالفة" بدل اختفاء البانر الأحمر بصمت لصالح نص القرار العادي فقط —
+  // PM10-VIOLATION-STOP-006 (راجع rulebook.ts) هو الكود الوحيد الذي يفوز به
+  // decidingRuleCode تحديداً بعد اكتمال isConfirmedViolation340، فيميّز هذه
+  // الحالة بدقة عن أي إيقاف إلزامي آخر مصدره قاعدة مختلفة (رياح/رؤية...).
+  const isConfirmedViolationNow = !isEnded && worst?.decidingRuleCode === 'PM10-VIOLATION-STOP-006';
   // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "تناقض": عدّاد "تعليق 250" كان يظهر
   // حتى عندما تكون القراءة أصلاً معلَّقة بانتظار تأكيد حد المخالفة الأشد
   // (340، worst.pendingConfirmation=true عبر MRQ-PM10-BLACK-PENDING-104) —
@@ -689,7 +696,15 @@ export default function ComplianceWidgetCard({
             <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-red-600 shrink-0" />
               <span className="text-[11px] font-bold text-red-700">
-                جارٍ التحقق من استمرار التجاوز — سيتأكد القرار تلقائياً (إيقاف إلزامي أو عودة آمنة) إن استمر التجاوز
+                جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين سيُسجَّل مخالفة تنظيمية مؤكَّدة (إيقاف إلزامي)، وإلا ستعود الحالة آمنة تلقائياً
+              </span>
+            </div>
+          )}
+          {!worst?.pendingConfirmation && isConfirmedViolationNow && (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/5 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-slate-800 shrink-0" />
+              <span className="text-[11px] font-bold text-slate-800">
+                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين
               </span>
             </div>
           )}
@@ -920,7 +935,15 @@ export default function ComplianceWidgetCard({
                 <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
                   <Timer className="w-5 h-5 text-red-600 shrink-0" />
                   <span className="text-[13px] font-bold text-red-700">
-                    جارٍ التحقق من استمرار التجاوز — سيتأكد القرار تلقائياً (إيقاف إلزامي أو عودة آمنة) إن استمر التجاوز
+                    جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين سيُسجَّل مخالفة تنظيمية مؤكَّدة (إيقاف إلزامي)، وإلا ستعود الحالة آمنة تلقائياً
+                  </span>
+                </div>
+              )}
+              {!worst?.pendingConfirmation && isConfirmedViolationNow && (
+                <div className="flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/5 px-4 py-3">
+                  <Timer className="w-5 h-5 text-slate-800 shrink-0" />
+                  <span className="text-[13px] font-bold text-slate-800">
+                    تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين
                   </span>
                 </div>
               )}
