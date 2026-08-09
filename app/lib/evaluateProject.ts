@@ -208,18 +208,30 @@ export async function evaluateProject(
 // حتى DEAD)، فيصبح لكل فشل تقييم بعد قراءة ناجحة مساراً صريحاً ومتتبَّعاً
 // للمحاولة مجدداً، لا اعتماداً على "الدورة القادمة قد تلتقطه صدفة".
 //
-// dedupe_key فريد لكل استدعاء (لا نافذة زمنية ثابتة كـscheduler-tick) —
-// فشل تقييم فعلي يستحق مهمة خاصة به فوراً، لا انتظار مشاركة نافذة دقيقتين
-// مع مهمة scheduled محتملة قد لا تُنشأ إلا لاحقاً.
+// حادثة إنتاج فعلية (2026-08-09): dedupe_key كان فريداً لكل استدعاء
+// (crypto.randomUUID()) رغم اسمه — القيد الفريد الفعلي على الجدول
+// (project_id, dedupe_key) لم يكن يمنع أي شيء عملياً. تحت تزاحم مستمر على
+// نفس صف القرار (provider-pull كل دقيقة يفشل بتكرار بسبب lock_timeout)،
+// كل فشل كان يُنشئ مهمة retry جديدة كلياً، تُضاف فوق التي قبلها ويعالجها
+// scheduler-worker لاحقاً كمصدر تزامن إضافي على نفس الصف — حلقة تغذية
+// راجعة سلبية تُفاقم التزاحم بدل تخفيفه. الإصلاح: مفتاح مستقر لكل دقيقة
+// (نفس مبدأ provider_pull_run_lock بالضبط) — كل فشل ضمن نفس الدقيقة لنفس
+// (project_id, triggerType) يصطدم بقيد unique(project_id, dedupe_key)
+// فيُرفَض بصمت (PostgREST يُرجع خطأ 23505 في استجابة .insert()، لا استثناء
+// يُرمى — لا حاجة لفحصه صراحةً هنا؛ نفس فلسفة "فشل الإدراج لا يُسقط
+// الاستدعاء الأصلي" الموثَّقة أدناه أصلاً)، فلا يتراكم أكثر من محاولة
+// retry واحدة معلَّقة لكل مشروع في كل دقيقة، بصرف النظر عن عدد مرات الفشل
+// الفعلية خلالها.
 export async function enqueueEvaluationRetryJob(
   projectId: string,
   triggerType: 'DEVICE_EVENT' | 'PROVIDER_PULL',
   error: string
 ): Promise<void> {
   try {
+    const minuteBucket = Math.floor(Date.now() / 60_000);
     await supabaseAdmin.from('project_evaluation_jobs').insert({
       project_id: projectId,
-      dedupe_key: `retry:${triggerType}:${crypto.randomUUID()}`,
+      dedupe_key: `retry:${triggerType}:${minuteBucket}`,
       trigger_type: triggerType,
       last_error: error,
     });

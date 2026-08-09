@@ -31,9 +31,14 @@
 //   لغرضين مختلفين تماماً؛ التقرير اعتبر هذا "PM10 قديم يدخل القرار" رغم أن
 //   قرار الإيقاف نفسه كان يستخدم 4 دقائق بالفعل): 20 دقيقة كانت أطول من
 //   اللازم عملياً (نافذة واسعة جداً قبل أي تنبيه "قراءة قديمة" للمستخدم أو
-//   تراجع evidenceQuality)، فقُلِّصت إلى 10 دقائق — لا تزال أوسع بكثير من
-//   عتبة LIVE (4 دقائق، تبقى منفصلة عمداً لتفادي إنذار كاذب مستمر لجهاز
-//   يرسل كل 5-8 دقائق بشكل طبيعي)، لكنها أضيق من 20 دقيقة القديمة.
+//   تراجع evidenceQuality)، فقُلِّصت إلى 10 دقائق كموقف وسط مؤقت.
+//
+//   قرار مستخدم صريح لاحق (2026-08-09): سياسة المشروع تُلزم كل جهاز رصد
+//   حقيقي بوتيرة إرسال دقيقة واحدة (نفس معدّل provider-pull الفعلي) — لا
+//   وجود لجهاز "بطيء طبيعياً" (5-8 دقائق) ضمن الأجهزة المدعومة فعلياً، فلا
+//   خطر إنذار كاذب من عتبة أضيق. عتبتا DEVICE_CONNECTION وLIVE توحَّدتا الآن
+//   على نفس القيمة (4 دقائق) — "لا قرار واثق بلا قراءة خلال آخر 4 دقائق"،
+//   بلا استثناء لأي غرض (استمرار فيزيائي لحظي أو تصنيف evidenceQuality).
 // =============================================================
 
 // LIVE_FIELD_FRESHNESS_MS: عتبة الحداثة اللحظية — نفس FIELD_FRESHNESS_MS في
@@ -46,7 +51,9 @@ export const LIVE_FIELD_FRESHNESS_MS = 4 * 60_000;
 // DEVICE_CONNECTION_FRESHNESS_MS: عتبة اتصال المحطة العامة — نفس
 // DEVICE_READING_FRESHNESS_MINUTES (dustEvaluation.ts وfinal-decision-engine/
 // adapters.ts) وDEVICE_READING_STALENESS_MINUTES (Compliancewidgetcard.tsx).
-export const DEVICE_CONNECTION_FRESHNESS_MS = 10 * 60_000;
+// موحَّدة الآن مع LIVE_FIELD_FRESHNESS_MS (4 دقائق) — راجع تعليق القرار
+// أعلاه.
+export const DEVICE_CONNECTION_FRESHNESS_MS = 4 * 60_000;
 
 export type FreshnessMetric =
   | 'windSpeed'

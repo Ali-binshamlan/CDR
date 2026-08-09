@@ -48,12 +48,20 @@ describe('enqueueEvaluationRetryJob', () => {
     expect(insertCalls[0].last_error).toBe('فشل التقييم');
   });
 
-  it('dedupe_key فريد لكل استدعاء — لا يشارك نافذة زمنية ثابتة مع مهام scheduled', async () => {
+  it('dedupe_key مستقر لكل دقيقة — فشلان متتاليان لنفس المشروع/triggerType ضمن نفس الدقيقة يتشاركان نفس المفتاح (يمنع تراكم مهام retry تحت تزاحم مستمر)', async () => {
     const { enqueueEvaluationRetryJob } = await import('./evaluateProject');
     await enqueueEvaluationRetryJob('project-1', 'PROVIDER_PULL', 'err-1');
     await enqueueEvaluationRetryJob('project-1', 'PROVIDER_PULL', 'err-2');
 
     expect(insertCalls).toHaveLength(2);
+    expect(insertCalls[0].dedupe_key).toBe(insertCalls[1].dedupe_key);
+  });
+
+  it('dedupe_key يختلف بين triggerType مختلفين لنفس المشروع في نفس اللحظة', async () => {
+    const { enqueueEvaluationRetryJob } = await import('./evaluateProject');
+    await enqueueEvaluationRetryJob('project-1', 'PROVIDER_PULL', 'err-1');
+    await enqueueEvaluationRetryJob('project-1', 'DEVICE_EVENT', 'err-2');
+
     expect(insertCalls[0].dedupe_key).not.toBe(insertCalls[1].dedupe_key);
   });
 
