@@ -554,15 +554,31 @@ export function computeSustainedPm10Status(
   // — أي قراءة تساوي العتبة بالضبط تُعامَل كأنها لم تتجاوزها، فتقطع السلسلة
   // تماماً كأي قراءة أقل منها. يُمرَّر false صراحة فقط لعتبة 250 (حيث
   // المساواة تُحتسب ضمن النطاق فعلاً حسب النص التنظيمي).
-  function streakMinutesAbove(threshold: number, strict: boolean = true): { minutes: number; ids: string[] } {
+  //
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد PM10 إلى 3 مستويات
+  // منفصلة تماماً): كانت سلسلة استمرار 250 (above250Streak) تمتد بلا حد
+  // أعلى — قراءة 250 ثم 350 ثم 260 كانت جميعها تُحسَب "سلسلة واحدة متصلة
+  // فوق 250"، فتخلط عملياً بين مستوى التحذير [250,340] ومستوى المخالفة
+  // (>340) رغم أنهما مستويان منفصلان تماماً في التصميم الجديد. الإصلاح:
+  // upperExclusiveBound اختياري يقطع السلسلة أيضاً عند أي قراءة تتجاوزه —
+  // يُمرَّر 340 لسلسلة 250 حصراً (قاعدة الـ30 دقيقة تخص نطاق [250,340] فقط؛
+  // أي قراءة >340 تُخرِج السلسلة من هذه النافذة كلياً، بقرار المستخدم
+  // الصريح)، ويبقى undefined لسلسلة 340 (لا حد أعلى، القيم الأكبر منها كلها
+  // تخدم نفس الاستمرار).
+  function streakMinutesAbove(
+    threshold: number,
+    strict: boolean = true,
+    upperExclusiveBound?: number
+  ): { minutes: number; ids: string[] } {
     const isBelow = (value: number) => (strict ? value <= threshold : value < threshold);
-    if (isBelow(sorted[0].pm10UgM3)) return { minutes: 0, ids: [] };
+    const isAboveUpperBound = (value: number) => upperExclusiveBound !== undefined && value > upperExclusiveBound;
+    if (isBelow(sorted[0].pm10UgM3) || isAboveUpperBound(sorted[0].pm10UgM3)) return { minutes: 0, ids: [] };
     let streakStartMs = new Date(sorted[0].recordedAt).getTime();
     const streakEndMs = streakStartMs;
     let sampleCount = 0;
     const streakIds: string[] = [];
     for (let i = 0; i < sorted.length; i++) {
-      if (isBelow(sorted[i].pm10UgM3)) break;
+      if (isBelow(sorted[i].pm10UgM3) || isAboveUpperBound(sorted[i].pm10UgM3)) break;
       if ((sorted[i].source ?? 'open-meteo') !== currentSource) break;
       const currentMs = new Date(sorted[i].recordedAt).getTime();
       if (i > 0) {
@@ -581,7 +597,11 @@ export function computeSustainedPm10Status(
   }
 
   const above340Streak = streakMinutesAbove(PM10_SUSTAINED_VIOLATION_THRESHOLD, true);
-  const above250Streak = streakMinutesAbove(PM10_SUSTAINED_WARNING_THRESHOLD, false);
+  const above250Streak = streakMinutesAbove(
+    PM10_SUSTAINED_WARNING_THRESHOLD,
+    false,
+    PM10_SUSTAINED_VIOLATION_THRESHOLD
+  );
   const sustainedMinutesAbove340 = above340Streak.minutes;
   const sustainedMinutesAbove250 = above250Streak.minutes;
 

@@ -519,24 +519,23 @@ describe('محرك امتثال الغبار — تثبيط معزز عام (15-
   });
 });
 
-// حدود PM10 التشغيلية من حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE=2026.2،
-// طلب صريح من المستخدم — تراجع عن رفع الإصدار): 200 طبيعي، 201-250 احتراز،
-// 251-339 ضوابط (تحذير)، 340 فقط تقييد شديد (أحمر — نطاق ضيق جداً في هذه
-// الحزمة)، >340 معلَّق/مؤكَّد.
+// حدود PM10 — 3 مستويات فقط (طلب صريح من المستخدم، توحيد عن 4 فروع سابقة
+// في ACTIVE_RULE_BUNDLE=2026.2): ≤249 سماح، 250-340 تحذير+تحكم معزَّز موحَّد
+// (بلا تدرّج احتراز/تقييد داخلي)، >340 معلَّق/مؤكَّد.
 describe('محرك امتثال الغبار — حدود PM10 التنظيمية', () => {
-  it('PM10=340 (فقط — نطاق RESTRICT_ACTIVITY الضيق في 2026.2) → RESTRICT_ACTIVITY (تقييد شديد)', () => {
+  it('PM10=340 (الحد الأقصى لنطاق التحذير الموحَّد بالضبط) → ALLOW_WITH_CONTROLS، ليس مخالفة', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 340 }));
-    expect(r.decisionCategory).toBe('RESTRICT_ACTIVITY');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-RED-RESTRICT-010')).toBe(true);
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  it('PM10=330 (بين 251-339، ما زال ضمن نطاق الضوابط في 2026.2) → ALLOW_WITH_CONTROLS، ليس تقييداً', () => {
+  it('PM10=330 (ضمن نطاق التحذير الموحَّد) → ALLOW_WITH_CONTROLS', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 330 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-RED-RESTRICT-010')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  it('PM10=260 (بين 251-339) → ALLOW_WITH_CONTROLS مع تحذير', () => {
+  it('PM10=260 (ضمن نطاق التحذير الموحَّد) → ALLOW_WITH_CONTROLS مع تحذير', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 260 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
@@ -577,7 +576,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
   // دقيقتين" يعني `>` صراحة لا `>=`. الاختبارات التالية تثبّت السلوك الصحيح
   // عند الحدود الأربعة بالضبط.
   it.each([
-    { pm10: 340, minutes: 60, decision: 'RESTRICT_ACTIVITY', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تقييد شديد فقط، لا معلَّق ولا مؤكَّد' },
+    { pm10: 340, minutes: 60, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تحذير/تحكم معزَّز فقط، لا معلَّق ولا مؤكَّد' },
     { pm10: 340.01, minutes: 1.99, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → معلَّق فقط' },
     { pm10: 340.01, minutes: 2, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط (لم يتجاوز) → معلَّق فقط، ليس مؤكَّداً بعد' },
     { pm10: 340.01, minutes: 2.01, decision: 'MANDATORY_STOP', label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → مخالفة مؤكدة' },
@@ -703,47 +702,34 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  // طلب صريح من المستخدم — تراجع عن رفع إصدار حزمة القواعد (RIYADH_DUST_
-  // 2026_3) إلى الحزمة القديمة RIYADH_DUST_2026_2: نطاق 201-250 (احتراز)،
-  // أخف من نطاق الضوابط 251-339 (ALLOW_WITH_CONTROLS) ولا يُقيّد AEI
-  // إطلاقاً (راجع applyComplianceGateToAei). السماح النظيف (ALLOW) يمتد
-  // حتى 200 (لا 150).
-  it('PM10=220 (بين 201 و250) → حالة احتراز (PRECAUTION) فقط، ليست تحذيراً', () => {
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد إلى 3 مستويات فقط، لا
+  // 4): كان نطاق 201-249 يُصنَّف "احتراز" (PRECAUTION) منفصلاً عن نطاق
+  // التحذير 250-339. الإصلاح: normalMaxInclusive أصبح 249 — أي قراءة ≤249
+  // الآن ALLOW نظيف بلا أي قاعدة PM10 مفعَّلة (لا "احتراز" وسيط)، مطابقةً
+  // للوثيقة التنظيمية حرفياً (<250 → لا Trigger خاص بـPM10).
+  it('PM10=220 (دون حد التحذير 250) → ALLOW نظيف، لا قاعدة PM10 مفعَّلة إطلاقاً', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 220 }));
-    expect(r.decisionCategory).toBe('PRECAUTION');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(true);
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
+    expect(r.triggeredRules.some((h) => h.code.startsWith('PM10-'))).toBe(false);
     expect(r.canOverride).toBe(true);
   });
 
-  it('PM10=200 (الحد الأعلى للسماح النظيف) → لا قاعدة PM10 تنظيمية مفعّلة إطلاقاً', () => {
+  it('PM10=200 → لا قاعدة PM10 تنظيمية مفعّلة إطلاقاً', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 200 }));
     expect(r.triggeredRules.some((h) => h.code.startsWith('PM10-'))).toBe(false);
     expect(r.decisionCategory).toBe('ALLOW');
   });
 
-  it('PM10=201 (الحد الأدنى للاحتراز بالضبط) → يُفعَّل الاحتراز', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 201 }));
-    expect(r.decisionCategory).toBe('PRECAUTION');
-  });
-
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم): كانت precautionMaxInclusive=250
-  // وwarningThresholdInclusive=251 معاً — فجوة رقمية بمقدار 1 تجعل PM10=250
-  // بالضبط يُصنَّف احترازاً لا تحذيراً، ويمنع قاعدة تعليق 30 دقيقة
-  // (RCRC-PM10-30M-SUSPENSION-012) من التفعيل عند استمرار 250 بالضبط. الإصلاح:
-  // precautionMaxInclusive=249، warningThresholdInclusive=250 — 250 نفسها
-  // أصبحت بداية نطاق التحذير، بلا فجوة.
-  it('PM10=249 (أقصى نطاق الاحتراز قبل التحذير) → لا يزال احترازاً، ليس تحذيراً', () => {
+  it('PM10=249 (أقصى نطاق السماح قبل التحذير بالضبط) → لا يزال ALLOW نظيف، ليس تحذيراً', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 249 }));
-    expect(r.decisionCategory).toBe('PRECAUTION');
+    expect(r.decisionCategory).toBe('ALLOW');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
   });
 
-  it('PM10=250 (الحد الأدنى لنطاق الضوابط/التحذير بالضبط) → يُفعَّل التحذير، لا احترازاً', () => {
+  it('PM10=250 (الحد الأدنى لنطاق التحذير بالضبط) → يُفعَّل التحذير، لا سماحاً', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 250 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(false);
   });
 
   it('PM10=250 استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012) — القيمة الحدّية بالضبط يجب أن تُفعِّل التعليق', () => {
@@ -752,19 +738,10 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(true);
   });
 
-  it('PM10=339 (أقصى نطاق الضوابط قبل حد المخالفة 340) → لا يزال ALLOW_WITH_CONTROLS', () => {
+  it('PM10=339 (ضمن نطاق التحذير الموحَّد قبل حد المخالفة 340) → لا يزال ALLOW_WITH_CONTROLS', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 339 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
-  });
-
-  // نطاق RESTRICT_ACTIVITY في حزمة 2026.2 أصبح ضيقاً جداً (339 < pm10 <= 340
-  // فقط) بعد التراجع عن رفع الإصدار — controlsMaxInclusive=339 قريب جداً من
-  // حد المخالفة 340 نفسه (لا فاصل 320-340 كما في 2026.3).
-  it('PM10=340 (الحد الأقصى لنطاق الضوابط في 2026.2 بالضبط) → RESTRICT_ACTIVITY (تقييد شديد)', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 340 }));
-    expect(r.decisionCategory).toBe('RESTRICT_ACTIVITY');
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-RED-RESTRICT-010')).toBe(true);
   });
 });
 
@@ -992,10 +969,10 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
   });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=220 (نطاق الاحتراز) → تنبيه احتراز كأي نشاط آخر (لا إعفاء)', () => {
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=220 (دون حد التحذير 250) → لا قاعدة PM10 مفعَّلة كأي نشاط آخر (لا إعفاء)', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 220, activity: exemptBatchingActivity() }));
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(true);
-    expect(r.decisionCategory).toBe('PRECAUTION');
+    expect(r.triggeredRules.some((h) => h.code.startsWith('PM10-'))).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
   });
 
   it('محطة خلط بصوامع مغلقة بكفاءة فلتر أقل من 99% + PM10=1500 مستمرة → مخالفة مؤكَّدة كالمعتاد (بلا تغيير)', () => {
@@ -2770,7 +2747,7 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
   // messageAr فعلياً — فيُخفي الإجراء التصحيحي الأهم تشغيلياً (مثال: تنبيه
   // PM10 الاستباقي) عن قسم "الإجراءات المطلوبة".
   it('H-06.1: قاعدة ALLOW_WITH_CONTROLS (تحذير PM10) → actionAr يظهر في requiredActions، لا يُستبعَد', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 260 })); // نطاق 251-320: PM10-WARNING-008
+    const r = evaluateDustCompliance(context({ pm10UgM3: 260 })); // نطاق 250-340: PM10-WARNING-008
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
     expect(r.requiredActions.some((a) => a.includes('التثبيط المعزز'))).toBe(true);

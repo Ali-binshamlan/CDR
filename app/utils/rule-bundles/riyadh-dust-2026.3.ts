@@ -68,18 +68,22 @@ export const RIYADH_DUST_2026_2: Readonly<RuleBundle> = deepFreeze({
   id: 'RCRC-NCEC-RIYADH-DUST-2026.2',
   effectiveFrom: '2026-01-01T00:00:00+03:00',
   pm10: {
+    // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد إلى 3 مستويات فقط،
+    // لا 4): كانت هذه الحدود تُنتج 4 مستويات فعلية في pm10ThresholdRule
+    // (طبيعي/احتراز 201-249/ضوابط 250-339/تقييد شديد 340 فقط)، بينما الوثيقة
+    // التنظيمية تنص على 3 مستويات حصراً: <250 سماح، 250-340 تحذير+تحكم
+    // معزَّز موحَّد (بلا تدرّج داخلي)، >340 مخالفة. الإصلاح: normalMaxInclusive
+    // يمتد الآن حتى 249 (يبتلع نطاق الاحتراز السابق بالكامل)،
+    // precautionMaxInclusive يساوي normalMaxInclusive فعلياً (لا نطاق احتراز
+    // منفصل بعد الآن)، وcontrolsMaxInclusive=340 (يبتلع نطاق التقييد الشديد
+    // السابق 340 فقط) — فرع RESTRICT_ACTIVITY/PRECAUTION في pm10ThresholdRule
+    // حُذف، يبقى فرع WARNING واحد يغطي [250,340] بالكامل. لا تغيير على حدود
+    // regulatory/evidence (340 حد المخالفة، 120s المدة، 250/30min التعليق) —
+    // هذه الثلاثة مطابقة للوثيقة التنظيمية أصلاً بلا حاجة لتعديل.
     operational: {
-      normalMaxInclusive: 200,
-      // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم): كانت precautionMaxInclusive=250
-      // وwarningThresholdInclusive=251 معاً — فجوة رقمية بمقدار 1 تجعل قيمة
-      // PM10=250 بالضبط تُصنَّف "احتراز" لا "تحذير"، وتمنع قاعدة تعليق النشاط
-      // (RCRC-PM10-30M-SUSPENSION-012، أدناه: pm10UgM3 >= warningThresholdInclusive)
-      // من التفعيل عند استمرار 250 لمدة 30 دقيقة رغم أنه يجب أن يُعامَل كتحذير
-      // تنظيمي فعلي. الإصلاح: 250 أصبح بداية نطاق التحذير (لا نهاية الاحتراز)
-      // — precautionMaxInclusive=249، warningThresholdInclusive/
-      // suspensionThresholdInclusive=250، بلا أي فجوة أو تداخل بين النطاقين.
+      normalMaxInclusive: 249,
       precautionMaxInclusive: 249,
-      controlsMaxInclusive: 339,
+      controlsMaxInclusive: 340,
       severeMaxInclusive: 340,
     },
     regulatory: {

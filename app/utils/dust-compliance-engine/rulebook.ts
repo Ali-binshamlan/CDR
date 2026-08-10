@@ -81,20 +81,16 @@ export const BATCHING_PM10_FILTER_MIN_PERCENT = () => getRuleParameters().BATCHI
 // (مختلفة عن عتبات 15/25 كم/س العامة — خاصة بحالة الأغطية تحديداً).
 const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = () => getRuleParameters().IDLE_SURFACE_COVER_INSPECTION_WIND_KMH;
 
-// حدود PM10 التشغيلية — من حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE، القسم
-// 5.2-5.3 من "دليل الإصلاح الجذري"): النطاق التشغيلي لمرقاب منفصل عن الحكم
-// التنظيمي الرسمي (warningThresholdInclusive/violationThresholdExclusive
-// أدناه). لا تُعدَّل هذه القيم هنا مباشرة — أي تغيير يتطلب حزمة قواعد جديدة
-// في app/utils/rule-bundles.
-//   ≤200            → طبيعي (ALLOW)
-//   200 < x ≤ 249   → احتراز (PRECAUTION)
-//   249 < x ≤ 339   → تحذير/ضوابط إلزامية (ALLOW_WITH_CONTROLS) — 250 نفسها
-//                     بداية نطاق التحذير التنظيمي (warningThresholdInclusive)
-//   339 < x ≤ 340   → تقييد شديد — تصعيد نصي فقط ضمن نفس ALLOW_WITH_CONTROLS
-//   > 340           → معلَّق/مؤكَّد (STOP_AFFECTED_ACTIVITY/MANDATORY_STOP)
-const PM10_NORMAL_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.normalMaxInclusive;
-const PM10_PRECAUTION_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.precautionMaxInclusive;
-const PM10_CONTROLS_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.controlsMaxInclusive;
+// حدود PM10 — 3 مستويات فقط (طلب صريح من المستخدم، توحيد عن 4 فروع سابقة):
+// النطاق التشغيلي لمرقاب منفصل عن الحكم التنظيمي الرسمي
+// (warningThresholdInclusive/violationThresholdExclusive أدناه). لا تُعدَّل
+// هذه القيم هنا مباشرة — أي تغيير يتطلب حزمة قواعد جديدة في
+// app/utils/rule-bundles.
+//   ≤249    → سماح (ALLOW) — لا Trigger خاص بـPM10
+//   250-340 → تحذير + تحكم معزَّز موحَّد (ALLOW_WITH_CONTROLS)، مع قاعدة
+//             استمرار 30 دقيقة (RCRC-PM10-30M-SUSPENSION-012) أدناه
+//   > 340   → معلَّق/مؤكَّد (STOP_AFFECTED_ACTIVITY/MANDATORY_STOP)، بقاعدة
+//             استمرار الدقيقتين (>120s)
 // مُصدَّر (لا محلي فقط) — يُستخدَم أيضاً في buildPlanningForecastResult
 // (engine.ts) لتحديد "هل التوقّع صالح للنشاط؟" بناءً على الحكم التنظيمي، لا
 // DVI الفيزيائي وحده (راجع تعليق isFavorable هناك للسبب الكامل).
@@ -349,8 +345,8 @@ export function pm10ThresholdRule(
   const hits: DustRuleHit[] = [];
 
   // ترتيب القواعد من الأشد إلى الأخف (القسم 5.2 من "دليل الإصلاح الجذري")
-  // — `>` صراحة لا `>=` عند حد المخالفة (340 بالضبط يبقى "تقييد شديد" لا
-  // "مخالفة"، حتى تتجاوز الحد فعلياً).
+  // — `>` صراحة لا `>=` عند حد المخالفة (340 بالضبط يبقى ضمن نطاق التحذير
+  // الموحَّد أدناه لا "مخالفة"، حتى تتجاوز الحد فعلياً).
   if (pm10UgM3 > PM10_VIOLATION_STOP_UG_M3) {
     const isConfirmed = confirmedViolation340 === true;
     if (isConfirmed) {
@@ -372,31 +368,18 @@ export function pm10ThresholdRule(
         )
       );
     }
-  } else if (pm10UgM3 > PM10_CONTROLS_MAX_UG_M3) {
-    hits.push(
-      ruleHit(
-        'PM10-RED-RESTRICT-010',
-        'RESTRICT_ACTIVITY',
-        `تقييد شديد: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) ضمن النطاق الأحمر (${PM10_CONTROLS_MAX_UG_M3 + 1}–${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³)`,
-        'فعّل التثبيط المعزز فوراً وقلّص واجهات العمل استعداداً لاحتمال بلوغ حد المخالفة'
-      )
-    );
-  } else if (pm10UgM3 > PM10_PRECAUTION_MAX_UG_M3) {
+  } else if (pm10UgM3 >= PM10_WARNING_UG_M3) {
+    // نطاق التحذير/التحكم المعزَّز الموحَّد [250,340] — طلب صريح من
+    // المستخدم بدمج نطاقي "احتراز" و"تقييد شديد" السابقين في مستوى واحد
+    // فقط (لا تدرّج داخلي)، مطابقةً لنص الوثيقة التنظيمية حرفياً (3 مستويات
+    // لا 4). الفرع أعلاه (> PM10_VIOLATION_STOP_UG_M3 = 340) يتولى ما بعد
+    // حد المخالفة بمعزل تام — هذا الفرع (else) يتوقف تلقائياً عنده.
     hits.push(
       ruleHit(
         'PM10-WARNING-008',
         'ALLOW_WITH_CONTROLS',
-        `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
-        'فعّل التثبيط المعزز (رش ساعي، تغطية الأكوام) وراقب التركيز عن كثب'
-      )
-    );
-  } else if (pm10UgM3 > PM10_NORMAL_MAX_UG_M3) {
-    hits.push(
-      ruleHit(
-        'PM10-PRECAUTION-009',
-        'PRECAUTION',
-        `حالة احتراز: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) ضمن نطاق الإنذار المبكر (${PM10_NORMAL_MAX_UG_M3 + 1}–${PM10_PRECAUTION_MAX_UG_M3} ميكروجرام/م³)`,
-        'زِد وتيرة المراقبة ومتابعة القراءة — لا يتطلب إجراءً تصحيحياً فورياً ما لم يستمر الارتفاع'
+        `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) بلغ أو تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
+        'فعّل التثبيط المعزز فوراً: رش ساعي أو مثبطات، تغطية الأكوام وخفض ارتفاع التفريغ إلى متر واحد، تقليل واجهات العمل المتزامنة، وتقييد حركة النقل'
       )
     );
   }

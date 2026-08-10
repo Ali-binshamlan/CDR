@@ -237,6 +237,47 @@ describe('computeSustainedPm10Status', () => {
     expect(r.isSuspended250For30Min).toBe(false);
   });
 
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد PM10 إلى 3 مستويات
+  // منفصلة تماماً): سلسلة استمرار 250 (above250Streak) كانت تمتد بلا حد
+  // أعلى — قراءة >340 وسط النافذة كانت تُحسَب ضمن نفس "الاستمرار فوق 250"،
+  // فتخلط مستوى التحذير [250,340] بمستوى المخالفة (>340). الآن: أي قراءة
+  // >340 تقطع سلسلة استمرار 250 فوراً وتُخرِجها من النافذة كلياً — عداد
+  // دقائق الاستمرار في التحذير لا يتراكم عبر قفزة فوق 340.
+  describe('سلسلة استمرار 250 تنقطع عند أي قراءة >340 (مستويان منفصلان تماماً)', () => {
+    it('قراءة واحدة >340 في منتصف سلسلة 250 → تقطع الاستمرار، لا تعليق 30 دقيقة رغم امتداد النافذة الزمنية بالكامل', () => {
+      const readings = readingsBackFromNow(NOW, [
+        ...Array.from({ length: 15 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 255, source: 'device' as const })),
+        { minutesAgo: 15, pm10: 350, source: 'device' as const }, // تقطع السلسلة
+        ...Array.from({ length: 15 }, (_, i) => ({ minutesAgo: 14 - i, pm10: 255, source: 'device' as const })),
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isSuspended250For30Min).toBe(false);
+      // الاستمرار المُحتسَب يبدأ فقط من بعد قراءة الـ350 (آخر 15 دقيقة)، لا
+      // يمتد رجوعاً عبرها إلى أول قراءة قبل 30 دقيقة.
+      expect(r.sustainedMinutesAbove250).toBeLessThan(15);
+    });
+
+    it('القراءة الحالية نفسها >340 → above250Streak صفر تماماً (القراءة الحالية خارج نطاق [250,340])', () => {
+      const readings = readingsBackFromNow(NOW, [
+        { minutesAgo: 30, pm10: 255, source: 'device' as const },
+        { minutesAgo: 15, pm10: 255, source: 'device' as const },
+        { minutesAgo: 0, pm10: 350, source: 'device' as const }, // القراءة الحالية تتجاوز 340
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.sustainedMinutesAbove250).toBe(0);
+      expect(r.isSuspended250For30Min).toBe(false);
+    });
+
+    it('سلسلة 250 كاملة داخل النطاق [250,340] بلا أي قراءة تتجاوز 340 → تُحسَب كاملة كالمعتاد (لا تغيير سلوك)', () => {
+      const readings = readingsBackFromNow(
+        NOW,
+        Array.from({ length: 31 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 340, source: 'device' as const }))
+      );
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isSuspended250For30Min).toBe(true);
+    });
+  });
+
   it('آخر قراءة قديمة (>4 دقائق) — جهاز متوقف — لا تُبقي حالة "مؤكدة" أو "معلَّقة" حيّة رغم استمرار ظاهري طويل', () => {
     const readings = readingsBackFromNow(NOW, [
       { minutesAgo: 10, pm10: 350 },
