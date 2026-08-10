@@ -37,6 +37,19 @@ const PROVIDER_PULL_STALE_SECONDS = 300;
 const OUTBOX_LAG_ALERT_SECONDS = 300;
 const TELEMETRY_QUEUE_LAG_ALERT_SECONDS = 300;
 
+// خطة الاحتفاظ طويلة المدى (معتمدة 2026-08-10) — قسمان إضافيان:
+//   - db_cleanup: صحة عامل db-cleanup-worker نفسه (آخر تشغيلة ناجحة عبر
+//     db_cleanup_run_lock) — يكشف تعطّل التنظيف نفسه، لا فقط تعطّل مسارات
+//     الاستقبال/المعالجة.
+//   - evidence_growth: حجم القاعدة الكلي + أكبر الجداول، مقابل عتبات رقمية
+//     صريحة (لا مراقبة صامتة). لا يمس أي جدول أدلة بالكتابة — قراءة فقط عبر
+//     get_database_and_table_sizes().
+const DB_CLEANUP_STALE_SECONDS = 3 * 3600; // 3 ساعات = تخطي دورتين متتاليتين على الأقل (كل ساعة)
+const DB_SIZE_WARN_BYTES = 350 * 1024 * 1024; // 70% من حد Free ~500MB التقديري
+const DB_SIZE_ALERT_BYTES = 425 * 1024 * 1024; // 85%
+const EVIDENCE_TABLE_WARN_BYTES = 200 * 1024 * 1024;
+const EVIDENCE_TABLE_ALERT_BYTES = 500 * 1024 * 1024;
+
 export async function GET(request: Request) {
   if (!process.env.SCHEDULER_CRON_SECRET) {
     return NextResponse.json({ ok: false, error: 'SCHEDULER_CRON_SECRET غير مُعرَّف بالخادم' }, { status: 503 });
@@ -161,7 +174,46 @@ export async function GET(request: Request) {
     (telemetryQueueDead ?? 0) > 0 ||
     (telemetryQueueLagSeconds !== null && telemetryQueueLagSeconds > TELEMETRY_QUEUE_LAG_ALERT_SECONDS);
 
-  const alert = schedulerAlert || providerAlert || outboxAlert || telemetryQueueAlert;
+  // db_cleanup: آخر وقت تشغيل ناجح لـdb-cleanup-worker (من db_cleanup_run_lock،
+  // أحدث started_at) — يكشف مبكراً تعطّل التنظيف نفسه (لا فقط تعطّل مسارات
+  // الاستقبال/المعالجة). نفس منطق evaluationLagSeconds/schedulerAlert أعلاه،
+  // مطبَّق على جدول القفل بدل scheduler_heartbeat.
+  const { data: lastCleanupRun } = await supabaseAdmin
+    .from('db_cleanup_run_lock')
+    .select('started_at')
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const lastCleanupMs = lastCleanupRun?.started_at ? new Date(lastCleanupRun.started_at).getTime() : null;
+  const dbCleanupLagSeconds = lastCleanupMs !== null ? Math.max(0, Math.round((nowMs - lastCleanupMs) / 1000)) : null;
+  const dbCleanupAlert = dbCleanupLagSeconds === null || dbCleanupLagSeconds > DB_CLEANUP_STALE_SECONDS;
+
+  // evidence_growth: حجم القاعدة الكلي + أكبر 4 جداول أدلة (الأسرع نمواً
+  // حسب القياس الفعلي 2026-08-10) — عتبات رقمية صريحة، لا "مراقبة صامتة
+  // بلا نقطة قرار". get_database_and_table_sizes() قراءة فقط، لا تُنشئ أو
+  // تحذف أي شيء.
+  const { data: tableSizes } = await supabaseAdmin.rpc('get_database_and_table_sizes');
+  const sizesRows = (tableSizes ?? []) as Array<{ table_name: string; total_bytes: number; row_estimate: number | null }>;
+  const totalDatabaseBytes = sizesRows.reduce((sum, row) => sum + (row.total_bytes ?? 0), 0);
+  const largestEvidenceTables = sizesRows
+    .filter((row) =>
+      [
+        'decision_records', 'dust_evaluations', 'dust_compliance_evaluations',
+        'pm10_readings_history', 'alert_state_events', 'device_readings_history',
+        'final_decisions', 'admin_audit_log', 'device_events', 'device_measurements',
+      ].includes(row.table_name)
+    )
+    .sort((a, b) => b.total_bytes - a.total_bytes)
+    .slice(0, 4);
+
+  const dbSizeWarn = totalDatabaseBytes >= DB_SIZE_WARN_BYTES;
+  const dbSizeAlert = totalDatabaseBytes >= DB_SIZE_ALERT_BYTES;
+  const evidenceTableWarn = largestEvidenceTables.some((t) => t.total_bytes >= EVIDENCE_TABLE_WARN_BYTES);
+  const evidenceTableAlert = largestEvidenceTables.some((t) => t.total_bytes >= EVIDENCE_TABLE_ALERT_BYTES);
+  const evidenceGrowthAlert = dbSizeAlert || evidenceTableAlert;
+
+  const alert = schedulerAlert || providerAlert || outboxAlert || telemetryQueueAlert || dbCleanupAlert || evidenceGrowthAlert;
 
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — ربط هذا الـendpoint بمراقبة
   // خارجية فعلية UptimeRobot): كان يُرجع status 200 دائماً حتى مع alert=true
@@ -199,6 +251,21 @@ export async function GET(request: Request) {
       dead: telemetryQueueDead ?? 0,
       processed_last_hour: telemetryQueueProcessedLastHour ?? 0,
       oldest_pending_lag_seconds: telemetryQueueLagSeconds,
+    },
+    db_cleanup: {
+      alert: dbCleanupAlert,
+      last_run_at: lastCleanupRun?.started_at ?? null,
+      lag_seconds: dbCleanupLagSeconds,
+    },
+    evidence_growth: {
+      alert: evidenceGrowthAlert,
+      warn: dbSizeWarn || evidenceTableWarn,
+      total_database_bytes: totalDatabaseBytes,
+      largest_evidence_tables: largestEvidenceTables.map((t) => ({
+        table: t.table_name,
+        bytes: t.total_bytes,
+        approx_row_count: t.row_estimate ?? 0,
+      })),
     },
     // حقول مسطَّحة قديمة تبقى للتوافق مع أي إعداد مراقبة خارجي (Uptime
     // Robot/Healthchecks.io) موصول مسبقاً بصيغة القسم 10.3 الأصلية قبل هذا

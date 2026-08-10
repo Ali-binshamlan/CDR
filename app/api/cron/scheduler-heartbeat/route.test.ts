@@ -15,6 +15,7 @@ function makeChain(tableName: string) {
     eq: () => chain,
     in: () => chain,
     lte: () => chain,
+    gte: () => chain,
     or: () => chain,
     order: () => chain,
     limit: () => chain,
@@ -28,11 +29,22 @@ function makeChain(tableName: string) {
   return chain;
 }
 
+// evidence_growth (خطة الاحتفاظ طويلة المدى، 2026-08-10) يستدعي RPC
+// get_database_and_table_sizes بدل .from() — نموذج منفصل، قابل للتخصيص لكل
+// اختبار عبر rpcTableSizes.
+let rpcTableSizes: Array<{ table_name: string; total_bytes: number; row_estimate: number | null }> = [];
+
 vi.mock('@/app/lib/supabaseAdmin', () => ({
   supabaseAdmin: {
     from: (tableName: string) => ({
       select: () => makeChain(tableName),
     }),
+    rpc: async (fn: string) => {
+      if (fn === 'get_database_and_table_sizes') {
+        return { data: rpcTableSizes, error: null };
+      }
+      return { data: null, error: null };
+    },
   },
 }));
 
@@ -58,6 +70,9 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     tableResults.project_evaluation_jobs = { count: 0 };
     tableResults.provider_connections = { count: 0 };
     tableResults.decision_alert_outbox = { count: 0, data: null };
+    tableResults.telemetry_ingestion_queue = { count: 0, data: null };
+    tableResults.db_cleanup_run_lock = { data: { started_at: new Date().toISOString() } };
+    rpcTableSizes = [];
   });
 
   it('يرفض بلا سر مُعرَّف بالخادم', async () => {
@@ -118,5 +133,78 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     expect(res.status).toBe(503);
     expect(body.alert_outbox.alert).toBe(true);
     expect(body.ok).toBe(false);
+  });
+
+  // خطة الاحتفاظ طويلة المدى (2026-08-10) — قسم db_cleanup: يكشف تعطّل
+  // db-cleanup-worker نفسه (لا فقط تعطّل الاستقبال/المعالجة).
+  it('ينذر عندما تغيب دورة db-cleanup-worker الناجحة أكثر من 3 ساعات', async () => {
+    tableResults.db_cleanup_run_lock = { data: { started_at: new Date(Date.now() - 4 * 3600_000).toISOString() } };
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.db_cleanup.alert).toBe(true);
+    expect(body.ok).toBe(false);
+  });
+
+  it('لا إنذار db_cleanup عندما آخر تشغيلة حديثة (ضمن 3 ساعات)', async () => {
+    tableResults.db_cleanup_run_lock = { data: { started_at: new Date(Date.now() - 30 * 60_000).toISOString() } };
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.db_cleanup.alert).toBe(false);
+  });
+
+  // قسم evidence_growth: عتبات رقمية صريحة على حجم القاعدة الكلي وأكبر
+  // جدول أدلة منفرد — لا تنفّذ أي حذف، قراءة فقط عبر get_database_and_table_sizes.
+  it('لا إنذار evidence_growth عندما الحجم الكلي وكل جدول أدلة تحت العتبات', async () => {
+    rpcTableSizes = [
+      { table_name: 'pm10_readings_history', total_bytes: 10 * 1024 * 1024, row_estimate: 100 },
+      { table_name: 'dust_evaluations', total_bytes: 5 * 1024 * 1024, row_estimate: 50 },
+    ];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.evidence_growth.alert).toBe(false);
+    expect(body.evidence_growth.warn).toBe(false);
+    expect(body.evidence_growth.total_database_bytes).toBe(15 * 1024 * 1024);
+  });
+
+  it('ينذر evidence_growth عندما يتجاوز الحجم الكلي عتبة الإنذار (425MB)', async () => {
+    rpcTableSizes = [
+      { table_name: 'pm10_readings_history', total_bytes: 430 * 1024 * 1024, row_estimate: 1000000 },
+    ];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.evidence_growth.alert).toBe(true);
+    expect(body.ok).toBe(false);
+  });
+
+  it('ينذر evidence_growth عندما يتجاوز جدول أدلة منفرد 500MB حتى لو الحجم الكلي أقل من ذلك', async () => {
+    rpcTableSizes = [
+      { table_name: 'dust_evaluations', total_bytes: 510 * 1024 * 1024, row_estimate: 10 },
+      { table_name: 'telemetry_ingestion_queue', total_bytes: 1024, row_estimate: 5 }, // جدول عابر، غير أدلة — لا يُحسَب ضمن largest_evidence_tables
+    ];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.evidence_growth.alert).toBe(true);
+    expect(body.evidence_growth.largest_evidence_tables[0].table).toBe('dust_evaluations');
+    expect(body.evidence_growth.largest_evidence_tables.every((t: { table: string }) => t.table !== 'telemetry_ingestion_queue')).toBe(true);
+  });
+
+  it('warn=true (لا alert) عندما الحجم بين عتبة التحذير والإنذار', async () => {
+    rpcTableSizes = [
+      { table_name: 'pm10_readings_history', total_bytes: 360 * 1024 * 1024, row_estimate: 1000 },
+    ];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.evidence_growth.warn).toBe(true);
+    expect(body.evidence_growth.alert).toBe(false);
+    // تحذير فقط (لا إنذار) لا يجب أن يُسقط الاستجابة إلى 503 بمفرده
+    expect(res.status).toBe(200);
   });
 });
