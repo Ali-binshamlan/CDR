@@ -173,6 +173,36 @@ describe('computeInputSnapshotHash', () => {
     });
   });
 
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "جودة الدليل تعتمد على
+  // Date.now() بدل وقت التقييم، بينما بصمة المدخلات لا تشمل evaluatedAt أو
+  // evidenceQuality؛ قد ينتج replay لاحق قراراً مختلفاً لنفس البصمة"): نفس
+  // نمط قسم aei أعلاه بالضبط — evidenceQuality قادرة فعلياً على قلب
+  // operationalDecision (راجع evidenceUnavailable في final-decision-engine/
+  // engine.ts)، فيجب أن يغيّر تغيّرها وحده البصمة أيضاً.
+  describe('evidenceQuality يؤثر على البصمة (خطأ مكتشَف ومُصلَح)', () => {
+    it('evidenceQuality=OK مقابل STALE (بقية المدخلات مطابقة تماماً) → بصمة مختلفة', () => {
+      const dvi = minimalDvi();
+      const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null, 'OK');
+      const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null, 'STALE');
+      expect(a).not.toBe(b);
+    });
+
+    it('evidenceQuality غير مُمرَّرة إطلاقاً (افتراضي) يساوي تمرير evidenceQuality=null صراحة (توافق خلفي)', () => {
+      const dvi = minimalDvi();
+      const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null);
+      const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null, null);
+      expect(a).toBe(b);
+    });
+
+    it('كل قيم EvidenceQuality الأربع تُنتج بصمات مختلفة عن بعضها لنفس بقية المدخلات', () => {
+      const dvi = minimalDvi();
+      const hashes = (['OK', 'PARTIAL', 'STALE', 'UNAVAILABLE'] as const).map((q) =>
+        computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', null, q)
+      );
+      expect(new Set(hashes).size).toBe(4);
+    });
+  });
+
   // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات مع القرار"):
   // computeInputSnapshotHash يُجزّئ مخرجات التقييم (dvi/compliance/mode/aei)
   // فقط — يجب ألا يتأثر إطلاقاً بأي تغيّر في rule_parameter_versions

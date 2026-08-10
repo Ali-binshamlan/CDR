@@ -2221,11 +2221,26 @@ export interface ActivityDecisionPersistResult {
 // البصمة (إثبات "نفس المدخلات تنتج نفس القرار"). aei معامل رابع اختياري
 // (لا يكسر أي استدعاء قديم) — تمريره الآن إلزامي عملياً من نقطة الاستدعاء
 // الوحيدة الفعلية (persistActivityDecisionsAtomic أدناه).
+//
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "جودة الدليل تعتمد على
+// Date.now() بدل وقت التقييم، بينما بصمة المدخلات لا تشمل evaluatedAt أو
+// evidenceQuality؛ قد ينتج replay لاحق قراراً مختلفاً لنفس البصمة"): نفس
+// المشكلة التي أدت لإضافة aei أعلاه — evidenceQuality (final-decision-engine/
+// adapters.ts) قادرة فعلياً على قلب operationalDecision بين MANDATORY_STOP
+// وHOLD_FOR_VERIFICATION (راجع evidenceUnavailable في engine.ts)، فبقيت
+// البصمة قابلة للتطابق بين قرارين مختلفين فعلياً لو تغيّرت وحدها. evidenceQuality
+// معامل خامس اختياري (لا يكسر أي استدعاء قديم)، تمريره الآن إلزامي عملياً
+// من نقطة الاستدعاء الوحيدة الفعلية (decision.evidenceQuality بعد decideFinal
+// مباشرة). evaluatedAt نفسه يبقى خارج البصمة عمداً — هو طابع زمني توثيقي
+// لوقت الحفظ، لا مُدخلاً يغيّر القرار بذاته (بخلاف evidenceQuality المشتقة
+// منه وتؤثر فعلياً)؛ تضمينه كان سيجعل البصمة تتغيّر لمجرد إعادة تشغيل نفس
+// التقييم بالضبط في لحظة مختلفة، بلا أي تغيّر حقيقي في المدخلات المحسوبة.
 export function computeInputSnapshotHash(
   dvi: DviEvaluationResult,
   compliance: DustComplianceResult | null,
   mode: string,
-  aei: AeiEvaluationResult | null = null
+  aei: AeiEvaluationResult | null = null,
+  evidenceQuality: string | null = null
 ): string {
   const sortedStringify = (value: unknown): string =>
     JSON.stringify(value, (_key, val) => {
@@ -2239,7 +2254,7 @@ export function computeInputSnapshotHash(
       }
       return val;
     });
-  const snapshot = sortedStringify({ dvi, compliance, aei, mode });
+  const snapshot = sortedStringify({ dvi, compliance, aei, mode, evidenceQuality });
   return createHash('sha256').update(snapshot).digest('hex');
 }
 
@@ -2339,7 +2354,7 @@ export async function persistActivityDecisionsAtomic(
           finalDecisionPayload = {
             decision,
             evaluatedAt: finalInput.evaluatedAt,
-            inputSnapshotHash: computeInputSnapshotHash(dvi, compliance, mode, r.aei),
+            inputSnapshotHash: computeInputSnapshotHash(dvi, compliance, mode, r.aei, decision.evidenceQuality),
           };
         }
 

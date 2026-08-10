@@ -285,3 +285,46 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
     expect(decision.operationalDecision).toBe('MANDATORY_STOP');
   });
 });
+
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "جودة الدليل تعتمد على
+// Date.now() بدل وقت التقييم، بينما بصمة المدخلات لا تشملها؛ قد ينتج replay
+// لاحق قراراً مختلفاً لنفس البصمة"): deriveEvidenceQuality كانت تستدعي
+// Date.now() ضمنياً بدل استقبال nowMs — فحساب عمر القراءة كان يعتمد على
+// لحظة تنفيذ الكود الفعلية، لا على evaluatedAt المخزَّن رسمياً كوقت
+// التقييم. الاختبارات التالية تثبّت الإصلاح: تمرير evaluatedAt بعيداً جداً
+// عن Date.now() الحقيقي (سواء ماضياً أو مستقبلاً) يجب أن يُنتج evidenceQuality
+// متسقة مع evaluatedAt نفسه، لا مع لحظة تنفيذ الاختبار.
+describe('evidenceQuality تُحسَب بالنسبة لـevaluatedAt الممرَّر، لا Date.now() الحقيقي', () => {
+  it('قراءة عمرها 3 دقائق بالنسبة لـevaluatedAt ماضٍ بعيد (لا الآن الحقيقي) → OK، رغم أن نفس القراءة قديمة جداً بالنسبة للحظة الفعلية', () => {
+    const farPastEvaluatedAt = new Date(Date.now() - 10 * 24 * 3600000).toISOString(); // قبل 10 أيام
+    const readingAt = new Date(new Date(farPastEvaluatedAt).getTime() - 3 * 60000).toISOString(); // قبل evaluatedAt بـ3 دقائق فقط
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: readingAt },
+    });
+    const finalInput = buildFinalDecisionInput('snap-1', baseDvi(), compliance, null, 'LIVE_OPERATIONAL', farPastEvaluatedAt);
+    // لو كانت الدالة لا تزال تستخدم Date.now() الحقيقي، هذه القراءة (قبل 10
+    // أيام تقريباً) كانت ستُصنَّف STALE قطعاً — التصنيف الصحيح STALE فقط لو
+    // اعتمدت على evaluatedAt نفسه (3 دقائق فرق، ضمن حد 4 دقائق) لتصبح OK.
+    expect(finalInput.evidenceQuality).toBe('OK');
+  });
+
+  it('نفس السيناريو لكن عمر القراءة 5 دقائق بالنسبة لـevaluatedAt (يتجاوز حد 4 دقائق) → STALE', () => {
+    const farPastEvaluatedAt = new Date(Date.now() - 10 * 24 * 3600000).toISOString();
+    const readingAt = new Date(new Date(farPastEvaluatedAt).getTime() - 5 * 60000).toISOString();
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: readingAt },
+    });
+    const finalInput = buildFinalDecisionInput('snap-1', baseDvi(), compliance, null, 'LIVE_OPERATIONAL', farPastEvaluatedAt);
+    expect(finalInput.evidenceQuality).toBe('STALE');
+  });
+
+  it('evaluatedAt مستقبلي (توقّع/محاكاة) مع قراءة "حديثة" بالنسبة له فقط → OK، لا يعتمد على الآن الحقيقي', () => {
+    const farFutureEvaluatedAt = new Date(Date.now() + 10 * 24 * 3600000).toISOString();
+    const readingAt = new Date(new Date(farFutureEvaluatedAt).getTime() - 2 * 60000).toISOString();
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: readingAt },
+    });
+    const finalInput = buildFinalDecisionInput('snap-1', baseDvi(), compliance, null, 'LIVE_OPERATIONAL', farFutureEvaluatedAt);
+    expect(finalInput.evidenceQuality).toBe('OK');
+  });
+});

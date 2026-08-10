@@ -65,7 +65,16 @@ const CONFIDENCE_MIN_FOR_ALLOW = 70;
 // PARTIAL كما كان (evidenceUnavailable لا يتأثر بالـmode هناك أصلاً، فلا
 // فرق عملي، لكن التصنيف الدقيق يبقى صحيحاً لأي مستهلك مستقبلي يفحص
 // evidenceQuality مباشرة بمعزل عن operationalDecision).
-function deriveEvidenceQuality(compliance: DustComplianceResult | null, mode: FinalDecisionMode): EvidenceQuality {
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "جودة الدليل تعتمد على
+// Date.now() بدل وقت التقييم، بينما بصمة المدخلات لا تشملها؛ قد ينتج replay
+// لاحق قراراً مختلفاً لنفس البصمة"): كانت هذه الدالة تستدعي Date.now()
+// ضمنياً — مخالفة صريحة لمبدأ H-07 الموثَّق في المشروع (دوال حساب القرار
+// يجب أن تستقبل nowMs صراحة، لا Date.now() ضمنياً، لتبقى نقية وقابلة
+// لإعادة الحساب بحتمية — نفس المبدأ المطبَّق في determineFinalDecisionMode
+// وdust-compliance-engine/engine.ts). الآن nowMs معامل إلزامي — buildFinalDecisionInput
+// يمرره من evaluatedAt نفسه (لا Date.now() منفصل)، فيصبح evidenceQuality
+// محسوبة دائماً بالنسبة لنفس اللحظة المخزَّنة رسمياً كوقت التقييم.
+function deriveEvidenceQuality(compliance: DustComplianceResult | null, mode: FinalDecisionMode, nowMs: number): EvidenceQuality {
   if (!compliance) return mode === 'LIVE_OPERATIONAL' ? 'UNAVAILABLE' : 'PARTIAL';
 
   // دفاعي عمداً (compliance?.missingCriticalInputs?.length، لا .length
@@ -106,7 +115,7 @@ function deriveEvidenceQuality(compliance: DustComplianceResult | null, mode: Fi
   // وإلا الرجوع لـdeviceLastReadingAt العام.
   const referenceReadingAt = devicePm10LastReadingAt !== undefined ? devicePm10LastReadingAt : deviceLastReadingAt;
   if (referenceReadingAt === null) return 'STALE'; // محطة متصلة، لا قراءة PM10 قط
-  const ageMinutes = (Date.now() - new Date(referenceReadingAt).getTime()) / 60000;
+  const ageMinutes = (nowMs - new Date(referenceReadingAt).getTime()) / 60000;
   if (ageMinutes > DEVICE_READING_FRESHNESS_MINUTES) return 'STALE';
 
   if (compliance.confidenceScore !== undefined && compliance.confidenceScore < CONFIDENCE_MIN_FOR_ALLOW) return 'PARTIAL';
@@ -129,7 +138,9 @@ export function buildFinalDecisionInput(
     dvi,
     compliance,
     aei,
-    evidenceQuality: deriveEvidenceQuality(compliance, mode),
+    // nowMs مشتقة من evaluatedAt نفسه (لا Date.now() منفصل) — راجع تعليق
+    // deriveEvidenceQuality أعلاه.
+    evidenceQuality: deriveEvidenceQuality(compliance, mode, new Date(evaluatedAt).getTime()),
     ruleBundleVersion: compliance?.rulebookVersion ?? RULEBOOK_VERSION,
   };
 }
