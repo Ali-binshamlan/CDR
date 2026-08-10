@@ -14,7 +14,19 @@ import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
 // أيضاً — إسقاطهما هنا أفضل من تخزين قيمة العميل كأنها موثوقة (كانت القيمة
 // المُرسَلة من AddActivityModal/index.tsx تُخزَّن حرفياً بلا أي تحقق خادمي،
 // رغم عدم قراءتها فعلياً في أي مكان آخر بالتطبيق حالياً).
-const FORBIDDEN_DUST_PROFILE_FIELDS = ['id', 'created_at', 'device_id', 'aei_score', 'aei_status'];
+//
+// خطأ أمني مكتشَف ومُصلَح (طلب صريح من المستخدم): is_dust_generating لم
+// يكن ضمن هذه القائمة، فيسقط ضمن .catchall أدناه ويُقبَل حرفياً من العميل.
+// هذا الحقل يغذّي مباشرة بوابة الرياح التنظيمية (GATE-WIND-ABOVE-25-004 في
+// dust-compliance-engine/engine.ts: ctx.activity.isDustGenerating) وقواعد
+// أخرى (enhancedSuppressionRule، windGustSafetyRule) — طلب API مباشر
+// بـis_dust_generating=false كان يعطّل هذه البوابات بالكامل لأي نشاط
+// (حفر/هدم/إلخ) بصرف النظر عن نوعه الفعلي. لا يوجد نشاط تنظيمي واحد ضمن
+// REGULATORY_ACTIVITY_VALUES (حتى OTHER/ENTRY_EXIT) غير مولّد للغبار
+// منطقياً — القيمة تُشتَق ثابتة true دائماً خادمياً (راجع insert.is_dust_
+// generating أدناه)، مطابقة تماماً لـdefault true الحالي في migration
+// 202607290001_baseline_final.sql، فلا تغيير سلوكي على أي مسار طبيعي.
+const FORBIDDEN_DUST_PROFILE_FIELDS = ['id', 'created_at', 'device_id', 'aei_score', 'aei_status', 'is_dust_generating'];
 
 // enums فعلية — نفس المصادر الموثوقة في dust-engine/types.ts وdust-compliance-
 // engine/types.ts (لا نسخة مكرَّرة يدوياً هنا قد تنحرف عنها لاحقاً).
@@ -31,6 +43,33 @@ const REGULATORY_ACTIVITY_VALUES = [
   'DEMOLITION', 'CRUSHER', 'BATCHING_PLANT', 'STONE_CUTTING', 'CD_WASTE_TRANSPORT',
   'IDLE_SURFACE', 'OTHER',
 ] as const;
+
+// خطأ أمني مكتشَف ومُصلَح (طلب صريح من المستخدم): regulatory_activity
+// مُرسَل من العميل (اختيار مستخدم فعلي، لا يمكن اشتقاقه بالكامل خادمياً —
+// activity_type الواحد قد يخدم أكثر من regulatory_activity واحد، مثال:
+// HEAVY_EQUIPMENT_MOVEMENT يُستخدَم لكل من DEMOLITION/CRUSHER/STONE_CUTTING)
+// لكن كان يُقبَل بلا أي تحقق تناسب — طلب API مباشر بـregulatory_activity:
+// 'CRUSHER' مع activity_type: 'INDOOR_WORK' (غير متوافقين منطقياً) كان
+// يمر بصمت، فيُشغِّل قواعد الكسارة الصارمة (CRUSHER-CATEGORY-001 وغيرها)
+// على نشاط لا علاقة له فعلياً بكسارة. الخريطة أدناه (نسخة طبق الأصل من
+// REGULATORY_ACTIVITY_OPTIONS في AddActivityModal/constants.ts — مصدر
+// موثوق واحد لكل مفتاح تنظيمي قابل للاختيار من الواجهة، وليست نسخة يدوية
+// منفصلة قد تنحرف عنها) تحدد activity_type الوحيد الجائز فعلياً لكل
+// regulatory_activity. ENTRY_EXIT/OTHER مستثنيان عمداً من التحقق الصارم:
+// ENTRY_EXIT محذوف من مسار الإنشاء الجديد أصلاً (نفس تعليق constants.ts)
+// فلا dviCategory معروف له هنا، وOTHER هو fallback عام بلا نوع نشاط
+// فيزيائي محدد بطبيعته.
+const REGULATORY_ACTIVITY_EXPECTED_TYPE: Partial<Record<(typeof REGULATORY_ACTIVITY_VALUES)[number], (typeof ACTIVITY_TYPE_VALUES)[number]>> = {
+  EARTHWORKS: 'GRADING',
+  SITE_TRAFFIC: 'ROAD_WORKS',
+  MATERIAL_HANDLING_STOCKPILE: 'MATERIAL_TRANSPORT',
+  DEMOLITION: 'HEAVY_EQUIPMENT_MOVEMENT',
+  CRUSHER: 'HEAVY_EQUIPMENT_MOVEMENT',
+  BATCHING_PLANT: 'CONCRETE_POURING',
+  STONE_CUTTING: 'HEAVY_EQUIPMENT_MOVEMENT',
+  CD_WASTE_TRANSPORT: 'MATERIAL_TRANSPORT',
+  IDLE_SURFACE: 'GENERAL_OUTDOOR_WORK',
+};
 
 const RECEPTOR_TYPE_VALUES = [
   'HOSPITAL_SCHOOL_NURSERY_RESIDENTIAL_ADJACENT', 'HIGH_TRAFFIC_PUBLIC_ROAD',
@@ -152,6 +191,30 @@ export async function POST(request: NextRequest) {
     );
   }
   const insert: Record<string, unknown> = parsed.data;
+
+  // خطأ أمني مكتشَف ومُصلَح (طلب صريح من المستخدم) — راجع تعليق
+  // REGULATORY_ACTIVITY_EXPECTED_TYPE أعلاه: activity_type يجب أن يطابق
+  // النوع الوحيد الجائز فعلياً للـregulatory_activity المُرسَل معه، إن
+  // كان الأخير من الأنشطة التسعة ذات النوع المعروف (لا ENTRY_EXIT/OTHER).
+  if (typeof insert.regulatory_activity === 'string') {
+    const expectedActivityType =
+      REGULATORY_ACTIVITY_EXPECTED_TYPE[insert.regulatory_activity as (typeof REGULATORY_ACTIVITY_VALUES)[number]];
+    if (expectedActivityType && insert.activity_type !== expectedActivityType) {
+      return NextResponse.json(
+        {
+          error: `activity_type (${insert.activity_type}) لا يتوافق مع regulatory_activity (${insert.regulatory_activity}) — يجب أن يكون ${expectedActivityType}`,
+        },
+        { status: 400 }
+      );
+    }
+  }
+
+  // خطأ أمني مكتشَف ومُصلَح (طلب صريح من المستخدم) — راجع تعليق
+  // FORBIDDEN_DUST_PROFILE_FIELDS أعلاه: مُشتَق ثابتاً true دائماً، بلا أي
+  // مدخل من العميل (كان FORBIDDEN_DUST_PROFILE_FIELDS يحذف الحقل إن أُرسل
+  // فقط — لكن بلا هذا السطر، غيابه كان يترك العمود على القيمة الافتراضية
+  // في قاعدة البيانات نفسها بدل قيمة صريحة مضمونة من التطبيق).
+  insert.is_dust_generating = true;
 
   const owns = await verifyProjectOwnership(insert.project_id as string, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
