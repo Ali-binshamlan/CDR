@@ -37,6 +37,10 @@ interface DustStepProps {
   updateCrusherUnit: <K extends keyof CrusherUnit>(itemId: string, index: number, field: K, value: CrusherUnit[K]) => void;
   addCrusherUnit: (itemId: string) => void;
   removeCrusherUnit: (itemId: string, index: number) => void;
+  // طلب صريح من المستخدم — نتيجة تحقق فوري (crusher-precheck) لكل وحدة
+  // كسارة، مفتاحها `${itemId}:${index}` — تُحدَّث من index.tsx (تملك الحالة
+  // لأن handleDustSubmit يحتاجها لمنع الحفظ فعلياً)، هنا للعرض فقط.
+  crusherPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
 }
 
 // ملاحظة: من بين الحقول ضمن DUST_CONTROL_CHECKBOXES، dustScreensAvailable فقط
@@ -144,6 +148,7 @@ export function DustStep({
   updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
   updateIdleSurfaceUnit, addIdleSurfaceUnit, removeIdleSurfaceUnit,
   updateCrusherUnit, addCrusherUnit, removeCrusherUnit,
+  crusherPrecheckResults,
 }: DustStepProps) {
   const mapCenterLat = project.latitude || 24.7136;
   const mapCenterLng = project.longitude || 46.6753;
@@ -680,6 +685,23 @@ export function DustStep({
                                     >
                                       {activeMapPointId === pointId ? 'نشِط على الخريطة أعلاه' : 'حدّد موقعها على الخريطة'}
                                     </button>
+                                  </div>
+                                );
+                              })()}
+                              {/* طلب صريح من المستخدم — تنبيه فوري (Hard Block عند الحفظ، راجع
+                                  index.tsx/handleDustSubmit) عند مخالفة فئة المشروع أو مسافة
+                                  المستقبل الحساس، فور تحديد الموقع على الخريطة. */}
+                              {(() => {
+                                const precheck = crusherPrecheckResults[`${item.id}:${i}`];
+                                if (!precheck || !precheck.blocked) return null;
+                                return (
+                                  <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-1">
+                                    <p className="text-[11px] font-black text-red-700 flex items-center gap-1.5">
+                                      <AlertTriangle className="w-3.5 h-3.5" /> هذا الموقع غير مسموح لتشغيل الكسارة
+                                    </p>
+                                    {precheck.reasonsAr.map((reason, ri) => (
+                                      <p key={ri} className="text-[12px] text-red-800 pr-4">⚠ {reason}</p>
+                                    ))}
                                   </div>
                                 );
                               })()}

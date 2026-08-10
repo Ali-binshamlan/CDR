@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useHasMounted } from '@/app/lib/useHasMounted';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '@/app/lib/apiClient';
@@ -152,6 +152,18 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // أي بطاقة أكورديون مفتوحة حالياً — الأولى تُفتح تلقائياً بعد الاختيار،
   // والمستخدم يفتح غيرها يدوياً (يسمح بفتح أكثر من بطاقة معاً).
   const [expandedActivityIds, setExpandedActivityIds] = useState<Set<string>>(new Set());
+
+  // طلب صريح من المستخدم — تحقق فوري (Hard Block) عند تحديد موقع كسارة على
+  // الخريطة، قبل الحفظ: فئة المشروع (الفئة الثالثة فقط) + المسافة عن أقرب
+  // مستقبل حساس (200م عام/500م سكني-مدرسي-صحي)، عبر
+  // /api/dust-profiles/crusher-precheck (نفس منطق CRUSHER-CATEGORY-001/
+  // CRUSHER-DISTANCE-* في rulebook.ts، بلا تشغيل محرك القرار كاملاً).
+  // النتيجة مُخزَّنة هنا (لا في DustStep) لأن handleDustSubmit يحتاجها مباشرة
+  // لمنع الحفظ فعلياً — DustStep تحدّثها عبر setCrusherPrecheckResults وتقرأها
+  // للعرض فقط. المفتاح: `${itemId}:${unitIndex}`.
+  const [crusherPrecheckResults, setCrusherPrecheckResults] = useState<
+    Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>
+  >({});
 
   const updateDustField = <K extends keyof typeof DUST_FORM_DEFAULTS>(field: K, value: (typeof DUST_FORM_DEFAULTS)[K]) => { setDustForm((prev) => ({ ...prev, [field]: value })); };
 
@@ -309,10 +321,14 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   };
 
   const updateCrusherUnit = <K extends keyof CrusherUnit>(itemId: string, index: number, field: K, value: CrusherUnit[K]) => {
+    let updatedLat: string | number = '';
+    let updatedLng: string | number = '';
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
         const crusherUnits = item.crusherUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
+        updatedLat = crusherUnits[index].crusherLat;
+        updatedLng = crusherUnits[index].crusherLng;
         const syncLoc =
           index === 0 && (field === 'crusherLat' || field === 'crusherLng')
             ? syncItemLocationFromUnit(
@@ -323,6 +339,15 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, crusherUnits, ...syncLoc };
       })
     );
+    // طلب صريح من المستخدم — تحقق فوري فقط عند تحديث الموقع نفسه (لا كل
+    // حقل آخر من CrusherUnit)، وفقط بعد اكتمال lat وlng معاً.
+    if (
+      (field === 'crusherLat' || field === 'crusherLng') &&
+      typeof updatedLat === 'number' &&
+      typeof updatedLng === 'number'
+    ) {
+      runCrusherPrecheck(itemId, index, updatedLat, updatedLng);
+    }
   };
   const addCrusherUnit = (itemId: string) => {
     setRegulatoryActivities((prev) =>
@@ -341,6 +366,36 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, crusherUnits, ...syncLoc };
       })
     );
+    setCrusherPrecheckResults((prev) => {
+      const next = { ...prev };
+      delete next[`${itemId}:${index}`];
+      return next;
+    });
+  };
+
+  // طلب صريح من المستخدم — استدعاء crusher-precheck عند كل تغيير لموقع
+  // كسارة، بـdebounce (600ms) حتى لا يُرسَل طلب لكل نقرة سحب على الخريطة —
+  // نافذة زمنية واحدة فقط لكل وحدة كسارة (المفتاح `${itemId}:${index}`)،
+  // فتغيير وحدة أخرى لا يُلغي مؤقّت هذه.
+  const crusherPrecheckTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const runCrusherPrecheck = (itemId: string, index: number, lat: number, lng: number) => {
+    const key = `${itemId}:${index}`;
+    if (crusherPrecheckTimers.current[key]) clearTimeout(crusherPrecheckTimers.current[key]);
+    crusherPrecheckTimers.current[key] = setTimeout(async () => {
+      try {
+        const { data } = await apiClient.post('/dust-profiles/crusher-precheck', { projectId: project.id, lat, lng });
+        setCrusherPrecheckResults((prev) => ({ ...prev, [key]: { blocked: data.blocked, reasonsAr: data.reasonsAr } }));
+      } catch {
+        // فشل التحقق الفوري (شبكة/خادم) لا يمنع الحفظ بمفرده — محرك التقييم
+        // اللاحق (evaluateProject.ts) يبقى الحكم النهائي الفعلي دائماً؛ هذا
+        // التحقق تحسين تجربة مستخدم فقط، لا مصدر الحقيقة الوحيد.
+        setCrusherPrecheckResults((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+    }, 600);
   };
 
   const resetAndClose = () => {
@@ -774,6 +829,22 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       if (durationHours === null) { toast.error(`النشاط ${i + 1}: تعذّر حساب مدة النشاط — تحقق من التاريخ والوقت.`); return; }
       const unitsError = validateRegulatoryUnits(item.fields, { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits });
       if (unitsError) { toast.error(`النشاط ${i + 1}: ${unitsError}`); return; }
+
+      // طلب صريح من المستخدم — منع حفظ فعلي (Hard Block) إذا كانت آخر نتيجة
+      // معروفة لموقع كسارة = blocked (فئة المشروع أو المسافة عن مستقبل
+      // حساس). لا يعتمد على انتظار استجابة الشبكة هنا — يقرأ فقط آخر نتيجة
+      // وصلت فعلاً (crusherPrecheckResults)؛ إن لم تصل نتيجة بعد (طلب لا
+      // يزال معلَّقاً)، لا يُمنع الحفظ (محرك التقييم اللاحق يبقى الحكم
+      // النهائي دائماً — راجع تعليق runCrusherPrecheck).
+      if (item.fields.regulatoryActivity === 'CRUSHER') {
+        for (let u = 0; u < item.crusherUnits.length; u++) {
+          const result = crusherPrecheckResults[`${item.id}:${u}`];
+          if (result?.blocked) {
+            toast.error(`النشاط ${i + 1} — الكسارة ${u + 1}: ${result.reasonsAr[0] ?? 'الموقع المحدَّد لا يستوفي شروط تشغيل الكسارة.'}`);
+            return;
+          }
+        }
+      }
     }
 
     setDustLoading(true);
@@ -888,6 +959,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
                         updateCrusherUnit={updateCrusherUnit}
                         addCrusherUnit={addCrusherUnit}
                         removeCrusherUnit={removeCrusherUnit}
+                        crusherPrecheckResults={crusherPrecheckResults}
                       />
                     )}
                   </div>
