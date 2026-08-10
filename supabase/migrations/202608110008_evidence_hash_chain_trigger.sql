@@ -13,11 +13,20 @@
 --
 -- AFTER INSERT فقط — لا تضارب إطلاقاً مع forbid_evidence_mutation/
 -- forbid_evidence_truncate (BEFORE UPDATE/DELETE/TRUNCATE حصراً).
+--
+-- خطأ أمني مكتشَف ومُصلَح (نفس عائلة خطأ 202608110011 — "digest() does not
+-- exist" حين search_path لا يشمل extensions): كانت هذه الدالة بلا أي
+-- search_path صريح إطلاقاً، فتعتمد على search_path الافتراضي للدور وقت
+-- التنفيذ الفعلي (لا وقت الإنشاء) — عرضة لخطأ "digest() غير موجودة" إن
+-- تغيّر إعداد الدور لاحقاً، وأيضاً ثغرة schema hijacking نظرية (بلا تقييد
+-- صريح). الآن search_path مقيَّد صراحة (pg_catalog, public, extensions) —
+-- نفس نمط بقية دوال هذه البنية.
 -- =====================================================================
 
 create or replace function public.append_evidence_hash_link()
 returns trigger
 language plpgsql
+set search_path = pg_catalog, public, extensions
 as $$
 declare
   v_row_hash text;

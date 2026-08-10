@@ -6,6 +6,13 @@
 -- مباشر على الدفتر (تجاوز التطبيق بالكامل، عبر دور مالك القاعدة) يُنتج
 -- عدم تطابق يُكتشَف هنا. نافذة محدودة (افتراضي 50) — فحص السلسلة كاملة من
 -- أول صف يبقى مهمة منفصلة أثقل، لا تُشغَّل في كل نبضة مراقبة.
+--
+-- خطأ مكتشَف ومُصلَح (تطبيق فعلي على الإنتاج — "42883: function digest(text,
+-- unknown) does not exist"): search_path = pg_catalog, public لا يكفي —
+-- pgcrypto (توفّر digest()) مثبَّتة في مشاريع Supabase الحديثة داخل schema
+-- منفصل اسمه extensions، لا public. أُضيف extensions صراحة لسلسلة
+-- search_path (بلا أي مخاطرة أمنية إضافية — نفس مبدأ تقييد search_path
+-- الأصلي يبقى قائماً، فقط توسيع بمصدر ثقة واحد إضافي معروف).
 -- =====================================================================
 
 create or replace function public.verify_evidence_chain_tail(p_window integer default 50)
@@ -17,7 +24,7 @@ returns table(
 )
 language sql
 security invoker
-set search_path = pg_catalog, public
+set search_path = pg_catalog, public, extensions
 stable
 as $$
   with tail as (
