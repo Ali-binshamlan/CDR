@@ -84,11 +84,19 @@ describe('writeDeviceReading', () => {
   // types.ts. هذا الاختبار يثبت التكامل الفعلي بين الملفين، لا فقط أن كل
   // ملف يعمل بمعزل عن الآخر.
   it('يحدّث liveDataStore بالقيم الصحيحة عند نجاح الكتابة', async () => {
+    // خطأ مكتشَف ومُصلَح: كان هذا الاختبار يستخدم تاريخاً ثابتاً
+    // (2026-01-01) بافتراض أنه "حديث بما يكفي" — افتراض ضمني غير مقصود كان
+    // يعمل فقط لأن تاريخ كتابة الاختبار كان قريباً منه. الآن observedAtIso
+    // نسبي لوقت التنفيذ الفعلي (منذ دقيقة واحدة فقط) — يبقى الاختبار صحيحاً
+    // بصرف النظر عن متى يُشغَّل، ولا يسقط ضمن isLate (>40 دقيقة) الذي يمنع
+    // الآن تحديث liveDataStore (راجع اختبار "لا يحدّث liveDataStore لقراءة
+    // متأخرة" أدناه).
+    const recentIso = new Date(Date.now() - 60_000).toISOString();
     const { writeDeviceReading } = await import('./deviceReadingWriter');
     await writeDeviceReading({
       deviceId: 'device-live-1',
       projectId: 'project-live-1',
-      reading: { pm10: 285, windSpeedKmh: 6.4, observedAtIso: '2026-01-01T00:00:00.000Z' },
+      reading: { pm10: 285, windSpeedKmh: 6.4, observedAtIso: recentIso },
     });
 
     const snapshot = liveDataStore.getSnapshot('device-live-1');
@@ -96,7 +104,45 @@ describe('writeDeviceReading', () => {
     expect(snapshot?.projectId).toBe('project-live-1');
     expect(snapshot?.pm10).toBe(285);
     expect(snapshot?.windSpeedKmh).toBe(6.4);
-    expect(snapshot?.observedAtIso).toBe('2026-01-01T00:00:00.000Z');
+    expect(snapshot?.observedAtIso).toBe(recentIso);
+  });
+
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "عند تفعيل SSE، القراءة
+  // المتأخرة تُعرض في الحالة الحية قبل نجاح RPC، رغم منعها من تغيير القرار
+  // الرسمي في قاعدة البيانات"): isLate يُحسَب محلياً قبل استدعاء RPC —
+  // liveDataStore.setSnapshot كان يُستدعى بلا أي شرط عليه، فتُعرَض قراءة
+  // متأخرة فوراً عبر SSE بينما RPC يرفض بصمت تحديث القرار الرسمي لنفس
+  // القراءة (202608060002_late_reading_history_no_state_mutation.sql)، بلا
+  // أي تصحيح لاحق على liveDataStore. الآن: قراءة متأخرة لا تُحدِّث
+  // liveDataStore إطلاقاً — نفس القرار الذي تتخذه RPC، محلياً وفوراً.
+  it('لا يحدّث liveDataStore لقراءة متأخرة (observedAtIso أقدم من 40 دقيقة) رغم نجاح RPC', async () => {
+    const oldIso = new Date(Date.now() - 45 * 60_000).toISOString();
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    const result = await writeDeviceReading({
+      deviceId: 'device-live-late',
+      projectId: 'project-live-late',
+      reading: { pm10: 999, observedAtIso: oldIso },
+    });
+
+    expect(result).toEqual({ success: true, duplicate: false, late: true });
+    expect(rpcCalls[0].args.p_is_late).toBe(true);
+    // القراءة كُتبت فعلياً عبر RPC (للتدقيق)، لكن لا أثر لها في الحالة الحية
+    expect(liveDataStore.getSnapshot('device-live-late')).toBeNull();
+  });
+
+  it('يحدّث liveDataStore لقراءة حديثة (observedAtIso أحدث من 40 دقيقة)', async () => {
+    const recentIso = new Date(Date.now() - 10 * 60_000).toISOString();
+    const { writeDeviceReading } = await import('./deviceReadingWriter');
+    const result = await writeDeviceReading({
+      deviceId: 'device-live-fresh',
+      projectId: 'project-live-fresh',
+      reading: { pm10: 150, observedAtIso: recentIso },
+    });
+
+    expect(result).toEqual({ success: true, duplicate: false, late: false });
+    const snapshot = liveDataStore.getSnapshot('device-live-fresh');
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.pm10).toBe(150);
   });
 
   it('يحدّث liveDataStore حتى لو فشلت RPC لاحقاً (Live لا ينتظر Supabase)', async () => {

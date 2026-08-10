@@ -166,20 +166,35 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
   // فقط، لا فحص هنا) مقبول: قراءة مكررة تُعرض للحظة على الـLive State لا
   // تُغيّر أي قرار امتثال (القرار الفعلي يبقى من current_dust_*_decisions
   // في Supabase، لا من هذا الـcache).
-  liveDataStore.setSnapshot({
-    deviceId,
-    projectId,
-    windSpeedKmh: measurements.windSpeedKmh ?? null,
-    windGustKmh: measurements.windGustKmh ?? null,
-    windDirectionDeg: measurements.windDirectionDeg ?? null,
-    pm10: measurements.pm10 ?? null,
-    pm25: measurements.pm25 ?? null,
-    visibilityM: measurements.visibilityM ?? null,
-    relativeHumidityPercent: measurements.relativeHumidityPercent ?? null,
-    temperatureC: measurements.temperatureC ?? null,
-    observedAtIso: observedAt.toISOString(),
-    updatedAtIso: new Date().toISOString(),
-  });
+  //
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "عند تفعيل SSE، القراءة
+  // المتأخرة تُعرض في الحالة الحية قبل نجاح RPC، رغم منعها من تغيير القرار
+  // الرسمي في قاعدة البيانات"): isLate يُحسَب محلياً أعلاه (سطر 131) قبل
+  // هذه النقطة بالفعل — لا حاجة لانتظار RPC لمعرفته. كان setSnapshot يُستدعى
+  // بلا أي شرط على isLate، فتُعرَض القراءة المتأخرة فوراً عبر SSE
+  // (liveDataStore → app/api/live/stream/route.ts) بينما RPC (بعد وصولها،
+  // 202608060002_late_reading_history_no_state_mutation.sql) يرفض بصمت
+  // تحديث project_devices.last_*/device_metric_latest لنفس القراءة —
+  // فيتناقض ما يُعرَض حياً مع القرار الرسمي المخزَّن، بلا أي تصحيح لاحق على
+  // liveDataStore (لا rollback بعد معرفة نتيجة RPC). الإصلاح: تخطّي التحديث
+  // الحي كلياً لقراءة متأخرة — نفس القرار الذي تتخذه RPC، لكن محلياً وفوراً
+  // بلا انتظارها.
+  if (!isLate) {
+    liveDataStore.setSnapshot({
+      deviceId,
+      projectId,
+      windSpeedKmh: measurements.windSpeedKmh ?? null,
+      windGustKmh: measurements.windGustKmh ?? null,
+      windDirectionDeg: measurements.windDirectionDeg ?? null,
+      pm10: measurements.pm10 ?? null,
+      pm25: measurements.pm25 ?? null,
+      visibilityM: measurements.visibilityM ?? null,
+      relativeHumidityPercent: measurements.relativeHumidityPercent ?? null,
+      temperatureC: measurements.temperatureC ?? null,
+      observedAtIso: observedAt.toISOString(),
+      updatedAtIso: new Date().toISOString(),
+    });
+  }
 
   // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — "الكتابتان ليستا عملية واحدة
   // ذرية؛ فشل V2 لا يُفشل العملية كلها، يُسجَّل في console فقط"): كان هذا
