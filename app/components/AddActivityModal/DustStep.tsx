@@ -41,6 +41,8 @@ interface DustStepProps {
   // كسارة، مفتاحها `${itemId}:${index}` — تُحدَّث من index.tsx (تملك الحالة
   // لأن handleDustSubmit يحتاجها لمنع الحفظ فعلياً)، هنا للعرض فقط.
   crusherPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
+  // نفس المبدأ أعلاه بالضبط، لمحطة الخلط (batching-precheck).
+  batchingPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
 }
 
 // ملاحظة: من بين الحقول ضمن DUST_CONTROL_CHECKBOXES، dustScreensAvailable فقط
@@ -148,7 +150,7 @@ export function DustStep({
   updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
   updateIdleSurfaceUnit, addIdleSurfaceUnit, removeIdleSurfaceUnit,
   updateCrusherUnit, addCrusherUnit, removeCrusherUnit,
-  crusherPrecheckResults,
+  crusherPrecheckResults, batchingPrecheckResults,
 }: DustStepProps) {
   const mapCenterLat = project.latitude || 24.7136;
   const mapCenterLng = project.longitude || 46.6753;
@@ -565,6 +567,23 @@ export function DustStep({
                                     >
                                       {activeMapPointId === pointId ? 'نشِط على الخريطة أعلاه' : 'حدّد موقعها على الخريطة'}
                                     </button>
+                                  </div>
+                                );
+                              })()}
+                              {/* طلب صريح من المستخدم — تنبيه فوري (Hard Block عند الحفظ، راجع
+                                  index.tsx/handleDustSubmit) عند مسافة أقل من 200م عن أقرب مستقبل
+                                  حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)، فور تحديد الموقع على الخريطة. */}
+                              {(() => {
+                                const precheck = batchingPrecheckResults[`${item.id}:${i}`];
+                                if (!precheck || !precheck.blocked) return null;
+                                return (
+                                  <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-1">
+                                    <p className="text-[11px] font-black text-red-700 flex items-center gap-1.5">
+                                      <AlertTriangle className="w-3.5 h-3.5" /> هذا الموقع غير مسموح لإنشاء محطة الخلط
+                                    </p>
+                                    {precheck.reasonsAr.map((reason, ri) => (
+                                      <p key={ri} className="text-[12px] text-red-800 pr-4">⚠ {reason}</p>
+                                    ))}
                                   </div>
                                 );
                               })()}

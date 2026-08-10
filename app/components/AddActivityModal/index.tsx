@@ -165,6 +165,14 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>
   >({});
 
+  // نفس مبدأ crusherPrecheckResults أعلاه بالضبط، لمحطة الخلط (batching_
+  // plant) — عبر /api/dust-profiles/batching-precheck (BATCHING-DISTANCE-200
+  // في rulebook.ts: 200م عن أقرب مستقبل حساس بصرف النظر عن نوعه، لا فحص فئة
+  // مشروع هنا — بخلاف الكسارة، لا توجد قاعدة فئة لمحطة الخلط).
+  const [batchingPrecheckResults, setBatchingPrecheckResults] = useState<
+    Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>
+  >({});
+
   const updateDustField = <K extends keyof typeof DUST_FORM_DEFAULTS>(field: K, value: (typeof DUST_FORM_DEFAULTS)[K]) => { setDustForm((prev) => ({ ...prev, [field]: value })); };
 
   const generateActivityItemId = (): string => {
@@ -262,10 +270,14 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   };
 
   const updateBatchingUnit = <K extends keyof BatchingUnit>(itemId: string, index: number, field: K, value: BatchingUnit[K]) => {
+    let updatedLat: string | number = '';
+    let updatedLng: string | number = '';
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
         const batchingUnits = item.batchingUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
+        updatedLat = batchingUnits[index].batchingLat;
+        updatedLng = batchingUnits[index].batchingLng;
         const syncLoc =
           index === 0 && (field === 'batchingLat' || field === 'batchingLng')
             ? syncItemLocationFromUnit(
@@ -276,6 +288,15 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, batchingUnits, ...syncLoc };
       })
     );
+    // طلب صريح من المستخدم — تحقق فوري فقط عند تحديث الموقع نفسه، وفقط بعد
+    // اكتمال lat وlng معاً (نفس مبدأ updateCrusherUnit).
+    if (
+      (field === 'batchingLat' || field === 'batchingLng') &&
+      typeof updatedLat === 'number' &&
+      typeof updatedLng === 'number'
+    ) {
+      runBatchingPrecheck(itemId, index, updatedLat, updatedLng);
+    }
   };
   const addBatchingUnit = (itemId: string) => {
     setRegulatoryActivities((prev) =>
@@ -294,6 +315,11 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, batchingUnits, ...syncLoc };
       })
     );
+    setBatchingPrecheckResults((prev) => {
+      const next = { ...prev };
+      delete next[`${itemId}:${index}`];
+      return next;
+    });
   };
 
   const updateIdleSurfaceUnit = <K extends keyof IdleSurfaceUnit>(itemId: string, index: number, field: K, value: IdleSurfaceUnit[K]) => {
@@ -390,6 +416,25 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         // اللاحق (evaluateProject.ts) يبقى الحكم النهائي الفعلي دائماً؛ هذا
         // التحقق تحسين تجربة مستخدم فقط، لا مصدر الحقيقة الوحيد.
         setCrusherPrecheckResults((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+    }, 600);
+  };
+
+  // نفس مبدأ runCrusherPrecheck أعلاه بالضبط، لمحطة الخلط.
+  const batchingPrecheckTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const runBatchingPrecheck = (itemId: string, index: number, lat: number, lng: number) => {
+    const key = `${itemId}:${index}`;
+    if (batchingPrecheckTimers.current[key]) clearTimeout(batchingPrecheckTimers.current[key]);
+    batchingPrecheckTimers.current[key] = setTimeout(async () => {
+      try {
+        const { data } = await apiClient.post('/dust-profiles/batching-precheck', { projectId: project.id, lat, lng });
+        setBatchingPrecheckResults((prev) => ({ ...prev, [key]: { blocked: data.blocked, reasonsAr: data.reasonsAr } }));
+      } catch {
+        setBatchingPrecheckResults((prev) => {
           const next = { ...prev };
           delete next[key];
           return next;
@@ -845,6 +890,17 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
           }
         }
       }
+
+      // نفس مبدأ الكسارة أعلاه بالضبط، لمحطة الخلط (BATCHING-DISTANCE-200).
+      if (item.fields.regulatoryActivity === 'BATCHING_PLANT') {
+        for (let u = 0; u < item.batchingUnits.length; u++) {
+          const result = batchingPrecheckResults[`${item.id}:${u}`];
+          if (result?.blocked) {
+            toast.error(`النشاط ${i + 1} — محطة الخلط ${u + 1}: ${result.reasonsAr[0] ?? 'الموقع المحدَّد لا يستوفي شروط إنشاء محطة الخلط هنا.'}`);
+            return;
+          }
+        }
+      }
     }
 
     setDustLoading(true);
@@ -960,6 +1016,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
                         addCrusherUnit={addCrusherUnit}
                         removeCrusherUnit={removeCrusherUnit}
                         crusherPrecheckResults={crusherPrecheckResults}
+                        batchingPrecheckResults={batchingPrecheckResults}
                       />
                     )}
                   </div>
