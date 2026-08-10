@@ -17,6 +17,7 @@ function makeChain(tableName: string) {
     lte: () => chain,
     gte: () => chain,
     or: () => chain,
+    is: () => chain,
     order: () => chain,
     limit: () => chain,
     maybeSingle: async () => ({ data: result.data ?? null, error: result.error ?? null }),
@@ -34,6 +35,12 @@ function makeChain(tableName: string) {
 // اختبار عبر rpcTableSizes.
 let rpcTableSizes: Array<{ table_name: string; total_bytes: number; row_estimate: number | null }> = [];
 
+// evidence_integrity (بنية Tamper-Evidence، 2026-08-10) يستدعي RPCين إضافيين
+// (verify_evidence_chain_tail/check_evidence_trigger_integrity) — افتراضياً
+// سلسلة سليمة وكل triggers مفعَّلة، قابل للتخصيص لكل اختبار.
+let rpcChainVerify: Array<{ seq: number; is_valid: boolean }> = [];
+let rpcTriggerIntegrity: Array<{ table_name: string; trigger_name: string; is_enabled: boolean }> = [];
+
 vi.mock('@/app/lib/supabaseAdmin', () => ({
   supabaseAdmin: {
     from: (tableName: string) => ({
@@ -42,6 +49,12 @@ vi.mock('@/app/lib/supabaseAdmin', () => ({
     rpc: async (fn: string) => {
       if (fn === 'get_database_and_table_sizes') {
         return { data: rpcTableSizes, error: null };
+      }
+      if (fn === 'verify_evidence_chain_tail') {
+        return { data: rpcChainVerify, error: null };
+      }
+      if (fn === 'check_evidence_trigger_integrity') {
+        return { data: rpcTriggerIntegrity, error: null };
       }
       return { data: null, error: null };
     },
@@ -72,7 +85,10 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     tableResults.decision_alert_outbox = { count: 0, data: null };
     tableResults.telemetry_ingestion_queue = { count: 0, data: null };
     tableResults.db_cleanup_run_lock = { data: { started_at: new Date().toISOString() } };
+    tableResults.evidence_anchor_runs = { data: { anchored_at: new Date().toISOString(), error: null } };
     rpcTableSizes = [];
+    rpcChainVerify = [{ seq: 1, is_valid: true }];
+    rpcTriggerIntegrity = [{ table_name: 'final_decisions', trigger_name: 'final_decisions_immutable', is_enabled: true }];
   });
 
   it('يرفض بلا سر مُعرَّف بالخادم', async () => {
@@ -98,6 +114,7 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     expect(body.scheduler.alert).toBe(false);
     expect(body.provider_pull.alert).toBe(false);
     expect(body.alert_outbox.alert).toBe(false);
+    expect(body.evidence_integrity.alert).toBe(false);
   });
 
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — ربط بمراقبة UptimeRobot
@@ -206,5 +223,58 @@ describe('GET /api/cron/scheduler-heartbeat', () => {
     expect(body.evidence_growth.alert).toBe(false);
     // تحذير فقط (لا إنذار) لا يجب أن يُسقط الاستجابة إلى 503 بمفرده
     expect(res.status).toBe(200);
+  });
+
+  // بنية Tamper-Evidence (2026-08-10) — قسم evidence_integrity: ثلاثة أسباب
+  // مستقلة للإنذار (سلسلة مكسورة، trigger معطَّل، تثبيت GitHub متأخر).
+  it('ينذر evidence_integrity عندما تكسر verify_evidence_chain_tail صفاً واحداً', async () => {
+    rpcChainVerify = [
+      { seq: 3, is_valid: true },
+      { seq: 2, is_valid: false },
+      { seq: 1, is_valid: true },
+    ];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.evidence_integrity.alert).toBe(true);
+    expect(body.evidence_integrity.chain_broken).toBe(true);
+    expect(body.ok).toBe(false);
+  });
+
+  it('ينذر evidence_integrity عندما trigger حماية معطَّل على جدول أدلة', async () => {
+    rpcTriggerIntegrity = [
+      { table_name: 'final_decisions', trigger_name: 'final_decisions_immutable', is_enabled: false },
+    ];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.evidence_integrity.alert).toBe(true);
+    expect(body.evidence_integrity.disabled_triggers).toEqual([
+      { table: 'final_decisions', trigger: 'final_decisions_immutable' },
+    ]);
+  });
+
+  it('ينذر evidence_integrity عندما يتأخر آخر تثبيت GitHub ناجح أكثر من ساعتين', async () => {
+    tableResults.evidence_anchor_runs = {
+      data: { anchored_at: new Date(Date.now() - 3 * 3600_000).toISOString(), error: null },
+    };
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.evidence_integrity.alert).toBe(true);
+    expect(body.evidence_integrity.anchor_stale).toBe(true);
+  });
+
+  it('ينذر evidence_integrity عندما لا يوجد أي تثبيت GitHub ناجح إطلاقاً (data=null)', async () => {
+    tableResults.evidence_anchor_runs = { data: null };
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.evidence_integrity.alert).toBe(true);
+    expect(body.evidence_integrity.anchor_lag_seconds).toBeNull();
   });
 });

@@ -50,6 +50,15 @@ const DB_SIZE_ALERT_BYTES = 425 * 1024 * 1024; // 85%
 const EVIDENCE_TABLE_WARN_BYTES = 200 * 1024 * 1024;
 const EVIDENCE_TABLE_ALERT_BYTES = 500 * 1024 * 1024;
 
+// بنية Tamper-Evidence (معتمدة 2026-08-10) — قسم evidence_integrity: ثلاثة
+// فحوصات مستقلة عبر verify_evidence_chain_tail/check_evidence_trigger_
+// integrity (202608110010/202608110011) وجدول evidence_anchor_runs
+// (202608110009) — استمرارية سلسلة التجزئة، سلامة triggers الحماية على
+// جداول الأدلة، وحداثة آخر تثبيت خارجي على GitHub (evidence-anchor/route.ts،
+// يعمل كل ساعة — عتبة التنبيه ضعف فترة الجدولة، بنفس منطق dbCleanupAlert).
+const EVIDENCE_CHAIN_VERIFY_WINDOW = 50;
+const EVIDENCE_ANCHOR_STALE_SECONDS = 2 * 3600; // ضعف فترة جدولة evidence-anchor (كل ساعة)
+
 export async function GET(request: Request) {
   if (!process.env.SCHEDULER_CRON_SECRET) {
     return NextResponse.json({ ok: false, error: 'SCHEDULER_CRON_SECRET غير مُعرَّف بالخادم' }, { status: 503 });
@@ -213,7 +222,43 @@ export async function GET(request: Request) {
   const evidenceTableAlert = largestEvidenceTables.some((t) => t.total_bytes >= EVIDENCE_TABLE_ALERT_BYTES);
   const evidenceGrowthAlert = dbSizeAlert || evidenceTableAlert;
 
-  const alert = schedulerAlert || providerAlert || outboxAlert || telemetryQueueAlert || dbCleanupAlert || evidenceGrowthAlert;
+  // evidence_integrity: استمرارية سلسلة التجزئة (آخر EVIDENCE_CHAIN_VERIFY_
+  // WINDOW صفاً)، سلامة triggers الحماية على جداول الأدلة، وحداثة آخر
+  // تثبيت خارجي ناجح على GitHub (من evidence_anchor_runs، أحدث صف بلا
+  // error). أي انحراف في أي من الثلاثة = تلاعب محتمل أو تعطّل تشغيلي —
+  // كلاهما يستحق التنبيه فوراً.
+  const { data: chainVerifyRows } = await supabaseAdmin.rpc('verify_evidence_chain_tail', {
+    p_window: EVIDENCE_CHAIN_VERIFY_WINDOW,
+  });
+  const chainRows = (chainVerifyRows ?? []) as Array<{ seq: number; is_valid: boolean }>;
+  const chainBroken = chainRows.some((r) => !r.is_valid);
+
+  const { data: triggerIntegrityRows } = await supabaseAdmin.rpc('check_evidence_trigger_integrity');
+  const triggerRows = (triggerIntegrityRows ?? []) as Array<{ table_name: string; trigger_name: string; is_enabled: boolean }>;
+  const disabledTriggers = triggerRows.filter((r) => !r.is_enabled);
+
+  const { data: lastAnchorRun } = await supabaseAdmin
+    .from('evidence_anchor_runs')
+    .select('anchored_at, error')
+    .is('error', null)
+    .order('anchored_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const lastAnchorMs = lastAnchorRun?.anchored_at ? new Date(lastAnchorRun.anchored_at).getTime() : null;
+  const evidenceAnchorLagSeconds = lastAnchorMs !== null ? Math.max(0, Math.round((nowMs - lastAnchorMs) / 1000)) : null;
+  const evidenceAnchorStale = evidenceAnchorLagSeconds === null || evidenceAnchorLagSeconds > EVIDENCE_ANCHOR_STALE_SECONDS;
+
+  const evidenceIntegrityAlert = chainBroken || disabledTriggers.length > 0 || evidenceAnchorStale;
+
+  const alert =
+    schedulerAlert ||
+    providerAlert ||
+    outboxAlert ||
+    telemetryQueueAlert ||
+    dbCleanupAlert ||
+    evidenceGrowthAlert ||
+    evidenceIntegrityAlert;
 
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — ربط هذا الـendpoint بمراقبة
   // خارجية فعلية UptimeRobot): كان يُرجع status 200 دائماً حتى مع alert=true
@@ -266,6 +311,15 @@ export async function GET(request: Request) {
         bytes: t.total_bytes,
         approx_row_count: t.row_estimate ?? 0,
       })),
+    },
+    evidence_integrity: {
+      alert: evidenceIntegrityAlert,
+      chain_broken: chainBroken,
+      chain_window_checked: chainRows.length,
+      disabled_triggers: disabledTriggers.map((r) => ({ table: r.table_name, trigger: r.trigger_name })),
+      last_successful_anchor_at: lastAnchorRun?.anchored_at ?? null,
+      anchor_lag_seconds: evidenceAnchorLagSeconds,
+      anchor_stale: evidenceAnchorStale,
     },
     // حقول مسطَّحة قديمة تبقى للتوافق مع أي إعداد مراقبة خارجي (Uptime
     // Robot/Healthchecks.io) موصول مسبقاً بصيغة القسم 10.3 الأصلية قبل هذا
