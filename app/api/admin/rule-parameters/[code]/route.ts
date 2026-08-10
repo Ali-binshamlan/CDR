@@ -26,7 +26,7 @@ export async function GET(
 
   const { data: versions, error: versionsError } = await supabaseAdmin
     .from('rule_parameter_versions')
-    .select('id, value, status, effective_from, published_by, published_at, change_reason_ar, is_rollback, supersedes_version_id, created_by, created_at')
+    .select('id, value, status, effective_from, published_by, published_at, change_reason_ar, is_rollback, supersedes_version_id, created_by, created_at, bundle_id')
     .eq('parameter_code', code)
     .order('created_at', { ascending: false });
   if (versionsError) return NextResponse.json({ error: safeErrorResponse(versionsError, 'rule-parameter versions fetch failed') }, { status: 500 });
@@ -46,6 +46,7 @@ export async function GET(
       id: string; value: number; status: string; effective_from: string | null;
       published_by: string | null; published_at: string | null; change_reason_ar: string | null;
       is_rollback: boolean; supersedes_version_id: string | null; created_by: string | null; created_at: string;
+      bundle_id: string | null;
     }) => ({
       id: v.id,
       value: v.value,
@@ -58,6 +59,7 @@ export async function GET(
       supersedesVersionId: v.supersedes_version_id,
       createdBy: v.created_by,
       createdAt: v.created_at,
+      bundleId: v.bundle_id,
     })),
   });
 }

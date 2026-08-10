@@ -4,7 +4,7 @@ import {
   computeDustComplianceResults,
   persistActivityDecisionsAtomic,
 } from '@/app/lib/dustEvaluation';
-import { buildSensitiveReceptor, refreshRuleParameters } from '@/app/utils/dust-compliance-engine';
+import { buildSensitiveReceptor, refreshRuleParameters, getActiveParameterVersionIds } from '@/app/utils/dust-compliance-engine';
 import { checkDustActivities } from '@/app/api/alerts/generate/route';
 
 // منطق إعادة تقييم مشروع كامل (DVI + Compliance + FinalDecision) — مُستخرَج
@@ -70,6 +70,12 @@ export async function evaluateProject(
     // منشورة في نفس دورة التقييم الواحدة (كانا سيتباعدان لو تأخر التحديث
     // لبداية computeDustComplianceResults وحدها).
     await refreshRuleParameters(supabaseAdmin);
+    // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات مع القرار"):
+    // بصمة نسخ rule_parameter_versions.id الفعلية وقت هذه الدورة تحديداً —
+    // تُلتقَط هنا مباشرة بعد refresh (نفس لحظة evaluationRunId أدناه)، لا
+    // في persistActivityDecisionsAtomic لاحقاً حيث قد تكون current تبدَّلت
+    // بالفعل بدورة تقييم متزامنة أخرى.
+    const activeParameterVersionIds = getActiveParameterVersionIds();
 
     // القسم 11.2 — Evaluation Run: يربط كل دورة تقييم فعلية بمعرّف واحد،
     // بصرف النظر عن مصدر التحفيز. as_of هو لحظة بداية هذه الدورة تحديداً
@@ -123,7 +129,8 @@ export async function evaluateProject(
       dustComplianceResults,
       triggeredBy,
       triggeredBy,
-      evaluationRunId
+      evaluationRunId,
+      activeParameterVersionIds
     );
 
     const allFailedActivityIds = persistResults.filter((r) => r.failed).map((r) => r.activityId);

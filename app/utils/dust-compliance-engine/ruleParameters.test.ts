@@ -5,6 +5,7 @@ import {
   refreshRuleParameters,
   resetRuleParametersForTests,
   DEFAULT_RULE_PARAMETERS,
+  getActiveParameterVersionIds,
 } from './ruleParameters';
 
 // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
@@ -14,7 +15,10 @@ import {
 // تبدأ بالافتراضي المطابق للثوابت القديمة، وrefreshRuleParameters تستبدلها
 // بآخر نسخة PUBLISHED من قاعدة البيانات.
 
-function mockSupabase(rows: { parameter_code: string; value: number }[] | null, error: unknown = null): SupabaseClient {
+function mockSupabase(
+  rows: { id?: string; parameter_code: string; value: number }[] | null,
+  error: unknown = null
+): SupabaseClient {
   const chain = {
     select: () => chain,
     eq: async () => ({ data: rows, error }),
@@ -87,5 +91,53 @@ describe('ruleParameters', () => {
     const second = mockSupabase([{ parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }]);
     await refreshRuleParameters(second);
     expect(getRuleParameters().UNPAVED_SPEED_LIMIT_KMH).toBe(DEFAULT_RULE_PARAMETERS.UNPAVED_SPEED_LIMIT_KMH);
+  });
+
+  // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات المستخدمة مع
+  // القرار"): getActiveParameterVersionIds تُلتقَط بعد refresh وتُمرَّر حتى
+  // final_decisions.rule_parameter_version_snapshot — راجع evaluateProject.ts.
+  describe('getActiveParameterVersionIds', () => {
+    it('تُرجع كائناً فارغاً قبل أي refresh', () => {
+      expect(getActiveParameterVersionIds()).toEqual({});
+    });
+
+    it('تمتلئ بمعرّف النسخة لكل معامل منشور بعد refresh ناجح', async () => {
+      const supabase = mockSupabase([
+        { id: 'v-1', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 },
+        { id: 'v-2', parameter_code: 'UNPAVED_SPEED_LIMIT_KMH', value: 8 },
+      ]);
+      await refreshRuleParameters(supabase);
+      expect(getActiveParameterVersionIds()).toEqual({
+        STONE_CUTTING_WIND_STOP_KMH: 'v-1',
+        UNPAVED_SPEED_LIMIT_KMH: 'v-2',
+      });
+    });
+
+    it('معامل بلا نسخة PUBLISHED (يستخدم code_default_value) غائب من الخريطة — لا مفتاح بقيمة فارغة', async () => {
+      const supabase = mockSupabase([{ id: 'v-1', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }]);
+      await refreshRuleParameters(supabase);
+      const versionIds = getActiveParameterVersionIds();
+      expect(versionIds.STONE_CUTTING_WIND_STOP_KMH).toBe('v-1');
+      expect('UNPAVED_SPEED_LIMIT_KMH' in versionIds).toBe(false);
+    });
+
+    it('فشل الاستعلام لا يغيّر بصمة المعرّفات — تبقى آخر حالة معروفة جيدة', async () => {
+      const supabaseOk = mockSupabase([{ id: 'v-1', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }]);
+      await refreshRuleParameters(supabaseOk);
+      expect(getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH).toBe('v-1');
+
+      const supabaseFail = mockSupabase(null, { message: 'db down' });
+      await refreshRuleParameters(supabaseFail);
+      expect(getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH).toBe('v-1');
+    });
+
+    it('resetRuleParametersForTests يعيد بصمة المعرّفات لكائن فارغ أيضاً', async () => {
+      const supabase = mockSupabase([{ id: 'v-1', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }]);
+      await refreshRuleParameters(supabase);
+      expect(getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH).toBe('v-1');
+
+      resetRuleParametersForTests();
+      expect(getActiveParameterVersionIds()).toEqual({});
+    });
   });
 });

@@ -727,16 +727,29 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.decisionCategory).toBe('PRECAUTION');
   });
 
-  it('PM10=250 (أقصى نطاق الاحتراز قبل التحذير) → لا يزال احترازاً، ليس تحذيراً', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 250 }));
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم): كانت precautionMaxInclusive=250
+  // وwarningThresholdInclusive=251 معاً — فجوة رقمية بمقدار 1 تجعل PM10=250
+  // بالضبط يُصنَّف احترازاً لا تحذيراً، ويمنع قاعدة تعليق 30 دقيقة
+  // (RCRC-PM10-30M-SUSPENSION-012) من التفعيل عند استمرار 250 بالضبط. الإصلاح:
+  // precautionMaxInclusive=249، warningThresholdInclusive=250 — 250 نفسها
+  // أصبحت بداية نطاق التحذير، بلا فجوة.
+  it('PM10=249 (أقصى نطاق الاحتراز قبل التحذير) → لا يزال احترازاً، ليس تحذيراً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 249 }));
     expect(r.decisionCategory).toBe('PRECAUTION');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
   });
 
-  it('PM10=251 (الحد الأدنى لنطاق الضوابط/التحذير بالضبط) → يُفعَّل التحذير', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 251 }));
+  it('PM10=250 (الحد الأدنى لنطاق الضوابط/التحذير بالضبط) → يُفعَّل التحذير، لا احترازاً', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 250 }));
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-PRECAUTION-009')).toBe(false);
+  });
+
+  it('PM10=250 استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012) — القيمة الحدّية بالضبط يجب أن تُفعِّل التعليق', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 250, pm10SustainedMinutesAbove250: 30 }));
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(true);
   });
 
   it('PM10=339 (أقصى نطاق الضوابط قبل حد المخالفة 340) → لا يزال ALLOW_WITH_CONTROLS', () => {

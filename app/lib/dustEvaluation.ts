@@ -2235,7 +2235,14 @@ export async function persistActivityDecisionsAtomic(
   // (evaluateProject ينشئ صف evaluation_runs واحداً لكل دورة تقييم كاملة،
   // راجع evaluateProject.ts). null للاستدعاءات القديمة/الاختبارات التي لا
   // تُنشئ evaluation_runs بعد (توافقي، فشل آمن).
-  evaluationRunId: string | null = null
+  evaluationRunId: string | null = null,
+  // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات مع القرار"):
+  // بصمة rule_parameter_versions.id لكل معامل PUBLISHED فعلياً وقت هذه
+  // الدورة (من getActiveParameterVersionIds() بعد refreshRuleParameters في
+  // evaluateProject.ts) — تُخزَّن حرفياً في final_decisions.rule_parameter_
+  // version_snapshot لكل نشاط يُحفَظ. null للاستدعاءات القديمة/الاختبارات
+  // (توافقي).
+  ruleParameterVersionSnapshot: Record<string, string> | null = null
 ): Promise<ActivityDecisionPersistResult[]> {
   const complianceByActivityId = new Map<string, DustComplianceResultItem>(
     (complianceResults || []).map((r) => [r.activityId, r])
@@ -2340,6 +2347,9 @@ export async function persistActivityDecisionsAtomic(
 
           p_evaluation_run_id: evaluationRunId,
           p_input_snapshot_hash: finalDecisionPayload?.inputSnapshotHash ?? null,
+          // بلا معنى إن لم يُكتب final_decisions أصلاً هذه الدورة — نفس شرط
+          // finalDecisionPayload المستخدَم لبقية حقول final_decisions أعلاه.
+          p_rule_parameter_version_snapshot: finalDecisionPayload ? (ruleParameterVersionSnapshot ?? null) : null,
         });
 
         if (error || !data?.[0]) {

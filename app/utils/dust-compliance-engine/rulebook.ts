@@ -86,10 +86,11 @@ const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = () => getRuleParameters().IDLE_SU
 // التنظيمي الرسمي (warningThresholdInclusive/violationThresholdExclusive
 // أدناه). لا تُعدَّل هذه القيم هنا مباشرة — أي تغيير يتطلب حزمة قواعد جديدة
 // في app/utils/rule-bundles.
-//   ≤150            → طبيعي (ALLOW)
-//   150 < x ≤ 250   → احتراز (PRECAUTION)
-//   250 < x ≤ 320   → ضوابط إلزامية (ALLOW_WITH_CONTROLS)
-//   320 < x ≤ 340   → تقييد شديد — تصعيد نصي فقط ضمن نفس ALLOW_WITH_CONTROLS
+//   ≤200            → طبيعي (ALLOW)
+//   200 < x ≤ 249   → احتراز (PRECAUTION)
+//   249 < x ≤ 339   → تحذير/ضوابط إلزامية (ALLOW_WITH_CONTROLS) — 250 نفسها
+//                     بداية نطاق التحذير التنظيمي (warningThresholdInclusive)
+//   339 < x ≤ 340   → تقييد شديد — تصعيد نصي فقط ضمن نفس ALLOW_WITH_CONTROLS
 //   > 340           → معلَّق/مؤكَّد (STOP_AFFECTED_ACTIVITY/MANDATORY_STOP)
 const PM10_NORMAL_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.normalMaxInclusive;
 const PM10_PRECAUTION_MAX_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.precautionMaxInclusive;

@@ -17,5 +17,13 @@ export type { DeviceTrueNorthCalibration } from './adapters';
 export { evaluateDustCompliance } from './engine';
 export { haversineDistanceM, nearestReceptorDistancesM, receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from './geo';
 export type { ReceptorWithinRadius } from './geo';
-export { getRuleParameters, refreshRuleParameters, resetRuleParametersForTests, setRuleParametersForTests, DEFAULT_RULE_PARAMETERS } from './ruleParameters';
-export type { RuleParameters } from './ruleParameters';
+export {
+  getRuleParameters,
+  refreshRuleParameters,
+  resetRuleParametersForTests,
+  setRuleParametersForTests,
+  DEFAULT_RULE_PARAMETERS,
+  getActiveParameterVersionIds,
+  resetRuleParameterVersionIdsForTests,
+} from './ruleParameters';
+export type { RuleParameters, RuleParameterVersionSnapshot } from './ruleParameters';

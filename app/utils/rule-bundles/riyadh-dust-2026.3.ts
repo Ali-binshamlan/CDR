@@ -70,15 +70,23 @@ export const RIYADH_DUST_2026_2: Readonly<RuleBundle> = deepFreeze({
   pm10: {
     operational: {
       normalMaxInclusive: 200,
-      precautionMaxInclusive: 250,
+      // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم): كانت precautionMaxInclusive=250
+      // وwarningThresholdInclusive=251 معاً — فجوة رقمية بمقدار 1 تجعل قيمة
+      // PM10=250 بالضبط تُصنَّف "احتراز" لا "تحذير"، وتمنع قاعدة تعليق النشاط
+      // (RCRC-PM10-30M-SUSPENSION-012، أدناه: pm10UgM3 >= warningThresholdInclusive)
+      // من التفعيل عند استمرار 250 لمدة 30 دقيقة رغم أنه يجب أن يُعامَل كتحذير
+      // تنظيمي فعلي. الإصلاح: 250 أصبح بداية نطاق التحذير (لا نهاية الاحتراز)
+      // — precautionMaxInclusive=249، warningThresholdInclusive/
+      // suspensionThresholdInclusive=250، بلا أي فجوة أو تداخل بين النطاقين.
+      precautionMaxInclusive: 249,
       controlsMaxInclusive: 339,
       severeMaxInclusive: 340,
     },
     regulatory: {
-      warningThresholdInclusive: 251,
+      warningThresholdInclusive: 250,
       violationThresholdExclusive: 340,
       violationDurationMsExclusive: 120_000,
-      suspensionThresholdInclusive: 251,
+      suspensionThresholdInclusive: 250,
       suspensionDurationMsInclusive: 1_800_000,
     },
     evidence: {

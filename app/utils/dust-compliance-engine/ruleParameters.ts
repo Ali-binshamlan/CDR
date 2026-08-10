@@ -87,14 +87,44 @@ export const DEFAULT_RULE_PARAMETERS: RuleParameters = Object.freeze({
 // التحديث نفسه.
 let current: RuleParameters = DEFAULT_RULE_PARAMETERS;
 
+// خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات المستخدمة مع
+// القرار"): current أعلاه يحمل أرقاماً خاماً فقط، بلا أي أثر لمصدرها. بصمة
+// مصاحبة منفصلة تماماً — كائن {parameter_code: rule_parameter_versions.id}
+// — عمداً لا حقل إضافي داخل كل رقم في RuleParameters نفسها: rulebook.ts/
+// engine.ts يقرآن getRuleParameters().X كرقم خام مباشرة في مقارنات حسابية
+// (if (windSpeed >= WIND_GATE_STOP_KMH()))؛ تغيير الشكل لـ{value, versionId}
+// يكسر كل موقع استهلاك بلا أي فائدة لمحرك القرار نفسه — provenance معلومة
+// تدقيقية تُلتقَط عند الحفظ فقط (dustEvaluation.ts)، لا عند التقييم.
+export interface RuleParameterVersionSnapshot {
+  [parameterCode: string]: string; // parameter_code -> rule_parameter_versions.id
+}
+
+// معامل بلا نسخة PUBLISHED فعلية (يستخدم DEFAULT_RULE_PARAMETERS fallback)
+// غائب من هذه الخريطة عمداً — غياب المفتاح يعني صراحة "لا نسخة تحكم هذا
+// المعامل، القيمة من الكود الافتراضي"، لا "معرّف فارغ" ملتبس.
+let currentVersionIds: RuleParameterVersionSnapshot = {};
+
 export function getRuleParameters(): RuleParameters {
   return current;
+}
+
+// بصمة معرّفات النسخ الفعلية وقت آخر refreshRuleParameters ناجح — تُقرَأ
+// مرة واحدة لكل دورة تقييم (evaluateProject.ts) وتُمرَّر حتى persist_
+// activity_decision_atomic لتُخزَّن في final_decisions.rule_parameter_
+// version_snapshot.
+export function getActiveParameterVersionIds(): RuleParameterVersionSnapshot {
+  return currentVersionIds;
 }
 
 // للاختبارات فقط — يعيد الحالة للافتراضي الصريح، بمعزل تام عن أي DB حقيقية
 // (لا استيراد Supabase في أي مسار اختبار وحدة لـ rulebook.ts/engine.ts).
 export function resetRuleParametersForTests(): void {
   current = DEFAULT_RULE_PARAMETERS;
+  currentVersionIds = {};
+}
+
+export function resetRuleParameterVersionIdsForTests(): void {
+  currentVersionIds = {};
 }
 
 // للاختبارات فقط — يضبط معاملاً واحداً أو أكثر مباشرة بلا Supabase، لإثبات
@@ -115,19 +145,24 @@ export async function refreshRuleParameters(supabaseAdmin: SupabaseClient): Prom
   try {
     const { data, error } = await supabaseAdmin
       .from('rule_parameter_versions')
-      .select('parameter_code, value')
+      .select('id, parameter_code, value')
       .eq('status', 'PUBLISHED');
 
     if (error || !data) return;
 
     const next: RuleParameters = { ...DEFAULT_RULE_PARAMETERS };
-    for (const row of data as { parameter_code: string; value: number }[]) {
+    const nextVersionIds: RuleParameterVersionSnapshot = {};
+    for (const row of data as { id: string; parameter_code: string; value: number }[]) {
       if (row.parameter_code in next) {
         (next as unknown as Record<string, number>)[row.parameter_code] = Number(row.value);
+        nextVersionIds[row.parameter_code] = row.id;
       }
     }
+    // تبديل ذرّي لكليهما معاً — نفس مبدأ current أعلاه (لا دمج جزئي، لا
+    // قراءة توليفة متناقضة من قيمة جديدة مع معرّف نسخة قديم أو العكس).
     current = next;
+    currentVersionIds = nextVersionIds;
   } catch {
-    // فشل الاستعلام (شبكة/DB) لا يُسقط التقييم — يبقى current كما هو.
+    // فشل الاستعلام (شبكة/DB) لا يُسقط التقييم — يبقى current/currentVersionIds كما هما.
   }
 }

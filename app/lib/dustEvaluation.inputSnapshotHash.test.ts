@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeInputSnapshotHash } from './dustEvaluation';
+import { resetRuleParametersForTests, refreshRuleParameters, getActiveParameterVersionIds } from '@/app/utils/dust-compliance-engine';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { DviEvaluationResult } from '@/app/utils/dust-engine/types';
 import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
@@ -168,6 +170,43 @@ describe('computeInputSnapshotHash', () => {
       const a = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', aei1);
       const b = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL', aei2);
       expect(a).toBe(b);
+    });
+  });
+
+  // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات مع القرار"):
+  // computeInputSnapshotHash يُجزّئ مخرجات التقييم (dvi/compliance/mode/aei)
+  // فقط — يجب ألا يتأثر إطلاقاً بأي تغيّر في rule_parameter_versions
+  // (مدخلات العتبات، لا مخرجات القرار)، وإلا يختلط "إثبات نفس المخرجات" مع
+  // "إثبات نفس مدخلات المعاملات"، وهما التزامان منفصلان تماماً (الثاني
+  // مُخزَّن الآن في عمود مستقل final_decisions.rule_parameter_version_
+  // snapshot، لا داخل هذه البصمة). هذا الاختبار يثبت الضمان صراحة بدل
+  // افتراضه ضمنياً من عدم تمرير الدالة لهذه البصمة في توقيعها أصلاً.
+  describe('البصمة لا تتأثر بمعاملات القواعد (rule_parameter_versions)', () => {
+    it('نفس dvi/compliance/mode/aei تُنتج نفس البصمة بصرف النظر عن حالة getActiveParameterVersionIds() الحالية', async () => {
+      resetRuleParametersForTests();
+      const dvi = minimalDvi();
+      const beforeHash = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL');
+      expect(getActiveParameterVersionIds()).toEqual({});
+
+      // نشر معامل قواعد فعلي (تغيّر حقيقي في rule_parameter_versions) —
+      // يجب ألا يغيّر هذا البصمة إطلاقاً رغم نفس مدخلات dvi/compliance/mode.
+      const mockSupabase = {
+        from: () => ({
+          select: () => ({
+            eq: async () => ({
+              data: [{ id: 'v-99', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }],
+              error: null,
+            }),
+          }),
+        }),
+      } as unknown as SupabaseClient;
+      await refreshRuleParameters(mockSupabase);
+      expect(getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH).toBe('v-99');
+
+      const afterHash = computeInputSnapshotHash(dvi, null, 'LIVE_OPERATIONAL');
+      expect(afterHash).toBe(beforeHash);
+
+      resetRuleParametersForTests();
     });
   });
 });

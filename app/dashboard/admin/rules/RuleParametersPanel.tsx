@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { toast } from 'react-hot-toast';
 import { apiClient } from '@/app/lib/apiClient';
-import { Loader2, SlidersHorizontal, History, RotateCcw, Send } from 'lucide-react';
+import { Loader2, SlidersHorizontal, History, RotateCcw, Send, Layers } from 'lucide-react';
 
 // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
 // لا يوجد نظام حقيقي يدعم إنشاء نسخة قاعدة، النشر الذري، منع تعديل نسخة
@@ -73,14 +73,40 @@ function getApiErrorMessage(error: unknown): string | undefined {
   return undefined;
 }
 
-function ParameterRow({ row, onChanged }: { row: RuleParameterRow; onChanged: () => Promise<void> }) {
+function ParameterRow({
+  row,
+  onChanged,
+  bundleMode,
+  selected,
+  onToggleSelect,
+  draftValue: bundleDraftValue,
+  onDraftValueChange,
+}: {
+  row: RuleParameterRow;
+  onChanged: () => Promise<void>;
+  // خطأ مكتشَف (مراجعة تدقيق — "ليست حزمة ذرية موحدة"): وضع النشر الجماعي
+  // يُخفي حقل "سبب النشر" وزر "نشر" الفرديين في هذا المكوّن (تفادي الالتباس
+  // بين "انشر هذا الصف وحده" و"انشر كجزء من المجموعة المُختارة") — الحالة
+  // المشتركة (التحديد، القيمة المسودة، السبب المشترك) تعيش في الأب
+  // (RuleParametersPanel) وتُمرَّر هنا فقط عرضاً وتحديثاً.
+  bundleMode: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  draftValue: string;
+  onDraftValueChange: (value: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   // خطأ eslint مُصلَح (react-hooks/set-state-in-effect): بدل useEffect
   // لمزامنة draftValue مع row.currentValue بعد كل نشر ناجح، الأب (RuleParametersPanel)
   // يُمرِّر key={`${row.code}-${row.currentValue}`} فيُعيد React تركيب هذا
   // المكوّن بالكامل (state جديد كلياً) تلقائياً عند تغيّر القيمة المنشورة —
   // لا حاجة لمزامنة يدوية بعد الآن.
-  const [draftValue, setDraftValue] = useState(String(row.currentValue));
+  const [localDraftValue, setLocalDraftValue] = useState(String(row.currentValue));
+  // في وضع النشر الجماعي، القيمة المسودة تعيش في الأب (خريطة code -> value)
+  // بدل هنا محلياً — بلا هذا، اختيار صف ثم كتابة قيمة جديدة كان سيُفقَد عند
+  // تبديل وضع الحزمة لأن الحالة المحلية لا تصل للأب عند بناء طلب النشر.
+  const draftValue = bundleMode ? bundleDraftValue : localDraftValue;
+  const setDraftValue = bundleMode ? onDraftValueChange : setLocalDraftValue;
   const [changeReason, setChangeReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [versions, setVersions] = useState<VersionRow[] | null>(null);
@@ -158,6 +184,15 @@ function ParameterRow({ row, onChanged }: { row: RuleParameterRow; onChanged: ()
   return (
     <div className="border-b border-slate-100 last:border-b-0">
       <div className="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+        {bundleMode && (
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onToggleSelect}
+            className="w-4 h-4 shrink-0 accent-[#0176FB]"
+            aria-label={`تحديد ${row.labelAr} للنشر الجماعي`}
+          />
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-black text-[13px] text-[#061B40]">{row.labelAr}</span>
@@ -214,25 +249,29 @@ function ParameterRow({ row, onChanged }: { row: RuleParameterRow; onChanged: ()
                 </p>
               )}
             </div>
-            <div className="flex-[2]">
-              <label className="block text-[10px] font-bold text-slate-500 mb-1">سبب النشر *</label>
-              <input
-                type="text"
-                value={changeReason}
-                onChange={(e) => setChangeReason(e.target.value)}
-                placeholder="مثال: تعديل بناءً على تعميم جديد من الجهة المختصة"
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={handlePublish}
-              disabled={saving}
-              className="bg-[#0176FB] hover:bg-[#0176FB]/90 disabled:bg-slate-300 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              نشر
-            </button>
+            {!bundleMode && (
+              <>
+                <div className="flex-[2]">
+                  <label className="block text-[10px] font-bold text-slate-500 mb-1">سبب النشر *</label>
+                  <input
+                    type="text"
+                    value={changeReason}
+                    onChange={(e) => setChangeReason(e.target.value)}
+                    placeholder="مثال: تعديل بناءً على تعميم جديد من الجهة المختصة"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handlePublish}
+                  disabled={saving}
+                  className="bg-[#0176FB] hover:bg-[#0176FB]/90 disabled:bg-slate-300 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap"
+                >
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  نشر
+                </button>
+              </>
+            )}
           </div>
 
           <div>
@@ -288,6 +327,16 @@ export default function RuleParametersPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // خطأ مكتشَف (مراجعة تدقيق — "توجد معاملات قابلة للنشر والتراجع، لكن
+  // ليست حزمة ذرية موحدة"): وضع النشر الجماعي — الافتراضي هو النشر الفردي
+  // كما كان (بلا تغيير سلوكي)؛ التفعيل صريح واختياري، تفادياً لخطر التحديد
+  // الجماعي العرَضي على نظام امتثال تنظيمي.
+  const [bundleMode, setBundleMode] = useState(false);
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+  const [draftValuesByCode, setDraftValuesByCode] = useState<Record<string, string>>({});
+  const [bundleChangeReason, setBundleChangeReason] = useState('');
+  const [bundlePublishing, setBundlePublishing] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const { data } = await apiClient.get('/admin/rule-parameters');
@@ -307,16 +356,89 @@ export default function RuleParametersPanel() {
     run();
   }, [load]);
 
+  const toggleBundleMode = () => {
+    setBundleMode((prev) => !prev);
+    setSelectedCodes(new Set());
+    setDraftValuesByCode({});
+    setBundleChangeReason('');
+  };
+
+  const toggleSelectCode = (code: string, currentValue: number) => {
+    setSelectedCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+        setDraftValuesByCode((d) => (code in d ? d : { ...d, [code]: String(currentValue) }));
+      }
+      return next;
+    });
+  };
+
+  const handleBundlePublish = async () => {
+    const changes: { code: string; value: number }[] = [];
+    for (const code of selectedCodes) {
+      const raw = draftValuesByCode[code];
+      const numeric = Number(raw);
+      if (!Number.isFinite(numeric)) {
+        toast.error(`قيمة غير صالحة للمعامل ${code}`);
+        return;
+      }
+      changes.push({ code, value: numeric });
+    }
+    if (changes.length === 0) {
+      toast.error('اختر معاملاً واحداً على الأقل');
+      return;
+    }
+    if (!bundleChangeReason.trim()) {
+      toast.error('سبب النشر المشترك إلزامي — سجل تدقيق لكل المجموعة');
+      return;
+    }
+    setBundlePublishing(true);
+    try {
+      await apiClient.post('/admin/rule-parameters/bundle/publish', {
+        changes,
+        changeReasonAr: bundleChangeReason.trim(),
+      });
+      toast.success(`تم نشر ${changes.length} معاملاً كمجموعة واحدة`);
+      setBundleMode(false);
+      setSelectedCodes(new Set());
+      setDraftValuesByCode({});
+      setBundleChangeReason('');
+      await load();
+    } catch (err) {
+      toast.error(getApiErrorMessage(err) || 'فشل نشر المجموعة');
+    } finally {
+      setBundlePublishing(false);
+    }
+  };
+
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
       <div className="p-5 border-b border-slate-100 bg-slate-50/50">
-        <div className="flex items-center gap-2">
-          <SlidersHorizontal className="w-4 h-4 text-[#0176FB]" />
-          <h2 className="font-black text-[#061B40] text-base">العتبات القابلة للضبط</h2>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="w-4 h-4 text-[#0176FB]" />
+            <h2 className="font-black text-[#061B40] text-base">العتبات القابلة للضبط</h2>
+          </div>
+          <button
+            type="button"
+            onClick={toggleBundleMode}
+            className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all ${
+              bundleMode
+                ? 'bg-[#0176FB] text-white border-[#0176FB]'
+                : 'bg-white text-slate-500 border-slate-200 hover:border-[#0176FB] hover:text-[#0176FB]'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            {bundleMode ? 'إلغاء وضع النشر الجماعي' : 'وضع النشر الجماعي'}
+          </button>
         </div>
         <p className="text-[11px] font-bold text-slate-400 mt-1">
           مسافات المستقبِلات الحساسة، سرعات بوابات الرياح، حدود السرعة، الأزمنة، النسب — نسخ/نشر/تراجع حقيقي بسجل تدقيق كامل.
           عتبات PM10 التنظيمية مُستبعَدة عمداً (تبقى ثابتة في حزمة القواعد النشطة).
+          {bundleMode && ' — اختر عدة معاملات وانشرها معاً كوحدة ذرية واحدة، بسبب نشر مشترك.'}
         </p>
       </div>
 
@@ -331,8 +453,44 @@ export default function RuleParametersPanel() {
       ) : (
         <div>
           {rows.map((row) => (
-            <ParameterRow key={`${row.code}-${row.currentValue}`} row={row} onChanged={load} />
+            <ParameterRow
+              key={`${row.code}-${row.currentValue}`}
+              row={row}
+              onChanged={load}
+              bundleMode={bundleMode}
+              selected={selectedCodes.has(row.code)}
+              onToggleSelect={() => toggleSelectCode(row.code, row.currentValue)}
+              draftValue={draftValuesByCode[row.code] ?? String(row.currentValue)}
+              onDraftValueChange={(value) => setDraftValuesByCode((d) => ({ ...d, [row.code]: value }))}
+            />
           ))}
+        </div>
+      )}
+
+      {bundleMode && selectedCodes.size > 0 && (
+        <div className="sticky bottom-0 border-t border-slate-200 bg-white p-4 flex flex-col sm:flex-row gap-2 items-stretch sm:items-end shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+          <div className="text-[11px] font-bold text-slate-500 shrink-0 sm:self-center">
+            {selectedCodes.size} معامل مُحدَّد
+          </div>
+          <div className="flex-1">
+            <label className="block text-[10px] font-bold text-slate-500 mb-1">سبب النشر المشترك *</label>
+            <input
+              type="text"
+              value={bundleChangeReason}
+              onChange={(e) => setBundleChangeReason(e.target.value)}
+              placeholder="مثال: ملف تشغيلي جديد لعتبات بوابة الرياح"
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleBundlePublish}
+            disabled={bundlePublishing}
+            className="bg-[#0176FB] hover:bg-[#0176FB]/90 disabled:bg-slate-300 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap"
+          >
+            {bundlePublishing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            نشر المجموعة ({selectedCodes.size})
+          </button>
         </div>
       )}
     </div>
