@@ -23,11 +23,19 @@ import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 //     صف PENDING — decision_alert_outbox/route.ts (alert-outbox-worker)
 //     يعالج الصفوف لكن بلا مقياس تجميعي لعمق الطابور أو تعطّله.
 //
+// المرحلة 7 من خطة إعادة تصميم مسار Telemetry (طُبِّقت بموافقة صريحة
+// 2026-08-09/10) — قسم telemetry_queue إضافي: عمق telemetry_ingestion_queue
+// حسب الحالة + عمر أقدم صف PENDING + عدد DEAD — يكشف مبكراً حالة
+// "Ingestion Rate > Processing Rate" (القسم 9/13 من خطة التصميم) قبل أن
+// تتحول لمشكلة أداء فعلية، بنفس منطق التنبيه المستخدَم أعلاه لبقية
+// الأنظمة الفرعية (لا بنية جديدة، توسيع للنمط الموجود).
+//
 // مصادقة عبر SCHEDULER_CRON_SECRET نفسه (قراءة حالة النظام الفرعي، لا
 // تنفيذ عمل — لا يحتاج سراً منفصلاً).
 const HEARTBEAT_STALE_SECONDS = 180;
 const PROVIDER_PULL_STALE_SECONDS = 300;
 const OUTBOX_LAG_ALERT_SECONDS = 300;
+const TELEMETRY_QUEUE_LAG_ALERT_SECONDS = 300;
 
 export async function GET(request: Request) {
   if (!process.env.SCHEDULER_CRON_SECRET) {
@@ -117,7 +125,43 @@ export async function GET(request: Request) {
   const outboxLagSeconds = oldestPendingMs !== null ? Math.max(0, Math.round((nowMs - oldestPendingMs) / 1000)) : null;
   const outboxAlert = (outboxDead ?? 0) > 0 || (outboxLagSeconds !== null && outboxLagSeconds > OUTBOX_LAG_ALERT_SECONDS);
 
-  const alert = schedulerAlert || providerAlert || outboxAlert;
+  // telemetry_queue: عمق الطابور حسب الحالة + عمر أقدم صف PENDING/PROCESSING
+  // معلَّق + عدد DEAD — نفس مبدأ alert_outbox أعلاه بالضبط، مطبَّق على
+  // telemetry_ingestion_queue (المرحلة 1-4 من خطة إعادة تصميم Telemetry).
+  const { count: telemetryQueuePending } = await supabaseAdmin
+    .from('telemetry_ingestion_queue')
+    .select('id', { count: 'exact', head: true })
+    .in('status', ['PENDING', 'PROCESSING']);
+
+  const { count: telemetryQueueDead } = await supabaseAdmin
+    .from('telemetry_ingestion_queue')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'DEAD');
+
+  const { count: telemetryQueueProcessedLastHour } = await supabaseAdmin
+    .from('telemetry_ingestion_queue')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'PROCESSED')
+    .gte('processed_at', new Date(nowMs - 3600_000).toISOString());
+
+  const { data: oldestPendingTelemetryRow } = await supabaseAdmin
+    .from('telemetry_ingestion_queue')
+    .select('created_at')
+    .in('status', ['PENDING', 'PROCESSING'])
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  const oldestTelemetryPendingMs = oldestPendingTelemetryRow?.created_at
+    ? new Date(oldestPendingTelemetryRow.created_at).getTime()
+    : null;
+  const telemetryQueueLagSeconds =
+    oldestTelemetryPendingMs !== null ? Math.max(0, Math.round((nowMs - oldestTelemetryPendingMs) / 1000)) : null;
+  const telemetryQueueAlert =
+    (telemetryQueueDead ?? 0) > 0 ||
+    (telemetryQueueLagSeconds !== null && telemetryQueueLagSeconds > TELEMETRY_QUEUE_LAG_ALERT_SECONDS);
+
+  const alert = schedulerAlert || providerAlert || outboxAlert || telemetryQueueAlert;
 
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — ربط هذا الـendpoint بمراقبة
   // خارجية فعلية UptimeRobot): كان يُرجع status 200 دائماً حتى مع alert=true
@@ -148,6 +192,13 @@ export async function GET(request: Request) {
       pending: outboxPending ?? 0,
       dead: outboxDead ?? 0,
       oldest_pending_lag_seconds: outboxLagSeconds,
+    },
+    telemetry_queue: {
+      alert: telemetryQueueAlert,
+      pending_or_processing: telemetryQueuePending ?? 0,
+      dead: telemetryQueueDead ?? 0,
+      processed_last_hour: telemetryQueueProcessedLastHour ?? 0,
+      oldest_pending_lag_seconds: telemetryQueueLagSeconds,
     },
     // حقول مسطَّحة قديمة تبقى للتوافق مع أي إعداد مراقبة خارجي (Uptime
     // Robot/Healthchecks.io) موصول مسبقاً بصيغة القسم 10.3 الأصلية قبل هذا
