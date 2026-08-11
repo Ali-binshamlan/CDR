@@ -19,8 +19,8 @@ import {
   type DustResultItem,
   type StoredFinalDecisionRow,
 } from '@/app/lib/dustEvaluation';
-import { buildSensitiveReceptor, DECISION_PRIORITY } from '@/app/utils/dust-compliance-engine';
-import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import { buildSensitiveReceptor, DECISION_PRIORITY, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine';
+import type { DustComplianceResult, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { buildProjectZoneFromRow, distanceToZoneBoundaryM, zoneToBoundaryDistanceM, zoneSearchAnchorPoints } from '@/app/utils/geo/zone';
@@ -429,12 +429,37 @@ export async function GET(
     const NEARBY_RECEPTOR_RADIUS_M = 1000;
     const searchAnchors = zoneSearchAnchorPoints(projectZoneForReceptors);
 
-    const [dustResults, sensitiveReceptorsResult, discoveredReceptorsByAnchor] = await Promise.all([
+    // خطأ مكتشَف ومُصلَح (المستخدم لاحظ: مسجد على 5م من كسارة لم يظهر في
+    // قسم "المستقبِلات الحساسة حول الكسارة" رغم اكتشافه في قسم آخر بالبطاقة
+    // نفسها): searchAnchors أعلاه مبنية على حدود/منطقة المشروع ككل — لمشروع
+    // كبير (مثال حقيقي: 1.1 مليون م²)، موقع الكسارة الفعلي قد يقع بعيداً
+    // تماماً عن نقاط بحث حدود المشروع، فلا يُكتشف معلَم قريب منها تحديداً
+    // رغم قربه الفعلي منها. نقاط بحث إضافية صريحة حول كل موقع كسارة/محطة
+    // خلط فعلي (crusher_lat/lng، batching_lat/lng) — بمعزل تام عن حدود
+    // المشروع — تضمن اكتشاف OSM حول الوحدة نفسها بصرف النظر عن موقعها داخل
+    // مشروع كبير. عرض توعوي بحت (نفس قيد nearbySensitiveReceptors أعلاه) —
+    // لا يُغذّي أي قرار تنظيمي مُلزم.
+    const unitSearchAnchors: { lat: number; lng: number }[] = [];
+    for (const row of dustProfiles || []) {
+      const crusherLat = typeof row.crusher_lat === 'number' ? row.crusher_lat : null;
+      const crusherLng = typeof row.crusher_lng === 'number' ? row.crusher_lng : null;
+      if (crusherLat !== null && crusherLng !== null) unitSearchAnchors.push({ lat: crusherLat, lng: crusherLng });
+      const batchingLat = typeof row.batching_lat === 'number' ? row.batching_lat : null;
+      const batchingLng = typeof row.batching_lng === 'number' ? row.batching_lng : null;
+      if (batchingLat !== null && batchingLng !== null) unitSearchAnchors.push({ lat: batchingLat, lng: batchingLng });
+    }
+
+    const [dustResults, sensitiveReceptorsResult, discoveredReceptorsByAnchor, discoveredReceptorsByUnit] = await Promise.all([
       computeDustResults(dustProfiles || [], project, supabaseAdmin),
       supabaseAdmin.from('sensitive_receptors').select('id, name, receptor_type, lat, lng'),
       Promise.all(
         searchAnchors.map((anchor) =>
           fetchNearbySensitiveReceptorsFromOsm(anchor.lat, anchor.lng, NEARBY_RECEPTOR_RADIUS_M)
+        )
+      ),
+      Promise.all(
+        unitSearchAnchors.map((anchor) =>
+          fetchNearbySensitiveReceptorsFromOsm(anchor.lat, anchor.lng, UNIT_RECEPTOR_RADIUS_M)
         )
       ),
     ]);
@@ -511,22 +536,26 @@ export async function GET(
       // (لا من حدود المشروع) — تُرفَق على نفس عنصر dustResults ليعرضها
       // ComplianceWidgetCard عند اختيار نشاط كسارة أو محطة خلط.
       //
-      // المصدر هنا هو الاتحاد بين جدول sensitive_receptors المُدار يدوياً
-      // ومستقبِلات OSM المكتشفة تلقائياً: الجدول اليدوي وحده يبقى فارغاً في
-      // معظم المشاريع فتظهر القائمة خالية رغم وجود مدارس/مساكن فعلية حول
-      // الكسارة. هذا عرض توعوي بحت — قواعد المسافة المُلزمة أعلاه
+      // المصدر هنا هو الاتحاد بين جدول sensitive_receptors المُدار يدوياً،
+      // مستقبِلات OSM المكتشفة حول حدود المشروع (discoveredReceptors)،
+      // ومستقبِلات OSM المكتشفة حول موقع كل وحدة كسارة/خلط تحديداً
+      // (discoveredReceptorsByUnit — راجع تعليقها الكامل أعلاه لسبب
+      // الحاجة لبحث منفصل عن حدود المشروع). الجدول اليدوي وحده يبقى فارغاً
+      // في معظم المشاريع فتظهر القائمة خالية رغم وجود مدارس/مساكن فعلية
+      // حول الكسارة. هذا عرض توعوي بحت — قواعد المسافة المُلزمة أعلاه
       // (computeDustComplianceResults) ما زالت تقرأ sensitiveReceptors
       // اليدوية وحدها، فلا يُبنى أي قرار إيقاف على بيانات OSM غير الموثّقة.
-      const receptorsForUnitDisplay = [
-        ...sensitiveReceptors,
-        ...discoveredReceptors.map((r) => ({
-          id: r.id,
-          name: r.name,
-          receptorType: r.receptorType,
-          lat: r.lat,
-          lng: r.lng,
-        })),
-      ];
+      // dedupe بـid عبر كل المصادر الثلاثة معاً — نفس معلَم OSM قد يُكتشَف
+      // من بحث حدود المشروع وبحث موقع الوحدة معاً (تراكب دائرتي بحث)،
+      // فيظهر مكرَّراً في القائمة النهائية بلا هذا الدمج.
+      const receptorsForUnitDisplayDeduped = new Map<
+        string,
+        { id: string; name: string; receptorType: SensitiveReceptorType; lat: number; lng: number }
+      >();
+      for (const r of sensitiveReceptors) receptorsForUnitDisplayDeduped.set(r.id, r);
+      for (const r of discoveredReceptors) receptorsForUnitDisplayDeduped.set(r.id, r);
+      for (const r of discoveredReceptorsByUnit.flat()) receptorsForUnitDisplayDeduped.set(r.id, r);
+      const receptorsForUnitDisplay = Array.from(receptorsForUnitDisplayDeduped.values());
       const unitReceptorsByActivityId = computeUnitReceptors(
         dustProfiles || [],
         dustResults,
