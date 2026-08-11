@@ -196,9 +196,25 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // بدون معنى تشغيلي — RESTRICT_SEVERE/STOP_* الفيزيائية كلها تُطابَق MONITOR
   // بنفس منطق aei-engine/tables.ts AEI_CAPPING_DVI_DECISIONS، لا MANDATORY_STOP
   // إلا عبر dvi.mandatoryStop المنفصل أدناه).
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "سبب القرار قد لا يشرح القرار
+  // الفائز"): reasonAr/labelAr/level كانت تُحسَب بسلسلة شروط ثانية منفصلة
+  // تماماً عن اختيار operationalDecision (winner من candidates.reduce) —
+  // فحص evidenceUnavailable أولاً وبلا شرط في تلك السلسلة كان يعني أن أي
+  // نشاط بـPM10 قديم (evidenceQuality=STALE) يعرض دائماً "بيانات قديمة" حتى
+  // لو كان الفائز الفعلي مرشحاً آخر تماماً (مثال: رؤية 499م تُنتج
+  // dviMandatoryCandidate=MANDATORY_STOP، رتبته 5، تفوز على HOLD_FOR_
+  // VERIFICATION رتبة 3 من evidenceCandidate — لكن النص المعروض كان لا يزال
+  // "تعذّر اعتماد قرار واثق: بيانات قديمة" بدل ذكر الرؤية إطلاقاً). الإصلاح:
+  // كل مرشح يحمل الآن reasonAr/labelAr/level الخاصة به مباشرة — القيم
+  // المعروضة تُقرأ من نفس المرشح الفائز حصراً (winner.reasonAr/labelAr/level)،
+  // لا من إعادة حساب منفصلة بعد اختيار الفائز.
   interface DecisionCandidate {
     source: 'DVI' | 'COMPLIANCE' | 'EVIDENCE' | 'ENCLOSED_SUPPRESS' | 'AEI';
     decision: OperationalDecision;
+    reasonAr: string;
+    labelAr: string;
+    level: FinalDecision['level'];
   }
 
   // القسم 18.1 من "دليل الإصلاح الجذري لمنظومة مرقاب" (مصفوفة اختبارات
@@ -223,18 +239,41 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // حتى لا تختفي إشارة "PM10 مرتفع رآه DVI" كلياً؛ evidenceCandidate أدناه
   // (HOLD_FOR_VERIFICATION، رتبة 3) هو من يفوز فعلياً في هذه الحالة بلا
   // منافسة PROTECTIVE_STOP (رتبة 4) المبنية على دليل غير موثوق.
+  // محرك DVI الفيزيائي لا يعرف مفهوم "العملية المغلقة" إطلاقاً. القمع هنا
+  // محصور بحالة dvi.decisionCategory==='ALLOW_WITH_MONITORING' تحديداً (لا
+  // أي قرار DVI آخر) — RESTRICT_SEVERE/STOP_* بسبب رؤية فيزيائية حقيقية لا
+  // علاقة لها بالرياح لا تُقمَع أبداً (بروتوكول الملحق أ يُعفي العمليات
+  // المغلقة من بوابة الرياح تحديداً، لا من كل خطر فيزيائي آخر). محسوبة هنا
+  // (قبل بناء dviCandidate مباشرة، لا بعده) وتُطبَّق داخل dviCandidate نفسه
+  // (decision/reasonAr/labelAr/level معاً) — لا استبدال منفصل للمصفوفة بعد
+  // البناء كما كان سابقاً، فلا تنسى أي حقل جديد يُضاف مستقبلاً هذا القمع.
+  const suppressDviMonitoring =
+    compliance?.isEnclosedOperation === true &&
+    compliance.decisionCategory === 'ALLOW' &&
+    dvi.decisionCategory === 'ALLOW_WITH_MONITORING';
+
+  // dviLevel (لون DVI الفيزيائي الخام، بعد قمع العملية المغلقة إن انطبق) —
+  // يُستهلَك من dviCandidate مباشرة، ومن complianceCandidate أدناه أيضاً
+  // (floorLevel التنظيمي يُقارَن بلون DVI دائماً، بصرف النظر عن أي مرشح فاز).
+  const dviLevel = suppressDviMonitoring ? 'GREEN' : LEVEL_BY_DVI[dvi.level] ?? 'GREEN';
   const dviCandidate: DecisionCandidate = {
     source: 'DVI',
-    decision:
-      (dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
-        dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES') &&
-      !dviStopIsPm10StaleOnly
+    decision: suppressDviMonitoring
+      ? 'ALLOW'
+      : (dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
+          dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES') &&
+        !dviStopIsPm10StaleOnly
         ? 'PROTECTIVE_STOP'
         : dvi.decisionCategory === 'RESTRICT' || dvi.decisionCategory === 'RESTRICT_SEVERE'
           ? 'RESTRICT'
           : dvi.decisionCategory === 'ALLOW_WITH_MONITORING' || dviStopIsPm10StaleOnly
             ? 'MONITOR'
             : 'ALLOW',
+    // نص/لون 'مسموح — تشغيل اعتيادي'/GREEN عند القمع يطابقان حرفياً ما كانت
+    // الشروط المنفصلة القديمة (suppressDviMonitoring ? ...) تُنتجه.
+    reasonAr: suppressDviMonitoring ? compliance?.shortReasonAr || '' : dvi.shortReason || '',
+    labelAr: suppressDviMonitoring ? 'مسموح — تشغيل اعتيادي' : dvi.decisionLabelAr,
+    level: dviLevel,
   };
 
   // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "التحقق الميداني ما زال يتحول
@@ -246,6 +285,20 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // OPERATION_RANK يضع HOLD_FOR_VERIFICATION (3) أعلى بكثير من MONITOR (1)
   // عمداً — القرار السابق كان يُخفي هذا النقص خلف نص احترازي عادي بدل
   // إيقاف اعتماد القرار حتى يُستكمَل التحقق الميداني المطلوب فعلياً.
+  // مستوى مرشح الامتثال: confirmedAffectedStop يفرض BLACK وpendingAffectedStop
+  // يفرض RED (عقد قديم صريح — راجع unifiedDecision.test.ts: "معلَّق مؤقت"
+  // أحمر مقابل "إيقاف مؤكَّد" أسود بلون مختلف تماماً، لا حداً أدنى قابلاً
+  // للتجاوز). غير ذلك: floorLevel (complianceFloorLevel) يرفع الحد الأدنى
+  // فوق dviLevel الخام دون خفضه أبداً — نفس منطق floorLevel القديم بالضبط،
+  // محسوب الآن هنا مباشرة مع المرشح نفسه بدل إعادة اشتقاقه بعد اختيار الفائز.
+  const complianceFloor = compliance ? complianceFloorLevel(compliance.decisionCategory) : null;
+  const complianceLevel: FinalDecision['level'] = confirmedAffectedStop
+    ? 'BLACK'
+    : pendingAffectedStop
+      ? 'RED'
+      : complianceFloor && LEVEL_WEIGHT[dviLevel] < LEVEL_WEIGHT[complianceFloor]
+        ? complianceFloor
+        : dviLevel;
   const complianceCandidate: DecisionCandidate = {
     source: 'COMPLIANCE',
     decision: !compliance
@@ -261,6 +314,17 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
               : compliance.decisionCategory === 'ALLOW_WITH_CONTROLS' || compliance.decisionCategory === 'PRECAUTION'
                 ? 'MONITOR'
                 : 'ALLOW',
+    reasonAr: confirmedAffectedStop
+      ? compliance!.shortReasonAr
+      : pendingAffectedStop
+        ? compliance!.shortReasonAr
+        : compliance?.shortReasonAr || '',
+    labelAr: confirmedAffectedStop
+      ? 'إيقاف إلزامي نظامي'
+      : pendingAffectedStop
+        ? 'إيقاف مؤقت (معلَّق) — بانتظار التأكيد'
+        : compliance?.decisionLabelAr || '',
+    level: complianceLevel,
   };
 
   // dvi.mandatoryStop (خطر فيزيائي فوري — رؤية حرجة/عاصفة، أو PM10 لحظي مع
@@ -271,11 +335,29 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     source: 'DVI',
     decision:
       dvi.mandatoryStop === true && !pendingAffectedStop && !dviPm10StopIsUnreliable ? 'MANDATORY_STOP' : 'ALLOW',
+    // dvi.shortReason هو السبب الفعلي (رؤية حرجة/رياح شديدة+مواد سائبة) —
+    // نفس النص المعروض قديماً عند mandatoryStop=true من DVI وحده بلا مساهمة
+    // امتثال. غير مستهلَكة عملياً عند decision='ALLOW' (هذا المرشح لا يفوز
+    // حينها إلا في تعادل عام بلا أي مرشح آخر أشد، تماماً كسلوك اليوم).
+    reasonAr: dvi.shortReason || '',
+    labelAr: 'إيقاف إلزامي نظامي',
+    level: 'BLACK',
   };
 
+  // خطأ مكتشَف ومُصلَح (طلب المستخدم — تقرير المراجعة الخارجي: "سبب القرار
+  // قد لا يشرح القرار الفائز"): نص "بيانات قديمة/غير متوفرة" الآن يعيش هنا
+  // فقط، مع مرشحه الخاص (HOLD_FOR_VERIFICATION، رتبة 3) — لا فحصاً منفصلاً
+  // (evidenceUnavailable ? ... : ...) يُطبَّق أولاً بلا شرط الرتبة الفعلية،
+  // كما كان سابقاً (راجع مثال رؤية 499م + PM10 قديم في تعليق DecisionCandidate
+  // أعلاه). لو فاز مرشح أشد (دvi.mandatoryStop من رؤية حرجة، رتبة 5) رغم وجود
+  // evidenceUnavailable=true بنفس اللحظة، نص evidenceCandidate ببساطة لا
+  // يُقرَأ إطلاقاً — القراءة تقتصر على المرشح الفائز فقط.
   const evidenceCandidate: DecisionCandidate = {
     source: 'EVIDENCE',
     decision: evidenceUnavailable ? 'HOLD_FOR_VERIFICATION' : 'ALLOW',
+    reasonAr: 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.',
+    labelAr: 'بانتظار تحقق ميداني — بيانات غير كافية',
+    level: 'ORANGE',
   };
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "AEI يغيّر اللون والنص دون تغيير
@@ -304,30 +386,26 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     CLOSED: 'PROTECTIVE_STOP',
   };
   const aeiCandidate: DecisionCandidate | null = input.aei
-    ? { source: 'AEI', decision: AEI_TO_OPERATION[input.aei.status] }
+    ? {
+        source: 'AEI',
+        decision: AEI_TO_OPERATION[input.aei.status],
+        reasonAr: input.aei.shortReasonAr,
+        labelAr: input.aei.statusLabelAr,
+        level: input.aei.color,
+      }
     : null;
 
-  // محرك DVI الفيزيائي لا يعرف مفهوم "العملية المغلقة" إطلاقاً. القمع هنا
-  // محصور بحالة dvi.decisionCategory==='ALLOW_WITH_MONITORING' تحديداً (لا
-  // أي قرار DVI آخر) — RESTRICT_SEVERE/STOP_* بسبب رؤية فيزيائية حقيقية لا
-  // علاقة لها بالرياح لا تُقمَع أبداً (بروتوكول الملحق أ يُعفي العمليات
-  // المغلقة من بوابة الرياح تحديداً، لا من كل خطر فيزيائي آخر). يُطبَّق فقط
-  // إن لم يكن هناك mandatoryStop أصلاً (محسوبة من dviMandatoryCandidate
-  // نفسه أدناه بعد اختيار الأشد، فلا حاجة لحسابها هنا مسبقاً).
-  const suppressDviMonitoring =
-    compliance?.isEnclosedOperation === true &&
-    compliance.decisionCategory === 'ALLOW' &&
-    dvi.decisionCategory === 'ALLOW_WITH_MONITORING';
-
-  const candidates: DecisionCandidate[] = [dviCandidate, complianceCandidate, dviMandatoryCandidate, evidenceCandidate];
+  // ترتيب المصفوفة يحدد الفائز عند التعادل (reduce بـ`>` صارم يبقي أول
+  // عنصر عند تساوي الرتبة) — complianceCandidate أولاً عمداً: نص القاعدة
+  // التنظيمية الفعلية يُفضَّل على نص DVI الفيزيائي العام كلما تساويا في
+  // الشدة (الاتفاقية القديمة الموروثة من computeUnifiedActivityDecision،
+  // راجع أيضاً aeiIsDecisive سابقاً — نفس المبدأ). هذا يضمن أن نص
+  // pendingAffectedStop ('إيقاف مؤقت معلَّق') يبقى يفوز دائماً عند تعادله
+  // رتبةً مع dviCandidate (كلاهما قد يصلان PROTECTIVE_STOP معاً)، تماماً
+  // كسلوك اليوم قبل هذا الإصلاح. suppressDviMonitoring مطبَّقة بالفعل داخل
+  // dviCandidate نفسه (أعلاه) — لا استبدال منفصل للمصفوفة هنا بعد الآن.
+  const candidates: DecisionCandidate[] = [complianceCandidate, dviCandidate, dviMandatoryCandidate, evidenceCandidate];
   if (aeiCandidate) candidates.push(aeiCandidate);
-  if (suppressDviMonitoring) {
-    // استبعاد مرشح DVI (ALLOW_WITH_MONITORING→MONITOR) من الاختيار عندما
-    // النشاط مغلق فعلياً وامتثاله نظيف — لا يجوز لأي مصدر آخر (compliance/
-    // evidence) أن "يُخفي" هذا الاستبعاد لاحقاً، لذا يُستبعد المرشح نفسه بدل
-    // تخفيف النتيجة بعد اختيار الأشد.
-    candidates[0] = { source: 'DVI', decision: 'ALLOW' };
-  }
 
   const winner = candidates.reduce((strictest, current) =>
     OPERATION_RANK[current.decision] > OPERATION_RANK[strictest.decision] ? current : strictest
@@ -356,103 +434,23 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
 
   const overridable = !mandatoryStop && (compliance ? compliance.canOverride === true : dvi.overridable === true);
 
-  // shortReasonAr/decisionLabelAr: يجب أن يطابقا المرشح الفائز فعلياً
-  // (winner.source)، لا فحصاً منفصلاً عن حالة compliance وحدها.
-  //
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — البند 2: "سبب القرار المعروض لا
-  // يرتبط دائمًا بالمرشح الفائز"): الشرط السابق كان
-  // `compliance.decisionCategory !== 'ALLOW'` بمعزل تام عن نتيجة
-  // candidates.reduce() أعلاه — فلو فاز DVI فعلياً بقرار أشد (مثال:
-  // PROTECTIVE_STOP، رتبة 4) بينما compliance في نفس اللحظة غير-ALLOW لكن
-  // أضعف (مثال: PRECAUTION→MONITOR، رتبة 1 فقط)، كان الشرط يتحقق رغم أن
-  // COMPLIANCE لم يفز بشيء، فيعرض نص/عنوان compliance الأضعف بدل نص DVI الذي
-  // يفسر القرار الفعلي — يفسد قابلية التدقيق حتى مع operationalDecision
-  // صحيح.
-  //
-  // الإصلاح: مقارنة رتبة complianceCandidate مباشرةً بالفائز الفعلي
-  // (OPERATION_RANK[complianceCandidate.decision] >=
-  // OPERATION_RANK[operationalDecision]) بدل الاعتماد على winner.source
-  // نفسه — التعادل على الرتبة (compliance بنفس شدة DVI تماماً) يجب أن يبقى
-  // لصالح نص compliance (الاتفاقية القديمة الموروثة من
-  // computeUnifiedActivityDecision: نص القاعدة التنظيمية الفعلية يُفضَّل
-  // على نص DVI الفيزيائي العام كلما تساويا في الشدة)، بينما candidates.reduce
-  // أعلاه يبقي أول عنصر (dviCandidate) عند التعادل لأغراض اختيار
-  // operationalDecision نفسه فقط — لا علاقة لذلك باختيار النص المعروض.
-  //
-  // mandatoryStop من DVI وحده (بلا مساهمة امتثال) يستخدم نص DVI لأنه السبب
-  // الفعلي حينها.
-  //
-  // evidenceUnavailable (HOLD_FOR_VERIFICATION) يجب أن يعرض نصاً/لوناً
-  // محايدَين يعكسان "البيانات غير كافية للحكم" صراحةً — لا نص/لون DVI أو
-  // الامتثال المحسوبَين أصلاً من نفس القراءة القديمة/الناقصة (وإلا ظهر
-  // "مسموح — تشغيل اعتيادي" أخضر أو "تقييد" أحمر بثقة كاملة رغم أن مصدره
-  // بيانات لا يُعتمَد عليها، وهو بالضبط الخلل الذي صُحِّح بإضافة STALE لهذا
-  // الشرط أعلاه). يُفحَص بعد mandatoryStop/pendingAffectedStop (يبقيان
-  // الأولوية القصوى — خطر فيزيائي فعلي أو إيقاف امتثال معلَّق يفوزان حتى مع
-  // بيانات قديمة)، وقبل أي نص/لون مشتق من DVI/الامتثال العاديين.
-  const complianceIsDecisive =
-    !!compliance &&
-    compliance.decisionCategory !== 'ALLOW' &&
-    OPERATION_RANK[complianceCandidate.decision] >= OPERATION_RANK[operationalDecision];
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق aeiCandidate/
-  // AEI_TO_OPERATION الكامل أعلاه): نفس مبدأ complianceIsDecisive بالضبط —
-  // AEI يُختار كمصدر النص/اللون فقط عندما فاز فعلياً (رتبته >= الفائز
-  // الحقيقي)، لا عند أي "أشد لوناً" منفصل عن operationalDecision كما كان
-  // سابقاً. complianceIsDecisive يبقى مفحوصاً أولاً عمداً (نفس أولوية النص
-  // التنظيمي على أي مصدر آخر عند التعادل، الاتفاقية القديمة الموروثة) —
-  // AEI لا "يتجاوز" نص امتثال حاسم بنفس الشدة، فقط يفوز حين يتفوق فعلياً أو
-  // حين لا يوجد نص امتثال حاسم أصلاً.
-  const aeiIsDecisive =
-    !!aeiCandidate &&
-    !complianceIsDecisive &&
-    OPERATION_RANK[aeiCandidate.decision] >= OPERATION_RANK[operationalDecision];
-  const shortReasonAr = evidenceUnavailable
-    ? 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.'
-    : complianceIsDecisive
-      ? compliance!.shortReasonAr
-      : aeiIsDecisive
-        ? input.aei!.shortReasonAr
-        : suppressDviMonitoring
-          ? compliance?.shortReasonAr || ''
-          : dvi.shortReason || '';
-  const decisionLabelAr = mandatoryStop
-    ? 'إيقاف إلزامي نظامي'
-    : pendingAffectedStop
-      ? 'إيقاف مؤقت (معلَّق) — بانتظار التأكيد'
-      : evidenceUnavailable
-        ? 'بانتظار تحقق ميداني — بيانات غير كافية'
-        : complianceIsDecisive
-          ? compliance!.decisionLabelAr
-          : aeiIsDecisive
-            ? input.aei!.statusLabelAr
-            : suppressDviMonitoring
-              ? 'مسموح — تشغيل اعتيادي'
-              : dvi.decisionLabelAr;
-
-  // level: نفس منطق floorLevel القديم — لا يُخفَّض DVI لو كان هو الأشد
-  // أصلاً، فقط يُرفَع لحد أدنى حين يكون الامتثال أو AEI هو الأشد.
-  // pendingAffectedStop (معلَّق بانتظار تأكيد) يفرض RED دائماً بصرف النظر عن
-  // شدة DVI — عقد قديم صريح (راجع unifiedDecision.test.ts): يميّز "معلَّق
-  // مؤقت" (أحمر) عن "إيقاف مؤكَّد" (أسود) بلون مختلف تماماً، لا مجرد حد أدنى
-  // قابل للتجاوز بشدة DVI الفيزيائية. evidenceUnavailable يفرض ORANGE
-  // (تنبيهي محايد — لا أخضر "آمن" ولا أحمر/أسود "خطر مؤكَّد" لا يملك المحرك
-  // دليلاً كافياً عليه). aeiIsDecisive يستخدم لون AEI مباشرة (لا floorLevel
-  // مشتق) — نفس مبدأ compliance، مصدر واحد للون والنص معاً بلا خلط.
-  const dviLevel = LEVEL_BY_DVI[dvi.level] ?? 'GREEN';
-  const floorLevel = complianceIsDecisive ? complianceFloorLevel(compliance!.decisionCategory) : null;
-  const level = mandatoryStop
-    ? 'BLACK'
-    : pendingAffectedStop
-      ? 'RED'
-      : evidenceUnavailable
-        ? 'ORANGE'
-        : suppressDviMonitoring
-          ? 'GREEN'
-          : aeiIsDecisive
-            ? input.aei!.color
-            : floorLevel && LEVEL_WEIGHT[dviLevel] < LEVEL_WEIGHT[floorLevel]
-              ? floorLevel
-              : dviLevel;
+  // خطأ مكتشَف ومُصلَح (طلب المستخدم — تقرير المراجعة الخارجي: "سبب القرار
+  // قد لا يشرح القرار الفائز"، راجع تعليق DecisionCandidate الكامل أعلى
+  // الدالة): shortReasonAr/decisionLabelAr/level تُقرأ الآن مباشرة من نفس
+  // المرشح الفائز (winner) — لا سلسلة شروط منفصلة (complianceIsDecisive/
+  // aeiIsDecisive/evidenceUnavailable/mandatoryStop/pendingAffectedStop/
+  // suppressDviMonitoring) تُعاد فحصها بترتيب ثابت بمعزل عن candidates.reduce
+  // الفعلي. مثال الثغرة المُصلَحة بالضبط: رؤية 499م (dviMandatoryCandidate
+  // يفوز برتبة 5) + PM10 قديم بنفس اللحظة (evidenceUnavailable=true) — قبل
+  // الإصلاح كان شرط `evidenceUnavailable ? 'بيانات قديمة' : ...` يُفحَص أولاً
+  // بلا قيد الرتبة، فيعرض نص نقص البيانات رغم أن الفائز الفعلي مرشح آخر
+  // تماماً (الرؤية). كل مرشح يحمل نصه/لونه الخاص منذ إنشائه (dviCandidate/
+  // complianceCandidate/dviMandatoryCandidate/evidenceCandidate/aeiCandidate
+  // أعلاه) — القراءة هنا مجرد `winner.reasonAr/labelAr/level`، بلا أي إعادة
+  // اشتقاق مستقلة يمكن أن تنحرف عن الفائز الحقيقي.
+  const shortReasonAr = winner.reasonAr;
+  const decisionLabelAr = winner.labelAr;
+  const level = winner.level;
 
   // دفاعي عمداً (?? []) — بعض المستهلكين التاريخيين يبنون كائن compliance
   // جزئياً (decisionCategory/shortReasonAr فقط، بلا triggeredRules)، نفس

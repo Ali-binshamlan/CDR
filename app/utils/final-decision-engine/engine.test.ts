@@ -462,6 +462,42 @@ describe('decideFinal — evidenceQuality وHOLD_FOR_VERIFICATION', () => {
     expect(r.level).toBe('ORANGE');
     expect(r.shortReasonAr).toContain('تحقق ميداني');
   });
+
+  // اختبارا قبول صريحان (طلب المستخدم — تقرير المراجعة الخارجي: "سبب القرار
+  // قد لا يشرح القرار الفائز"): shortReasonAr يجب أن يعكس دائماً سبب المرشح
+  // الفائز فعلياً (operationalDecision)، لا فحصاً منفصلاً (evidenceUnavailable
+  // ? 'بيانات قديمة' : ...) يُقيَّم بمعزل عن candidates.reduce الفعلي.
+  describe('shortReasonAr يطابق دائماً سبب المرشح الفائز فعلياً (اختبار قبول صريح)', () => {
+    it('رؤية 499م (dvi.mandatoryStop=true) + PM10 قديم (evidenceQuality=STALE) بنفس اللحظة → operationalDecision=MANDATORY_STOP، shortReasonAr يذكر الرؤية لا "بيانات قديمة"', () => {
+      const compliance = baseCompliance({ decisionCategory: 'ALLOW' });
+      const dvi = baseDvi({
+        mandatoryStop: true,
+        overridable: false,
+        level: 'BLACK',
+        decisionCategory: 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES',
+        decisionLabelAr: 'إيقاف إلزامي نظامي',
+        shortReason: 'رؤية حرجة أقل من 500م (499م)',
+      });
+      const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'STALE' }));
+
+      expect(r.operationalDecision).toBe('MANDATORY_STOP');
+      expect(r.mandatoryStop).toBe(true);
+      expect(r.shortReasonAr).toBe('رؤية حرجة أقل من 500م (499م)');
+      expect(r.shortReasonAr).not.toContain('بيانات');
+      expect(r.shortReasonAr).not.toContain('تحقق ميداني');
+    });
+
+    it('PM10 قديم وحده (evidenceQuality=STALE)، بلا أي خطر فيزيائي مستقل → operationalDecision=HOLD_FOR_VERIFICATION، shortReasonAr يذكر نقص البيانات', () => {
+      const compliance = baseCompliance({ decisionCategory: 'ALLOW' });
+      const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+      const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'STALE' }));
+
+      expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+      expect(r.mandatoryStop).toBe(false);
+      expect(r.shortReasonAr).toContain('بيانات');
+      expect(r.shortReasonAr).toContain('تحقق ميداني');
+    });
+  });
 });
 
 // اختبارا قبول صريحان (طلب المستخدم — تقرير المراجعة الخارجي: "إيقاف مبني
