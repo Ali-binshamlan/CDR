@@ -25,6 +25,11 @@ interface ActiveProviderConnectionRow {
   vendor_station_id: string;
   provider_instance_id: string | null;
   last_pull_at: string | null;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مؤشر السحب يتقدم حتى عند فشل
+  // Queue"): راجع تعليق migration 202608110014 الكامل. pull_cursor_at
+  // مستقل تماماً عن last_pull_at — يتقدم فقط عند نجاح إدراج دفعة القراءات
+  // كاملة، ويُستخدَم هنا لحساب sinceMs بدل last_pull_at.
+  pull_cursor_at: string | null;
 }
 
 // =====================================================================
@@ -189,9 +194,25 @@ export async function GET(request: Request) {
       // تكفي لإثبات استمرار PM10. نستخدم fetchReadingsSince (إن دعمها
       // الـConnector) لجلب كل العينات منذ آخر سحب فعلي لهذا الاتصال —
       // بلا تغيير عن السلوك السابق، هذا الجزء لا علاقة له بإعادة التصميم.
+      //
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مؤشر السحب يتقدم حتى عند فشل
+      // Queue"، راجع migration 202608110014 الكامل): sinceMs تُحسَب الآن من
+      // pull_cursor_at (يتقدم فقط عند نجاح إدراج دفعة كاملة)، لا last_pull_at
+      // (كانت تتقدم في كل محاولة بصرف النظر عن النجاح — فشل إدراج الدفعة أو
+      // استثناء غير متوقَّع كان يُزحزح مؤشر البداية للأمام، فتُفقَد القراءات
+      // الواقعة بين آخر نجاح فعلي وتلك المحاولة الفاشلة نهائياً).
+      //
+      // OVERLAP_MARGIN_MS: هامش تداخل صغير للخلف عن pull_cursor_at نفسه —
+      // يحمي من فروق دقيقة (انحراف ساعة، وقت تنفيذ الاستعلام نفسه بين قراءة
+      // pull_cursor_at وبدء fetchReadingsSince) قد تُسقِط عينة على حافة
+      // النافذة الزمنية تماماً. التداخل الناتج (إعادة طلب عينات نجحت فعلاً
+      // في دورة سابقة) غير ضار: idempotency_key الفريد على
+      // telemetry_ingestion_queue (ON CONFLICT DO NOTHING أدناه) يمنع أي
+      // تكرار فعلي — لا حاجة لدقة مطلقة هنا، فقط عدم فقد أي عينة حقيقية.
       const MAX_LOOKBACK_MS = 10 * 60_000;
-      const sinceMs = conn.last_pull_at
-        ? Math.max(new Date(conn.last_pull_at).getTime(), Date.now() - MAX_LOOKBACK_MS)
+      const OVERLAP_MARGIN_MS = 5_000;
+      const sinceMs = conn.pull_cursor_at
+        ? Math.max(new Date(conn.pull_cursor_at).getTime() - OVERLAP_MARGIN_MS, Date.now() - MAX_LOOKBACK_MS)
         : Date.now() - MAX_LOOKBACK_MS;
 
       let readings: NormalizedReading[];
@@ -205,11 +226,21 @@ export async function GET(request: Request) {
       }
 
       if (readings.length === 0) {
-        // لا قراءات جديدة متاحة — ليس خطأً، فقط لا شيء لإدراجه الآن.
+        // لا قراءات جديدة متاحة — ليس خطأً، بل نجاح فعلي بمعنى "تحقّقنا
+        // حتى الآن ولا شيء جديد": pull_cursor_at يتقدم هنا أيضاً (لا فقط
+        // last_pull_at) — لا مبرر لإعادة فحص نفس النافذة الفارغة لاحقاً.
+        const nowIso = new Date().toISOString();
         results.push({ connectionId: conn.id, provider: conn.provider, ok: true, queued: 0 });
         await supabaseAdmin
           .from('provider_connections')
-          .update({ last_pull_at: new Date().toISOString(), last_pull_success: true, last_pull_error: null, updated_at: new Date().toISOString() })
+          .update({
+            last_pull_at: nowIso,
+            pull_cursor_at: nowIso,
+            last_pull_success: true,
+            last_pull_success_at: nowIso,
+            last_pull_error: null,
+            updated_at: nowIso,
+          })
           .eq('id', conn.id);
         return;
       }
@@ -252,13 +283,22 @@ export async function GET(request: Request) {
         }
       }
 
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق OVERLAP_MARGIN_MS
+      // وmigration 202608110014 الكاملين): pull_cursor_at/last_pull_success_at
+      // يتقدمان فقط عند نجاح إدراج الدفعة كاملة بلا lastError — فشل الإدراج
+      // (queue table خطأ DB) يُبقي المؤشر عند نقطته السابقة، فتُعاد محاولة
+      // نفس النافذة الزمنية بالضبط في الدورة التالية بدل فقدها. last_pull_at
+      // (وقت المحاولة) يتقدم دائماً بصرف النظر عن النتيجة — يبقى صحيحاً
+      // كمقياس "متى آخر محاولة" لـscheduler-heartbeat.
+      const nowIso = new Date().toISOString();
       await supabaseAdmin
         .from('provider_connections')
         .update({
-          last_pull_at: new Date().toISOString(),
+          last_pull_at: nowIso,
+          ...(lastError ? {} : { pull_cursor_at: nowIso, last_pull_success_at: nowIso }),
           last_pull_success: !lastError,
           last_pull_error: lastError ?? null,
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso,
         })
         .eq('id', conn.id);
 
@@ -272,6 +312,9 @@ export async function GET(request: Request) {
     } catch (err) {
       // فشل اتصال واحد لا يوقف الباقي — نفس مبدأ الحلقات المشابهة في
       // dustEvaluation.ts (resolveFreshProjectDevice) وalerts/generate.
+      // pull_cursor_at/last_pull_success_at عمداً غير مذكورين في update()
+      // هنا — يبقيان بلا تغيير (الاستثناء وقع قبل أي دليل على نجاح فعلي)،
+      // فتُعاد محاولة نفس النافذة الزمنية في الدورة التالية بدل فقدها.
       const message = err instanceof Error ? err.message : String(err);
       console.error(`provider-pull failed for connection ${conn.id}:`, message);
       results.push({ connectionId: conn.id, provider: conn.provider, ok: false, error: message });
