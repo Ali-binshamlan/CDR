@@ -43,7 +43,16 @@ export const DUST_FORM_DEFAULTS = {
 // وحدة "محطة خلط خرسانة" واحدة (A6) — يمكن إضافة أكثر من وحدة لنفس النشاط،
 // كل وحدة بموقعها الخاص (batching_lat/batching_lng، منفصل عن موقع الأكوام
 // المشترك stockpileLat/stockpileLng في REGULATORY_ACTIVITY_FIELDS_DEFAULTS)
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "يُستخدَم رقم الفهرس بدل معرّف
+// ثابت للوحدة"): كانت crusherPrecheckResults/batchingPrecheckResults في
+// index.tsx تُفهرَس بمفتاح `${itemId}:${index}` — حذف/إضافة وحدة وسط
+// الجلسة يُزحزح كل الفهارس بعدها، فتُطابَق نتيجة فحص قديمة لموقع مختلف
+// تماماً بالخطأ. id ثابت (مولَّد مرة واحدة عند addCrusherUnit/addBatchingUnit
+// عبر crypto.randomUUID، نفس نمط generateActivityItemId) يبقى صحيحاً بصرف
+// النظر عن أي حذف/إضافة لاحقة لوحدات أخرى.
 export const BATCHING_UNIT_DEFAULTS = {
+  id: '' as string,
   batchingLat: '' as string | number,
   batchingLng: '' as string | number,
   silosSealed: true as boolean | null,
@@ -59,6 +68,7 @@ export type BatchingUnit = typeof BATCHING_UNIT_DEFAULTS;
 // السابقة في REGULATORY_ACTIVITY_FIELDS_DEFAULTS (كانت كسارة واحدة فقط لكل
 // نشاط تنظيمي) إلى مصفوفة، بنفس نمط BatchingUnit تماماً.
 export const CRUSHER_UNIT_DEFAULTS = {
+  id: '' as string,
   crusherLat: '' as string | number,
   crusherLng: '' as string | number,
   crusherDistanceToReceptorM: '' as string | number,

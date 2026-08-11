@@ -19,6 +19,19 @@ import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFiel
 import type { ActivityStep, AddActivityModalProps, IndicatorTab, ProjectDeviceLite } from './types';
 import { haversineDistanceM } from '@/app/utils/geo/zone';
 
+// طلب صريح من المستخدم (مراجعة كود خارجية) — نتيجة تحقق فوري لموقع وحدة
+// كسارة/محطة خلط واحدة. مُصدَّرة على مستوى الوحدة (لا محلية داخل المكوّن)
+// حتى يستوردها DustStep.tsx بدل تكرار الشكل. 'checking'/'error' حالتان
+// مانعتان صراحة للحفظ (لا "غياب نتيجة = سماح")، وlat/lng تُخزَّنان مع كل
+// نتيجة لمطابقتها بإحداثيات الوحدة الحالية وقت الحفظ (راجع handleDustSubmit)
+// — نتيجة فحصت إحداثيات قديمة لا يجوز أن "تُطابَق" لموقع مختلف.
+export type PlacementPrecheck = {
+  status: 'checking' | 'allowed' | 'blocked' | 'error';
+  lat: number;
+  lng: number;
+  reasonsAr: string[];
+};
+
 export default function AddActivityModal({ project, onActivityCreated }: AddActivityModalProps) {
   const router = useRouter();
 
@@ -158,20 +171,19 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // مستقبل حساس (200م عام/500م سكني-مدرسي-صحي)، عبر
   // /api/dust-profiles/crusher-precheck (نفس منطق CRUSHER-CATEGORY-001/
   // CRUSHER-DISTANCE-* في rulebook.ts، بلا تشغيل محرك القرار كاملاً).
+  //
   // النتيجة مُخزَّنة هنا (لا في DustStep) لأن handleDustSubmit يحتاجها مباشرة
   // لمنع الحفظ فعلياً — DustStep تحدّثها عبر setCrusherPrecheckResults وتقرأها
-  // للعرض فقط. المفتاح: `${itemId}:${unitIndex}`.
-  const [crusherPrecheckResults, setCrusherPrecheckResults] = useState<
-    Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>
-  >({});
+  // للعرض فقط. المفتاح: `${itemId}:${unit.id}` — معرّف وحدة ثابت (لا رقم
+  // فهرس، راجع تعليق id في constants.ts) حتى لا يختلط فحص وحدة بأخرى عند
+  // حذف/إضافة وحدات وسط الجلسة.
+  const [crusherPrecheckResults, setCrusherPrecheckResults] = useState<Record<string, PlacementPrecheck | undefined>>({});
 
   // نفس مبدأ crusherPrecheckResults أعلاه بالضبط، لمحطة الخلط (batching_
   // plant) — عبر /api/dust-profiles/batching-precheck (BATCHING-DISTANCE-200
   // في rulebook.ts: 200م عن أقرب مستقبل حساس بصرف النظر عن نوعه، لا فحص فئة
   // مشروع هنا — بخلاف الكسارة، لا توجد قاعدة فئة لمحطة الخلط).
-  const [batchingPrecheckResults, setBatchingPrecheckResults] = useState<
-    Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>
-  >({});
+  const [batchingPrecheckResults, setBatchingPrecheckResults] = useState<Record<string, PlacementPrecheck | undefined>>({});
 
   // خطأ مكتشَف ومُصلَح (المستخدم: "التنبيه يعمل لكن يظهر متأخر — أقدر أسوي
   // حفظ قبل ما يظهر التنبيه"): Hard Block أعلاه كان يقرأ فقط آخر نتيجة
@@ -283,12 +295,14 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   const updateBatchingUnit = <K extends keyof BatchingUnit>(itemId: string, index: number, field: K, value: BatchingUnit[K]) => {
     let updatedLat: string | number = '';
     let updatedLng: string | number = '';
+    let updatedUnitId = '';
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
         const batchingUnits = item.batchingUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
         updatedLat = batchingUnits[index].batchingLat;
         updatedLng = batchingUnits[index].batchingLng;
+        updatedUnitId = batchingUnits[index].id;
         const syncLoc =
           index === 0 && (field === 'batchingLat' || field === 'batchingLng')
             ? syncItemLocationFromUnit(
@@ -306,15 +320,23 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       typeof updatedLat === 'number' &&
       typeof updatedLng === 'number'
     ) {
-      runBatchingPrecheck(itemId, index, updatedLat, updatedLng);
+      runBatchingPrecheck(itemId, updatedUnitId, updatedLat, updatedLng);
     }
   };
   const addBatchingUnit = (itemId: string) => {
     setRegulatoryActivities((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, batchingUnits: [...item.batchingUnits, { ...BATCHING_UNIT_DEFAULTS }] } : item))
+      prev.map((item) =>
+        item.id === itemId
+          ? { ...item, batchingUnits: [...item.batchingUnits, { ...BATCHING_UNIT_DEFAULTS, id: generateActivityItemId() }] }
+          : item
+      )
     );
   };
   const removeBatchingUnit = (itemId: string, index: number) => {
+    // unitId يُلتقَط من الحالة الحالية *قبل* التحديث — يلزم لحذف نتيجة
+    // precheck الصحيحة (مفتاحها معرّف الوحدة الثابت، لا رقم فهرس قد يشير
+    // بعد الحذف لوحدة مختلفة تماماً).
+    const unitId = regulatoryActivities.find((item) => item.id === itemId)?.batchingUnits[index]?.id;
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId || item.batchingUnits.length <= 1) return item;
@@ -326,11 +348,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, batchingUnits, ...syncLoc };
       })
     );
-    setBatchingPrecheckResults((prev) => {
-      const next = { ...prev };
-      delete next[`${itemId}:${index}`];
-      return next;
-    });
+    if (unitId) {
+      setBatchingPrecheckResults((prev) => {
+        const next = { ...prev };
+        delete next[`${itemId}:${unitId}`];
+        return next;
+      });
+    }
   };
 
   const updateIdleSurfaceUnit = <K extends keyof IdleSurfaceUnit>(itemId: string, index: number, field: K, value: IdleSurfaceUnit[K]) => {
@@ -360,12 +384,14 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   const updateCrusherUnit = <K extends keyof CrusherUnit>(itemId: string, index: number, field: K, value: CrusherUnit[K]) => {
     let updatedLat: string | number = '';
     let updatedLng: string | number = '';
+    let updatedUnitId = '';
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
         const crusherUnits = item.crusherUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
         updatedLat = crusherUnits[index].crusherLat;
         updatedLng = crusherUnits[index].crusherLng;
+        updatedUnitId = crusherUnits[index].id;
         const syncLoc =
           index === 0 && (field === 'crusherLat' || field === 'crusherLng')
             ? syncItemLocationFromUnit(
@@ -383,15 +409,21 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       typeof updatedLat === 'number' &&
       typeof updatedLng === 'number'
     ) {
-      runCrusherPrecheck(itemId, index, updatedLat, updatedLng);
+      runCrusherPrecheck(itemId, updatedUnitId, updatedLat, updatedLng);
     }
   };
   const addCrusherUnit = (itemId: string) => {
     setRegulatoryActivities((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, crusherUnits: [...item.crusherUnits, { ...CRUSHER_UNIT_DEFAULTS }] } : item))
+      prev.map((item) =>
+        item.id === itemId
+          ? { ...item, crusherUnits: [...item.crusherUnits, { ...CRUSHER_UNIT_DEFAULTS, id: generateActivityItemId() }] }
+          : item
+      )
     );
   };
   const removeCrusherUnit = (itemId: string, index: number) => {
+    // راجع تعليق removeBatchingUnit أعلاه — نفس المبدأ بالضبط.
+    const unitId = regulatoryActivities.find((item) => item.id === itemId)?.crusherUnits[index]?.id;
     setRegulatoryActivities((prev) =>
       prev.map((item) => {
         if (item.id !== itemId || item.crusherUnits.length <= 1) return item;
@@ -403,11 +435,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         return { ...item, crusherUnits, ...syncLoc };
       })
     );
-    setCrusherPrecheckResults((prev) => {
-      const next = { ...prev };
-      delete next[`${itemId}:${index}`];
-      return next;
-    });
+    if (unitId) {
+      setCrusherPrecheckResults((prev) => {
+        const next = { ...prev };
+        delete next[`${itemId}:${unitId}`];
+        return next;
+      });
+    }
   };
 
   // مجموعة مفاتيح (`${itemId}:${index}`) لكل فحص كسارة/خلط "معلَّق حالياً"
@@ -431,27 +465,37 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
 
   // طلب صريح من المستخدم — استدعاء crusher-precheck عند كل تغيير لموقع
   // كسارة، بـdebounce (600ms) حتى لا يُرسَل طلب لكل نقرة سحب على الخريطة —
-  // نافذة زمنية واحدة فقط لكل وحدة كسارة (المفتاح `${itemId}:${index}`)،
-  // فتغيير وحدة أخرى لا يُلغي مؤقّت هذه.
+  // نافذة زمنية واحدة فقط لكل وحدة كسارة (المفتاح `${itemId}:${unitId}`،
+  // معرّف ثابت لا رقم فهرس)، فتغيير وحدة أخرى لا يُلغي مؤقّت هذه.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي): الحالة تُضبَط 'checking' فوراً
+  // عند جدولة الفحص (لا فقط عند بدء الطلب الفعلي بعد 600ms) — handleDustSubmit
+  // يقرأ هذه الحالة مباشرة ليمنع الحفظ، فيجب أن تعكس "فحص جارٍ" من لحظة
+  // تغيّر الموقع، لا من لحظة انتهاء الـdebounce. فشل الشبكة الآن يضبط
+  // 'error' (حالة مانعة للحفظ) بدل حذف النتيجة بصمت كما كان سابقاً — فشل
+  // الاتصال لا يعني "الموقع آمن"، بل "لم نتحقق بعد".
   const crusherPrecheckTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const runCrusherPrecheck = (itemId: string, index: number, lat: number, lng: number) => {
-    const key = `${itemId}:${index}`;
+  const runCrusherPrecheck = (itemId: string, unitId: string, lat: number, lng: number) => {
+    const key = `${itemId}:${unitId}`;
     if (crusherPrecheckTimers.current[key]) clearTimeout(crusherPrecheckTimers.current[key]);
     markPrecheckPending(key);
+    setCrusherPrecheckResults((prev) => ({ ...prev, [key]: { status: 'checking', lat, lng, reasonsAr: [] } }));
     crusherPrecheckTimers.current[key] = setTimeout(async () => {
       try {
         const { data } = await apiClient.post('/dust-profiles/crusher-precheck', { projectId: project.id, lat, lng });
-        setCrusherPrecheckResults((prev) => ({ ...prev, [key]: { blocked: data.blocked, reasonsAr: data.reasonsAr } }));
+        setCrusherPrecheckResults((prev) => ({
+          ...prev,
+          [key]: { status: data.blocked ? 'blocked' : 'allowed', lat, lng, reasonsAr: data.reasonsAr ?? [] },
+        }));
       } catch {
-        // فشل التحقق الفوري (شبكة/خادم) لا يمنع الحفظ بمفرده — محرك التقييم
-        // اللاحق (evaluateProject.ts) يبقى الحكم النهائي الفعلي دائماً؛ هذا
-        // التحقق تحسين تجربة مستخدم فقط، لا مصدر الحقيقة الوحيد. الحارس
-        // الحقيقي (route.ts) يبقى يعمل بصرف النظر عن نجاح هذا الطلب.
-        setCrusherPrecheckResults((prev) => {
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
+        // فشل التحقق الفوري (شبكة/خادم) لا يجوز أن يُعامَل كـ"آمن" — الحارس
+        // الحقيقي غير القابل للتجاوز يبقى في route.ts بصرف النظر عن هذه
+        // الحالة، لكن الواجهة يجب ألا تسمح بضغطة حفظ تبدو ناجحة بينما لم
+        // يصلها أي دليل فعلي على سلامة الموقع.
+        setCrusherPrecheckResults((prev) => ({
+          ...prev,
+          [key]: { status: 'error', lat, lng, reasonsAr: ['تعذّر التحقق من الموقع — تحقّق من الاتصال وأعد المحاولة.'] },
+        }));
       } finally {
         markPrecheckSettled(key);
       }
@@ -460,20 +504,23 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
 
   // نفس مبدأ runCrusherPrecheck أعلاه بالضبط، لمحطة الخلط.
   const batchingPrecheckTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const runBatchingPrecheck = (itemId: string, index: number, lat: number, lng: number) => {
-    const key = `${itemId}:${index}`;
+  const runBatchingPrecheck = (itemId: string, unitId: string, lat: number, lng: number) => {
+    const key = `${itemId}:${unitId}`;
     if (batchingPrecheckTimers.current[key]) clearTimeout(batchingPrecheckTimers.current[key]);
     markPrecheckPending(key);
+    setBatchingPrecheckResults((prev) => ({ ...prev, [key]: { status: 'checking', lat, lng, reasonsAr: [] } }));
     batchingPrecheckTimers.current[key] = setTimeout(async () => {
       try {
         const { data } = await apiClient.post('/dust-profiles/batching-precheck', { projectId: project.id, lat, lng });
-        setBatchingPrecheckResults((prev) => ({ ...prev, [key]: { blocked: data.blocked, reasonsAr: data.reasonsAr } }));
+        setBatchingPrecheckResults((prev) => ({
+          ...prev,
+          [key]: { status: data.blocked ? 'blocked' : 'allowed', lat, lng, reasonsAr: data.reasonsAr ?? [] },
+        }));
       } catch {
-        setBatchingPrecheckResults((prev) => {
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
+        setBatchingPrecheckResults((prev) => ({
+          ...prev,
+          [key]: { status: 'error', lat, lng, reasonsAr: ['تعذّر التحقق من الموقع — تحقّق من الاتصال وأعد المحاولة.'] },
+        }));
       } finally {
         markPrecheckSettled(key);
       }
@@ -527,9 +574,9 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     const newItems: RegulatoryActivityItem[] = activityKeys.map((key) => ({
       id: generateActivityItemId(),
       fields: { ...REGULATORY_ACTIVITY_FIELDS_DEFAULTS, regulatoryActivity: key },
-      batchingUnits: [{ ...BATCHING_UNIT_DEFAULTS }],
+      batchingUnits: [{ ...BATCHING_UNIT_DEFAULTS, id: generateActivityItemId() }],
       idleSurfaceUnits: [{ ...IDLE_SURFACE_UNIT_DEFAULTS }],
-      crusherUnits: [{ ...CRUSHER_UNIT_DEFAULTS }],
+      crusherUnits: [{ ...CRUSHER_UNIT_DEFAULTS, id: generateActivityItemId() }],
       lat: null,
       lng: null,
       deviceId: null,
@@ -931,17 +978,24 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       const unitsError = validateRegulatoryUnits(item.fields, { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits });
       if (unitsError) { toast.error(`النشاط ${i + 1}: ${unitsError}`); return; }
 
-      // طلب صريح من المستخدم — منع حفظ فعلي (Hard Block) إذا كانت آخر نتيجة
-      // معروفة لموقع كسارة = blocked (فئة المشروع أو المسافة عن مستقبل
-      // حساس). لا يعتمد على انتظار استجابة الشبكة هنا — يقرأ فقط آخر نتيجة
-      // وصلت فعلاً (crusherPrecheckResults)؛ إن لم تصل نتيجة بعد (طلب لا
-      // يزال معلَّقاً)، لا يُمنع الحفظ (محرك التقييم اللاحق يبقى الحكم
-      // النهائي دائماً — راجع تعليق runCrusherPrecheck).
+      // طلب صريح من المستخدم (تطبيق تقرير المراجعة الثاني) — منع الحفظ ما لم
+      // تكن آخر نتيجة فحص لهذه الوحدة تحديداً (بمعرّف ثابت unit.id، لا رقم
+      // فهرس قابل للانزياح) = 'allowed' فعلاً، وتطابق إحداثيات الوحدة
+      // الحالية بالضبط. أي حالة أخرى (checking/error/blocked/غياب تام
+      // للنتيجة، أو نتيجة قديمة لموقع مختلف) تمنع الحفظ — الحارس الخادمي في
+      // route.ts يبقى الحكم النهائي دائماً، لكن هذا يمنع تسرّع المستخدم قبل
+      // وصول نتيجة الفحص الفعلية للموقع الحالي.
       if (item.fields.regulatoryActivity === 'CRUSHER') {
         for (let u = 0; u < item.crusherUnits.length; u++) {
-          const result = crusherPrecheckResults[`${item.id}:${u}`];
-          if (result?.blocked) {
-            toast.error(`النشاط ${i + 1} — الكسارة ${u + 1}: ${result.reasonsAr[0] ?? 'الموقع المحدَّد لا يستوفي شروط تشغيل الكسارة.'}`);
+          const unit = item.crusherUnits[u];
+          const result = crusherPrecheckResults[`${item.id}:${unit.id}`];
+          if (
+            !result ||
+            result.status !== 'allowed' ||
+            result.lat !== Number(unit.crusherLat) ||
+            result.lng !== Number(unit.crusherLng)
+          ) {
+            toast.error(`النشاط ${i + 1} — الكسارة ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
             return;
           }
         }
@@ -950,9 +1004,15 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       // نفس مبدأ الكسارة أعلاه بالضبط، لمحطة الخلط (BATCHING-DISTANCE-200).
       if (item.fields.regulatoryActivity === 'BATCHING_PLANT') {
         for (let u = 0; u < item.batchingUnits.length; u++) {
-          const result = batchingPrecheckResults[`${item.id}:${u}`];
-          if (result?.blocked) {
-            toast.error(`النشاط ${i + 1} — محطة الخلط ${u + 1}: ${result.reasonsAr[0] ?? 'الموقع المحدَّد لا يستوفي شروط إنشاء محطة الخلط هنا.'}`);
+          const unit = item.batchingUnits[u];
+          const result = batchingPrecheckResults[`${item.id}:${unit.id}`];
+          if (
+            !result ||
+            result.status !== 'allowed' ||
+            result.lat !== Number(unit.batchingLat) ||
+            result.lng !== Number(unit.batchingLng)
+          ) {
+            toast.error(`النشاط ${i + 1} — محطة الخلط ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
             return;
           }
         }

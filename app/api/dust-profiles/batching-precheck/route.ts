@@ -1,24 +1,15 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
-import { safeErrorResponse } from '@/app/lib/apiError';
-import {
-  buildSensitiveReceptor,
-  nearestReceptorDistancesM,
-  refreshRuleParameters,
-  getRuleParameters,
-} from '@/app/utils/dust-compliance-engine';
-import { buildOsmProximityWarning } from '@/app/utils/geo/overpassReceptors';
+import { validateDustUnitPlacement } from '@/app/lib/dustPlacementValidation';
 
 // طلب صريح من المستخدم — نفس مبدأ crusher-precheck، لمحطة الخلط (batching_
 // plant): تحقق فوري قبل الحفظ عند تحديد موقع وحدة خلط على الخريطة، بدل
 // انتظار محرك التقييم اللاحق الذي يطبّق فعلياً BATCHING-DISTANCE-200
-// (rulebook.ts) بعد الحفظ. بخلاف الكسارة، لا توجد قاعدة فئة مشروع لمحطة
-// الخلط (لا مكافئ لـCRUSHER-CATEGORY-001) — فقط حد مسافة واحد (200م) عن
-// أقرب مستقبل حساس **بصرف النظر عن نوعه** (سكني/مدرسي/صحي/مسجد/غيره)،
-// نفس CRUSHER_GENERAL_RECEPTOR_DISTANCE_M المُعاد استخدامها حرفياً في
-// BATCHING-DISTANCE-200 — لذا يُستخدَم nearestAnyM هنا حصراً، لا
-// nearestResidentialM (ذاك حصري لحد الـ500م الأشد الخاص بالكسارة فقط).
+// (rulebook.ts) بعد الحفظ. المنطق الفعلي موحَّد في
+// app/lib/dustPlacementValidation.ts (راجع التعليق الكامل في crusher-
+// precheck/route.ts) — لا فئة مشروع لمحطة الخلط (لا مكافئ لـ
+// CRUSHER-CATEGORY-001)، فقط حد مسافة واحد (200م) عن أقرب مستقبل حساس
+// بصرف النظر عن نوعه.
 export async function POST(request: Request) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -43,42 +34,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'غير مصرّح بالوصول لهذا المشروع' }, { status: 403 });
   }
 
-  const { data: receptorRows, error: receptorsError } = await supabaseAdmin
-    .from('sensitive_receptors')
-    .select('id, name, receptor_type, lat, lng');
+  const result = await validateDustUnitPlacement({ projectId, lat, lng, activityType: 'BATCHING_PLANT' });
 
-  // خطأ أمني يجب تجنبه (نفس نمط crusher-precheck): فشل الاستعلام يجب ألا
+  // خطأ أمني يجب تجنبه (نفس نمط crusher-precheck): فشل التحقق يجب ألا
   // يتحول بصمت إلى "لا مستقبِلات" (مسافة Infinity = آمن زوراً).
-  if (receptorsError) {
-    return NextResponse.json(
-      { error: safeErrorResponse(receptorsError, 'sensitive_receptors fetch failed') },
-      { status: 500 }
-    );
+  if (!result.verified) {
+    return NextResponse.json({ error: 'PLACEMENT_NOT_VERIFIED', detail: result.error }, { status: 503 });
   }
-
-  await refreshRuleParameters(supabaseAdmin);
-
-  const sensitiveReceptors = (receptorRows || []).map(buildSensitiveReceptor);
-  const { nearestAnyM } = nearestReceptorDistancesM(lat, lng, sensitiveReceptors);
-  const { CRUSHER_GENERAL_RECEPTOR_DISTANCE_M } = getRuleParameters();
-
-  const reasons: string[] = [];
-  if (nearestAnyM !== null && nearestAnyM < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
-    reasons.push(
-      `الموقع المحدَّد على بُعد ${Math.round(nearestAnyM)} م فقط من أقرب مستقبل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية) — أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`
-    );
-  }
-
-  // طلب صريح من المستخدم — نفس إصلاح crusher-precheck بالضبط: جدول
-  // sensitive_receptors اليدوي قد يبقى فارغاً بلا إدخال بشري، فتمر محطة
-  // خلط قرب مسجد حقيقي بلا أي تنبيه. راجع التعليق الكامل هناك للتفصيل
-  // الكامل حول سبب اقتصار هذا على منع الحفظ (لا مخالفة تنظيمية فعلية).
-  const osmWarning = await buildOsmProximityWarning(lat, lng, CRUSHER_GENERAL_RECEPTOR_DISTANCE_M);
-  if (osmWarning) reasons.push(osmWarning);
 
   return NextResponse.json({
-    blocked: reasons.length > 0,
-    reasonsAr: reasons,
-    nearestReceptorM: nearestAnyM === Infinity ? null : nearestAnyM,
+    blocked: result.blocked,
+    reasonsAr: result.reasonsAr,
+    nearestReceptorM: result.nearestReceptorM,
   });
 }

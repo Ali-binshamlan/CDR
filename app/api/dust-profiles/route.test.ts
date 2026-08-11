@@ -229,17 +229,19 @@ describe('POST /api/dust-profiles', () => {
   // قبل وصول النتيجة كان يتجاوز الحارس بالكامل. هذه المجموعة تختبر الحارس
   // الحقيقي المُضاف الآن في route.ts نفسه (المصدر الوحيد للحقيقة).
   describe('حارس الكسارة/محطة الخلط عند الحفظ الفعلي (لا يعتمد على الواجهة)', () => {
-    it('كسارة في مشروع دون الفئة الثالثة (site_area_m2 صغيرة) → 400', async () => {
+    it('كسارة في مشروع دون الفئة الثالثة (site_area_m2 صغيرة) → 422 PLACEMENT_BLOCKED', async () => {
       tableResults.projects = { data: { site_area_m2: 1000, daily_truck_movements: 5 }, error: null };
       const { POST } = await import('./route');
       const res = await POST(
         makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toBe('PLACEMENT_BLOCKED');
       expect(lastDustProfileInsert).toBeNull();
     });
 
-    it('كسارة في مشروع فئة ثالثة + مستقبل سكني على 100م (sensitive_receptors يدوي) → 400', async () => {
+    it('كسارة في مشروع فئة ثالثة + مستقبل سكني على 100م (sensitive_receptors يدوي) → 422 PLACEMENT_BLOCKED', async () => {
       tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
       tableResults.sensitive_receptors = {
         data: [{ id: 'r1', name: 'حي سكني', receptor_type: 'RESIDENTIAL', lat: 24.7009, lng: 46.6 }],
@@ -249,18 +251,18 @@ describe('POST /api/dust-profiles', () => {
       const res = await POST(
         makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
       expect(lastDustProfileInsert).toBeNull();
     });
 
-    it('كسارة في مشروع فئة ثالثة + OSM يكتشف مسجداً قريباً (sensitive_receptors فارغ) → 400', async () => {
+    it('كسارة في مشروع فئة ثالثة + OSM يكتشف مسجداً قريباً (sensitive_receptors فارغ) → 422 PLACEMENT_BLOCKED', async () => {
       tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
       mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
       const { POST } = await import('./route');
       const res = await POST(
         makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
       expect(lastDustProfileInsert).toBeNull();
     });
 
@@ -274,7 +276,7 @@ describe('POST /api/dust-profiles', () => {
       expect(lastDustProfileInsert).not.toBeNull();
     });
 
-    it('محطة خلط + مسجد على 100م (أقل من 200م) → 400', async () => {
+    it('محطة خلط + مسجد على 100م (أقل من 200م) → 422 PLACEMENT_BLOCKED', async () => {
       tableResults.sensitive_receptors = {
         data: [{ id: 'r1', name: 'مسجد', receptor_type: 'MOSQUE', lat: 24.7009, lng: 46.6 }],
         error: null,
@@ -290,11 +292,13 @@ describe('POST /api/dust-profiles', () => {
           })
         ) as never
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toBe('PLACEMENT_BLOCKED');
       expect(lastDustProfileInsert).toBeNull();
     });
 
-    it('محطة خلط + OSM يكتشف معلَماً قريباً → 400', async () => {
+    it('محطة خلط + OSM يكتشف معلَماً قريباً → 422 PLACEMENT_BLOCKED', async () => {
       mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
       const { POST } = await import('./route');
       const res = await POST(
@@ -307,7 +311,7 @@ describe('POST /api/dust-profiles', () => {
           })
         ) as never
       );
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(422);
       expect(lastDustProfileInsert).toBeNull();
     });
 

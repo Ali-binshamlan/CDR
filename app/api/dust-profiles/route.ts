@@ -5,15 +5,7 @@ import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { haversineDistanceM } from '@/app/utils/geo/zone';
 import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
-import {
-  buildProjectComplianceProfile,
-  buildSensitiveReceptor,
-  classifyProject,
-  nearestReceptorDistancesM,
-  refreshRuleParameters,
-  getRuleParameters,
-} from '@/app/utils/dust-compliance-engine';
-import { buildOsmProximityWarning } from '@/app/utils/geo/overpassReceptors';
+import { validateDustUnitPlacement } from '@/app/lib/dustPlacementValidation';
 
 // حقول حساسة لا يجوز أن يتحكم بها العميل مطلقاً — id لمنع انتحال/تصادم
 // صف موجود، created_at لمنع تزوير توقيت السجل، device_id (الربط بمحطة
@@ -319,50 +311,26 @@ export async function POST(request: NextRequest) {
         : (typeof insert.batching_lng === 'number' ? insert.batching_lng : lng);
 
     if (typeof unitLat === 'number' && typeof unitLng === 'number') {
-      const { data: receptorRows, error: receptorsError } = await supabaseAdmin
-        .from('sensitive_receptors')
-        .select('id, name, receptor_type, lat, lng');
-      if (receptorsError) {
+      const placement = await validateDustUnitPlacement({
+        projectId: insert.project_id as string,
+        lat: unitLat,
+        lng: unitLng,
+        activityType: insert.regulatory_activity,
+      });
+
+      // طلب صريح من المستخدم (تطبيق تقرير المراجعة الثاني) — 503 يميّز
+      // صراحة "تعذّر التحقق فعلياً" (فشل جلب sensitive_receptors) عن أي حالة
+      // أخرى؛ لا يجوز أن يتحول فشل التحقق بصمت إلى سماح بالحفظ (أمان كاذب).
+      if (!placement.verified) {
+        return NextResponse.json({ error: 'PLACEMENT_NOT_VERIFIED', detail: placement.error }, { status: 503 });
+      }
+      // 422 (لا 400 العام) — يميّز "الطلب صالح شكلاً لكن الموقع مرفوض
+      // تنظيمياً" عن أخطاء التحقق من صحة المدخلات الأخرى في هذا الملف.
+      if (placement.blocked) {
         return NextResponse.json(
-          { error: safeErrorResponse(receptorsError, 'sensitive_receptors fetch failed') },
-          { status: 500 }
+          { error: 'PLACEMENT_BLOCKED', reasonsAr: placement.reasonsAr },
+          { status: 422 }
         );
-      }
-      await refreshRuleParameters(supabaseAdmin);
-      const sensitiveReceptors = (receptorRows || []).map(buildSensitiveReceptor);
-      const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(unitLat, unitLng, sensitiveReceptors);
-      const { CRUSHER_GENERAL_RECEPTOR_DISTANCE_M, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M } = getRuleParameters();
-
-      const blockReasons: string[] = [];
-
-      if (insert.regulatory_activity === 'CRUSHER') {
-        const { data: projectRow2 } = await supabaseAdmin
-          .from('projects')
-          .select('site_area_m2, daily_truck_movements, has_onsite_crusher, has_onsite_batching_plant')
-          .eq('id', insert.project_id as string)
-          .maybeSingle();
-        const { riskClass } = classifyProject(buildProjectComplianceProfile(projectRow2));
-        if (riskClass !== 'CATEGORY_III_HIGH') {
-          blockReasons.push('الكسارات مسموحة فقط في مشاريع الفئة الثالثة (عالية المخاطر) — تصنيف هذا المشروع الحالي لا يستوفي الشرط');
-        }
-        if (nearestAnyM !== null && nearestAnyM < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
-          blockReasons.push(`الموقع المحدَّد على بُعد ${Math.round(nearestAnyM)} م فقط من أقرب مستقبل حساس — أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`);
-        }
-        if (nearestResidentialM !== null && nearestResidentialM < CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M) {
-          blockReasons.push(`الموقع المحدَّد على بُعد ${Math.round(nearestResidentialM)} م فقط من أقرب منطقة سكنية/مدرسة/مستشفى — أقل من الحد الأدنى (${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م)`);
-        }
-        const osmWarning = await buildOsmProximityWarning(unitLat, unitLng, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M);
-        if (osmWarning) blockReasons.push(osmWarning);
-      } else {
-        if (nearestAnyM !== null && nearestAnyM < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
-          blockReasons.push(`الموقع المحدَّد على بُعد ${Math.round(nearestAnyM)} م فقط من أقرب مستقبل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية) — أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`);
-        }
-        const osmWarning = await buildOsmProximityWarning(unitLat, unitLng, CRUSHER_GENERAL_RECEPTOR_DISTANCE_M);
-        if (osmWarning) blockReasons.push(osmWarning);
-      }
-
-      if (blockReasons.length > 0) {
-        return NextResponse.json({ error: blockReasons[0], reasonsAr: blockReasons }, { status: 400 });
       }
     }
   }

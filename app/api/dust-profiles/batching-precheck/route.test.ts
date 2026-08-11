@@ -118,11 +118,13 @@ describe('POST /api/dust-profiles/batching-precheck', () => {
     expect(body.blocked).toBe(false);
   });
 
-  it('فشل استعلام sensitive_receptors → 500 صريح، لا أمان كاذب', async () => {
+  it('فشل استعلام sensitive_receptors → 503 PLACEMENT_NOT_VERIFIED صريح، لا أمان كاذب', async () => {
     tableResults.sensitive_receptors = { data: null, error: { message: 'db down' } };
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toBe('PLACEMENT_NOT_VERIFIED');
   });
 
   // طلب صريح من المستخدم — نفس إصلاح crusher-precheck: sensitive_receptors

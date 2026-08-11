@@ -8,6 +8,7 @@ import type { ProjectLite, ProjectDeviceLite } from './types';
 import { MultiActivityMapPicker, buildMapPoints } from './MultiActivityMapPicker';
 import type { MapPoint } from './MultiActivityMapPicker';
 import { buildProjectZoneFromRow, haversineDistanceM } from '@/app/utils/geo/zone';
+import type { PlacementPrecheck } from './index';
 
 type DustForm = typeof DUST_FORM_DEFAULTS;
 
@@ -38,11 +39,12 @@ interface DustStepProps {
   addCrusherUnit: (itemId: string) => void;
   removeCrusherUnit: (itemId: string, index: number) => void;
   // طلب صريح من المستخدم — نتيجة تحقق فوري (crusher-precheck) لكل وحدة
-  // كسارة، مفتاحها `${itemId}:${index}` — تُحدَّث من index.tsx (تملك الحالة
-  // لأن handleDustSubmit يحتاجها لمنع الحفظ فعلياً)، هنا للعرض فقط.
-  crusherPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
+  // كسارة، مفتاحها `${itemId}:${unit.id}` (معرّف وحدة ثابت، لا رقم فهرس) —
+  // تُحدَّث من index.tsx (تملك الحالة لأن handleDustSubmit يحتاجها لمنع
+  // الحفظ فعلياً)، هنا للعرض فقط.
+  crusherPrecheckResults: Record<string, PlacementPrecheck | undefined>;
   // نفس المبدأ أعلاه بالضبط، لمحطة الخلط (batching-precheck).
-  batchingPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
+  batchingPrecheckResults: Record<string, PlacementPrecheck | undefined>;
   // خطأ مكتشَف ومُصلَح (المستخدم: "أقدر أسوي حفظ قبل ما يظهر التنبيه") —
   // true طالما يوجد فحص كسارة/محطة خلط لم تصل نتيجته بعد (debounce 600ms
   // أو استجابة شبكة قيد الانتظار). زر الحفظ يُعطَّل طوال هذه الفترة، بدل
@@ -579,8 +581,8 @@ export function DustStep({
                                   index.tsx/handleDustSubmit) عند مسافة أقل من 200م عن أقرب مستقبل
                                   حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)، فور تحديد الموقع على الخريطة. */}
                               {(() => {
-                                const precheck = batchingPrecheckResults[`${item.id}:${i}`];
-                                if (!precheck || !precheck.blocked) return null;
+                                const precheck = batchingPrecheckResults[`${item.id}:${unit.id}`];
+                                if (!precheck || precheck.status !== 'blocked') return null;
                                 return (
                                   <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-1">
                                     <p className="text-[11px] font-black text-red-700 flex items-center gap-1.5">
@@ -716,8 +718,8 @@ export function DustStep({
                                   index.tsx/handleDustSubmit) عند مخالفة فئة المشروع أو مسافة
                                   المستقبل الحساس، فور تحديد الموقع على الخريطة. */}
                               {(() => {
-                                const precheck = crusherPrecheckResults[`${item.id}:${i}`];
-                                if (!precheck || !precheck.blocked) return null;
+                                const precheck = crusherPrecheckResults[`${item.id}:${unit.id}`];
+                                if (!precheck || precheck.status !== 'blocked') return null;
                                 return (
                                   <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-1">
                                     <p className="text-[11px] font-black text-red-700 flex items-center gap-1.5">
