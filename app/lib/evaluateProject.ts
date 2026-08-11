@@ -3,6 +3,7 @@ import {
   computeDustResults,
   computeDustComplianceResults,
   persistActivityDecisionsAtomic,
+  riyadhLocalToUtcIso,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor, refreshRuleParameters, getActiveParameterVersionIds } from '@/app/utils/dust-compliance-engine';
 import { checkDustActivities } from '@/app/api/alerts/generate/route';
@@ -29,6 +30,27 @@ export interface EvaluateProjectResult {
   // جديد؛ لا تستحق نفس درجة الخطورة أو نفس معالجة الفشل الحقيقي في route.ts.
   conflictActivityIds?: string[];
   error?: string;
+}
+
+// خطأ مكتشَف ومُصلَح (المستخدم لاحظ أن نشاطاً تعرضه الواجهة كـ"انتهى النشاط"
+// — planned_date/planned_time/duration_hours انقضت نافذته الزمنية — استمر
+// يستقبل قرارات جديدة في final_decisions): الواجهة
+// (MultiIndicatorActivityBox.tsx) تحسب status==='past' وتُخفي القرار الحي
+// بصرياً فقط، لكن evaluateProject لم يكن يستبعد هذه الصفوف من التقييم
+// الفعلي على الخادم إطلاقاً — نفس منطق النافذة الزمنية
+// (riyadhLocalToUtcIso(planned_date, planned_time) + duration_hours ساعات)
+// المستخدم في app/api/projects/[projectId]/route.ts:278-282 يُطبَّق هنا
+// الآن، مُصدَّرة لقابلية الاختبار المستقلة. صف بلا planned_date/planned_time/
+// duration_hours صالحة (نشاط بلا نافذة زمنية معروفة) لا يُستبعَد أبداً —
+// فشل آمن نحو التقييم لا الاستبعاد الصامت.
+export function isDustProfileWindowActive(
+  row: { planned_date?: string | null; planned_time?: string | null; duration_hours?: number | null },
+  nowMs: number
+): boolean {
+  const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
+  if (!startIso || !row.duration_hours) return true;
+  const endMs = new Date(startIso).getTime() + row.duration_hours * 3600000;
+  return endMs >= nowMs;
 }
 
 // خطأ مكتشَف ومُصلَح (القسم 10.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" —
@@ -89,7 +111,7 @@ export async function evaluateProject(
       .single();
     const evaluationRunId = runRow?.id ?? null;
 
-    const [{ data: dustProfiles }, { data: projectShifts }] = await Promise.all([
+    const [{ data: dustProfilesRaw }, { data: projectShifts }] = await Promise.all([
       // archived_at is null — نشاط مؤرشَف (راجع DELETE في app/api/activities/
       // route.ts، الأرشفة حلّت محل الحذف الفعلي) يجب ألا يدخل دورة تقييم حية
       // جديدة، رغم بقاء أدلته التاريخية قابلة للقراءة دائماً في مكان آخر.
@@ -98,7 +120,19 @@ export async function evaluateProject(
     ]);
     project.shifts = projectShifts || [];
 
-    const dustResults = await computeDustResults(dustProfiles || [], project, supabaseAdmin);
+    // خطأ مكتشَف ومُصلَح (المستخدم لاحظ أن نشاطاً تعرضه الواجهة كـ"انتهى
+    // النشاط" — planned_date/planned_time/duration_hours انقضت نافذته
+    // الزمنية — استمر يستقبل قرارات جديدة في final_decisions): الواجهة
+    // (MultiIndicatorActivityBox.tsx) تحسب status==='past' وتُخفي القرار
+    // الحي بصرياً فقط، لكن evaluateProject لم يكن يستبعد هذه الصفوف من
+    // التقييم الفعلي على الخادم إطلاقاً — نفس منطق النافذة الزمنية
+    // (riyadhLocalToUtcIso(planned_date, planned_time) + duration_hours
+    // ساعات) المستخدم في app/api/projects/[projectId]/route.ts:278-282
+    // يُطبَّق هنا الآن ليستبعد أي نشاط انتهت نافذته المخطَّطة فعلياً من دورة
+    // التقييم — لا تعديل على منطق الواجهة نفسه، فقط مطابقة الخادم لها.
+    const dustProfiles = (dustProfilesRaw || []).filter((row) => isDustProfileWindowActive(row, Date.now()));
+
+    const dustResults = await computeDustResults(dustProfiles, project, supabaseAdmin);
     if (dustResults.length === 0) {
       await completeEvaluationRun(evaluationRunId, { status: 'SUCCEEDED', activitiesEvaluated: 0, activitiesFailed: 0 });
       return { success: true, persisted: 0 };
