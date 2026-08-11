@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // نموّه supabaseAdmin — يغطي: التحقق من الملكية (خارج هذا الملف عبر
-// requireUserId/verifyProjectOwnership)، upsert لـactivity_groups، قراءة
-// work_hours لتحقق أوقات الدوام، قراءة project_devices لحساب device_id
-// التلقائي، وأخيراً INSERT الفعلي في project_dust_profiles (نلتقط الحمولة
-// النهائية للتحقق من is_dust_generating/activity_type).
+// requireUserId/verifyProjectOwnership)، قراءة work_hours لتحقق أوقات
+// الدوام، قراءة project_devices لحساب device_id التلقائي، وأخيراً استدعاء
+// RPC الذرية insert_dust_profile_atomic (نلتقط الحمولة النهائية p_insert
+// للتحقق من is_dust_generating/activity_type — راجع تعليق mockRpcError
+// أدناه لسبب تحويل activity_groups + project_dust_profiles لRPC واحدة).
 type TableResult = { data: unknown; error: { message: string } | null };
 const tableResults: Record<string, TableResult> = {};
 let lastDustProfileInsert: Record<string, unknown> | null = null;
+let lastRpcCall: { name: string; args: Record<string, unknown> } | null = null;
+// خطأ RPC اختياري — لاختبار مسار الفشل الخادمي (مثال: قيد قاعدة بيانات)
+// بمعزل عن أي تحقق سابق ناجح، يثبت أن lastDustProfileInsert لا يُحفَظ محلياً
+// إلا بعد أن "تنجح" RPC فعلياً في هذا المموّه (لا قبلها).
+let mockRpcError: { message: string } | null = null;
 
 function makeChain(tableName: string) {
   const result = tableResults[tableName] ?? { data: null, error: null };
@@ -15,11 +21,6 @@ function makeChain(tableName: string) {
     select: () => chain,
     eq: () => chain,
     maybeSingle: async () => ({ data: result.data ?? null, error: result.error ?? null }),
-    upsert: async () => ({ error: null }),
-    insert: async (row: Record<string, unknown>) => {
-      if (tableName === 'project_dust_profiles') lastDustProfileInsert = row;
-      return { error: result.error ?? null };
-    },
     then: (resolve: (value: { data: unknown; error: unknown }) => void) =>
       resolve({ data: result.data ?? null, error: result.error ?? null }),
   };
@@ -29,6 +30,15 @@ function makeChain(tableName: string) {
 vi.mock('@/app/lib/supabaseAdmin', () => ({
   supabaseAdmin: {
     from: (tableName: string) => makeChain(tableName),
+    rpc: async (name: string, args: Record<string, unknown>) => {
+      lastRpcCall = { name, args };
+      if (mockRpcError) return { data: null, error: mockRpcError };
+      if (name === 'insert_dust_profile_atomic') {
+        lastDustProfileInsert = args.p_insert as Record<string, unknown>;
+        return { data: { id: 'dust-profile-1', ...(args.p_insert as Record<string, unknown>) }, error: null };
+      }
+      return { data: null, error: null };
+    },
   },
 }));
 
@@ -86,6 +96,8 @@ describe('POST /api/dust-profiles', () => {
   beforeEach(() => {
     for (const key of Object.keys(tableResults)) delete tableResults[key];
     lastDustProfileInsert = null;
+    lastRpcCall = null;
+    mockRpcError = null;
     mockRequireUserIdResult = { userId: 'user-1' };
     mockOwnershipResult = true;
     tableResults.projects = { data: { work_hours_start: null, work_hours_end: null }, error: null };
@@ -320,6 +332,47 @@ describe('POST /api/dust-profiles', () => {
       const { POST } = await import('./route');
       const res = await POST(makeRequest(baseInsert()) as never);
       expect(res.status).toBe(200);
+    });
+  });
+
+  // اختبارا قبول صريحان (طلب المستخدم — تقرير المراجعة الخارجي: "إنشاء
+  // نشاط الغبار ليس معاملة واحدة"): activity_groups لم يعد يُكتَب مباشرة من
+  // route.ts بمعزل عن باقي التحققات — الكتابة الوحيدة الآن هي RPC واحدة
+  // (insert_dust_profile_atomic) تُنشئ activity_groups وproject_dust_profiles
+  // معاً، ولا تُستدعى إطلاقاً قبل نجاح كل تحقق سابق (تاريخ/أوقات دوام/فحص
+  // موقع الكسارة). فشل أي تحقق لاحق يعني عدم استدعاء RPC مطلقاً — لا صف
+  // مجموعة يتيم ممكن.
+  describe('لا كتابة على activity_groups قبل نجاح كل التحققات (اختبار قبول صريح)', () => {
+    it('فشل فحص موقع الكسارة (PLACEMENT_BLOCKED) → RPC الذرية لا تُستدعى إطلاقاً', async () => {
+      tableResults.projects = { data: { site_area_m2: 1000, daily_truck_movements: 5 }, error: null };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(422);
+      expect(lastRpcCall).toBeNull();
+    });
+
+    it('نجاح كل التحققات → RPC واحدة فقط تُستدعى، تحمل activity_group_id وحمولة النشاط معاً (لا كتابتان منفصلتان)', async () => {
+      tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(200);
+      expect(lastRpcCall?.name).toBe('insert_dust_profile_atomic');
+      expect(typeof lastRpcCall?.args.p_activity_group_id).toBe('string');
+      expect((lastRpcCall?.args.p_insert as Record<string, unknown>)?.project_id).toBe(PROJECT_ID);
+    });
+
+    it('فشل RPC الذرية خادمياً (مثال: قيد قاعدة بيانات) → 500 صريح، لا نجاح كاذب', async () => {
+      tableResults.projects = { data: { work_hours_start: null, work_hours_end: null }, error: null };
+      mockRpcError = { message: 'constraint violation' };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ regulatory_activity: 'EARTHWORKS', activity_type: 'GRADING' })) as never
+      );
+      expect(res.status).toBe(500);
     });
   });
 });

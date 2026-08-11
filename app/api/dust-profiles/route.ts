@@ -220,27 +220,20 @@ export async function POST(request: NextRequest) {
   const owns = await verifyProjectOwnership(insert.project_id as string, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
-  // خطأ معماري مكتشَف ومُصلَح (القسم 12.2/12.3 من "دليل الإصلاح الجذري
-  // لمنظومة مرقاب" — "الأفضل ألا يقبل api/dust-profiles قيمة activity_
-  // group_id حرة من العميل"): كان العميل (AddActivityModal.tsx) يرسل
-  // activity_group_id=null أحياناً فعلياً (قبل توليده محلياً لأول نشاط في
-  // الجلسة)، بلا أي fallback خادمي يضمن قيمة قبل الإدراج — قيد NOT NULL/FK
-  // المركّب على activity_group_id (activity_groups(project_id, id)) كان
-  // سيكسر هذا التدفق الصحيح فعلياً. الإصلاح: الخادم يولّد المعرّف دائماً
-  // إن غاب من العميل، ويُسجَّل صراحة في activity_groups (هوية المجموعة)
-  // قبل إدراج صف النشاط نفسه — يضمن استيفاء FK المركّب دائماً بلا استثناء.
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "إنشاء نشاط الغبار ليس
+  // معاملة واحدة"): activity_groups كان يُكتَب هنا (upsert فوري) قبل كل
+  // التحققات اللاحقة (تاريخ ماضٍ/أوقات الدوام/فحص الموقع) — فشل أي منها كان
+  // يترك صف activity_groups يتيماً بلا أي نشاط ينتمي إليه. الإصلاح: توليد
+  // activity_group_id يبقى هنا (نحتاج القيمة النهائية للتحققات التالية التي
+  // تُضمَّن في insert نفسه)، لكن الكتابة الفعلية لصف activity_groups
+  // تأجَّلت بالكامل إلى insert_dust_profile_atomic أسفل هذه الدالة — تُنفَّذ
+  // فقط بعد نجاح كل تحقق لاحق، وداخل نفس المعاملة الذرية التي تُدرج صف
+  // project_dust_profiles نفسه (كلاهما يُكتَب معاً أو لا شيء يُكتَب).
   const activityGroupId =
     typeof insert.activity_group_id === 'string' && insert.activity_group_id.trim()
       ? insert.activity_group_id.trim()
       : crypto.randomUUID();
   insert.activity_group_id = activityGroupId;
-
-  const { error: groupError } = await supabaseAdmin
-    .from('activity_groups')
-    .upsert({ project_id: insert.project_id as string, id: activityGroupId }, { onConflict: 'project_id,id', ignoreDuplicates: true });
-  if (groupError) {
-    return NextResponse.json({ error: safeErrorResponse(groupError, 'activity_groups upsert failed') }, { status: 500 });
-  }
 
   // منع جدولة نشاط في تاريخ ماضٍ على مستوى السيرفر أيضاً (لا نعتمد على فحص
   // الواجهة وحده) — تقييم DVI/الامتثال يعتمد على توقّع طقس ساعي لا يخدم
@@ -343,7 +336,17 @@ export async function POST(request: NextRequest) {
     insert.activity_lng as number | null | undefined
   );
 
-  const { error } = await supabaseAdmin.from('project_dust_profiles').insert(insert);
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'dust-profiles insert failed') }, { status: 500 });
-  return NextResponse.json({ success: true });
+  // لا كتابة على activity_groups أو project_dust_profiles قبل هذه النقطة —
+  // كل التحققات أعلاه (تاريخ/أوقات الدوام/فئة المشروع/المسافة عن مستقبِل
+  // حساس) نجحت بالفعل. insert_dust_profile_atomic (migration
+  // 202608110013) تُنشئ صف activity_groups (إن لم يكن موجوداً بالفعل) وصف
+  // project_dust_profiles معاً داخل معاملة واحدة ذرية — لا صف مجموعة يتيم
+  // ممكن بعد الآن، حتى مع فشل شبكي/خادمي عابر أثناء الكتابة نفسها.
+  const { data: insertedRow, error } = await supabaseAdmin.rpc('insert_dust_profile_atomic', {
+    p_project_id: insert.project_id as string,
+    p_activity_group_id: activityGroupId,
+    p_insert: insert,
+  });
+  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'dust-profiles atomic insert failed') }, { status: 500 });
+  return NextResponse.json({ success: true, data: insertedRow });
 }
