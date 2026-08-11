@@ -150,13 +150,20 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
       windSpeedKmh: ctx.windSpeedKmh,
       windGustKmh: ctx.windGustKmh,
       windDirectionDeg: ctx.windDirectionDeg,
-      pm10UgM3: ctx.pm10UgM3,
+      // خطأ مكتشَف ومُصلَح (راجع تعليق pm10RawUgM3/pm10EvidenceState الكامل
+      // في types.ts): ctx.pm10UgM3 قد يكون null الآن بسبب بوابة الحداثة
+      // (قراءة جهاز قديمة) رغم وجود قيمة خام فعلية — العرض هنا يجب أن يبقى
+      // القيمة الحقيقية دائماً (pm10RawUgM3)، لا القيمة المُصفَّرة المستخدَمة
+      // في القرار. ?? ctx.pm10UgM3 احتياطي فقط لاستدعاءات context() القديمة
+      // في الاختبارات التي لا تمرّر pm10RawUgM3 إطلاقاً.
+      pm10UgM3: ctx.pm10RawUgM3 ?? ctx.pm10UgM3,
       pm25UgM3: ctx.pm25UgM3,
       relativeHumidityPercent: ctx.relativeHumidityPercent,
       temperatureC: ctx.temperatureC,
       visibilityM: ctx.visibilityM,
       deviceLastReadingAt: ctx.deviceLastReadingAt,
       devicePm10LastReadingAt: ctx.devicePm10LastReadingAt,
+      pm10EvidenceState: ctx.pm10EvidenceState,
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
   };
@@ -800,13 +807,20 @@ export function evaluateDustCompliance(
       windSpeedKmh: ctx.windSpeedKmh,
       windGustKmh: ctx.windGustKmh,
       windDirectionDeg: ctx.windDirectionDeg,
-      pm10UgM3: ctx.pm10UgM3,
+      // خطأ مكتشَف ومُصلَح (راجع تعليق pm10RawUgM3/pm10EvidenceState الكامل
+      // في types.ts): ctx.pm10UgM3 قد يكون null الآن بسبب بوابة الحداثة
+      // (قراءة جهاز قديمة) رغم وجود قيمة خام فعلية — العرض هنا يجب أن يبقى
+      // القيمة الحقيقية دائماً (pm10RawUgM3)، لا القيمة المُصفَّرة المستخدَمة
+      // في القرار. ?? ctx.pm10UgM3 احتياطي فقط لاستدعاءات context() القديمة
+      // في الاختبارات التي لا تمرّر pm10RawUgM3 إطلاقاً.
+      pm10UgM3: ctx.pm10RawUgM3 ?? ctx.pm10UgM3,
       pm25UgM3: ctx.pm25UgM3,
       relativeHumidityPercent: ctx.relativeHumidityPercent,
       temperatureC: ctx.temperatureC,
       visibilityM: ctx.visibilityM,
       deviceLastReadingAt: ctx.deviceLastReadingAt,
       devicePm10LastReadingAt: ctx.devicePm10LastReadingAt,
+      pm10EvidenceState: ctx.pm10EvidenceState,
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
   };

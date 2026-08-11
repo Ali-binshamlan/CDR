@@ -11,11 +11,13 @@ import type {
   DustComplianceContext,
   DustProjectComplianceProfile,
   DmpApprovalStatus,
+  Pm10EvidenceState,
   RegulatoryDustActivity,
   SensitiveReceptor,
   SensitiveReceptorType,
 } from './types';
 import { nearestReceptorDistancesM, nearestDownwindReceptorDistanceM } from './geo';
+import { LIVE_FIELD_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 
 function toNullableNumber(value: unknown): number | null {
   return typeof value === 'number' && !Number.isNaN(value) ? value : null;
@@ -299,7 +301,15 @@ export function buildComplianceContext(
   // المشروع كله — راجع تعليق buildActivityComplianceProfile الكامل).
   // اختياري: undefined/null يعني "لا جهاز مرتبط أو لا توثيق مسجَّل"، فيُعامَل
   // اتجاه الرياح كغير صالح لقاعدة المستقبِل باتجاه الريح (فشل آمن).
-  deviceTrueNorthCalibration?: DeviceTrueNorthCalibration | null
+  deviceTrueNorthCalibration?: DeviceTrueNorthCalibration | null,
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق Pm10EvidenceState
+  // الكامل في types.ts): وقت "الآن" المستخدَم لحساب حداثة قراءة PM10 —
+  // Date.now() افتراضياً (توافقي مع كل الاستدعاءات القديمة)، لكن المستدعي
+  // يجب أن يمرّر نفس اللحظة الممرَّرة لاحقاً لـ evaluateDustCompliance(ctx, now)
+  // صراحة (لا يترك القيمة الافتراضية) حتى يمكن إعادة حساب نفس القرار لاحقاً
+  // (Replay/تدقيق) بنفس النتيجة تماماً — استدعاءان منفصلان لـ Date.now() في
+  // نفس التقييم قد يقعان على جانبين مختلفين من حد 4 دقائق نظرياً.
+  evaluatedAtMs: number = Date.now()
 ): DustComplianceContext {
   // القراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite — راجع
   // mergeDustReading في dust-engine/engine.ts) متوفرة فقط إن كان dviResult
@@ -345,6 +355,30 @@ export function buildComplianceContext(
     ? 'onsite'
     : 'none';
 
+  const pm10RawUgM3 = toNullableNumber(merged?.pm10);
+  const pm10SourceValue = merged?.sources.pm10;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق Pm10EvidenceState
+  // الكامل في types.ts): البوابة الفعلية المفقودة — pm10ThresholdRule
+  // (rulebook.ts) كان يقارن pm10UgM3 الخام مباشرة بـ340/250 بلا أي شرط
+  // حداثة خاص به (بخلاف الرياح/الرؤية المارّتين عبر freshOrNull في dust-
+  // engine/engine.ts). تُطبَّق فقط على pm10Source='device' — قراءة طقس/يدوية
+  // ليست "قراءة جهاز" لها عمر بنفس المعنى (نفس استثناء dust-engine/engine.ts
+  // بالضبط)، فتُعامَل كطازجة دائماً (FRESH) بصرف النظر عن devicePm10LastReadingAt.
+  const pm10EvidenceState: Pm10EvidenceState = (() => {
+    if (pm10SourceValue !== 'device') return 'FRESH';
+    const observedAtIso = merged?.devicePm10LastReadingAt;
+    if (!observedAtIso) return 'MISSING';
+    const ageMs = evaluatedAtMs - Date.parse(observedAtIso);
+    if (Number.isNaN(ageMs)) return 'MISSING';
+    if (ageMs < 0) return 'FUTURE';
+    return ageMs <= LIVE_FIELD_FRESHNESS_MS ? 'FRESH' : 'STALE';
+  })();
+  // pm10UgM3 (يدخل pm10ThresholdRule مباشرة) يُصفَّر إلى null عند STALE/
+  // FUTURE/MISSING لقراءة جهاز — لا "بلا بيانات" مموَّهة كصفر ولا قيمة قديمة
+  // تُعامَل كحية. pm10RawUgM3 يبقى دائماً القيمة الخام كاملة، للعرض/التدقيق
+  // فقط (راجع evidence.pm10UgM3 في engine.ts الذي يعرض الخام دائماً).
+  const pm10UgM3ForDecision = pm10EvidenceState === 'FRESH' ? pm10RawUgM3 : null;
+
   return {
     project: buildProjectComplianceProfile(project),
     activity: buildActivityComplianceProfile(
@@ -383,7 +417,7 @@ export function buildComplianceContext(
     windSpeedKmh: merged?.windSpeedKmh ?? null,
     windGustKmh: merged?.windGustKmh ?? null,
     windDirectionDeg: merged?.windDirectionDeg ?? null,
-    pm10UgM3: merged?.pm10 ?? null,
+    pm10UgM3: pm10UgM3ForDecision,
     pm25UgM3: merged?.pm25 ?? null,
     relativeHumidityPercent: merged?.relativeHumidityPercent ?? null,
     temperatureC: merged?.temperatureC ?? null,
@@ -395,7 +429,9 @@ export function buildComplianceContext(
     devicePm10LastReadingAt: dataSource === 'device' ? merged?.devicePm10LastReadingAt ?? null : undefined,
     dviCaveatsAr: dviResult.caveatsAr ?? [],
     dataSource,
-    pm10Source: merged?.sources.pm10,
+    pm10Source: pm10SourceValue,
+    pm10RawUgM3,
+    pm10EvidenceState,
     sensitiveReceptors,
     previousDecisionCategory: (previousDecision?.decision as DustComplianceContext['previousDecisionCategory']) ?? null,
     previousDecidingRuleCode: previousDecision?.deciding_rule_code ?? null,

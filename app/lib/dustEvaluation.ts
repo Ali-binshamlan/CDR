@@ -1485,6 +1485,14 @@ export async function computeDustComplianceResults(
         const dviResult = r.windowEval?.worst;
         if (!row || !dviResult) return null;
 
+        // لحظة تقييم واحدة موحَّدة لكل هذا النشاط — تُمرَّر صراحة لكل من
+        // buildComplianceContext (بوابة حداثة PM10) وevaluateDustCompliance
+        // (now) بدل استدعاءين منفصلين لـ Date.now() قد يقعان نظرياً على
+        // جانبين مختلفين من حد الحداثة (راجع تعليق evaluatedAtMs الكامل في
+        // adapters.ts) — يضمن قابلية إعادة حساب نفس القرار لاحقاً بنفس
+        // النتيجة تماماً.
+        const evaluatedAtMs = Date.now();
+
         // توثيق معايرة الجهاز الفعلي المرتبط بهذا النشاط تحديداً (لا
         // المشروع كله) — null إن لم يكن النشاط مرتبطاً بجهاز، أو لم يوجد
         // توثيق مسجَّل له بعد (فشل آمن نحو تجاهل اتجاه الرياح في القاعدة).
@@ -1507,7 +1515,7 @@ export async function computeDustComplianceResults(
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
-        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, deviceTrueNorthCalibration);
+        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, deviceTrueNorthCalibration, evaluatedAtMs);
 
         // تسجيل قراءة PM10 — يُستخدم لحساب استمرار القراءة (دقيقتين/30
         // دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
@@ -1589,11 +1597,11 @@ export async function computeDustComplianceResults(
           pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, project.id, r.activityGroupId, row.device_id ?? null);
         }
 
-        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration);
+        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration, evaluatedAtMs);
         // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
         // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
         // تصلح" (راجع buildPlanningForecastResult في engine.ts).
-        const result = evaluateDustCompliance(ctx, Date.now(), mode === 'PLANNING');
+        const result = evaluateDustCompliance(ctx, evaluatedAtMs, mode === 'PLANNING');
         return {
           activityGroupId: r.activityGroupId,
           activityId: r.activityId,
@@ -1655,11 +1663,12 @@ export function computeDustComplianceHourly(
       if (hourly.length === 0) return;
 
       const hourlyCompliance = hourly.map((hour) => {
-        const ctx = buildComplianceContext(project, row, hour, sensitiveReceptors);
+        const hourEvaluatedAtMs = Date.now();
+        const ctx = buildComplianceContext(project, row, hour, sensitiveReceptors, null, null, null, hourEvaluatedAtMs);
         // isPlanning=true: كل ساعة هنا توقّع طقس بحت (شبكة hourly كاملة) —
         // نفس السبب بالضبط الذي يمنع STOP/تعليق إلزامي على PLANNING أعلاه
         // بـcomputeDustComplianceResults، راجع buildPlanningForecastResult.
-        const result = evaluateDustCompliance(ctx, Date.now(), true);
+        const result = evaluateDustCompliance(ctx, hourEvaluatedAtMs, true);
         const rawAei = evaluateAei(hour, r.activityType);
         // mode='PLANNING' — نفس ساعة توقّع بلا استمرار PM10/استقرار استئناف
         // (لم تُمرَّر previousDecision/pm10Sustained لـbuildComplianceContext

@@ -2506,6 +2506,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
   // أولوية جهاز > طقس > onsite) — لم يعد activityRow.onsite_pm10 يُقرأ
   // مباشرة هنا بمعزل عن الجهاز كما كان قديماً.
   it('pm10UgM3 يعكس mergedReading.pm10 (الذي قد يكون من الجهاز)، لا onsite_pm10 مباشرة بمعزل عنه', () => {
+    const evaluatedAtMs = Date.parse('2026-01-01T12:00:00.000Z');
     const dviHourly = {
       ...baseDviHourly,
       rawWeatherSample: {
@@ -2517,11 +2518,64 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       },
       // الجهاز فاز بـ pm10=260 (لا 999 اليدوي ولا 45 الطقس) — يثبت أن
       // القراءة المدموجة فعلياً هي المصدر، لا onsite_pm10 من activityRow.
-      mergedReading: mergedReadingFixture({ pm10: 260, sources: { ...mergedReadingFixture().sources, pm10: 'device' } }),
+      // devicePm10LastReadingAt طازجة (لحظة evaluatedAtMs نفسها) — راجع
+      // اختبارات pm10EvidenceState أدناه للحالات القديمة/المفقودة تحديداً.
+      mergedReading: mergedReadingFixture({
+        pm10: 260,
+        devicePm10LastReadingAt: new Date(evaluatedAtMs).toISOString(),
+        sources: { ...mergedReadingFixture().sources, pm10: 'device' },
+      }),
     };
-    const ctx = buildComplianceContext({}, { onsite_pm10: 999 }, dviHourly, []);
+    const ctx = buildComplianceContext({}, { onsite_pm10: 999 }, dviHourly, [], null, null, null, evaluatedAtMs);
     expect(ctx.pm10UgM3).toBe(260);
+    expect(ctx.pm10RawUgM3).toBe(260);
+    expect(ctx.pm10EvidenceState).toBe('FRESH');
     expect(ctx.dataSource).toBe('device');
+  });
+
+  // اختبار قبول صريح (طلب المستخدم — تقرير المراجعة الخارجي، "PM10 القديم
+  // يدخل القرار كأنه قراءة حية"): قراءة جهاز بعمر 4:00.000 بالضبط (=
+  // LIVE_FIELD_FRESHNESS_MS تماماً) لا تزال صالحة (FRESH، حد شامل ≤)،
+  // وبعمر 4:00.001 (مليثانية واحدة أكثر) تصبح قديمة (STALE) ولا يجوز أن
+  // تُنتج أي إيقاف/تعليق PM10 (MRQ-PM10-BLACK-PENDING-104) رغم قيمتها 500
+  // (>340 بكثير) — لأن pm10UgM3 يُصفَّر إلى null قبل وصوله pm10ThresholdRule.
+  describe('حد الحداثة 4 دقائق بالضبط (طلب المستخدم — اختبار قبول صريح)', () => {
+    const evaluatedAtMs = Date.parse('2026-01-01T12:00:00.000Z');
+    function contextWithPm10Age(ageMs: number) {
+      const observedAtMs = evaluatedAtMs - ageMs;
+      const dviHourly = {
+        ...baseDviHourly,
+        mergedReading: mergedReadingFixture({
+          pm10: 500,
+          devicePm10LastReadingAt: new Date(observedAtMs).toISOString(),
+          sources: { ...mergedReadingFixture().sources, pm10: 'device' },
+        }),
+      };
+      return buildComplianceContext({}, {}, dviHourly, [], null, null, null, evaluatedAtMs);
+    }
+
+    it('عمر 4:00.000 بالضبط → FRESH، pm10UgM3=500 يدخل القرار، ينتج STOP', () => {
+      const ctx = contextWithPm10Age(4 * 60_000);
+      expect(ctx.pm10EvidenceState).toBe('FRESH');
+      expect(ctx.pm10UgM3).toBe(500);
+      expect(ctx.pm10RawUgM3).toBe(500);
+
+      const r = evaluateDustCompliance(context(ctx));
+      expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
+    });
+
+    it('عمر 4:00.001 (مليثانية واحدة أكثر) → STALE، pm10UgM3=null، لا إيقاف/تعليق PM10', () => {
+      const ctx = contextWithPm10Age(4 * 60_000 + 1);
+      expect(ctx.pm10EvidenceState).toBe('STALE');
+      expect(ctx.pm10UgM3).toBeNull();
+      // القيمة الخام تبقى محفوظة للعرض/التدقيق رغم قِدمها.
+      expect(ctx.pm10RawUgM3).toBe(500);
+
+      const r = evaluateDustCompliance(context(ctx));
+      expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(false);
+    });
   });
 
   it('mergedReading يفتقد pm10 (none) و onsite_pm10 موجود على activityRow → pm10UgM3 يبقى null (لا رجوع مباشر لـ onsite_pm10 خارج الدمج)', () => {

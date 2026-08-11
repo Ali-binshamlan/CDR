@@ -13,6 +13,19 @@ export type DustRiskClass =
   | 'CATEGORY_III_HIGH'
   | 'UNCLASSIFIED';
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "PM10 القديم يدخل القرار كأنه قراءة
+// حية"): pm10UgM3 (أدناه) كان يمرَّر خاماً من merged.pm10 (adapters.ts) بلا
+// أي فحص حداثة قبل وصوله pm10ThresholdRule (rulebook.ts) — الرياح/الرؤية
+// تمران عبر freshOrNull (dust-engine/engine.ts)، لكن PM10 كان مستثنى عمداً
+// من تلك الدالة تحديداً (راجع تعليق buildDeviceMergedReading الكامل هناك:
+// قرار مقصود لإبقاء PM10 القديم مؤثراً بدرجة احترازية أضعف في DVI). المشكلة
+// الحقيقية لم تكن في DVI (له آلية دقيقة منفصلة: pm10ReadingIsFreshEnoughFor
+// ImmediateStop) بل في محرك الامتثال التنظيمي — pm10ThresholdRule يقرأ
+// pm10UgM3 مباشرة بلا أي بوابة حداثة خاصة به؛ قراءة جهاز عمرها ساعات، قيمتها
+// >340، كانت تُنتج MRQ-PM10-BLACK-PENDING-104 (STOP_AFFECTED_ACTIVITY حقيقي)
+// فقط لأنها ليست null، رغم كونها بلا أي دليل على استمرار التجاوز الآن.
+export type Pm10EvidenceState = 'FRESH' | 'STALE' | 'MISSING' | 'FUTURE';
+
 export type DustWindBand = 'BELOW_15' | 'FROM_15_TO_25' | 'ABOVE_25' | 'UNKNOWN';
 
 export type DustComplianceDecisionCategory =
@@ -460,6 +473,10 @@ export interface DustComplianceResult {
     // في DustEngineInput للسبب الكامل). نفس دلالة undefined/null أعلاه.
     // للعرض فقط.
     devicePm10LastReadingAt?: string | null;
+    // حالة حداثة pm10UgM3 أعلاه وقت القرار — راجع Pm10EvidenceState/
+    // pm10EvidenceState في DustComplianceContext للتفصيل الكامل. undefined
+    // يعني "لم يُحسَب" (استدعاءات قديمة/اختبارات تبني evidence يدوياً).
+    pm10EvidenceState?: Pm10EvidenceState;
   };
 
   // ملاحظات تحذيرية لصحة القراءة (من DVI، راجع DviEvaluationResult.caveatsAr)
@@ -565,6 +582,20 @@ export interface DustComplianceContext {
   // يُسجَّل في أي مكان — فتنقطع سلسلة إثبات استمرار التجاوز لتلك القراءة
   // كلياً. undefined = لا معلومة مصدر متاحة (اختبارات/استدعاءات قديمة).
   pm10Source?: 'device' | 'weather' | 'onsite' | 'none';
+  // القيمة الخام كما وصلت (بلا أي بوابة حداثة) — للعرض/التدقيق فقط (evidence.
+  // pm10UgM3 في engine.ts يعرضها دائماً، بصرف النظر عن pm10EvidenceState).
+  // pm10UgM3 أعلاه هو ما يدخل فعلياً pm10ThresholdRule (rulebook.ts)؛
+  // pm10RawUgM3 لا يدخل أي قرار تنظيمي مطلقاً. عندما pm10EvidenceState=FRESH
+  // تكون القيمتان متطابقتين دائماً.
+  pm10RawUgM3?: number | null;
+  // حالة حداثة قراءة PM10 وقت بناء هذا السياق (evaluatedAtMs، لا Date.now()
+  // وقت القراءة نفسها — راجع evaluatedAtMs في buildComplianceContext
+  // للسبب: يضمن قابلية إعادة حساب نفس القرار لاحقاً بنفس النتيجة تماماً).
+  // MISSING = لا وقت قراءة معروف؛ FUTURE = وقت القراءة بعد evaluatedAtMs
+  // (ساعة جهاز غير متزامنة)؛ STALE = تجاوزت LIVE_FIELD_FRESHNESS_MS. تُطبَّق
+  // فقط على pm10Source='device' — قراءات الطقس/اليدوية تُعامَل كطازجة دائماً
+  // (لا "قراءة" فردية لها عمر بنفس المعنى، نفس مبدأ dust-engine/engine.ts).
+  pm10EvidenceState?: Pm10EvidenceState;
   sensitiveReceptors: SensitiveReceptor[];
 
   // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
