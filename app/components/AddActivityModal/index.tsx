@@ -156,15 +156,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   const [dustForm, setDustForm] = useState({ ...DUST_FORM_DEFAULTS });
   const [dustLoading, setDustLoading] = useState(false);
 
-  // الأنشطة التنظيمية (Riyadh Dust Compliance) — قائمة مسطّحة واحدة، كل
-  // عنصر بطاقة أكورديون مستقلة بموقعها وتوقيتها الخاصين (بدل "مسودة حالية +
-  // قائمة انتظار" سابقاً). تُبنى دفعة واحدة من اختيار المستخدم في
-  // ActivityTypeStep عبر handleRegulatoryActivitiesContinue، وكل عنصر يُحفظ
-  // كصف/صفوف مستقلة في project_dust_profiles عند الحفظ النهائي.
-  const [regulatoryActivities, setRegulatoryActivities] = useState<RegulatoryActivityItem[]>([]);
-  // أي بطاقة أكورديون مفتوحة حالياً — الأولى تُفتح تلقائياً بعد الاختيار،
-  // والمستخدم يفتح غيرها يدوياً (يسمح بفتح أكثر من بطاقة معاً).
-  const [expandedActivityIds, setExpandedActivityIds] = useState<Set<string>>(new Set());
+  // طلب صريح من المستخدم — إزالة آلية "أكثر من نشاط في نفس الجلسة": كان
+  // النظام يبني قائمة regulatoryActivities من مصفوفة مفاتيح (اسمياً فقط —
+  // ActivityTypeStep يفرض اختياراً واحداً بالفعل، بلا أي زر "إضافة نشاط
+  // آخر" فعلي في الواجهة)، مع كل منطق تحديث/تحقق/إرسال يلفّ عبرها بحلقات
+  // for/.map بمعزل عن أنه لا يمكن أن يحوي أكثر من عنصر واحد عملياً. الآن
+  // نشاط تنظيمي واحد فقط لكل جلسة مودال — null يعني "لم يُختَر نشاط بعد".
+  const [regulatoryActivity, setRegulatoryActivity] = useState<RegulatoryActivityItem | null>(null);
 
   // طلب صريح من المستخدم — تحقق فوري (Hard Block) عند تحديد موقع كسارة على
   // الخريطة، قبل الحفظ: فئة المشروع (الفئة الثالثة فقط) + المسافة عن أقرب
@@ -203,12 +201,12 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     return 'ra-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   };
 
-  // تحديث حقل عام (fields) لنشاط تنظيمي واحد ضمن القائمة عبر id — يستبدل
-  // updateRegulatoryField القديمة (كانت تحدّث "المسودة" الوحيدة فقط).
+  // تحديث حقل عام (fields) للنشاط التنظيمي الحالي — itemId يبقى معاملاً
+  // (بدل الاعتماد الضمني على الحالة المغلقة عليها) كحارس اتساق بسيط: تحديث
+  // بمعرّف لا يطابق النشاط الحالي (سباق حالة نظري، مثال: حدث متأخر بعد
+  // إغلاق المودال) يُتجاهَل بصمت بدل تطبيقه خطأً على نشاط مختلف.
   const updateRegulatoryActivityField = <K extends keyof RegulatoryActivityFields>(itemId: string, field: K, value: RegulatoryActivityFields[K]) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, fields: { ...item.fields, [field]: value } } : item))
-    );
+    setRegulatoryActivity((prev) => (prev && prev.id === itemId ? { ...prev, fields: { ...prev.fields, [field]: value } } : prev));
   };
 
   // أقرب محطة رصد نشطة لنقطة معيّنة — للعرض التوضيحي فقط في DustStep (أي
@@ -233,18 +231,16 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   };
 
   const updateRegulatoryActivityLocation = (itemId: string, lat: number | null, lng: number | null) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => {
-        if (item.id !== itemId) return item;
-        // إعادة تحديد موقع النشاط تُعيد حساب أقرب محطة تلقائياً دائماً (لا
-        // اختيار يدوي يُبقي القيمة القديمة بعد الآن).
-        const deviceId =
-          item.deviceId === null && typeof lat === 'number' && typeof lng === 'number'
-            ? findNearestActiveDeviceId(lat, lng)
-            : item.deviceId;
-        return { ...item, lat, lng, deviceId };
-      })
-    );
+    setRegulatoryActivity((prev) => {
+      if (!prev || prev.id !== itemId) return prev;
+      // إعادة تحديد موقع النشاط تُعيد حساب أقرب محطة تلقائياً دائماً (لا
+      // اختيار يدوي يُبقي القيمة القديمة بعد الآن).
+      const deviceId =
+        prev.deviceId === null && typeof lat === 'number' && typeof lng === 'number'
+          ? findNearestActiveDeviceId(lat, lng)
+          : prev.deviceId;
+      return { ...prev, lat, lng, deviceId };
+    });
   };
 
   const updateRegulatoryActivityTiming = (
@@ -252,32 +248,15 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     field: 'startDate' | 'endDate' | 'customStartTime' | 'customEndTime',
     value: string
   ) => {
-    setRegulatoryActivities((prev) => prev.map((item) => (item.id === itemId ? { ...item, [field]: value } : item)));
+    setRegulatoryActivity((prev) => (prev && prev.id === itemId ? { ...prev, [field]: value } : prev));
   };
 
   const updateRegulatoryActivityTimingMode = (itemId: string, timingMode: 'shift' | 'custom') => {
-    setRegulatoryActivities((prev) => prev.map((item) => (item.id === itemId ? { ...item, timingMode } : item)));
+    setRegulatoryActivity((prev) => (prev && prev.id === itemId ? { ...prev, timingMode } : prev));
   };
 
   const updateRegulatoryActivityShift = (itemId: string, shiftId: string | null) => {
-    setRegulatoryActivities((prev) => prev.map((item) => (item.id === itemId ? { ...item, shiftId } : item)));
-  };
-
-  const removeRegulatoryActivity = (itemId: string) => {
-    setRegulatoryActivities((prev) => prev.filter((item) => item.id !== itemId));
-    setExpandedActivityIds((prev) => {
-      const next = new Set(prev);
-      next.delete(itemId);
-      return next;
-    });
-  };
-
-  const toggleRegulatoryActivityExpanded = (itemId: string) => {
-    setExpandedActivityIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
-      return next;
-    });
+    setRegulatoryActivity((prev) => (prev && prev.id === itemId ? { ...prev, shiftId } : prev));
   };
 
   // موقع النشاط العام (item.lat/lng) لأنشطة الخلاطة/الكسارة يتبع تلقائياً
@@ -296,23 +275,21 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     let updatedLat: string | number = '';
     let updatedLng: string | number = '';
     let updatedUnitId = '';
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => {
-        if (item.id !== itemId) return item;
-        const batchingUnits = item.batchingUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
-        updatedLat = batchingUnits[index].batchingLat;
-        updatedLng = batchingUnits[index].batchingLng;
-        updatedUnitId = batchingUnits[index].id;
-        const syncLoc =
-          index === 0 && (field === 'batchingLat' || field === 'batchingLng')
-            ? syncItemLocationFromUnit(
-                field === 'batchingLat' ? (value as string | number) : batchingUnits[0].batchingLat,
-                field === 'batchingLng' ? (value as string | number) : batchingUnits[0].batchingLng
-              )
-            : {};
-        return { ...item, batchingUnits, ...syncLoc };
-      })
-    );
+    setRegulatoryActivity((prev) => {
+      if (!prev || prev.id !== itemId) return prev;
+      const batchingUnits = prev.batchingUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
+      updatedLat = batchingUnits[index].batchingLat;
+      updatedLng = batchingUnits[index].batchingLng;
+      updatedUnitId = batchingUnits[index].id;
+      const syncLoc =
+        index === 0 && (field === 'batchingLat' || field === 'batchingLng')
+          ? syncItemLocationFromUnit(
+              field === 'batchingLat' ? (value as string | number) : batchingUnits[0].batchingLat,
+              field === 'batchingLng' ? (value as string | number) : batchingUnits[0].batchingLng
+            )
+          : {};
+      return { ...prev, batchingUnits, ...syncLoc };
+    });
     // طلب صريح من المستخدم — تحقق فوري فقط عند تحديث الموقع نفسه، وفقط بعد
     // اكتمال lat وlng معاً (نفس مبدأ updateCrusherUnit).
     if (
@@ -324,30 +301,26 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     }
   };
   const addBatchingUnit = (itemId: string) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) =>
-        item.id === itemId
-          ? { ...item, batchingUnits: [...item.batchingUnits, { ...BATCHING_UNIT_DEFAULTS, id: generateActivityItemId() }] }
-          : item
-      )
+    setRegulatoryActivity((prev) =>
+      prev && prev.id === itemId
+        ? { ...prev, batchingUnits: [...prev.batchingUnits, { ...BATCHING_UNIT_DEFAULTS, id: generateActivityItemId() }] }
+        : prev
     );
   };
   const removeBatchingUnit = (itemId: string, index: number) => {
     // unitId يُلتقَط من الحالة الحالية *قبل* التحديث — يلزم لحذف نتيجة
     // precheck الصحيحة (مفتاحها معرّف الوحدة الثابت، لا رقم فهرس قد يشير
     // بعد الحذف لوحدة مختلفة تماماً).
-    const unitId = regulatoryActivities.find((item) => item.id === itemId)?.batchingUnits[index]?.id;
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => {
-        if (item.id !== itemId || item.batchingUnits.length <= 1) return item;
-        const batchingUnits = item.batchingUnits.filter((_, i) => i !== index);
-        const syncLoc =
-          index === 0
-            ? syncItemLocationFromUnit(batchingUnits[0].batchingLat, batchingUnits[0].batchingLng)
-            : {};
-        return { ...item, batchingUnits, ...syncLoc };
-      })
-    );
+    const unitId = regulatoryActivity?.id === itemId ? regulatoryActivity.batchingUnits[index]?.id : undefined;
+    setRegulatoryActivity((prev) => {
+      if (!prev || prev.id !== itemId || prev.batchingUnits.length <= 1) return prev;
+      const batchingUnits = prev.batchingUnits.filter((_, i) => i !== index);
+      const syncLoc =
+        index === 0
+          ? syncItemLocationFromUnit(batchingUnits[0].batchingLat, batchingUnits[0].batchingLng)
+          : {};
+      return { ...prev, batchingUnits, ...syncLoc };
+    });
     if (unitId) {
       setBatchingPrecheckResults((prev) => {
         const next = { ...prev };
@@ -358,26 +331,22 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   };
 
   const updateIdleSurfaceUnit = <K extends keyof IdleSurfaceUnit>(itemId: string, index: number, field: K, value: IdleSurfaceUnit[K]) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) =>
-        item.id === itemId
-          ? { ...item, idleSurfaceUnits: item.idleSurfaceUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u)) }
-          : item
-      )
+    setRegulatoryActivity((prev) =>
+      prev && prev.id === itemId
+        ? { ...prev, idleSurfaceUnits: prev.idleSurfaceUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u)) }
+        : prev
     );
   };
   const addIdleSurfaceUnit = (itemId: string) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, idleSurfaceUnits: [...item.idleSurfaceUnits, { ...IDLE_SURFACE_UNIT_DEFAULTS }] } : item))
+    setRegulatoryActivity((prev) =>
+      prev && prev.id === itemId ? { ...prev, idleSurfaceUnits: [...prev.idleSurfaceUnits, { ...IDLE_SURFACE_UNIT_DEFAULTS }] } : prev
     );
   };
   const removeIdleSurfaceUnit = (itemId: string, index: number) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) =>
-        item.id === itemId && item.idleSurfaceUnits.length > 1
-          ? { ...item, idleSurfaceUnits: item.idleSurfaceUnits.filter((_, i) => i !== index) }
-          : item
-      )
+    setRegulatoryActivity((prev) =>
+      prev && prev.id === itemId && prev.idleSurfaceUnits.length > 1
+        ? { ...prev, idleSurfaceUnits: prev.idleSurfaceUnits.filter((_, i) => i !== index) }
+        : prev
     );
   };
 
@@ -385,23 +354,21 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     let updatedLat: string | number = '';
     let updatedLng: string | number = '';
     let updatedUnitId = '';
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => {
-        if (item.id !== itemId) return item;
-        const crusherUnits = item.crusherUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
-        updatedLat = crusherUnits[index].crusherLat;
-        updatedLng = crusherUnits[index].crusherLng;
-        updatedUnitId = crusherUnits[index].id;
-        const syncLoc =
-          index === 0 && (field === 'crusherLat' || field === 'crusherLng')
-            ? syncItemLocationFromUnit(
-                field === 'crusherLat' ? (value as string | number) : crusherUnits[0].crusherLat,
-                field === 'crusherLng' ? (value as string | number) : crusherUnits[0].crusherLng
-              )
-            : {};
-        return { ...item, crusherUnits, ...syncLoc };
-      })
-    );
+    setRegulatoryActivity((prev) => {
+      if (!prev || prev.id !== itemId) return prev;
+      const crusherUnits = prev.crusherUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
+      updatedLat = crusherUnits[index].crusherLat;
+      updatedLng = crusherUnits[index].crusherLng;
+      updatedUnitId = crusherUnits[index].id;
+      const syncLoc =
+        index === 0 && (field === 'crusherLat' || field === 'crusherLng')
+          ? syncItemLocationFromUnit(
+              field === 'crusherLat' ? (value as string | number) : crusherUnits[0].crusherLat,
+              field === 'crusherLng' ? (value as string | number) : crusherUnits[0].crusherLng
+            )
+          : {};
+      return { ...prev, crusherUnits, ...syncLoc };
+    });
     // طلب صريح من المستخدم — تحقق فوري فقط عند تحديث الموقع نفسه (لا كل
     // حقل آخر من CrusherUnit)، وفقط بعد اكتمال lat وlng معاً.
     if (
@@ -413,28 +380,24 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     }
   };
   const addCrusherUnit = (itemId: string) => {
-    setRegulatoryActivities((prev) =>
-      prev.map((item) =>
-        item.id === itemId
-          ? { ...item, crusherUnits: [...item.crusherUnits, { ...CRUSHER_UNIT_DEFAULTS, id: generateActivityItemId() }] }
-          : item
-      )
+    setRegulatoryActivity((prev) =>
+      prev && prev.id === itemId
+        ? { ...prev, crusherUnits: [...prev.crusherUnits, { ...CRUSHER_UNIT_DEFAULTS, id: generateActivityItemId() }] }
+        : prev
     );
   };
   const removeCrusherUnit = (itemId: string, index: number) => {
     // راجع تعليق removeBatchingUnit أعلاه — نفس المبدأ بالضبط.
-    const unitId = regulatoryActivities.find((item) => item.id === itemId)?.crusherUnits[index]?.id;
-    setRegulatoryActivities((prev) =>
-      prev.map((item) => {
-        if (item.id !== itemId || item.crusherUnits.length <= 1) return item;
-        const crusherUnits = item.crusherUnits.filter((_, i) => i !== index);
-        const syncLoc =
-          index === 0
-            ? syncItemLocationFromUnit(crusherUnits[0].crusherLat, crusherUnits[0].crusherLng)
-            : {};
-        return { ...item, crusherUnits, ...syncLoc };
-      })
-    );
+    const unitId = regulatoryActivity?.id === itemId ? regulatoryActivity.crusherUnits[index]?.id : undefined;
+    setRegulatoryActivity((prev) => {
+      if (!prev || prev.id !== itemId || prev.crusherUnits.length <= 1) return prev;
+      const crusherUnits = prev.crusherUnits.filter((_, i) => i !== index);
+      const syncLoc =
+        index === 0
+          ? syncItemLocationFromUnit(crusherUnits[0].crusherLat, crusherUnits[0].crusherLng)
+          : {};
+      return { ...prev, crusherUnits, ...syncLoc };
+    });
     if (unitId) {
       setCrusherPrecheckResults((prev) => {
         const next = { ...prev };
@@ -531,8 +494,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     setIsOpen(false);
     setStep('choose');
     setDustForm({ ...DUST_FORM_DEFAULTS });
-    setRegulatoryActivities([]);
-    setExpandedActivityIds(new Set());
+    setRegulatoryActivity(null);
     setSelectedActivityLabel('');
     setActiveIndicators([]);
     setActiveIndicatorTab('dust');
@@ -549,17 +511,15 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     onActivityCreated?.();
   };
 
-  // شاشة اختيار النشاط أصبحت قائمة أنشطة امتثال تنظيمي (Riyadh Dust
-  // Compliance)، لا نوع نشاط فيزيائي واحد. كل مفتاح مختار يصبح بطاقة
-  // أكورديون مستقلة بموقعها وتوقيتها الخاصين (راجع RegulatoryActivityItem)،
-  // لا "مسودة + قائمة انتظار" كما سابقاً. كل الأنشطة تُفعّل مؤشر الغبار
-  // (المؤشر الوحيد في DCR). البطاقة الأولى تُفتح تلقائياً (expandedActivityIds).
-  const handleRegulatoryActivitiesContinue = (activityKeys: RegulatoryActivityKey[]) => {
-    if (activityKeys.length === 0) return;
+  // طلب صريح من المستخدم — إزالة آلية تعدد الأنشطة: المستخدم يختار نشاطاً
+  // تنظيمياً واحداً فقط في ActivityTypeStep (اختيار مفرد بالفعل هناك)،
+  // فيصبح بطاقة تفاصيل واحدة هنا مباشرة (لا أكورديون قائمة، لا "مسودة +
+  // قائمة انتظار" كما في تصميمات سابقة). يُفعّل مؤشر الغبار (المؤشر الوحيد
+  // في DCR).
+  const handleRegulatoryActivityContinue = (activityKey: RegulatoryActivityKey) => {
+    const option = REGULATORY_ACTIVITY_OPTIONS.find((o) => o.key === activityKey)!;
 
-    const firstOption = REGULATORY_ACTIVITY_OPTIONS.find((o) => o.key === activityKeys[0])!;
-
-    setSelectedActivityLabel(firstOption.label);
+    setSelectedActivityLabel(option.label);
     setActiveIndicators(['dust']);
     setActiveIndicatorTab('dust');
     setCompletedIndicators([]);
@@ -567,13 +527,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     setCurrentActivityGroupId(generateActivityGroupId());
 
     // فئة DVI الفيزيائية (تُستخدم داخلياً لمحرك الغبار فقط، لا حقل واجهة
-    // بعد حذف قسم "أ. التصنيف الدقيق للنشاط") تُؤخذ من النشاط الأول تلقائياً.
-    setDustForm((prev) => ({ ...prev, activityType: firstOption.dviCategory as ActivityCategory }));
+    // بعد حذف قسم "أ. التصنيف الدقيق للنشاط") تُؤخذ من النشاط المختار.
+    setDustForm((prev) => ({ ...prev, activityType: option.dviCategory as ActivityCategory }));
 
     const today = new Date().toISOString().slice(0, 10);
-    const newItems: RegulatoryActivityItem[] = activityKeys.map((key) => ({
+    setRegulatoryActivity({
       id: generateActivityItemId(),
-      fields: { ...REGULATORY_ACTIVITY_FIELDS_DEFAULTS, regulatoryActivity: key },
+      fields: { ...REGULATORY_ACTIVITY_FIELDS_DEFAULTS, regulatoryActivity: activityKey },
       batchingUnits: [{ ...BATCHING_UNIT_DEFAULTS, id: generateActivityItemId() }],
       idleSurfaceUnits: [{ ...IDLE_SURFACE_UNIT_DEFAULTS }],
       crusherUnits: [{ ...CRUSHER_UNIT_DEFAULTS, id: generateActivityItemId() }],
@@ -586,12 +546,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       shiftId: null,
       customStartTime: '',
       customEndTime: '',
-    }));
-    setRegulatoryActivities(newItems);
-    // البطاقة الأولى فقط مفتوحة تلقائياً — "افتح خيارات النشاط الأول ثم
-    // افتح خيارات النشاط الثاني" يعني فتحاً تسلسلياً بقرار المستخدم، لا
-    // فتح الكل دفعة واحدة.
-    setExpandedActivityIds(new Set(newItems.length > 0 ? [newItems[0].id] : []));
+    });
 
     setStep('indicators');
   };
@@ -624,8 +579,8 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // بقية حقول الضوابط) لأنها تُغذّي قواعد MANDATORY_STOP/RESTRICT_ACTIVITY
   // في rulebook.ts مباشرة (إحكام إغلاق الصوامع، كفاءة فلتر PM10، تسرب،
   // أسلوب التنظيف، أيام التوقف وحالة التثبيت) — تحويلها لنص عام كان سيعني
-  // فقدان القدرة على اكتشاف مخالفة فعلية بلا أي بديل. يُستدعى لكل عنصر ضمن
-  // regulatoryActivities عند الحفظ النهائي.
+  // فقدان القدرة على اكتشاف مخالفة فعلية بلا أي بديل. يُستدعى للنشاط
+  // التنظيمي الحالي عند الحفظ النهائي.
   const validateRegulatoryUnits = (
     fields: RegulatoryActivityFields,
     units: { batchingUnits: BatchingUnit[]; idleSurfaceUnits: IdleSurfaceUnit[]; crusherUnits: CrusherUnit[] }
@@ -890,25 +845,18 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     }
   };
 
-  // كل نشاط تنظيمي له الآن موقعه وتوقيته الخاصان (RegulatoryActivityItem)،
-  // بعكس النموذج القديم (موقع/توقيت مشترك واحد لكل الأنشطة) — لذا لم يعد
-  // ممكناً تقييم DVI/AEI مرة واحدة واستخدام نفس النتيجة للجميع؛ نتيجة
-  // محسوبة في مكان/وقت نشاط ما لا تعكس نشاطاً آخر في موقع أو وقت مختلف.
-  // نُقيّم كل نشاط على حدة داخل الحلقة أدناه، ونعرض نتيجة آخر نشاط تم
-  // تقييمه في بطاقة DVI العلوية (dustResult/aeiResult) كملخص تمثيلي فقط.
-  const validateRegulatoryActivityLocations = (): string | null => {
-    for (let i = 0; i < regulatoryActivities.length; i++) {
-      const item = regulatoryActivities[i];
-      if (typeof item.lat !== 'number' || typeof item.lng !== 'number') {
-        return `النشاط ${i + 1}: حدد موقعه على الخريطة قبل الحفظ.`;
-      }
-      // محطة الرصد (device_id) اختيارية — طلب صريح من المستخدم: من لا
-      // يختار محطة يُسمح له بالحفظ، والنشاط يأخذ قراءاته من API الطقس
-      // (Open-Meteo) بدل الجهاز، بنفس أولوية جهاز > API > يدوي المعتادة
-      // في resolveFreshProjectDevice/mergeDustReading — لا حاجة لأي منطق
-      // احتياطي إضافي هنا، فالمحرك يتعامل مع device_id=null كأنه لا يوجد
-      // جهاز مرتبط أصلاً.
+  // موقع وتوقيت النشاط التنظيمي (RegulatoryActivityItem) — يُتحقَّق منهما
+  // قبل تقييم DVI/AEI وإرسال الحفظ.
+  const validateRegulatoryActivityLocation = (item: RegulatoryActivityItem): string | null => {
+    if (typeof item.lat !== 'number' || typeof item.lng !== 'number') {
+      return 'حدد موقع النشاط على الخريطة قبل الحفظ.';
     }
+    // محطة الرصد (device_id) اختيارية — طلب صريح من المستخدم: من لا يختار
+    // محطة يُسمح له بالحفظ، والنشاط يأخذ قراءاته من API الطقس (Open-Meteo)
+    // بدل الجهاز، بنفس أولوية جهاز > API > يدوي المعتادة في
+    // resolveFreshProjectDevice/mergeDustReading — لا حاجة لأي منطق احتياطي
+    // إضافي هنا، فالمحرك يتعامل مع device_id=null كأنه لا يوجد جهاز مرتبط
+    // أصلاً.
     return null;
   };
 
@@ -957,64 +905,58 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       toast.error('جارٍ التحقق من موقع الكسارة/محطة الخلط — يرجى الانتظار لحظة قبل الحفظ.');
       return;
     }
-    if (regulatoryActivities.length === 0) { toast.error('أضف نشاطاً تنظيمياً واحداً على الأقل.'); return; }
-    { const locError = validateRegulatoryActivityLocations(); if (locError) { toast.error(locError); return; } }
-    for (let i = 0; i < regulatoryActivities.length; i++) {
-      const item = regulatoryActivities[i];
-      if (!item.startDate || !item.endDate) { toast.error(`النشاط ${i + 1}: حدد تاريخ البداية والنهاية.`); return; }
-      const daily = resolveDailyTimeRange(item);
-      if (!daily) {
-        toast.error(
-          item.timingMode === 'shift'
-            ? `النشاط ${i + 1}: اختر وردية.`
-            : `النشاط ${i + 1}: حدد وقت البداية والنهاية اليومي.`
-        );
-        return;
-      }
-      const whError = validateWorkHours(item.startDate, item.endDate, daily.start, daily.end, item.shiftId);
-      if (whError) { toast.error(`النشاط ${i + 1}: ${whError}`); return; }
-      const durationHours = computeDurationHours(item);
-      if (durationHours === null) { toast.error(`النشاط ${i + 1}: تعذّر حساب مدة النشاط — تحقق من التاريخ والوقت.`); return; }
-      const unitsError = validateRegulatoryUnits(item.fields, { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits });
-      if (unitsError) { toast.error(`النشاط ${i + 1}: ${unitsError}`); return; }
+    const item = regulatoryActivity;
+    if (!item) { toast.error('اختر نشاطاً تنظيمياً أولاً.'); return; }
+    { const locError = validateRegulatoryActivityLocation(item); if (locError) { toast.error(locError); return; } }
+    if (!item.startDate || !item.endDate) { toast.error('حدد تاريخ البداية والنهاية.'); return; }
+    const daily = resolveDailyTimeRange(item);
+    if (!daily) {
+      toast.error(item.timingMode === 'shift' ? 'اختر وردية.' : 'حدد وقت البداية والنهاية اليومي.');
+      return;
+    }
+    const whError = validateWorkHours(item.startDate, item.endDate, daily.start, daily.end, item.shiftId);
+    if (whError) { toast.error(whError); return; }
+    const durationHours = computeDurationHours(item);
+    if (durationHours === null) { toast.error('تعذّر حساب مدة النشاط — تحقق من التاريخ والوقت.'); return; }
+    const unitsError = validateRegulatoryUnits(item.fields, { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits });
+    if (unitsError) { toast.error(unitsError); return; }
 
-      // طلب صريح من المستخدم (تطبيق تقرير المراجعة الثاني) — منع الحفظ ما لم
-      // تكن آخر نتيجة فحص لهذه الوحدة تحديداً (بمعرّف ثابت unit.id، لا رقم
-      // فهرس قابل للانزياح) = 'allowed' فعلاً، وتطابق إحداثيات الوحدة
-      // الحالية بالضبط. أي حالة أخرى (checking/error/blocked/غياب تام
-      // للنتيجة، أو نتيجة قديمة لموقع مختلف) تمنع الحفظ — الحارس الخادمي في
-      // route.ts يبقى الحكم النهائي دائماً، لكن هذا يمنع تسرّع المستخدم قبل
-      // وصول نتيجة الفحص الفعلية للموقع الحالي.
-      if (item.fields.regulatoryActivity === 'CRUSHER') {
-        for (let u = 0; u < item.crusherUnits.length; u++) {
-          const unit = item.crusherUnits[u];
-          const result = crusherPrecheckResults[`${item.id}:${unit.id}`];
-          if (
-            !result ||
-            result.status !== 'allowed' ||
-            result.lat !== Number(unit.crusherLat) ||
-            result.lng !== Number(unit.crusherLng)
-          ) {
-            toast.error(`النشاط ${i + 1} — الكسارة ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
-            return;
-          }
+    // طلب صريح من المستخدم (تطبيق تقرير المراجعة الثاني) — منع الحفظ ما لم
+    // تكن آخر نتيجة فحص لهذه الوحدة تحديداً (بمعرّف ثابت unit.id، لا رقم
+    // فهرس قابل للانزياح) = 'allowed' فعلاً، وتطابق إحداثيات الوحدة
+    // الحالية بالضبط. أي حالة أخرى (checking/error/blocked/غياب تام
+    // للنتيجة، أو نتيجة قديمة لموقع مختلف) تمنع الحفظ — الحارس الخادمي في
+    // route.ts يبقى الحكم النهائي دائماً، لكن هذا يمنع تسرّع المستخدم قبل
+    // وصول نتيجة الفحص الفعلية للموقع الحالي.
+    if (item.fields.regulatoryActivity === 'CRUSHER') {
+      for (let u = 0; u < item.crusherUnits.length; u++) {
+        const unit = item.crusherUnits[u];
+        const result = crusherPrecheckResults[`${item.id}:${unit.id}`];
+        if (
+          !result ||
+          result.status !== 'allowed' ||
+          result.lat !== Number(unit.crusherLat) ||
+          result.lng !== Number(unit.crusherLng)
+        ) {
+          toast.error(`الكسارة ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
+          return;
         }
       }
+    }
 
-      // نفس مبدأ الكسارة أعلاه بالضبط، لمحطة الخلط (BATCHING-DISTANCE-200).
-      if (item.fields.regulatoryActivity === 'BATCHING_PLANT') {
-        for (let u = 0; u < item.batchingUnits.length; u++) {
-          const unit = item.batchingUnits[u];
-          const result = batchingPrecheckResults[`${item.id}:${unit.id}`];
-          if (
-            !result ||
-            result.status !== 'allowed' ||
-            result.lat !== Number(unit.batchingLat) ||
-            result.lng !== Number(unit.batchingLng)
-          ) {
-            toast.error(`النشاط ${i + 1} — محطة الخلط ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
-            return;
-          }
+    // نفس مبدأ الكسارة أعلاه بالضبط، لمحطة الخلط (BATCHING-DISTANCE-200).
+    if (item.fields.regulatoryActivity === 'BATCHING_PLANT') {
+      for (let u = 0; u < item.batchingUnits.length; u++) {
+        const unit = item.batchingUnits[u];
+        const result = batchingPrecheckResults[`${item.id}:${unit.id}`];
+        if (
+          !result ||
+          result.status !== 'allowed' ||
+          result.lat !== Number(unit.batchingLat) ||
+          result.lng !== Number(unit.batchingLng)
+        ) {
+          toast.error(`محطة الخلط ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
+          return;
         }
       }
     }
@@ -1023,37 +965,33 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     toast.loading('جاري التقييم...', { id: 'dvi-calc' });
 
     try {
-      for (const item of regulatoryActivities) {
-        const daily = resolveDailyTimeRange(item) as { start: string; end: string };
-        const durationHours = computeDurationHours(item) as number;
-        // تقييم DVI الحي يعتمد على توقّع طقس ساعي متاح لأيام قليلة قادمة
-        // فقط — لنشاط يمتد لأسابيع/أشهر، يُقيَّم اليوم الأول فقط (بساعاته
-        // اليومية) كممثل، والمدة الإجمالية المحفوظة (duration_hours) تبقى
-        // إجمالي كل الأيام كما هي.
-        const dailyHours = (toMin(daily.end) - toMin(daily.start)) / 60;
-        const engineInput: DustEngineInput = {
-          activityType: dustForm.activityType, latitude: item.lat as number, longitude: item.lng as number,
-          site: { hasEarthworks: dustForm.hasEarthworks, internalDirtRoads: dustForm.internalDirtRoads, heavyEquipmentMovement: dustForm.heavyEquipmentMovement, looseMaterials: dustForm.looseMaterials, largeExposedArea: dustForm.largeExposedArea, drySurface: dustForm.drySurface, surfaceWet: dustForm.surfaceWet, wateringAvailable: dustForm.wateringAvailable, stockpilesCovered: dustForm.stockpilesCovered, speedLimitApplied: dustForm.speedLimitApplied, wheelWashAvailable: dustForm.wheelWashAvailable, dustScreensAvailable: dustForm.dustScreensAvailable, fieldMonitoringAvailable: dustForm.fieldMonitoringAvailable, receptorType: dustForm.receptorType, receptorDistance: dustForm.receptorDistance, receptorIsDownwind: dustForm.receptorIsDownwind, visibleDustPlumeReported: dustForm.visibleDustPlumeReported, openConcretePour: dustForm.openConcretePour },
-          onsiteVisibilityM: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsitePm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsitePm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
-          // معاينة ما قبل الحفظ لا تجلب قراءة الجهاز فعلياً (لا نداء شبكة
-          // إضافي هنا) — hasDeviceLink يعكس اقتراح أقرب محطة المحسوب محلياً
-          // (findNearestActiveDeviceId)، فتظهر المعاينة بيانات فارغة بأمانة
-          // (بدل قراءة API خاطئة) حين يُتوقَّع ربط بمحطة، تماماً كما ستظهر
-          // البطاقة الفعلية بعد الحفظ (السيرفر يحسب الربط الملزم بنفس
-          // الخوارزمية — راجع resolveNearestActiveDeviceId في dust-profiles/route.ts).
-          hasDeviceLink: !!item.deviceId,
-        };
+      // تقييم DVI الحي يعتمد على توقّع طقس ساعي متاح لأيام قليلة قادمة فقط
+      // — لنشاط يمتد لأسابيع/أشهر، يُقيَّم اليوم الأول فقط (بساعاته
+      // اليومية) كممثل، والمدة الإجمالية المحفوظة (duration_hours) تبقى
+      // إجمالي كل الأيام كما هي.
+      const dailyHours = (toMin(daily.end) - toMin(daily.start)) / 60;
+      const engineInput: DustEngineInput = {
+        activityType: dustForm.activityType, latitude: item.lat as number, longitude: item.lng as number,
+        site: { hasEarthworks: dustForm.hasEarthworks, internalDirtRoads: dustForm.internalDirtRoads, heavyEquipmentMovement: dustForm.heavyEquipmentMovement, looseMaterials: dustForm.looseMaterials, largeExposedArea: dustForm.largeExposedArea, drySurface: dustForm.drySurface, surfaceWet: dustForm.surfaceWet, wateringAvailable: dustForm.wateringAvailable, stockpilesCovered: dustForm.stockpilesCovered, speedLimitApplied: dustForm.speedLimitApplied, wheelWashAvailable: dustForm.wheelWashAvailable, dustScreensAvailable: dustForm.dustScreensAvailable, fieldMonitoringAvailable: dustForm.fieldMonitoringAvailable, receptorType: dustForm.receptorType, receptorDistance: dustForm.receptorDistance, receptorIsDownwind: dustForm.receptorIsDownwind, visibleDustPlumeReported: dustForm.visibleDustPlumeReported, openConcretePour: dustForm.openConcretePour },
+        onsiteVisibilityM: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsitePm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsitePm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
+        // معاينة ما قبل الحفظ لا تجلب قراءة الجهاز فعلياً (لا نداء شبكة
+        // إضافي هنا) — hasDeviceLink يعكس اقتراح أقرب محطة المحسوب محلياً
+        // (findNearestActiveDeviceId)، فتظهر المعاينة بيانات فارغة بأمانة
+        // (بدل قراءة API خاطئة) حين يُتوقَّع ربط بمحطة، تماماً كما ستظهر
+        // البطاقة الفعلية بعد الحفظ (السيرفر يحسب الربط الملزم بنفس
+        // الخوارزمية — راجع resolveNearestActiveDeviceId في dust-profiles/route.ts).
+        hasDeviceLink: !!item.deviceId,
+      };
 
-        const windowStartIso = new Date(`${item.startDate}T${daily.start}:00`).toISOString();
-        const windowEval = await evaluateDustVisibilityWindow(engineInput, windowStartIso, dailyHours);
-        const result = windowEval.worst;
-        const aei = evaluateAei(result, dustForm.activityType);
+      const windowStartIso = new Date(`${item.startDate}T${daily.start}:00`).toISOString();
+      const windowEval = await evaluateDustVisibilityWindow(engineInput, windowStartIso, dailyHours);
+      const result = windowEval.worst;
+      const aei = evaluateAei(result, dustForm.activityType);
 
-        try {
-          await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status, dailyHours);
-        } catch {
-          throw new Error('مشكلة أثناء الحفظ.');
-        }
+      try {
+        await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status, dailyHours);
+      } catch {
+        throw new Error('مشكلة أثناء الحفظ.');
       }
       toast.success('تم التقييم والحفظ بنجاح.', { id: 'dvi-calc' });
       finishIndicator('dust');
@@ -1063,7 +1001,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   return (
     <>
       <button onClick={() => setIsOpen(true)} className="bg-[#3995FF] hover:bg-[#3995FF]/90 text-white font-bold px-5 py-2.5 rounded-xl text-sm flex items-center gap-2 shadow-sm shadow-[#3995FF]/30 transition-colors">
-        <Plus className="w-4 h-4" /> إضافة أنشطة
+        <Plus className="w-4 h-4" /> إضافة نشاط
       </button>
 
       {isOpen && (
@@ -1079,7 +1017,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
             </div>
 
             <div className="p-6 flex-1">
-              {step === 'choose' && <ActivityTypeStep onContinue={handleRegulatoryActivitiesContinue} />}
+              {step === 'choose' && <ActivityTypeStep onContinue={handleRegulatoryActivityContinue} />}
 
               {step === 'indicators' && (
                 <div className="space-y-6">
@@ -1112,10 +1050,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
                         updateDustField={updateDustField}
                         dustLoading={dustLoading}
                         onSubmit={handleDustSubmit}
-                        regulatoryActivities={regulatoryActivities}
-                        expandedActivityIds={expandedActivityIds}
-                        toggleRegulatoryActivityExpanded={toggleRegulatoryActivityExpanded}
-                        removeRegulatoryActivity={removeRegulatoryActivity}
+                        regulatoryActivity={regulatoryActivity}
                         updateRegulatoryActivityField={updateRegulatoryActivityField}
                         updateRegulatoryActivityLocation={updateRegulatoryActivityLocation}
                         projectDevices={projectDevices}

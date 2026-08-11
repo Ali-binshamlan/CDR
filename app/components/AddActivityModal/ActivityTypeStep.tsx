@@ -7,8 +7,7 @@ import { REGULATORY_ACTIVITY_OPTIONS, type RegulatoryActivityKey, labelClass, ge
 interface ActivityTypeStepProps {
   // تُستدعى بعد اختيار نوع النشاط التنظيمي والضغط على "متابعة" — عنصر
   // واحد فقط (النظام لا يدعم إضافة أكثر من نشاط تنظيمي في نفس الجلسة).
-  // يبقى التوقيع مصفوفة لتفادي أي تغيير في index.tsx أو الأنواع المشتركة.
-  onContinue: (activityKeys: RegulatoryActivityKey[]) => void;
+  onContinue: (activityKey: RegulatoryActivityKey) => void;
 }
 
 export function ActivityTypeStep({ onContinue }: ActivityTypeStepProps) {
@@ -38,7 +37,7 @@ export function ActivityTypeStep({ onContinue }: ActivityTypeStepProps) {
 
       <button
         type="button"
-        onClick={() => onContinue([selected])}
+        onClick={() => onContinue(selected)}
         className="w-full flex items-center justify-center gap-2 bg-[#061B40] hover:bg-[#061B40]/90 text-white font-bold py-3 rounded-xl text-sm transition-colors"
       >
         متابعة لإدخال التفاصيل <ArrowLeft className="w-4 h-4" />

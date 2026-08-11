@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Wind, Plus, Trash2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Wind, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { DUST_FORM_DEFAULTS, getInputClass, labelClass, sectionTitleClass, REGULATORY_ACTIVITY_LABEL_AR } from './constants';
 import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem } from './constants';
 import type { ProjectLite, ProjectDeviceLite } from './types';
@@ -19,10 +19,11 @@ interface DustStepProps {
   updateDustField: <K extends keyof DustForm>(field: K, value: DustForm[K]) => void;
   dustLoading: boolean;
   onSubmit: (e: React.FormEvent) => void;
-  regulatoryActivities: RegulatoryActivityItem[];
-  expandedActivityIds: Set<string>;
-  toggleRegulatoryActivityExpanded: (itemId: string) => void;
-  removeRegulatoryActivity: (itemId: string) => void;
+  // طلب صريح من المستخدم — إزالة آلية "أكثر من نشاط في نفس الجلسة": نشاط
+  // تنظيمي واحد فقط لكل جلسة مودال (بدل مصفوفة تُعرَض كأكورديون قابل
+  // للحذف). null يعني "لم يُختَر نشاط بعد" — لا تُعرَض هذه الخطوة حينها
+  // أصلاً (index.tsx لا يصل لخطوة 'indicators' قبل اختيار نشاط).
+  regulatoryActivity: RegulatoryActivityItem | null;
   updateRegulatoryActivityField: <K extends keyof RegulatoryActivityFields>(itemId: string, field: K, value: RegulatoryActivityFields[K]) => void;
   updateRegulatoryActivityLocation: (itemId: string, lat: number | null, lng: number | null) => void;
   projectDevices: ProjectDeviceLite[];
@@ -151,7 +152,7 @@ const GENERAL_ALERTS_AR: Record<string, string[]> = {
 export function DustStep({
   project, isMounted,
   dustForm, updateDustField, dustLoading, onSubmit,
-  regulatoryActivities, expandedActivityIds, toggleRegulatoryActivityExpanded, removeRegulatoryActivity,
+  regulatoryActivity,
   updateRegulatoryActivityField, updateRegulatoryActivityLocation, updateRegulatoryActivityTiming, updateRegulatoryActivityTimingMode, updateRegulatoryActivityShift,
   projectDevices,
   updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
@@ -164,11 +165,17 @@ export function DustStep({
   const projectZone = useMemo(() => buildProjectZoneFromRow(project), [project]);
   const projectShifts = Array.isArray(project.shifts) ? project.shifts : [];
 
-  // النقطة النشِطة حالياً على الخريطة الموحدة (نشاط عادي، أو وحدة
-  // خلاطة/كسارة محددة) — النقر على الخريطة يحدد موقع هذه النقطة تحديداً.
-  // تبدأ بأول نقطة متاحة، وتتبع أي تغيير في قائمة النقاط إن لم تعد النقطة
-  // الحالية موجودة (نشاط/وحدة حُذفت).
-  const mapPoints = buildMapPoints(regulatoryActivities);
+  // buildMapPoints/MultiActivityMapPicker يبقيان عامَّين على مصفوفة (يعرضان
+  // نقطة لكل وحدة خلاطة/كسارة ضمن النشاط الواحد — تعدد مشروع ومختلف تماماً
+  // عن تعدد الأنشطة نفسها) — نمرّر مصفوفة من عنصر واحد فقط، أو فارغة إن لم
+  // يُختَر نشاط بعد.
+  const activityList = regulatoryActivity ? [regulatoryActivity] : [];
+
+  // النقطة النشِطة حالياً على الخريطة (النشاط نفسه، أو وحدة خلاطة/كسارة
+  // محددة ضمنه) — النقر على الخريطة يحدد موقع هذه النقطة تحديداً. تبدأ
+  // بأول نقطة متاحة، وتتبع أي تغيير في قائمة النقاط إن لم تعد النقطة
+  // الحالية موجودة (وحدة حُذفت).
+  const mapPoints = buildMapPoints(activityList);
   const [selectedMapPointId, setActiveMapPointId] = useState<string | null>(mapPoints[0]?.id ?? null);
   // النقطة المحدَّدة فعلياً تُشتق أثناء الـrender نفسه (لا مزامنة عبر Effect)
   // — لو selectedMapPointId لم يعد موجوداً ضمن mapPoints الحالية (نشاط/وحدة
@@ -194,27 +201,22 @@ export function DustStep({
     <div className="space-y-6 animate-fadeIn">
       <form onSubmit={onSubmit} className="space-y-5">
 
-        {/* كل نشاط تنظيمي مُختار في الشاشة السابقة يصبح بطاقة أكورديون
-            مستقلة هنا — موقعها يُحدَّد من الخريطة الموحدة أدناه، وتوقيتها
-            الخاص (بداية/نهاية)، وتنبيهات عامة بدل حقول إدخال تفصيلية
-            (باستثناء عدد قليل من الحقول الحرجة الباقية كمدخلات حقيقية —
-            راجع GENERAL_ALERTS_AR أعلاه). */}
+        {/* النشاط التنظيمي المُختار في الشاشة السابقة — موقعه يُحدَّد من
+            الخريطة أدناه، وتوقيته الخاص (بداية/نهاية)، وتنبيهات عامة بدل
+            حقول إدخال تفصيلية (باستثناء عدد قليل من الحقول الحرجة الباقية
+            كمدخلات حقيقية — راجع GENERAL_ALERTS_AR أعلاه). */}
         <div className="space-y-3 border-t border-[#061B40]/10 pt-4">
           <h3 className={sectionTitleClass + ' flex items-center gap-1.5'}>
             النشاط التنظيمي
           </h3>
 
-          {/* خريطة واحدة موحدة لكل الأنشطة معاً — نقطة لكل نشاط عادي، أو
-              نقطة لكل وحدة خلاطة/كسارة */}
-          {regulatoryActivities.length > 0 && (
+          {/* خريطة موقع النشاط — نقطة واحدة له، أو نقطة لكل وحدة خلاطة/كسارة
+              ضمنه */}
+          {regulatoryActivity && (
             <MultiActivityMapPicker
-              items={regulatoryActivities}
+              items={activityList}
               activePointId={activeMapPointId}
-              onActivate={(pointId) => {
-                setActiveMapPointId(pointId);
-                const itemId = pointId.split(':')[0];
-                if (!expandedActivityIds.has(itemId)) toggleRegulatoryActivityExpanded(itemId);
-              }}
+              onActivate={(pointId) => setActiveMapPointId(pointId)}
               onPointLocationChange={handlePointLocationChange}
               isMounted={isMounted}
               centerLat={mapCenterLat}
@@ -223,42 +225,25 @@ export function DustStep({
             />
           )}
 
-          <div className="space-y-2">
-            {regulatoryActivities.map((item, index) => {
-              const isExpanded = expandedActivityIds.has(item.id);
-              const showEnclosedOption = !ENCLOSED_OPTION_EXCLUDED_ACTIVITIES.has(item.fields.regulatoryActivity as string);
-              const alerts = GENERAL_ALERTS_AR[item.fields.regulatoryActivity as string] ?? [];
-              const hasLocation = typeof item.lat === 'number' && typeof item.lng === 'number';
+          {regulatoryActivity && (() => {
+            const item = regulatoryActivity;
+            const showEnclosedOption = !ENCLOSED_OPTION_EXCLUDED_ACTIVITIES.has(item.fields.regulatoryActivity as string);
+            const alerts = GENERAL_ALERTS_AR[item.fields.regulatoryActivity as string] ?? [];
+            const hasLocation = typeof item.lat === 'number' && typeof item.lng === 'number';
 
-              return (
-                <div key={item.id} className="rounded-xl border border-[#061B40]/10 overflow-hidden">
+            return (
+                <div className="rounded-xl border border-[#061B40]/10 overflow-hidden">
                   <div className="flex items-center justify-between bg-[#F4F7FB] px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => toggleRegulatoryActivityExpanded(item.id)}
-                      className="flex items-center gap-2 flex-1 text-right"
-                    >
-                      {isExpanded ? <ChevronUp className="w-4 h-4 text-[#061B40]/60" /> : <ChevronDown className="w-4 h-4 text-[#061B40]/60" />}
-                      <span className="text-sm font-bold text-[#061B40]">
-                        {index + 1}. {REGULATORY_ACTIVITY_LABEL_AR[item.fields.regulatoryActivity] || item.fields.regulatoryActivity}
-                      </span>
+                    <span className="flex items-center gap-2 flex-1 text-sm font-bold text-[#061B40]">
+                      {REGULATORY_ACTIVITY_LABEL_AR[item.fields.regulatoryActivity] || item.fields.regulatoryActivity}
                       {!hasLocation && (
                         <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full flex items-center gap-1">
                           <AlertTriangle className="w-3 h-3" /> بلا موقع
                         </span>
                       )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeRegulatoryActivity(item.id)}
-                      className="text-red-500 hover:text-red-600 shrink-0"
-                      title="حذف هذا النشاط"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    </span>
                   </div>
 
-                  {isExpanded && (
                     <div className="p-4 space-y-4 bg-white">
                       {/* موقع هذا النشاط يُحدَّد من الخريطة الموحدة أعلاه —
                           هذا الزر فقط ينشّط النشاط عليها إن لم يكن مفعّلاً.
@@ -804,11 +789,9 @@ export function DustStep({
                         </div>
                       )}
                     </div>
-                  )}
                 </div>
-              );
-            })}
-          </div>
+            );
+          })()}
         </div>
 
         {SHOW_CONTROL_MEASURES_SECTION && (
@@ -828,7 +811,7 @@ export function DustStep({
         <div className="flex gap-3 pt-2">
           <button
             type="submit"
-            disabled={dustLoading || precheckPending || regulatoryActivities.length === 0}
+            disabled={dustLoading || precheckPending || !regulatoryActivity}
             className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-bold py-3.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors shadow-sm"
           >
             <Wind className="w-5 h-5" />
