@@ -35,6 +35,13 @@ vi.mock('@/app/utils/dust-compliance-engine', async () => {
   };
 });
 
+// راجع نفس التعليق في crusher-precheck/route.test.ts — يمنع نداء شبكة
+// Overpass حقيقياً أثناء الاختبار.
+let mockOsmWarning: string | null = null;
+vi.mock('@/app/utils/geo/overpassReceptors', () => ({
+  buildOsmProximityWarning: async () => mockOsmWarning,
+}));
+
 function makeRequest(body: unknown): Request {
   return new Request('http://localhost/api/dust-profiles/batching-precheck', {
     method: 'POST',
@@ -49,6 +56,7 @@ describe('POST /api/dust-profiles/batching-precheck', () => {
     tableResults.sensitive_receptors = { data: [], error: null };
     mockRequireUserIdResult = { userId: 'user-1' };
     mockOwnershipResult = true;
+    mockOsmWarning = null;
   });
 
   it('يرفض بلا مصادقة (401)', async () => {
@@ -115,5 +123,24 @@ describe('POST /api/dust-profiles/batching-precheck', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     expect(res.status).toBe(500);
+  });
+
+  // طلب صريح من المستخدم — نفس إصلاح crusher-precheck: sensitive_receptors
+  // اليدوي فارغ لا يعني عدم وجود مستقبِل حساس حقيقي.
+  it('OSM يكتشف معلَماً قريباً رغم sensitive_receptors فارغ → blocked=true بتحذير OSM', async () => {
+    mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap ("مسجد أبو بكر الصديق"، على بُعد 7 م تقريباً) — بيانات غير رسمية تتطلب تحققاً ميدانياً.';
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
+    const body = await res.json();
+    expect(body.blocked).toBe(true);
+    expect(body.reasonsAr).toContain(mockOsmWarning);
+  });
+
+  it('لا تحذير OSM ولا مستقبلات يدوية قريبة → blocked=false', async () => {
+    mockOsmWarning = null;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
+    const body = await res.json();
+    expect(body.blocked).toBe(false);
   });
 });

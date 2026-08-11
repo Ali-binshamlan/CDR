@@ -37,6 +37,15 @@ vi.mock('@/app/utils/dust-compliance-engine', async () => {
   };
 });
 
+// buildOsmProximityWarning يستدعي شبكة Overpass حقيقية بلا هذا التمويه —
+// اختبارات هذا الملف تختبر منطق sensitive_receptors اليدوي حصراً، فتُموَّه
+// دائماً بـnull (لا تحذير OSM) افتراضياً؛ اختبارات OSM الصريحة أدناه تُغيّر
+// mockOsmWarning لكل حالة.
+let mockOsmWarning: string | null = null;
+vi.mock('@/app/utils/geo/overpassReceptors', () => ({
+  buildOsmProximityWarning: async () => mockOsmWarning,
+}));
+
 function makeRequest(body: unknown): Request {
   return new Request('http://localhost/api/dust-profiles/crusher-precheck', {
     method: 'POST',
@@ -56,6 +65,7 @@ describe('POST /api/dust-profiles/crusher-precheck', () => {
     tableResults.sensitive_receptors = { data: [], error: null };
     mockRequireUserIdResult = { userId: 'user-1' };
     mockOwnershipResult = true;
+    mockOsmWarning = null;
   });
 
   it('يرفض بلا مصادقة (401 من requireUserId)', async () => {
@@ -143,5 +153,25 @@ describe('POST /api/dust-profiles/crusher-precheck', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     expect(res.status).toBe(500);
+  });
+
+  // طلب صريح من المستخدم — ثغرة مكتشفة: sensitive_receptors اليدوي فارغ
+  // لا يعني بالضرورة عدم وجود مستقبِل حساس حقيقي (مثال حقيقي: مسجد على 7م
+  // من كسارة، مكتشَف عبر OpenStreetMap لكن غير مُدخَل يدوياً بعد).
+  it('OSM يكتشف معلَماً قريباً رغم sensitive_receptors فارغ → blocked=true بتحذير OSM', async () => {
+    mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap ("مسجد أبو بكر الصديق"، على بُعد 7 م تقريباً) — بيانات غير رسمية تتطلب تحققاً ميدانياً.';
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
+    const body = await res.json();
+    expect(body.blocked).toBe(true);
+    expect(body.reasonsAr).toContain(mockOsmWarning);
+  });
+
+  it('لا تحذير OSM ولا مستقبلات يدوية قريبة → blocked=false', async () => {
+    mockOsmWarning = null;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
+    const body = await res.json();
+    expect(body.blocked).toBe(false);
   });
 });

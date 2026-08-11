@@ -1,15 +1,22 @@
 // =============================================================
 // اكتشاف تلقائي للمستقبِلات الحساسة (مدارس/مستشفيات/مساجد/سكني) القريبة
 // من منطقة المشروع عبر Overpass API (خدمة مجانية تابعة لـ OpenStreetMap،
-// بلا مفتاح) — بدل الاعتماد على جدول sensitive_receptors اليدوي الذي قد
-// يبقى فارغاً بلا أي إدخال بشري. هذا الاستخدام عرضي فقط (بطاقة الامتثال
-// "المستقبِلات القريبة")، ولا يُستخدم كمُدخل لقواعد الامتثال الفعلية
-// (مسافة الكسارة/الأكوام) — تلك تبقى تعتمد على جدول sensitive_receptors
-// المُدار يدوياً، لتفادي بناء قرار تنظيمي مُلزم على بيانات OSM غير موثّقة
-// أو غير دقيقة.
+// بلا مفتاح) — بدل الاعتماد الحصري على جدول sensitive_receptors اليدوي
+// الذي قد يبقى فارغاً بلا أي إدخال بشري.
+//
+// خطأ مكتشَف ومُصلَح (المستخدم لاحظ تناقضاً: بطاقة الامتثال تعرض مسجداً
+// حقيقياً على 7م من كسارة عبر OSM، بينما القاعدة التنظيمية الرسمية أعلاها
+// تقول "لا توجد بيانات مستقبلات" لأن sensitive_receptors فارغ فعلياً):
+// اكتشاف OSM يبقى ممنوعاً من إصدار مخالفة/إيقاف تنظيمي مُلزم مباشرة (مصدر
+// مجتمعي مفتوح غير موثَّق الدقة) — لكنه أصبح الآن يُستخدم أيضاً في
+// crusher-precheck/batching-precheck (قبل الحفظ) لمنع المستخدم من إكمال
+// حفظ نشاط قرب معلَم اكتُشف عبر OSM دون تحقق يدوي أولاً (buildOsmProximityWarning
+// أدناه) — طلب صريح: "امنع المستخدم من انشاء النشاط فقط"، لا مخالفة تلقائية.
+// الاستخدام التوعوي الأصلي (بطاقة "المستقبِلات القريبة") يبقى كما هو.
 // =============================================================
 
 import type { SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
+import { nearestReceptorDistancesM } from '@/app/utils/dust-compliance-engine/geo';
 
 export interface DiscoveredReceptor {
   id: string;
@@ -203,4 +210,33 @@ export async function fetchNearbySensitiveReceptorsFromOsm(
   } catch {
     return [];
   }
+}
+
+// يجلب معالم OSM القريبة ويبني رسالة تحذير عربية جاهزة إن وُجد أقرب واحد
+// منها ضمن thresholdM — مستخرَجة من crusher-precheck/batching-precheck
+// (كانتا تكرران نفس منطق "أقرب معلَم + بناء الرسالة" بالضبط). null إن لم
+// يوجد أي معلَم ضمن الحد (لا تحذير)، أو عند فشل الجلب من Overpass (فشل آمن
+// موروث من fetchNearbySensitiveReceptorsFromOsm نفسها).
+export async function buildOsmProximityWarning(
+  lat: number,
+  lng: number,
+  thresholdM: number
+): Promise<string | null> {
+  const osmReceptors = await fetchNearbySensitiveReceptorsFromOsm(lat, lng, thresholdM);
+  if (osmReceptors.length === 0) return null;
+
+  let nearestName = '';
+  let nearestDistanceM = Infinity;
+  for (const r of osmReceptors) {
+    const { nearestAnyM } = nearestReceptorDistancesM(lat, lng, [
+      { id: r.id, name: r.name, receptorType: r.receptorType, lat: r.lat, lng: r.lng },
+    ]);
+    if (nearestAnyM !== null && nearestAnyM < nearestDistanceM) {
+      nearestDistanceM = nearestAnyM;
+      nearestName = r.name;
+    }
+  }
+  if (nearestDistanceM === Infinity || nearestDistanceM >= thresholdM) return null;
+
+  return `تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap ("${nearestName}"، على بُعد ${Math.round(nearestDistanceM)} م تقريباً) — بيانات غير رسمية تتطلب تحققاً ميدانياً. أدخِل هذا المستقبِل في سجل المستقبلات الحساسة الرسمي إن ثبت وجوده فعلياً، أو أكِّد المسافة يدوياً قبل المتابعة`;
 }

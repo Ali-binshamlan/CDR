@@ -10,6 +10,7 @@ import {
   refreshRuleParameters,
   getRuleParameters,
 } from '@/app/utils/dust-compliance-engine';
+import { buildOsmProximityWarning } from '@/app/utils/geo/overpassReceptors';
 
 // طلب صريح من المستخدم — تحقق فوري قبل الحفظ عند تحديد موقع الكسارة على
 // الخريطة، بدل انتظار محرك التقييم اللاحق (evaluateProject.ts) الذي يطبّق
@@ -94,6 +95,19 @@ export async function POST(request: Request) {
       `الموقع المحدَّد على بُعد ${Math.round(nearestResidentialM)} م فقط من أقرب منطقة سكنية/مدرسة/مستشفى — أقل من الحد الأدنى (${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م)`
     );
   }
+
+  // طلب صريح من المستخدم — ثغرة مكتشفة: جدول sensitive_receptors اليدوي
+  // (المصدر الوحيد أعلاه) قد يبقى فارغاً بلا أي إدخال بشري، فتمر كسارة قرب
+  // مسجد حقيقي بلا أي إيقاف رغم وجوده فعلياً على خرائط OpenStreetMap. لا
+  // يجوز لاكتشاف OSM (مصدر مجتمعي مفتوح غير موثَّق الدقة) أن يُصدر إيقافاً
+  // إلزامياً تلقائياً في القرار التنظيمي النهائي (الفصل الأصلي في
+  // overpassReceptors.ts يبقى صحيحاً) — لكن هنا، في مرحلة *ما قبل الحفظ*
+  // فقط، الأثر مختلف تماماً: لا نُصدر مخالفة، فقط نمنع المستخدم من إكمال
+  // الحفظ دون تحقق يدوي (إما تأكيد المسافة يدوياً أو إدخال المستقبِل رسمياً
+  // في sensitive_receptors). فشل الجلب من OSM يُعامَل بأمان (null، لا سبب
+  // حظر جديد) — لا يُسقط هذا الفحص طلب precheck بأكمله.
+  const osmWarning = await buildOsmProximityWarning(lat, lng, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M);
+  if (osmWarning) reasons.push(osmWarning);
 
   return NextResponse.json({
     blocked: reasons.length > 0,

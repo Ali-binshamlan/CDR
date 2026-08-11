@@ -8,6 +8,7 @@ import {
   refreshRuleParameters,
   getRuleParameters,
 } from '@/app/utils/dust-compliance-engine';
+import { buildOsmProximityWarning } from '@/app/utils/geo/overpassReceptors';
 
 // طلب صريح من المستخدم — نفس مبدأ crusher-precheck، لمحطة الخلط (batching_
 // plant): تحقق فوري قبل الحفظ عند تحديد موقع وحدة خلط على الخريطة، بدل
@@ -67,6 +68,13 @@ export async function POST(request: Request) {
       `الموقع المحدَّد على بُعد ${Math.round(nearestAnyM)} م فقط من أقرب مستقبل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية) — أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`
     );
   }
+
+  // طلب صريح من المستخدم — نفس إصلاح crusher-precheck بالضبط: جدول
+  // sensitive_receptors اليدوي قد يبقى فارغاً بلا إدخال بشري، فتمر محطة
+  // خلط قرب مسجد حقيقي بلا أي تنبيه. راجع التعليق الكامل هناك للتفصيل
+  // الكامل حول سبب اقتصار هذا على منع الحفظ (لا مخالفة تنظيمية فعلية).
+  const osmWarning = await buildOsmProximityWarning(lat, lng, CRUSHER_GENERAL_RECEPTOR_DISTANCE_M);
+  if (osmWarning) reasons.push(osmWarning);
 
   return NextResponse.json({
     blocked: reasons.length > 0,
