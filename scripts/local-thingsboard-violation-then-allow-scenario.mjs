@@ -32,10 +32,21 @@ const FIXED_VISIBILITY_M = Number(process.env.VISIBILITY_M) || 1000;
 
 const ALLOW_PM10_MIN = Number(process.env.ALLOW_PM10_MIN) || 150;
 const ALLOW_PM10_MAX = Number(process.env.ALLOW_PM10_MAX) || 200;
+// وضع تدرّج خطي اختياري لمرحلة ALLOW (طلب صريح: "سجل مخالفة أولاً ثم ابدأ
+// بالنزول") — القيمة تبدأ من pm10Max وتنخفض تدريجياً حتى pm10Min مع كل
+// قراءة بدل نطاق عشوائي ثابت. لا يغيّر سلوك الاستخدامات السابقة (افتراضي
+// false يبقي النمط العشوائي القديم).
+const ALLOW_DECLINING = process.env.ALLOW_DECLINING === '1' || process.env.ALLOW_DECLINING === 'true';
 
 const STAGES = [
   { name: 'VIOLATION (تجاوز حد المخالفة 340)', minutes: 5, pm10Min: 350, pm10Max: 450 },
-  { name: `ALLOW (نطاق مسموح ${ALLOW_PM10_MIN}-${ALLOW_PM10_MAX}، يتجاوز استقرار 10 دقائق)`, minutes: Number(process.env.ALLOW_MINUTES) || 12, pm10Min: ALLOW_PM10_MIN, pm10Max: ALLOW_PM10_MAX },
+  {
+    name: `ALLOW (${ALLOW_DECLINING ? `تدرّج تنازلي ${ALLOW_PM10_MAX}→${ALLOW_PM10_MIN}` : `نطاق مسموح ${ALLOW_PM10_MIN}-${ALLOW_PM10_MAX}`}، يتجاوز استقرار 10 دقائق)`,
+    minutes: Number(process.env.ALLOW_MINUTES) || 12,
+    pm10Min: ALLOW_PM10_MIN,
+    pm10Max: ALLOW_PM10_MAX,
+    declining: ALLOW_DECLINING,
+  },
 ];
 
 if (!DEVICE_TOKEN) {
@@ -48,12 +59,12 @@ function randomInRange(min, max, decimals = 1) {
   return Math.round((min + Math.random() * (max - min)) * factor) / factor;
 }
 
-function buildReading(pm10Min, pm10Max) {
+function buildReading(pm10Value) {
   return {
     windSpeed: randomInRange(5, 15), // ثابت نسبياً ومعتدل — لا يفعّل بوابة الرياح >25
     windGust: randomInRange(10, 20),
     windDirection: randomInRange(0, 360, 0),
-    pm10: randomInRange(pm10Min, pm10Max),
+    pm10: pm10Value,
     pm25: randomInRange(10, 80),
     visibility: FIXED_VISIBILITY_M, // ثابتة (طلب صريح) — لا تتداخل مع اختبار PM10
     humidity: randomInRange(20, 50, 0),
@@ -61,8 +72,8 @@ function buildReading(pm10Min, pm10Max) {
   };
 }
 
-async function sendReading(pm10Min, pm10Max) {
-  const reading = buildReading(pm10Min, pm10Max);
+async function sendReading(pm10Value) {
+  const reading = buildReading(pm10Value);
   const startedAt = new Date().toISOString();
   try {
     const res = await fetch(`${BASE_URL}/api/v1/${DEVICE_TOKEN}/telemetry`, {
@@ -89,7 +100,16 @@ async function runScenario() {
     console.log(`\n=== المرحلة: ${stage.name} — ${stage.minutes} دقيقة، pm10 بين ${stage.pm10Min}-${stage.pm10Max} ===`);
     const ticksInStage = Math.round((stage.minutes * 60 * 1000) / SEND_INTERVAL_MS);
     for (let i = 0; i < ticksInStage; i++) {
-      await sendReading(stage.pm10Min, stage.pm10Max);
+      let pm10Value;
+      if (stage.declining) {
+        // تدرّج خطي من pm10Max إلى pm10Min عبر كل تكرارات المرحلة (آخر
+        // تكرار يصل بالضبط pm10Min).
+        const step = ticksInStage > 1 ? (stage.pm10Max - stage.pm10Min) / (ticksInStage - 1) : 0;
+        pm10Value = Math.round((stage.pm10Max - step * i) * 10) / 10;
+      } else {
+        pm10Value = randomInRange(stage.pm10Min, stage.pm10Max);
+      }
+      await sendReading(pm10Value);
       if (i < ticksInStage - 1) await sleep(SEND_INTERVAL_MS);
     }
   }
