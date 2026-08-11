@@ -30,9 +30,12 @@ const DEVICE_TOKEN = process.env.THINGSBOARD_DEVICE_TOKEN;
 const SEND_INTERVAL_MS = Number(process.env.SCENARIO_SEND_INTERVAL_MS) || 60 * 1000;
 const FIXED_VISIBILITY_M = Number(process.env.VISIBILITY_M) || 1000;
 
+const ALLOW_PM10_MIN = Number(process.env.ALLOW_PM10_MIN) || 150;
+const ALLOW_PM10_MAX = Number(process.env.ALLOW_PM10_MAX) || 200;
+
 const STAGES = [
   { name: 'VIOLATION (تجاوز حد المخالفة 340)', minutes: 5, pm10Min: 350, pm10Max: 450 },
-  { name: 'ALLOW (نطاق مسموح قريب من الحد الأعلى 200، يتجاوز استقرار 10 دقائق)', minutes: Number(process.env.ALLOW_MINUTES) || 12, pm10Min: 150, pm10Max: 200 },
+  { name: `ALLOW (نطاق مسموح ${ALLOW_PM10_MIN}-${ALLOW_PM10_MAX}، يتجاوز استقرار 10 دقائق)`, minutes: Number(process.env.ALLOW_MINUTES) || 12, pm10Min: ALLOW_PM10_MIN, pm10Max: ALLOW_PM10_MAX },
 ];
 
 if (!DEVICE_TOKEN) {
