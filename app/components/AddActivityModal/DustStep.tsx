@@ -43,6 +43,11 @@ interface DustStepProps {
   crusherPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
   // نفس المبدأ أعلاه بالضبط، لمحطة الخلط (batching-precheck).
   batchingPrecheckResults: Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>;
+  // خطأ مكتشَف ومُصلَح (المستخدم: "أقدر أسوي حفظ قبل ما يظهر التنبيه") —
+  // true طالما يوجد فحص كسارة/محطة خلط لم تصل نتيجته بعد (debounce 600ms
+  // أو استجابة شبكة قيد الانتظار). زر الحفظ يُعطَّل طوال هذه الفترة، بدل
+  // السماح بضغطة قد ترفضها route.ts بعد ذلك بلا أي إشارة بصرية سابقة.
+  precheckPending: boolean;
 }
 
 // ملاحظة: من بين الحقول ضمن DUST_CONTROL_CHECKBOXES، dustScreensAvailable فقط
@@ -150,7 +155,7 @@ export function DustStep({
   updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
   updateIdleSurfaceUnit, addIdleSurfaceUnit, removeIdleSurfaceUnit,
   updateCrusherUnit, addCrusherUnit, removeCrusherUnit,
-  crusherPrecheckResults, batchingPrecheckResults,
+  crusherPrecheckResults, batchingPrecheckResults, precheckPending,
 }: DustStepProps) {
   const mapCenterLat = project.latitude || 24.7136;
   const mapCenterLng = project.longitude || 46.6753;
@@ -819,11 +824,17 @@ export function DustStep({
         )}
 
         <div className="flex gap-3 pt-2">
-          <button type="submit" disabled={dustLoading || regulatoryActivities.length === 0} className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-bold py-3.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors shadow-sm">
+          <button
+            type="submit"
+            disabled={dustLoading || precheckPending || regulatoryActivities.length === 0}
+            className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-bold py-3.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors shadow-sm"
+          >
             <Wind className="w-5 h-5" />
             {dustLoading
               ? 'جاري التقييم...'
-              : 'حفظ وتقييم النشاط'}
+              : precheckPending
+                ? 'جارٍ التحقق من الموقع...'
+                : 'حفظ وتقييم النشاط'}
           </button>
         </div>
       </form>

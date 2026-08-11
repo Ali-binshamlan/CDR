@@ -173,6 +173,17 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     Record<string, { blocked: boolean; reasonsAr: string[] } | undefined>
   >({});
 
+  // خطأ مكتشَف ومُصلَح (المستخدم: "التنبيه يعمل لكن يظهر متأخر — أقدر أسوي
+  // حفظ قبل ما يظهر التنبيه"): Hard Block أعلاه كان يقرأ فقط آخر نتيجة
+  // *وصلت فعلاً* — الضغط على حفظ خلال نافذة الـ600ms debounce (أو أثناء
+  // انتظار استجابة الشبكة/Overpass بعدها) كان يتجاوز الحارس كلياً بالواجهة
+  // (المصدر الحقيقي للحقيقة الآن هو route.ts نفسه، لكن تعطيل الزر هنا يمنع
+  // تجربة مستخدم مربكة: ضغطة تبدو ناجحة ثم رفض خادمي). عدّاد بسيط (لا
+  // Set/Map لكل مفتاح — يكفي "هل يوجد أي فحص جارٍ الآن على الإطلاق؟") يُزاد
+  // عند جدولة الفحص (بداية المؤقّت 600ms) ويُنقَص عند وصول أي نتيجة (نجاح
+  // أو فشل شبكة) — الزر الرئيسي يُعطَّل طالما > 0.
+  const [pendingPrecheckCount, setPendingPrecheckCount] = useState(0);
+
   const updateDustField = <K extends keyof typeof DUST_FORM_DEFAULTS>(field: K, value: (typeof DUST_FORM_DEFAULTS)[K]) => { setDustForm((prev) => ({ ...prev, [field]: value })); };
 
   const generateActivityItemId = (): string => {
@@ -399,6 +410,25 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     });
   };
 
+  // مجموعة مفاتيح (`${itemId}:${index}`) لكل فحص كسارة/خلط "معلَّق حالياً"
+  // (مؤقّت debounce لم يُطلَق بعد، أو الطلب لا يزال في الطريق) — pendingPrecheckCount
+  // يبقى مرآة لحجمها فقط لتبسيط الشرط في زر الحفظ. Set (لا عدّاد مباشر)
+  // لضمان الدقة تحت تحريك متكرر لنفس الوحدة: تغيير الموقع مرتين متتاليتين
+  // يُلغي المؤقّت الأول (نفس المفتاح يبقى في المجموعة، لا زيادة/نقصان
+  // مزدوج) بدل زيادة عدّاد لمؤقّت أُلغي فعلياً ولن يُنقَص أبداً.
+  const pendingPrecheckKeys = useRef<Set<string>>(new Set());
+  const markPrecheckPending = (key: string) => {
+    if (!pendingPrecheckKeys.current.has(key)) {
+      pendingPrecheckKeys.current.add(key);
+      setPendingPrecheckCount(pendingPrecheckKeys.current.size);
+    }
+  };
+  const markPrecheckSettled = (key: string) => {
+    if (pendingPrecheckKeys.current.delete(key)) {
+      setPendingPrecheckCount(pendingPrecheckKeys.current.size);
+    }
+  };
+
   // طلب صريح من المستخدم — استدعاء crusher-precheck عند كل تغيير لموقع
   // كسارة، بـdebounce (600ms) حتى لا يُرسَل طلب لكل نقرة سحب على الخريطة —
   // نافذة زمنية واحدة فقط لكل وحدة كسارة (المفتاح `${itemId}:${index}`)،
@@ -407,6 +437,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   const runCrusherPrecheck = (itemId: string, index: number, lat: number, lng: number) => {
     const key = `${itemId}:${index}`;
     if (crusherPrecheckTimers.current[key]) clearTimeout(crusherPrecheckTimers.current[key]);
+    markPrecheckPending(key);
     crusherPrecheckTimers.current[key] = setTimeout(async () => {
       try {
         const { data } = await apiClient.post('/dust-profiles/crusher-precheck', { projectId: project.id, lat, lng });
@@ -414,12 +445,15 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       } catch {
         // فشل التحقق الفوري (شبكة/خادم) لا يمنع الحفظ بمفرده — محرك التقييم
         // اللاحق (evaluateProject.ts) يبقى الحكم النهائي الفعلي دائماً؛ هذا
-        // التحقق تحسين تجربة مستخدم فقط، لا مصدر الحقيقة الوحيد.
+        // التحقق تحسين تجربة مستخدم فقط، لا مصدر الحقيقة الوحيد. الحارس
+        // الحقيقي (route.ts) يبقى يعمل بصرف النظر عن نجاح هذا الطلب.
         setCrusherPrecheckResults((prev) => {
           const next = { ...prev };
           delete next[key];
           return next;
         });
+      } finally {
+        markPrecheckSettled(key);
       }
     }, 600);
   };
@@ -429,6 +463,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   const runBatchingPrecheck = (itemId: string, index: number, lat: number, lng: number) => {
     const key = `${itemId}:${index}`;
     if (batchingPrecheckTimers.current[key]) clearTimeout(batchingPrecheckTimers.current[key]);
+    markPrecheckPending(key);
     batchingPrecheckTimers.current[key] = setTimeout(async () => {
       try {
         const { data } = await apiClient.post('/dust-profiles/batching-precheck', { projectId: project.id, lat, lng });
@@ -439,6 +474,8 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
           delete next[key];
           return next;
         });
+      } finally {
+        markPrecheckSettled(key);
       }
     }, 600);
   };
@@ -863,6 +900,16 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
 
   const handleDustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // طلب صريح من المستخدم — منع ضغطة حفظ تسبق وصول نتيجة precheck (نافذة
+    // الـ600ms debounce + زمن استجابة الشبكة/Overpass). الزر نفسه يُعطَّل
+    // بصرياً أيضاً (DustStep.tsx)، لكن هذا الفحص طبقة دفاع مستقلة (مثال:
+    // الضغط على Enter داخل نموذج). الحارس الحقيقي غير القابل للتجاوز يبقى
+    // في route.ts بصرف النظر عن هذا الفحص — هذا فقط يمنع رفضاً خادمياً
+    // مربكاً بعد ضغطة بدت ناجحة.
+    if (pendingPrecheckCount > 0) {
+      toast.error('جارٍ التحقق من موقع الكسارة/محطة الخلط — يرجى الانتظار لحظة قبل الحفظ.');
+      return;
+    }
     if (regulatoryActivities.length === 0) { toast.error('أضف نشاطاً تنظيمياً واحداً على الأقل.'); return; }
     { const locError = validateRegulatoryActivityLocations(); if (locError) { toast.error(locError); return; } }
     for (let i = 0; i < regulatoryActivities.length; i++) {
@@ -1026,6 +1073,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
                         removeCrusherUnit={removeCrusherUnit}
                         crusherPrecheckResults={crusherPrecheckResults}
                         batchingPrecheckResults={batchingPrecheckResults}
+                        precheckPending={pendingPrecheckCount > 0}
                       />
                     )}
                   </div>

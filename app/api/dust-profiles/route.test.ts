@@ -40,6 +40,24 @@ vi.mock('@/app/lib/apiAuth', () => ({
   verifyProjectOwnership: async () => mockOwnershipResult,
 }));
 
+// خطأ مكتشَف ومُصلَح (المستخدم لاحظ: يمكن الحفظ قبل ظهور تنبيه precheck
+// بالواجهة) — الحارس الحقيقي أصبح مطبَّقاً هنا في route.ts نفسه أيضاً
+// لأنشطة CRUSHER/BATCHING_PLANT، يستدعي buildOsmProximityWarning (نداء
+// شبكة Overpass حقيقي بلا هذا التمويه). موقع افتراضي "آمن" (لا تحذير) —
+// اختبارات الحارس الجديد الصريحة أدناه تُغيّر mockOsmWarning.
+let mockOsmWarning: string | null = null;
+vi.mock('@/app/utils/geo/overpassReceptors', () => ({
+  buildOsmProximityWarning: async () => mockOsmWarning,
+}));
+
+vi.mock('@/app/utils/dust-compliance-engine', async () => {
+  const actual = await vi.importActual('@/app/utils/dust-compliance-engine');
+  return {
+    ...actual,
+    refreshRuleParameters: vi.fn(async () => undefined),
+  };
+});
+
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 function makeRequest(insert: Record<string, unknown>): Request {
@@ -72,6 +90,8 @@ describe('POST /api/dust-profiles', () => {
     mockOwnershipResult = true;
     tableResults.projects = { data: { work_hours_start: null, work_hours_end: null }, error: null };
     tableResults.project_devices = { data: [], error: null };
+    tableResults.sensitive_receptors = { data: [], error: null };
+    mockOsmWarning = null;
   });
 
   it('يرفض بلا مصادقة', async () => {
@@ -184,10 +204,118 @@ describe('POST /api/dust-profiles', () => {
       error: null,
     };
     const { POST } = await import('./route');
+    // regulatory_activity=EARTHWORKS عمداً (لا CRUSHER/BATCHING_PLANT) —
+    // هذا الاختبار يقصد device_id فقط، ولا يجوز أن يصطدم بحارس الكسارة/
+    // محطة الخلط الجديد (يتطلب site_area_m2 كافياً لتصنيف الفئة، لا علاقة
+    // له بموضوع هذا الاختبار).
     const res = await POST(
-      makeRequest(baseInsert({ device_id: 'device-spoofed', activity_lat: 24.7, activity_lng: 46.6 })) as never
+      makeRequest(
+        baseInsert({
+          regulatory_activity: 'EARTHWORKS',
+          activity_type: 'GRADING',
+          device_id: 'device-spoofed',
+          activity_lat: 24.7,
+          activity_lng: 46.6,
+        })
+      ) as never
     );
     expect(res.status).toBe(200);
     expect(lastDustProfileInsert?.device_id).toBe('device-near');
+  });
+
+  // طلب صريح من المستخدم — ثغرة مكتشفة: crusher-precheck/batching-precheck
+  // بالواجهة تحققان تجربة مستخدم فقط (debounce 600ms + زمن شبكة)، وHard
+  // Block هناك يقرأ فقط آخر نتيجة *وصلت فعلاً* — الضغط على حفظ بسرعة كافية
+  // قبل وصول النتيجة كان يتجاوز الحارس بالكامل. هذه المجموعة تختبر الحارس
+  // الحقيقي المُضاف الآن في route.ts نفسه (المصدر الوحيد للحقيقة).
+  describe('حارس الكسارة/محطة الخلط عند الحفظ الفعلي (لا يعتمد على الواجهة)', () => {
+    it('كسارة في مشروع دون الفئة الثالثة (site_area_m2 صغيرة) → 400', async () => {
+      tableResults.projects = { data: { site_area_m2: 1000, daily_truck_movements: 5 }, error: null };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(400);
+      expect(lastDustProfileInsert).toBeNull();
+    });
+
+    it('كسارة في مشروع فئة ثالثة + مستقبل سكني على 100م (sensitive_receptors يدوي) → 400', async () => {
+      tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
+      tableResults.sensitive_receptors = {
+        data: [{ id: 'r1', name: 'حي سكني', receptor_type: 'RESIDENTIAL', lat: 24.7009, lng: 46.6 }],
+        error: null,
+      };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(400);
+      expect(lastDustProfileInsert).toBeNull();
+    });
+
+    it('كسارة في مشروع فئة ثالثة + OSM يكتشف مسجداً قريباً (sensitive_receptors فارغ) → 400', async () => {
+      tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
+      mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(400);
+      expect(lastDustProfileInsert).toBeNull();
+    });
+
+    it('كسارة في مشروع فئة ثالثة + لا مستقبلات (يدوية أو OSM) → 200 (يُحفَظ)', async () => {
+      tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert).not.toBeNull();
+    });
+
+    it('محطة خلط + مسجد على 100م (أقل من 200م) → 400', async () => {
+      tableResults.sensitive_receptors = {
+        data: [{ id: 'r1', name: 'مسجد', receptor_type: 'MOSQUE', lat: 24.7009, lng: 46.6 }],
+        error: null,
+      };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(
+          baseInsert({
+            regulatory_activity: 'BATCHING_PLANT',
+            activity_type: 'CONCRETE_POURING',
+            activity_lat: 24.7,
+            activity_lng: 46.6,
+          })
+        ) as never
+      );
+      expect(res.status).toBe(400);
+      expect(lastDustProfileInsert).toBeNull();
+    });
+
+    it('محطة خلط + OSM يكتشف معلَماً قريباً → 400', async () => {
+      mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(
+          baseInsert({
+            regulatory_activity: 'BATCHING_PLANT',
+            activity_type: 'CONCRETE_POURING',
+            activity_lat: 24.7,
+            activity_lng: 46.6,
+          })
+        ) as never
+      );
+      expect(res.status).toBe(400);
+      expect(lastDustProfileInsert).toBeNull();
+    });
+
+    it('كسارة بلا إحداثيات (activity_lat/lng غائبة) → لا يُطبَّق الحارس، القرار النهائي يبقى للتقييم اللاحق', async () => {
+      tableResults.projects = { data: { site_area_m2: 1000 }, error: null };
+      const { POST } = await import('./route');
+      const res = await POST(makeRequest(baseInsert()) as never);
+      expect(res.status).toBe(200);
+    });
   });
 });

@@ -5,6 +5,15 @@ import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { haversineDistanceM } from '@/app/utils/geo/zone';
 import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
+import {
+  buildProjectComplianceProfile,
+  buildSensitiveReceptor,
+  classifyProject,
+  nearestReceptorDistancesM,
+  refreshRuleParameters,
+  getRuleParameters,
+} from '@/app/utils/dust-compliance-engine';
+import { buildOsmProximityWarning } from '@/app/utils/geo/overpassReceptors';
 
 // حقول حساسة لا يجوز أن يتحكم بها العميل مطلقاً — id لمنع انتحال/تصادم
 // صف موجود، created_at لمنع تزوير توقيت السجل، device_id (الربط بمحطة
@@ -280,6 +289,81 @@ export async function POST(request: NextRequest) {
         { error: `وقت النشاط اليومي يجب أن يقع ضمن أوقات دوام المشروع (${String(ws).slice(0, 5)} – ${String(we).slice(0, 5)}).` },
         { status: 400 }
       );
+    }
+  }
+
+  // خطأ أمني مكتشَف ومُصلَح (المستخدم لاحظ: "التنبيه يعمل لكن يظهر متأخر —
+  // أقدر أسوي حفظ قبل ما يظهر التنبيه"): crusher-precheck/batching-precheck
+  // (index.tsx) تحققان تجربة مستخدم فقط — استدعاء مؤجَّل بـdebounce (600ms)
+  // + زمن استجابة الشبكة/Overpass قد يتجاوز مجموعه ثوانٍ عدة، وHard Block
+  // بالواجهة يقرأ فقط آخر نتيجة *وصلت فعلاً* (crusherPrecheckResults) — لو
+  // لم تصل نتيجة بعد وقت الضغط على حفظ، لا يُمنع الحفظ إطلاقاً (تصميم
+  // متعمَّد أصلاً: "لا مصدر الحقيقة الوحيد"). هذا يعني الحارس بالواجهة كان
+  // قابلاً للتجاوز فعلياً بمجرد السرعة، لا فقط بتعطيل الجافاسكريبت. نفس
+  // منطق crusher-precheck/batching-precheck بالضبط يُعاد تطبيقه هنا —
+  // المصدر الوحيد للحقيقة الفعلي، لا يعتمد على أي نتيجة واجهة مخزَّنة.
+  if (insert.regulatory_activity === 'CRUSHER' || insert.regulatory_activity === 'BATCHING_PLANT') {
+    const lat = typeof insert.activity_lat === 'number' ? insert.activity_lat : null;
+    const lng = typeof insert.activity_lng === 'number' ? insert.activity_lng : null;
+    // إحداثيات الوحدة الفعلية (crusher_lat/batching_lat) تُفضَّل عند توفرها
+    // — نفس أولوية computeUnitReceptors (dustEvaluation.ts)؛ activity_lat/lng
+    // يبقيان fallback (الحقل المشترك لكل الأنشطة) إن غابت الإحداثيات
+    // المتخصصة (مثال: أول إدراج قبل تحديد موقع الوحدة على الخريطة).
+    const unitLat =
+      insert.regulatory_activity === 'CRUSHER'
+        ? (typeof insert.crusher_lat === 'number' ? insert.crusher_lat : lat)
+        : (typeof insert.batching_lat === 'number' ? insert.batching_lat : lat);
+    const unitLng =
+      insert.regulatory_activity === 'CRUSHER'
+        ? (typeof insert.crusher_lng === 'number' ? insert.crusher_lng : lng)
+        : (typeof insert.batching_lng === 'number' ? insert.batching_lng : lng);
+
+    if (typeof unitLat === 'number' && typeof unitLng === 'number') {
+      const { data: receptorRows, error: receptorsError } = await supabaseAdmin
+        .from('sensitive_receptors')
+        .select('id, name, receptor_type, lat, lng');
+      if (receptorsError) {
+        return NextResponse.json(
+          { error: safeErrorResponse(receptorsError, 'sensitive_receptors fetch failed') },
+          { status: 500 }
+        );
+      }
+      await refreshRuleParameters(supabaseAdmin);
+      const sensitiveReceptors = (receptorRows || []).map(buildSensitiveReceptor);
+      const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(unitLat, unitLng, sensitiveReceptors);
+      const { CRUSHER_GENERAL_RECEPTOR_DISTANCE_M, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M } = getRuleParameters();
+
+      const blockReasons: string[] = [];
+
+      if (insert.regulatory_activity === 'CRUSHER') {
+        const { data: projectRow2 } = await supabaseAdmin
+          .from('projects')
+          .select('site_area_m2, daily_truck_movements, has_onsite_crusher, has_onsite_batching_plant')
+          .eq('id', insert.project_id as string)
+          .maybeSingle();
+        const { riskClass } = classifyProject(buildProjectComplianceProfile(projectRow2));
+        if (riskClass !== 'CATEGORY_III_HIGH') {
+          blockReasons.push('الكسارات مسموحة فقط في مشاريع الفئة الثالثة (عالية المخاطر) — تصنيف هذا المشروع الحالي لا يستوفي الشرط');
+        }
+        if (nearestAnyM !== null && nearestAnyM < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
+          blockReasons.push(`الموقع المحدَّد على بُعد ${Math.round(nearestAnyM)} م فقط من أقرب مستقبل حساس — أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`);
+        }
+        if (nearestResidentialM !== null && nearestResidentialM < CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M) {
+          blockReasons.push(`الموقع المحدَّد على بُعد ${Math.round(nearestResidentialM)} م فقط من أقرب منطقة سكنية/مدرسة/مستشفى — أقل من الحد الأدنى (${CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M} م)`);
+        }
+        const osmWarning = await buildOsmProximityWarning(unitLat, unitLng, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M);
+        if (osmWarning) blockReasons.push(osmWarning);
+      } else {
+        if (nearestAnyM !== null && nearestAnyM < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M) {
+          blockReasons.push(`الموقع المحدَّد على بُعد ${Math.round(nearestAnyM)} م فقط من أقرب مستقبل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية) — أقل من الحد الأدنى (${CRUSHER_GENERAL_RECEPTOR_DISTANCE_M} م)`);
+        }
+        const osmWarning = await buildOsmProximityWarning(unitLat, unitLng, CRUSHER_GENERAL_RECEPTOR_DISTANCE_M);
+        if (osmWarning) blockReasons.push(osmWarning);
+      }
+
+      if (blockReasons.length > 0) {
+        return NextResponse.json({ error: blockReasons[0], reasonsAr: blockReasons }, { status: 400 });
+      }
     }
   }
 
