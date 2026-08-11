@@ -268,7 +268,15 @@ export default function IntegratedDashboard() {
                 لا تتوفر إحداثيات (latitude / longitude) للمشاريع بعد.
               </div>
             ) : (
-              <ProjectsMap points={mapPoints} onSelect={(id) => router.push(`/dashboard/Projects/${id}`)} />
+              // خطأ مكتشَف ومُصلَح (المستخدم لاحظ: "في خريطه المستخدم عادي
+              // تظهر القراءه ... ليست تبع الجهاز"): قسم قراءات الطقس في
+              // HoverCard (ProjectsMap.tsx) يجلب من /api/weather — تقدير
+              // Open-Meteo العام للموقع الجغرافي، بلا أي تحقق من وجود جهاز
+              // رصد حقيقي مرتبط بالمشروع أو قراءاته الحية الفعلية. مستخدم
+              // يفترض أنها قراءة جهازه الفعلي يُضلَّل. hideRawReadings يمنع
+              // هذا القسم بالكامل (ونداء /api/weather نفسه) — نفس الآلية
+              // المستخدمة أصلاً لخريطة جهة المراقبة (GlobalDashboard.tsx).
+              <ProjectsMap points={mapPoints} onSelect={(id) => router.push(`/dashboard/Projects/${id}`)} hideRawReadings />
             )}
           </div>
         </div>
