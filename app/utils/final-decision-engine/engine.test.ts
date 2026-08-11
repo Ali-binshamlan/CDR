@@ -897,6 +897,68 @@ describe('decideFinal — يدمج input.aei داخلياً (لا طبقة خا�
     expect(r.level).toBe('YELLOW');
     expect(r.decisionLabelAr).toBe('تنبيه: أجواء متوقعة غير مناسبة');
   });
+
+  // خطأ مكتشَف ومُصلَح (طلب المستخدم — تقرير المراجعة الخارجي: "AEI يغيّر
+  // اللون والنص دون تغيير القرار"): aeiIsMoreSevere القديمة كانت تستبدل
+  // level/decisionLabelAr/shortReasonAr فقط بلا أي أثر على operationalDecision/
+  // regulatoryFinding — نتيجة مثل operationalDecision=ALLOW + level=BLACK +
+  // decisionLabelAr='بيئة العمل غير آمنة (مغلق)' كانت ممكنة فعلياً. aeiCandidate
+  // الآن مرشح قرار كامل يشارك candidates.reduce نفسه — يستحيل بنيوياً الآن.
+  describe('AEI مرشح قرار كامل — لا يجوز تغيير level/النص بلا تغيير operationalDecision (اختبار قبول صريح)', () => {
+    it('DVI وامتثال كلاهما ALLOW نظيف + aei.status=CLOSED (BLACK) → operationalDecision=PROTECTIVE_STOP (لا ALLOW)، level=BLACK يطابقه فعلياً', () => {
+      const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', decisionLabelAr: 'مسموح — تشغيل اعتيادي', mandatoryStop: false, overridable: true });
+      const compliance = baseCompliance({ decisionCategory: 'ALLOW', decisionLabelAr: 'مسموح — تشغيل اعتيادي' });
+      const aei = baseAei({ status: 'CLOSED', statusLabelAr: 'بيئة العمل غير آمنة (مغلق)', color: 'BLACK', shortReasonAr: 'مؤشر AEI أغلق العملية.' });
+
+      const r = decideFinal(input({ dvi, compliance, aei }));
+
+      expect(r.operationalDecision).not.toBe('ALLOW');
+      expect(r.operationalDecision).toBe('PROTECTIVE_STOP');
+      expect(r.level).toBe('BLACK');
+      expect(r.decisionLabelAr).toBe('بيئة العمل غير آمنة (مغلق)');
+      // إغلاق AEI وحده لا يتحول تلقائياً إلى مخالفة تنظيمية ولا إيقاف إلزامي
+      // قطعي — regulatoryFinding يبقى محكوماً حصراً بالامتثال الفعلي.
+      expect(r.mandatoryStop).toBe(false);
+      expect(r.regulatoryFinding).toBe('COMPLIANT');
+    });
+
+    it('aei.status=RESTRICT (RED) وحده أشد من DVI/الامتثال ALLOW → operationalDecision=RESTRICT (لا ALLOW)', () => {
+      const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', mandatoryStop: false });
+      const compliance = baseCompliance({ decisionCategory: 'ALLOW' });
+      const aei = baseAei({ status: 'RESTRICT', statusLabelAr: 'تقييد تشغيلي وضوابط إضافية', color: 'RED', shortReasonAr: 'تأثير الغبار على جودة العمل.' });
+
+      const r = decideFinal(input({ dvi, compliance, aei }));
+
+      expect(r.operationalDecision).toBe('RESTRICT');
+      expect(r.level).toBe('RED');
+      expect(r.decisionLabelAr).toBe('تقييد تشغيلي وضوابط إضافية');
+    });
+
+    // اختبار قبول صريح (طلب المستخدم بالحرف): "لا يُسمح بأي حالة ALLOW مع
+    // RED/DARK_RED/BLACK" — فحص شامل عبر كل تركيبات aei.status الممكنة.
+    it('لا توجد أي تركيبة تُنتج operationalDecision=ALLOW مع level من {RED, DARK_RED, BLACK}', () => {
+      const aeiStatuses: AeiEvaluationResult['status'][] = ['ALLOW', 'MONITOR', 'RESTRICT', 'CLOSED'];
+      const severeLevels: FinalDecision['level'][] = ['RED', 'DARK_RED', 'BLACK'];
+
+      for (const status of aeiStatuses) {
+        const colorByStatus: Record<AeiEvaluationResult['status'], AeiEvaluationResult['color']> = {
+          ALLOW: 'GREEN',
+          MONITOR: 'YELLOW',
+          RESTRICT: 'RED',
+          CLOSED: 'BLACK',
+        };
+        const dvi = baseDvi({ level: 'GREEN', decisionCategory: 'ALLOW', mandatoryStop: false });
+        const compliance = baseCompliance({ decisionCategory: 'ALLOW' });
+        const aei = baseAei({ status, color: colorByStatus[status] });
+
+        const r = decideFinal(input({ dvi, compliance, aei }));
+
+        if (severeLevels.includes(r.level)) {
+          expect(r.operationalDecision, `status=${status}, level=${r.level}`).not.toBe('ALLOW');
+        }
+      }
+    });
+  });
 });
 
 // =====================================================================

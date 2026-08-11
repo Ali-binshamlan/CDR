@@ -8,6 +8,7 @@
 // =============================================================
 
 import type { FinalDecision, FinalDecisionInput, OperationalDecision, RegulatoryFinding } from './types';
+import type { AeiStatus } from '@/app/utils/aei-engine/types';
 // PM10_WARNING_UG_M3 (251 ميكروجرام/م³) — نفس الحد المستخدَم في
 // buildPlanningForecastResult (dust-compliance-engine/engine.ts) لتصنيف
 // توقّع PM10 "غير مناسب". decideFinal تبقى "الدالة الوحيدة المسموح لها
@@ -196,7 +197,7 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // بنفس منطق aei-engine/tables.ts AEI_CAPPING_DVI_DECISIONS، لا MANDATORY_STOP
   // إلا عبر dvi.mandatoryStop المنفصل أدناه).
   interface DecisionCandidate {
-    source: 'DVI' | 'COMPLIANCE' | 'EVIDENCE' | 'ENCLOSED_SUPPRESS';
+    source: 'DVI' | 'COMPLIANCE' | 'EVIDENCE' | 'ENCLOSED_SUPPRESS' | 'AEI';
     decision: OperationalDecision;
   }
 
@@ -277,6 +278,35 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     decision: evidenceUnavailable ? 'HOLD_FOR_VERIFICATION' : 'ALLOW',
   };
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "AEI يغيّر اللون والنص دون تغيير
+  // القرار"): aeiIsMoreSevere (أدناه سابقاً) كانت تستبدل level/decisionLabelAr/
+  // shortReasonAr فقط عندما AEI أشد من level المحسوب من DVI/الامتثال —
+  // بمعزل تام عن operationalDecision/regulatoryFinding/mandatoryStop، فكانت
+  // نتيجة مثل operationalDecision=ALLOW + regulatoryFinding=COMPLIANT +
+  // level=BLACK + decisionLabelAr='مغلق' ممكنة فعلياً: evaluateAei تُستدعى
+  // (dustEvaluation.ts) على dvi الخام مباشرة، غير مطّلعة على استثناءات
+  // decideFinal اللاحقة (pendingAffectedStop يُسقِط dviMandatoryCandidate،
+  // dviStopIsPm10StaleOnly يُخفِّف dviCandidate) — فقد يرى AEI dvi.mandatoryStop
+  // =true (CLOSED/BLACK) بينما decideFinal قرر بحق أن السبب معلَّق/غير موثوق،
+  // فيفوز operationalDecision الأخف بينما العرض يقفز لأسود "مغلق".
+  //
+  // الإصلاح: AEI مرشح قرار كامل الآن (نفس آلية "الأشد يفوز" بالضبط) — لا
+  // طبقة عرض منفصلة بعد اختيار الفائز. CLOSED→PROTECTIVE_STOP (لا
+  // MANDATORY_STOP): إغلاق AEI مؤشر جودة/سلامة إرشادي، لا مخالفة تنظيمية
+  // بحد ذاته — لا يجوز أن "يتحول تلقائياً" لإيقاف إلزامي قطعي (regulatoryFinding
+  // يبقى محكوماً حصراً بـconfirmedAffectedStop/pendingAffectedStop/compliance،
+  // لا بـAEI مطلقاً). isPlanning مستبعدة أصلاً (input.aei لا يصل هذه النقطة
+  // في وضع PLANNING، فرع مبكر منفصل أعلى الدالة).
+  const AEI_TO_OPERATION: Record<AeiStatus, OperationalDecision> = {
+    ALLOW: 'ALLOW',
+    MONITOR: 'MONITOR',
+    RESTRICT: 'RESTRICT',
+    CLOSED: 'PROTECTIVE_STOP',
+  };
+  const aeiCandidate: DecisionCandidate | null = input.aei
+    ? { source: 'AEI', decision: AEI_TO_OPERATION[input.aei.status] }
+    : null;
+
   // محرك DVI الفيزيائي لا يعرف مفهوم "العملية المغلقة" إطلاقاً. القمع هنا
   // محصور بحالة dvi.decisionCategory==='ALLOW_WITH_MONITORING' تحديداً (لا
   // أي قرار DVI آخر) — RESTRICT_SEVERE/STOP_* بسبب رؤية فيزيائية حقيقية لا
@@ -290,6 +320,7 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     dvi.decisionCategory === 'ALLOW_WITH_MONITORING';
 
   const candidates: DecisionCandidate[] = [dviCandidate, complianceCandidate, dviMandatoryCandidate, evidenceCandidate];
+  if (aeiCandidate) candidates.push(aeiCandidate);
   if (suppressDviMonitoring) {
     // استبعاد مرشح DVI (ALLOW_WITH_MONITORING→MONITOR) من الاختيار عندما
     // النشاط مغلق فعلياً وامتثاله نظيف — لا يجوز لأي مصدر آخر (compliance/
@@ -363,13 +394,27 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     !!compliance &&
     compliance.decisionCategory !== 'ALLOW' &&
     OPERATION_RANK[complianceCandidate.decision] >= OPERATION_RANK[operationalDecision];
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق aeiCandidate/
+  // AEI_TO_OPERATION الكامل أعلاه): نفس مبدأ complianceIsDecisive بالضبط —
+  // AEI يُختار كمصدر النص/اللون فقط عندما فاز فعلياً (رتبته >= الفائز
+  // الحقيقي)، لا عند أي "أشد لوناً" منفصل عن operationalDecision كما كان
+  // سابقاً. complianceIsDecisive يبقى مفحوصاً أولاً عمداً (نفس أولوية النص
+  // التنظيمي على أي مصدر آخر عند التعادل، الاتفاقية القديمة الموروثة) —
+  // AEI لا "يتجاوز" نص امتثال حاسم بنفس الشدة، فقط يفوز حين يتفوق فعلياً أو
+  // حين لا يوجد نص امتثال حاسم أصلاً.
+  const aeiIsDecisive =
+    !!aeiCandidate &&
+    !complianceIsDecisive &&
+    OPERATION_RANK[aeiCandidate.decision] >= OPERATION_RANK[operationalDecision];
   const shortReasonAr = evidenceUnavailable
     ? 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.'
     : complianceIsDecisive
       ? compliance!.shortReasonAr
-      : suppressDviMonitoring
-        ? compliance?.shortReasonAr || ''
-        : dvi.shortReason || '';
+      : aeiIsDecisive
+        ? input.aei!.shortReasonAr
+        : suppressDviMonitoring
+          ? compliance?.shortReasonAr || ''
+          : dvi.shortReason || '';
   const decisionLabelAr = mandatoryStop
     ? 'إيقاف إلزامي نظامي'
     : pendingAffectedStop
@@ -378,17 +423,21 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
         ? 'بانتظار تحقق ميداني — بيانات غير كافية'
         : complianceIsDecisive
           ? compliance!.decisionLabelAr
-          : suppressDviMonitoring
-            ? 'مسموح — تشغيل اعتيادي'
-            : dvi.decisionLabelAr;
+          : aeiIsDecisive
+            ? input.aei!.statusLabelAr
+            : suppressDviMonitoring
+              ? 'مسموح — تشغيل اعتيادي'
+              : dvi.decisionLabelAr;
 
   // level: نفس منطق floorLevel القديم — لا يُخفَّض DVI لو كان هو الأشد
-  // أصلاً، فقط يُرفَع لحد أدنى حين يكون الامتثال هو الأشد. pendingAffectedStop
-  // (معلَّق بانتظار تأكيد) يفرض RED دائماً بصرف النظر عن شدة DVI — عقد قديم
-  // صريح (راجع unifiedDecision.test.ts): يميّز "معلَّق مؤقت" (أحمر) عن
-  // "إيقاف مؤكَّد" (أسود) بلون مختلف تماماً، لا مجرد حد أدنى قابل للتجاوز
-  // بشدة DVI الفيزيائية. evidenceUnavailable يفرض ORANGE (تنبيهي محايد — لا
-  // أخضر "آمن" ولا أحمر/أسود "خطر مؤكَّد" لا يملك المحرك دليلاً كافياً عليه).
+  // أصلاً، فقط يُرفَع لحد أدنى حين يكون الامتثال أو AEI هو الأشد.
+  // pendingAffectedStop (معلَّق بانتظار تأكيد) يفرض RED دائماً بصرف النظر عن
+  // شدة DVI — عقد قديم صريح (راجع unifiedDecision.test.ts): يميّز "معلَّق
+  // مؤقت" (أحمر) عن "إيقاف مؤكَّد" (أسود) بلون مختلف تماماً، لا مجرد حد أدنى
+  // قابل للتجاوز بشدة DVI الفيزيائية. evidenceUnavailable يفرض ORANGE
+  // (تنبيهي محايد — لا أخضر "آمن" ولا أحمر/أسود "خطر مؤكَّد" لا يملك المحرك
+  // دليلاً كافياً عليه). aeiIsDecisive يستخدم لون AEI مباشرة (لا floorLevel
+  // مشتق) — نفس مبدأ compliance، مصدر واحد للون والنص معاً بلا خلط.
   const dviLevel = LEVEL_BY_DVI[dvi.level] ?? 'GREEN';
   const floorLevel = complianceIsDecisive ? complianceFloorLevel(compliance!.decisionCategory) : null;
   const level = mandatoryStop
@@ -399,9 +448,11 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
         ? 'ORANGE'
         : suppressDviMonitoring
           ? 'GREEN'
-          : floorLevel && LEVEL_WEIGHT[dviLevel] < LEVEL_WEIGHT[floorLevel]
-            ? floorLevel
-            : dviLevel;
+          : aeiIsDecisive
+            ? input.aei!.color
+            : floorLevel && LEVEL_WEIGHT[dviLevel] < LEVEL_WEIGHT[floorLevel]
+              ? floorLevel
+              : dviLevel;
 
   // دفاعي عمداً (?? []) — بعض المستهلكين التاريخيين يبنون كائن compliance
   // جزئياً (decisionCategory/shortReasonAr فقط، بلا triggeredRules)، نفس
@@ -415,22 +466,12 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // تقرأه إطلاقاً — الدمج الفعلي (AEI أشد من DVI/الامتثال يستبدل level/نص
   // العرض) كان يحدث فقط في computeUnifiedActivityDecision (dustEvaluation.ts)
   // حياً وقت العرض، بلا أي انعكاس على النتيجة المخزَّنة في final_decisions
-  // عبر persistFinalDecisions. فيبقى المخزَّن (وأي مسار يقرأه مباشرة —
-  // fetchLatestFinalDecisions، summaryFromStoredDecision، dashboard/global،
-  // alerts/generate) أخفّ دائماً مما تعرضه أي شاشة تحسب computeUnifiedActivityDecision
-  // حياً لنفس النشاط في نفس اللحظة — بالضبط التناقض الذي وصفه التقرير
-  // (ALLOW/GREEN محفوظ مقابل MONITOR/YELLOW معروض). الإصلاح: نفس منطق الدمج
-  // بالضبط (لا تغيير سلوكي) يُنقَل إلى هنا — المصدر الوحيد — بدل طبقة لاحقة
-  // منفصلة؛ computeUnifiedActivityDecision تُبسَّط لاحقاً لتصبح غلافاً رقيقاً
-  // بلا أي دمج AEI خاص بها (راجع تعليقها).
-  //
-  // نفس الاستثناءات المطبَّقة سابقاً هناك بالضبط: PLANNING مستبعدة أصلاً
-  // (فرع مبكر منفصل أعلى الدالة، aei لا يصل هذه النقطة في وضعها)، وmandatoryStop/
-  // pendingConfirmation يبقيان الأولوية القصوى بصرف النظر عن AEI (خطر فيزيائي
-  // مؤكَّد أو إيقاف امتثال معلَّق لا يجوز أن "يُخفَّفا" بتقييم AEI الإرشادي).
-  const aeiIsMoreSevere =
-    !!input.aei && !mandatoryStop && !pendingAffectedStop && LEVEL_WEIGHT[input.aei.color] > LEVEL_WEIGHT[level];
-
+  // عبر persistFinalDecisions — بالضبط التناقض الذي وصفه ذلك التقرير (ALLOW/
+  // GREEN محفوظ مقابل MONITOR/YELLOW معروض). aeiCandidate أعلاه (يشارك في
+  // candidates.reduce نفسه) هو الإصلاح الجذري: AEI الآن مرشح قرار كامل يؤثر
+  // على operationalDecision/mandatoryStop نفسيهما، لا طبقة عرض منفصلة بعد
+  // اختيار الفائز كما كان (aeiIsMoreSevere القديمة، محذوفة الآن) — يستحيل
+  // بنيوياً الآن أن يظهر level=BLACK بينما operationalDecision=ALLOW بسبب AEI.
   const result: FinalDecision = {
     snapshotId: input.snapshotId,
     mode,
@@ -438,9 +479,9 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     regulatoryFinding,
     mandatoryStop,
     overridable,
-    shortReasonAr: aeiIsMoreSevere ? input.aei!.shortReasonAr : shortReasonAr,
-    decisionLabelAr: aeiIsMoreSevere ? input.aei!.statusLabelAr : decisionLabelAr,
-    level: aeiIsMoreSevere ? input.aei!.color : level,
+    shortReasonAr,
+    decisionLabelAr,
+    level,
     pendingConfirmation: pendingAffectedStop,
     reasonCodes: Object.freeze(reasonCodes),
     evidenceQuality,
