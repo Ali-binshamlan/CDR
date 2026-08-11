@@ -34,7 +34,19 @@ export async function GET(request: NextRequest) {
 
   let dustData: DustActivityRow[] = [];
   let decisionsData: Record<string, unknown>[] = [];
-  let liveActivityByProjectId: Record<string, { decisionLabelAr: string; shortReason: string; level: string; mandatoryStop: boolean }> = {};
+  let liveActivityByProjectId: Record<
+    string,
+    {
+      decisionLabelAr: string;
+      shortReason: string;
+      level: string;
+      mandatoryStop: boolean;
+      evaluatedAt: string | null;
+      readingPm10UgM3: number | null;
+      readingWindSpeedKmh: number | null;
+      readingRecordedAt: string | null;
+    }
+  > = {};
 
   if (projectIds.length > 0) {
     const [dustRes, decisionsRes] = await Promise.all([
@@ -97,6 +109,7 @@ export async function GET(request: NextRequest) {
             mandatoryStop: d.mandatory_stop,
             pendingConfirmation: d.pending_confirmation,
             operationalDecision: d.operational_decision,
+            evaluatedAt: d.evaluated_at as string | null,
           },
         }));
       if (decisions.length === 0) return null;
@@ -108,10 +121,58 @@ export async function GET(request: NextRequest) {
         level: worst.level,
         mandatoryStop: worst.mandatoryStop,
         pendingConfirmation: worst.pendingConfirmation,
+        evaluatedAt: worst.evaluatedAt,
       };
     });
+    const liveResultsFiltered = liveResults.filter((r): r is NonNullable<typeof r> => !!r);
+
+    // طلب صريح من المستخدم — جهة المراقبة (viewer) تحتاج ترى وقت تسجيل
+    // المخالفة والقراءة الفعلية التي أنتجتها (لا القراءة الحية الآن، التي
+    // قد تختلف تماماً عن لحظة القرار). final_decisions لا يخزّن القراءات
+    // الخام نفسها (فقط النص/الرموز المشتقة منها) — نجلب أقرب قراءة فعلية
+    // من device_readings_history (recorded_at <= evaluatedAt، الأقرب
+    // تنازلياً) لكل مشروع لديه نشاط حي، بمعزل تام عن حساب القرار نفسه (هذا
+    // استعلام عرض إضافي فقط، لا يمس أي مسار قرار).
+    const readingByProjectId = new Map<string, { pm10UgM3: number | null; windSpeedKmh: number | null; recordedAt: string }>();
+    await Promise.all(
+      liveResultsFiltered
+        .filter((r) => !!r.evaluatedAt)
+        .map(async (r) => {
+          const { data: readingRows } = await supabaseAdmin
+            .from('device_readings_history')
+            .select('pm10_ug_m3, wind_speed_kmh, recorded_at')
+            .eq('project_id', r.projectId)
+            .lte('recorded_at', r.evaluatedAt as string)
+            .order('recorded_at', { ascending: false })
+            .limit(1);
+          const row = readingRows?.[0];
+          if (row) {
+            readingByProjectId.set(r.projectId, {
+              pm10UgM3: row.pm10_ug_m3 ?? null,
+              windSpeedKmh: row.wind_speed_kmh ?? null,
+              recordedAt: row.recorded_at,
+            });
+          }
+        })
+    );
+
     liveActivityByProjectId = Object.fromEntries(
-      liveResults.filter((r): r is NonNullable<typeof r> => !!r).map((r) => [r.projectId, r])
+      liveResultsFiltered.map((r) => {
+        const reading = readingByProjectId.get(r.projectId);
+        return [
+          r.projectId,
+          {
+            decisionLabelAr: r.decisionLabelAr,
+            shortReason: r.shortReason,
+            level: r.level,
+            mandatoryStop: r.mandatoryStop,
+            evaluatedAt: r.evaluatedAt,
+            readingPm10UgM3: reading?.pm10UgM3 ?? null,
+            readingWindSpeedKmh: reading?.windSpeedKmh ?? null,
+            readingRecordedAt: reading?.recordedAt ?? null,
+          },
+        ];
+      })
     );
   }
 

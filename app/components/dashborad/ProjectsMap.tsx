@@ -71,6 +71,14 @@ export interface ProjectPoint {
   hasLiveActivity?: boolean;
   statusLabel?: string;
   statusReason?: string;
+  /** لحظة تسجيل القرار الحالي (final_decisions.evaluated_at) — طلب صريح من
+   * جهة المراقبة: تعرض "متى سُجّلت هذه المخالفة" لا وقت التحميل الحالي. */
+  decisionEvaluatedAt?: string | null;
+  /** القراءة الفعلية التي أنتجت هذا القرار تحديداً (device_readings_history
+   * الأقرب لـ decisionEvaluatedAt)، لا القراءة الحية الآن — قد تختلفان
+   * تماماً لو تغيّرت الظروف منذ لحظة التسجيل. */
+  decisionReadingPm10UgM3?: number | null;
+  decisionReadingWindSpeedKmh?: number | null;
 }
 
 const decisionLabelAr: Record<Decision, string> = {
@@ -98,6 +106,15 @@ function degToCompassAr(deg: number): string {
   const directions = ['شمالية', 'شمالية شرقية', 'شرقية', 'جنوبية شرقية', 'جنوبية', 'جنوبية غربية', 'غربية', 'شمالية غربية'];
   const index = Math.round(deg / 45) % 8;
   return directions[index];
+}
+
+// وقت تسجيل القرار — بتوقيت الرياض، بصيغة تاريخ+ساعة مختصرة تكفي لسياق
+// فقاعة الهوفر (لا حاجة لثوانٍ).
+function formatDecisionTimeAr(iso: string): string {
+  const d = new Date(iso);
+  const datePart = d.toLocaleDateString('ar-SA', { day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh', calendar: 'gregory' });
+  const timePart = d.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh', calendar: 'gregory' });
+  return `${datePart} — ${timePart}`;
 }
 
 // بطاقة معلومات تظهر عند الهوفر (mouseover) على نقطة مشروع — موضعة بإحداثيات
@@ -177,6 +194,28 @@ function HoverCard({
       {!minimal && point.hasLiveActivity && point.statusReason && (
         <div className="text-[11px] text-slate-500 mb-1.5 leading-relaxed">{point.statusReason}</div>
       )}
+
+      {/* طلب صريح من جهة المراقبة: وقت تسجيل المخالفة + القراءات الفعلية
+          وقت التسجيل تحديداً (لا القراءة الحية الآن) — تظهر حتى في وضع
+          minimal، بخلاف بقية التفاصيل المخفاة عمداً لهذا الوضع. */}
+      {point.hasLiveActivity && point.decisionEvaluatedAt && (
+        <div className="text-[11px] text-slate-500 mb-1.5 pt-1.5 border-t border-slate-100 space-y-0.5">
+          <div>
+            وقت التسجيل: <span className="font-bold text-slate-700">{formatDecisionTimeAr(point.decisionEvaluatedAt)}</span>
+          </div>
+          {(point.decisionReadingPm10UgM3 !== null && point.decisionReadingPm10UgM3 !== undefined) && (
+            <div>
+              PM10 وقت التسجيل: <span className="font-bold text-slate-700">{point.decisionReadingPm10UgM3} µg/m³</span>
+            </div>
+          )}
+          {(point.decisionReadingWindSpeedKmh !== null && point.decisionReadingWindSpeedKmh !== undefined) && (
+            <div>
+              الرياح وقت التسجيل: <span className="font-bold text-slate-700">{point.decisionReadingWindSpeedKmh} كم/س</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {!minimal && (
         <div className="text-[11px] text-slate-500">
           الحالة الإدارية: <span className="font-bold text-slate-700">{PROJECT_STATUS_LABEL_AR[point.projectStatus || ''] || 'غير محدد'}</span>
@@ -254,7 +293,14 @@ export default function ProjectsMap({
             position={[p.latitude, p.longitude]}
             icon={makeIcon(p.decision ? decisionColor[p.decision] : NO_ACTIVITY_COLOR)}
             eventHandlers={{
-              click: () => onSelect?.(p.id),
+              // طلب صريح: جهة المراقبة (minimal) لا تملك صلاحية الوصول لصفحة
+              // تفاصيل المشروع (تلك الصفحة تتحقق من ملكية المستخدم، لا دور
+              // viewer) — النقر مُلغى تماماً في هذا الوضع، لا فقط onSelect
+              // غير مُمرَّرة من الأب (دفاع مضاعف صريح هنا).
+              click: () => {
+                if (minimal) return;
+                onSelect?.(p.id);
+              },
               mouseover: (e) => {
                 const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
                 setHovered({ point: p, screenPosition: { x: containerPoint.x, y: containerPoint.y } });

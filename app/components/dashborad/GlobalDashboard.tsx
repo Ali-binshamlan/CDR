@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/app/lib/apiClient';
 import type { ProjectPoint } from './ProjectsMap';
@@ -48,11 +47,12 @@ interface LiveActivitySummary {
   shortReason: string;
   level: string;
   mandatoryStop: boolean;
+  evaluatedAt?: string | null;
+  readingPm10UgM3?: number | null;
+  readingWindSpeedKmh?: number | null;
 }
 
 export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hideRawReadings = false }: GlobalDashboardProps) {
-  const router = useRouter();
-
   const [projects, setProjects] = useState<DashboardProjectRow[]>([]);
   const [todayActivities, setTodayActivities] = useState<DashboardActivityRow[]>([]);
   const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, LiveActivitySummary>>({});
@@ -105,6 +105,9 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
           hasLiveActivity: !!liveActivity,
           statusLabel: isStopped ? 'تم تسجيل مخالفة' : liveActivity?.decisionLabelAr,
           statusReason: isStopped ? undefined : liveActivity?.shortReason,
+          decisionEvaluatedAt: liveActivity?.evaluatedAt ?? null,
+          decisionReadingPm10UgM3: liveActivity?.readingPm10UgM3 ?? null,
+          decisionReadingWindSpeedKmh: liveActivity?.readingWindSpeedKmh ?? null,
         };
       });
   }, [projects, todayActivities, liveActivityByProjectId]);
@@ -133,12 +136,10 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
             لا تتوفر إحداثيات (latitude / longitude) للمشاريع بعد.
           </div>
         ) : (
-          <ProjectsMap
-            points={mapPoints}
-            onSelect={(id) => router.push(`/dashboard/Projects/${id}`)}
-            hideRawReadings={hideRawReadings}
-            minimal
-          />
+          // طلب صريح من المستخدم: جهة المراقبة (viewer) لا تملك صلاحية
+          // الوصول لصفحة تفاصيل المشروع — لا onSelect يُمرَّر هنا إطلاقاً
+          // (بالإضافة لدفاع minimal داخل ProjectsMap نفسه).
+          <ProjectsMap points={mapPoints} hideRawReadings={hideRawReadings} minimal />
         )}
       </div>
     </div>
