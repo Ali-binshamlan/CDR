@@ -31,11 +31,20 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false });
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/projects-list alerts fetch failed') }, { status: 500 });
 
+  // خطأ مكتشَف ومُصلَح (المستخدم لاحظ تناقضاً — "7 إجمالي أنشطة" في بطاقة
+  // المشروع مقابل نشاط واحد فقط ظاهر فعلياً في صفحة تفاصيل المشروع بعد حذف
+  // 6 أنشطة): كان الاستعلام يفلتر projects.archived_at فقط، بلا فلتر على
+  // project_dust_profiles.archived_at نفسه — الأرشفة (لا حذف فعلي، راجع
+  // DELETE في app/api/activities/route.ts) لا تُخفي الصف هنا رغم إخفائه في
+  // كل مسار آخر (evaluateProject.ts:118، app/api/projects/[projectId]/
+  // route.ts). is('archived_at', null) الآن يطابق نفس معيار الاستبعاد
+  // المستخدم في بقية المشروع.
   const { data: dustActivities, error: dustError } = await supabaseAdmin
     .from('project_dust_profiles')
     .select('id, project_id, projects!inner(user_id, archived_at)')
     .eq('projects.user_id', userId)
-    .is('projects.archived_at', null);
+    .is('projects.archived_at', null)
+    .is('archived_at', null);
   if (dustError) return NextResponse.json({ error: safeErrorResponse(dustError, 'dashboard/projects-list dust fetch failed') }, { status: 500 });
 
   return NextResponse.json({
