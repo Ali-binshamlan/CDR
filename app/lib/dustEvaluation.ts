@@ -73,6 +73,10 @@ export interface DustActivityRow {
   planned_date?: string | null;
   planned_time?: string | null;
   duration_hours?: number | null;
+  /** ساعات الدوام اليومي وحدها (بمعزل عن duration_hours الإجمالية عبر كل
+   * أيام النشاط) — راجع migration 202608110012 وisDustProfileWithinDailyWindow
+   * أدناه. null لصفوف قديمة/أنشطة بيوم واحد حيث لا فرق عن duration_hours. */
+  daily_duration_hours?: number | null;
   is_dust_generating?: boolean;
   is_enclosed_operation?: boolean;
   regulatory_activity?: string;
@@ -148,6 +152,138 @@ export function riyadhLocalToUtcIso(dateStr?: string | null, timeStr?: string | 
   if (!y || !m || !d) return undefined;
   const utcMs = Date.UTC(y, m - 1, d, hh, mm, 0) - RIYADH_UTC_OFFSET_MINUTES * 60000;
   return new Date(utcMs).toISOString();
+}
+
+// نفس ترتيب/تسمية WEEK_DAY_IDS في AddActivityModal/index.tsx (مصدر الحقيقة
+// الوحيد لهذا الترتيب) — مُعاد تعريفها هنا محلياً (لا استيراد مباشر بين
+// خادم/واجهة، نفس اتفاقية field-freshness.ts) لتحديد يوم الأسبوع (0=أحد)
+// المطابق لـ project.work_days_list.
+const WEEK_DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+// يحوّل تاريخ نصي YYYY-MM-DD إلى معرّف يوم أسبوع ('sun'..'sat') — مبني على
+// Date.UTC صراحة (لا new Date(dateStr) الذي يعتمد على منطقة زمنية النظام
+// المُشغِّل) حتى يُعطي نفس النتيجة بصرف النظر عن منطقة سيرفر Vercel الزمنية.
+function weekDayIdFromDateStr(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return WEEK_DAY_IDS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + days));
+  return next.toISOString().slice(0, 10);
+}
+
+// خطأ مكتشَف ومُصلَح (المستخدم سأل: "نشاط 3 أيام بدوام 8 ساعات، هل يُحتسب
+// من وقت العمل فقط؟"): كل مكان كان يحسب "متى ينتهي النشاط" كـ
+// planned_date+planned_time + duration_hours الإجمالية كفترة واحدة متصلة
+// بلا انقطاع ليلي — نشاط 8ص-4م لثلاثة أيام (duration_hours=24) كان يُعتبر
+// "جارياً" طوال الليل بين الأيام أيضاً، لا فقط خلال ساعات الدوام الفعلية.
+// هذه الدالة تحسب النافذة اليومية المتكررة الصحيحة: تُشتق أيام النشاط
+// الفعلية من duration_hours÷daily_duration_hours (عدد أيام العمل التي
+// حُسبت أصلاً وقت الإنشاء، راجع computeDurationHours في
+// AddActivityModal/index.tsx)، ثم يُحسَب آخر يوم عمل فعلي بعدّ الأيام ضمن
+// work_days_list ابتداءً من planned_date؛ أخيراً يُتحقَّق أن "الآن" يقع
+// ضمن مدى [planned_date, آخر يوم] وأن اليوم الحالي من أيام العمل وأن
+// الوقت الحالي (بتوقيت الرياض) يقع ضمن [planned_time, planned_time+
+// daily_duration_hours] لهذا اليوم تحديداً.
+//
+// fallback آمن لكل الحالات الناقصة (daily_duration_hours غياب/=0،
+// work_days_list فارغة، إلخ): يُعامَل النشاط كفترة واحدة متصلة من
+// planned_date+planned_time بطول duration_hours كاملة — نفس السلوك القديم
+// بلا تغيير، مطابق تماماً لكل الأنشطة الحالية في الإنتاج (كلها يوم واحد).
+export function isDustProfileWithinDailyWindow(
+  row: { planned_date?: string | null; planned_time?: string | null; duration_hours?: number | null; daily_duration_hours?: number | null },
+  workDaysList: string[] | null | undefined,
+  nowMs: number
+): boolean {
+  const { planned_date, planned_time, duration_hours, daily_duration_hours } = row;
+  if (!planned_date || !planned_time || !duration_hours) return true; // بيانات ناقصة — فشل آمن نحو عدم الاستبعاد
+
+  // fallback: بلا daily_duration_hours صالحة، أو أيام عمل غير معرَّفة —
+  // فترة متصلة واحدة (السلوك القديم بلا تغيير).
+  if (!daily_duration_hours || daily_duration_hours <= 0 || !Array.isArray(workDaysList) || workDaysList.length === 0) {
+    const startIso = riyadhLocalToUtcIso(planned_date, planned_time);
+    if (!startIso) return true;
+    const endMs = new Date(startIso).getTime() + duration_hours * 3600000;
+    return nowMs >= new Date(startIso).getTime() && nowMs <= endMs;
+  }
+
+  const activeDaysCount = Math.max(1, Math.round(duration_hours / daily_duration_hours));
+
+  // يوم الأسبوع الحالي بتوقيت الرياض — nowMs هو UTC epoch، نضيف أوفست
+  // الرياض قبل استخراج تاريخ اليوم المحلي منه.
+  const nowRiyadhDateStr = new Date(nowMs + RIYADH_UTC_OFFSET_MINUTES * 60000).toISOString().slice(0, 10);
+
+  // نمشي يوماً بيوم من planned_date، نعدّ أيام العمل فقط، حتى نجمع
+  // activeDaysCount يوماً — نتحقق في كل يوم عمل هل هو نفس يوم "الآن"
+  // بالرياض، وإن كان كذلك نفحص النافذة الساعية لذلك اليوم تحديداً.
+  let countedDays = 0;
+  const maxDaysToScan = 370; // نفس حد الأمان في countActiveDaysInRange بالواجهة
+  for (let i = 0; i < maxDaysToScan && countedDays < activeDaysCount; i++) {
+    const dateStr = addDaysToDateStr(planned_date, i);
+    if (!workDaysList.includes(weekDayIdFromDateStr(dateStr))) continue;
+    countedDays++;
+    if (dateStr !== nowRiyadhDateStr) continue;
+    const dayStartIso = riyadhLocalToUtcIso(dateStr, planned_time);
+    if (!dayStartIso) return false;
+    const dayStartMs = new Date(dayStartIso).getTime();
+    const dayEndMs = dayStartMs + daily_duration_hours * 3600000;
+    return nowMs >= dayStartMs && nowMs <= dayEndMs;
+  }
+  return false; // "الآن" لا يقع في أي يوم عمل ضمن مدى النشاط
+}
+
+// يحسب تاريخ آخر يوم عمل فعلي للنشاط (نهاية مداه الكلي عبر كل الأيام)،
+// بعدّ activeDaysCount يوم عمل ضمن work_days_list ابتداءً من planned_date
+// — نفس منطق عدّ الأيام في isDustProfileWithinDailyWindow أعلاه، لكن بلا
+// حاجة لمطابقة "الآن" (يُستخدَم فقط لمعرفة "متى ينتهي مدى النشاط بالكامل"،
+// لا "هل جارٍ الآن بالضبط"). null إن تعذّر الحساب (بيانات ناقصة).
+function computeLastActiveDateStr(
+  plannedDate: string,
+  durationHours: number,
+  dailyDurationHours: number,
+  workDaysList: string[]
+): string | null {
+  const activeDaysCount = Math.max(1, Math.round(durationHours / dailyDurationHours));
+  let countedDays = 0;
+  const maxDaysToScan = 370;
+  for (let i = 0; i < maxDaysToScan; i++) {
+    const dateStr = addDaysToDateStr(plannedDate, i);
+    if (!workDaysList.includes(weekDayIdFromDateStr(dateStr))) continue;
+    countedDays++;
+    if (countedDays === activeDaysCount) return dateStr;
+  }
+  return null;
+}
+
+// خطأ مكتشَف ومُصلَح (تكملة لنفس الإصلاح أعلاه — لكن لغرض مختلف: استبعاد
+// نشاط انتهى مداه الكلي بالكامل من دورة تقييم evaluateProject، لا مطابقة
+// "جارٍ الآن بالضبط"): نشاط 8ص-4م لثلاثة أيام يجب أن يبقى مؤهَّلاً للتقييم
+// طوال الأيام الثلاثة (حتى في الساعة 11م بين يومين، سيُستأنف صباحاً)، لا
+// يُستبعَد إلا بعد انتهاء آخر يوم عمل فعلياً. fallback لكل الحالات الناقصة
+// مطابق تماماً لـisDustProfileWithinDailyWindow (فترة متصلة واحدة).
+export function hasDustProfileWindowEnded(
+  row: { planned_date?: string | null; planned_time?: string | null; duration_hours?: number | null; daily_duration_hours?: number | null },
+  workDaysList: string[] | null | undefined,
+  nowMs: number
+): boolean {
+  const { planned_date, planned_time, duration_hours, daily_duration_hours } = row;
+  if (!planned_date || !planned_time || !duration_hours) return false;
+
+  if (!daily_duration_hours || daily_duration_hours <= 0 || !Array.isArray(workDaysList) || workDaysList.length === 0) {
+    const startIso = riyadhLocalToUtcIso(planned_date, planned_time);
+    if (!startIso) return false;
+    const endMs = new Date(startIso).getTime() + duration_hours * 3600000;
+    return nowMs > endMs;
+  }
+
+  const lastActiveDateStr = computeLastActiveDateStr(planned_date, duration_hours, daily_duration_hours, workDaysList);
+  if (!lastActiveDateStr) return false; // تعذّر الحساب — فشل آمن نحو عدم الاستبعاد
+  const lastDayStartIso = riyadhLocalToUtcIso(lastActiveDateStr, planned_time);
+  if (!lastDayStartIso) return false;
+  const lastDayEndMs = new Date(lastDayStartIso).getTime() + daily_duration_hours * 3600000;
+  return nowMs > lastDayEndMs;
 }
 
 // يحوّل صفوف project_shifts الخام (project.shifts، مرفقة في GET

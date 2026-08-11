@@ -31,45 +31,10 @@ vi.mock('@/app/api/alerts/generate/route', () => ({
   checkDustActivities: vi.fn(async () => {}),
 }));
 
-describe('isDustProfileWindowActive', () => {
-  // 2026-08-11T10:00:00Z كمرجع ثابت — التوقيت المحلي بالرياض UTC+3، فـ
-  // planned_time='10:00' يعني 07:00 UTC نفس اليوم.
-  const NOW_MS = new Date('2026-08-11T10:00:00.000Z').getTime();
-
-  it('يستبعد نشاطاً انقضت نافذته المخطَّطة بالكامل (بداية + مدة أقدم من الآن)', async () => {
-    const { isDustProfileWindowActive } = await import('./evaluateProject');
-    // planned 07:00 + 1 ساعة = ينتهي 08:00 UTC — قبل NOW_MS بساعتين.
-    const row = { planned_date: '2026-08-11', planned_time: '10:00', duration_hours: 1 };
-    expect(isDustProfileWindowActive(row, NOW_MS)).toBe(false);
-  });
-
-  it('يُبقي نشاطاً لا تزال نافذته المخطَّطة جارية', async () => {
-    const { isDustProfileWindowActive } = await import('./evaluateProject');
-    // planned 07:00 + 5 ساعات = ينتهي 12:00 UTC — بعد NOW_MS بساعتين.
-    const row = { planned_date: '2026-08-11', planned_time: '10:00', duration_hours: 5 };
-    expect(isDustProfileWindowActive(row, NOW_MS)).toBe(true);
-  });
-
-  it('لا يستبعد صفاً بلا duration_hours (نافذة زمنية غير معروفة — فشل آمن نحو التقييم)', async () => {
-    const { isDustProfileWindowActive } = await import('./evaluateProject');
-    const row = { planned_date: '2026-08-11', planned_time: '10:00', duration_hours: null };
-    expect(isDustProfileWindowActive(row, NOW_MS)).toBe(true);
-  });
-
-  it('لا يستبعد صفاً بلا planned_date/planned_time (نافذة زمنية غير معروفة)', async () => {
-    const { isDustProfileWindowActive } = await import('./evaluateProject');
-    const row = { planned_date: null, planned_time: null, duration_hours: 4 };
-    expect(isDustProfileWindowActive(row, NOW_MS)).toBe(true);
-  });
-
-  it('نافذة تنتهي بعد NOW_MS بدقيقة واحدة فقط تبقى نشطة (حد فاصل قريب)', async () => {
-    const { isDustProfileWindowActive } = await import('./evaluateProject');
-    // planned_time بتوقيت الرياض (UTC+3): '12:59' محلي = 09:59 UTC، +1h =
-    // 10:59 UTC — بعد NOW_MS (10:00 UTC) بدقيقة واحدة فقط.
-    const row = { planned_date: '2026-08-11', planned_time: '12:59', duration_hours: 1 };
-    expect(isDustProfileWindowActive(row, NOW_MS)).toBe(true);
-  });
-});
+// hasDustProfileWindowEnded/isDustProfileWithinDailyWindow انتقلتا إلى
+// dustEvaluation.ts (الدالتان الحقيقيتان المُستخدَمتان الآن في evaluateProject.ts
+// عبر الاستيراد أعلى هذا الملف) — راجع dustEvaluation.dailyWindow.test.ts
+// للاختبارات الكاملة (بما فيها سيناريوهات متعددة الأيام).
 
 describe('enqueueEvaluationRetryJob', () => {
   beforeEach(() => {

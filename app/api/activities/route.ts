@@ -72,9 +72,14 @@ export async function PATCH(request: NextRequest) {
   }
 
   for (const t of targets) {
+    // daily_duration_hours تُحدَّث بنفس durationHours دائماً هنا — هذا
+    // المسار يعدّل توقيت يوم واحد فقط (editStartTime/editEndTime لنفس
+    // اليوم، لا endDate)، فـdurationHours المحسوبة هي بالتعريف ساعات
+    // الدوام اليومي نفسها، لا مدة إجمالية متعددة الأيام (راجع تعليق
+    // daily_duration_hours الكامل في migration 202608110012).
     const { error } = await supabaseAdmin
       .from('project_dust_profiles')
-      .update({ planned_date: plannedDate, planned_time: plannedTime, duration_hours: durationHours })
+      .update({ planned_date: plannedDate, planned_time: plannedTime, duration_hours: durationHours, daily_duration_hours: durationHours })
       .eq('id', String(t.activityId))
       .eq('project_id', String(t.projectId));
     if (error) {

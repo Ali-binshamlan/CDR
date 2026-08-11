@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { fetchLatestFinalDecisions, activityDecisionKey, riyadhLocalToUtcIso, type DustActivityRow } from '@/app/lib/dustEvaluation';
+import { fetchLatestFinalDecisions, activityDecisionKey, isDustProfileWithinDailyWindow, type DustActivityRow } from '@/app/lib/dustEvaluation';
 import { pickWorstDecision } from '@/app/utils/final-decision-engine';
 
 // يجمع كل استعلامات المشاريع/التنبيهات/أنشطة اليوم/القرارات في نداء واحد
@@ -42,8 +42,24 @@ export async function GET(request: NextRequest) {
   let liveActivityByProjectId: Record<string, { decisionLabelAr: string; shortReason: string; level: string; mandatoryStop: boolean }> = {};
 
   if (projectIds.length > 0) {
+    // خطأ مكتشَف ومُصلَح (المستخدم سأل: "نشاط 3 أيام، هل يُحتسب من وقت
+    // العمل فقط؟"): eq('planned_date', todayStr) كان يستبعد كلياً أي نشاط
+    // بدأ في يوم سابق ولا يزال ممتداً اليوم (planned_date يبقى تاريخ
+    // البداية الثابت، لا يتحدَّث يومياً) — نشاط 3 أيام بدأ أمس لم يكن
+    // يظهر إطلاقاً في اليوم الثاني/الثالث. gte('planned_date', حد أدنى
+    // معقول للماضي) يوسّع النطاق ليشمل أنشطة بدأت مؤخراً ولا تزال ضمن
+    // مدى فعلي محتمل — isDustProfileWithinDailyWindow أدناه هو الفلتر
+    // الدقيق الفعلي (يستبعد أي نشاط انتهى مداه فعلياً بصرف النظر عن هذا
+    // النطاق الأولي الواسع).
+    const lookbackDateStr = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const [dustRes, decisionsRes] = await Promise.all([
-      supabaseAdmin.from('project_dust_profiles').select('*').in('project_id', projectIds).eq('planned_date', todayStr).is('archived_at', null),
+      supabaseAdmin
+        .from('project_dust_profiles')
+        .select('*')
+        .in('project_id', projectIds)
+        .gte('planned_date', lookbackDateStr)
+        .lte('planned_date', todayStr)
+        .is('archived_at', null),
       supabaseAdmin.from('decision_records').select('*').in('project_id', projectIds).order('created_at', { ascending: false }),
     ]);
     dustData = dustRes.data || [];
@@ -62,15 +78,17 @@ export async function GET(request: NextRequest) {
     // نفس اللحظة. الإصلاح: تجميع كل الصفوف الجارية لكل مشروع (لا صف واحد)،
     // تقييم كل صف على حدة عبر decideFinal، ثم pickWorstDecision يختار أسوأ
     // قرار — النتيجة الآن مستقلة تماماً عن ترتيب الاستعلام.
+    const workDaysListByProjectId = new Map<string, string[] | undefined>(
+      (projectsData || []).map((p: { id: string; work_days_list?: unknown }) => [
+        p.id,
+        Array.isArray(p.work_days_list) ? (p.work_days_list as string[]) : undefined,
+      ])
+    );
     const nowMs = Date.now();
     const runningRowsByProject = new Map<string, DustActivityRow[]>();
     for (const row of dustData) {
-      const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
-      if (!startIso) continue;
-      const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
-      const endMs = new Date(startIso).getTime() + durationHours * 3600000;
       if (!row.project_id) continue;
-      if (nowMs >= new Date(startIso).getTime() && nowMs <= endMs) {
+      if (isDustProfileWithinDailyWindow(row, workDaysListByProjectId.get(row.project_id), nowMs)) {
         const list = runningRowsByProject.get(row.project_id) ?? [];
         list.push(row);
         runningRowsByProject.set(row.project_id, list);

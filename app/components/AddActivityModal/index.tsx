@@ -596,13 +596,21 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     dailyStartTime: string,
     durationHours: number,
     aeiScore: number,
-    aeiStatus: string
+    aeiStatus: string,
+    dailyHours: number
   ) => {
    const regulatoryFields = item.fields;
    return ({
     project_id: project.id, activity_group_id: currentActivityGroupId, activity_type: dustForm.activityType,
     activity_lat: item.lat, activity_lng: item.lng, device_id: item.deviceId,
     planned_date: item.startDate, planned_time: dailyStartTime, duration_hours: durationHours,
+    // خطأ مكتشَف ومُصلَح (المستخدم سأل: "هل يُحتسب من وقت العمل فقط لنشاط
+    // متعدد الأيام؟") — duration_hours وحدها (= dailyHours × عدد الأيام)
+    // لا يمكن فكّها لاحقاً لمعرفة النافذة اليومية الفعلية، فكانت كل حسابات
+    // "هل النشاط جارٍ الآن" تعامل المدة الإجمالية كفترة متصلة بلا انقطاع
+    // ليلي. daily_duration_hours يحفظ ساعات الدوام اليومي وحدها، بمعزل عن
+    // duration_hours الإجمالية (تبقى كما هي لأغراض إحصائية).
+    daily_duration_hours: dailyHours,
     shift_id: item.shiftId,
     has_earthworks: dustForm.hasEarthworks, internal_dirt_roads: dustForm.internalDirtRoads, heavy_equipment_movement: dustForm.heavyEquipmentMovement, loose_materials: dustForm.looseMaterials, large_exposed_area: dustForm.largeExposedArea, dry_surface: dustForm.drySurface, surface_wet: dustForm.surfaceWet, watering_available: dustForm.wateringAvailable, stockpiles_covered: dustForm.stockpilesCovered, speed_limit_applied: dustForm.speedLimitApplied, wheel_wash_available: dustForm.wheelWashAvailable, dust_screens_available: dustForm.dustScreensAvailable, field_monitoring_available: dustForm.fieldMonitoringAvailable, receptor_type: dustForm.receptorType, receptor_distance: dustForm.receptorDistance, receptor_is_downwind: dustForm.receptorIsDownwind, visible_dust_plume_reported: dustForm.visibleDustPlumeReported, open_concrete_pour: dustForm.openConcretePour, onsite_visibility_m: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsite_pm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsite_pm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25), aei_score: aeiScore, aei_status: aeiStatus,
     // حقول محرك الامتثال التنظيمي (Riyadh Dust Compliance) — لا تؤثر على
@@ -743,11 +751,12 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     dailyStartTime: string,
     durationHours: number,
     aeiScore: number,
-    aeiStatus: string
+    aeiStatus: string,
+    dailyHours: number
   ) => {
     const fields = item.fields;
     const units = { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits };
-    const baseInsert = buildDustBaseInsert(item, dailyStartTime, durationHours, aeiScore, aeiStatus);
+    const baseInsert = buildDustBaseInsert(item, dailyStartTime, durationHours, aeiScore, aeiStatus, dailyHours);
     if (fields.regulatoryActivity === 'BATCHING_PLANT') {
       for (const unit of units.batchingUnits) {
         await apiClient.post('/dust-profiles', {
@@ -934,7 +943,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const aei = evaluateAei(result, dustForm.activityType);
 
         try {
-          await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status);
+          await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status, dailyHours);
         } catch {
           throw new Error('مشكلة أثناء الحفظ.');
         }

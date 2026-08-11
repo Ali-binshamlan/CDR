@@ -18,18 +18,31 @@ function toMinutes(hhmm: string): number {
   return (h || 0) * 60 + (m || 0);
 }
 
+// خطأ مكتشَف ومُصلَح (المستخدم سأل: "نشاط 3 أيام بدوام 8 ساعات، هل يُحتسب
+// من وقت العمل فقط؟"): كانت هذه الدالة تستقبل duration_hours الإجمالية
+// (= ساعات الدوام اليومي × عدد أيام النشاط، مثال: 24 لنشاط 3 أيام بدوام
+// 8 ساعات) وتتحقق أن activityStart+durationHours بالكامل يقع ضمن دوام
+// يوم واحد — أي نشاط متعدد الأيام كان يُرفَض بالحفظ دائماً (24 ساعة لا
+// يمكن أن تقع ضمن نافذة دوام يوم واحد 8 ساعات)، بصرف النظر عن صحة توقيته
+// اليومي الفعلي. الإصلاح: dailyDurationHours (اختياري، ساعات الدوام
+// اليومي وحدها بمعزل عن الإجمالية) يُستخدَم للتحقق إن توفّر؛ يبقى
+// السقوط الافتراضي على durationHours الإجمالية لضمان توافق كامل مع كل
+// الاستدعاءات القديمة (نشاط بيوم واحد حيث durationHours=dailyDurationHours
+// عملياً، فلا فرق في النتيجة).
 export function isActivityTimeWithinWorkHours(
   workHoursStart: string | null | undefined,
   workHoursEnd: string | null | undefined,
   plannedTime: string,
-  durationHours: number
+  durationHours: number,
+  dailyDurationHours?: number | null
 ): boolean {
   if (!workHoursStart || !workHoursEnd) return true; // لا أوقات دوام مُعرَّفة = لا قيد
 
   const workStart = toMinutes(workHoursStart);
   const workEnd = toMinutes(workHoursEnd);
   const activityStart = toMinutes(plannedTime);
-  const activityEnd = activityStart + Math.round(durationHours * 60);
+  const effectiveDailyHours = dailyDurationHours ?? durationHours;
+  const activityEnd = activityStart + Math.round(effectiveDailyHours * 60);
 
   return activityStart >= workStart && activityEnd <= workEnd;
 }

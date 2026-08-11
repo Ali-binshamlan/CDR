@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireViewer } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { fetchLatestFinalDecisions, activityDecisionKey, riyadhLocalToUtcIso, type DustActivityRow } from '@/app/lib/dustEvaluation';
+import { fetchLatestFinalDecisions, activityDecisionKey, isDustProfileWithinDailyWindow, type DustActivityRow } from '@/app/lib/dustEvaluation';
 import { pickWorstDecision } from '@/app/utils/final-decision-engine';
 
 // نسخة غير مقيّدة من app/api/dashboard/global/route.ts — نفس الشكل تماماً
@@ -49,8 +49,20 @@ export async function GET(request: NextRequest) {
   > = {};
 
   if (projectIds.length > 0) {
+    // خطأ مكتشَف ومُصلَح (المستخدم سأل: "نشاط 3 أيام، هل يُحتسب من وقت
+    // العمل فقط؟") — راجع نفس التعليق الكامل في dashboard/global/route.ts:
+    // eq('planned_date', todayStr) كان يستبعد أنشطة بدأت في يوم سابق ولا
+    // تزال ممتدة اليوم. gte/lte يوسّعان النطاق؛ isDustProfileWithinDailyWindow
+    // أدناه يبقى الفلتر الدقيق الفعلي.
+    const lookbackDateStr = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const [dustRes, decisionsRes] = await Promise.all([
-      supabaseAdmin.from('project_dust_profiles').select('*').in('project_id', projectIds).eq('planned_date', todayStr).is('archived_at', null),
+      supabaseAdmin
+        .from('project_dust_profiles')
+        .select('*')
+        .in('project_id', projectIds)
+        .gte('planned_date', lookbackDateStr)
+        .lte('planned_date', todayStr)
+        .is('archived_at', null),
       supabaseAdmin.from('decision_records').select('*').in('project_id', projectIds).order('created_at', { ascending: false }),
     ]);
     dustData = dustRes.data || [];
@@ -65,15 +77,21 @@ export async function GET(request: NextRequest) {
     // نتيجة الاستعلام، بلا ORDER BY يضمن الترتيب) ويُتجاهَل أي نشاط آخر
     // جارٍ بالتوازي لنفس المشروع — راجع نفس التعليق الكامل في
     // dashboard/global/route.ts للسبب التفصيلي.
+    // خطأ مكتشَف ومُصلَح (المستخدم سأل: "نشاط 3 أيام بدوام 8 ساعات، هل
+    // يُحتسب من وقت العمل فقط؟") — راجع تعليق isDustProfileWithinDailyWindow
+    // الكامل في dustEvaluation.ts. work_days_list لكل مشروع مطلوبة لحساب
+    // النافذة اليومية الصحيحة.
+    const workDaysListByProjectId = new Map<string, string[] | undefined>(
+      (projectsData || []).map((p: { id: string; work_days_list?: unknown }) => [
+        p.id,
+        Array.isArray(p.work_days_list) ? (p.work_days_list as string[]) : undefined,
+      ])
+    );
     const nowMs = Date.now();
     const runningRowsByProject = new Map<string, DustActivityRow[]>();
     for (const row of dustData) {
-      const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
-      if (!startIso) continue;
-      const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
-      const endMs = new Date(startIso).getTime() + durationHours * 3600000;
       if (!row.project_id) continue;
-      if (nowMs >= new Date(startIso).getTime() && nowMs <= endMs) {
+      if (isDustProfileWithinDailyWindow(row, workDaysListByProjectId.get(row.project_id), nowMs)) {
         const list = runningRowsByProject.get(row.project_id) ?? [];
         list.push(row);
         runningRowsByProject.set(row.project_id, list);

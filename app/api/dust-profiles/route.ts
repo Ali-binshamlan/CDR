@@ -267,7 +267,15 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
     const ws = projectRow?.work_hours_start ?? null;
     const we = projectRow?.work_hours_end ?? null;
-    if (!isActivityTimeWithinWorkHours(ws, we, String(insert.planned_time), insert.duration_hours)) {
+    if (
+      !isActivityTimeWithinWorkHours(
+        ws,
+        we,
+        String(insert.planned_time),
+        insert.duration_hours,
+        typeof insert.daily_duration_hours === 'number' ? insert.daily_duration_hours : null
+      )
+    ) {
       return NextResponse.json(
         { error: `وقت النشاط اليومي يجب أن يقع ضمن أوقات دوام المشروع (${String(ws).slice(0, 5)} – ${String(we).slice(0, 5)}).` },
         { status: 400 }

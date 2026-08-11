@@ -3,7 +3,7 @@ import {
   computeDustResults,
   computeDustComplianceResults,
   persistActivityDecisionsAtomic,
-  riyadhLocalToUtcIso,
+  hasDustProfileWindowEnded,
 } from '@/app/lib/dustEvaluation';
 import { buildSensitiveReceptor, refreshRuleParameters, getActiveParameterVersionIds } from '@/app/utils/dust-compliance-engine';
 import { checkDustActivities } from '@/app/api/alerts/generate/route';
@@ -30,27 +30,6 @@ export interface EvaluateProjectResult {
   // جديد؛ لا تستحق نفس درجة الخطورة أو نفس معالجة الفشل الحقيقي في route.ts.
   conflictActivityIds?: string[];
   error?: string;
-}
-
-// خطأ مكتشَف ومُصلَح (المستخدم لاحظ أن نشاطاً تعرضه الواجهة كـ"انتهى النشاط"
-// — planned_date/planned_time/duration_hours انقضت نافذته الزمنية — استمر
-// يستقبل قرارات جديدة في final_decisions): الواجهة
-// (MultiIndicatorActivityBox.tsx) تحسب status==='past' وتُخفي القرار الحي
-// بصرياً فقط، لكن evaluateProject لم يكن يستبعد هذه الصفوف من التقييم
-// الفعلي على الخادم إطلاقاً — نفس منطق النافذة الزمنية
-// (riyadhLocalToUtcIso(planned_date, planned_time) + duration_hours ساعات)
-// المستخدم في app/api/projects/[projectId]/route.ts:278-282 يُطبَّق هنا
-// الآن، مُصدَّرة لقابلية الاختبار المستقلة. صف بلا planned_date/planned_time/
-// duration_hours صالحة (نشاط بلا نافذة زمنية معروفة) لا يُستبعَد أبداً —
-// فشل آمن نحو التقييم لا الاستبعاد الصامت.
-export function isDustProfileWindowActive(
-  row: { planned_date?: string | null; planned_time?: string | null; duration_hours?: number | null },
-  nowMs: number
-): boolean {
-  const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
-  if (!startIso || !row.duration_hours) return true;
-  const endMs = new Date(startIso).getTime() + row.duration_hours * 3600000;
-  return endMs >= nowMs;
 }
 
 // خطأ مكتشَف ومُصلَح (القسم 10.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" —
@@ -125,12 +104,15 @@ export async function evaluateProject(
     // الزمنية — استمر يستقبل قرارات جديدة في final_decisions): الواجهة
     // (MultiIndicatorActivityBox.tsx) تحسب status==='past' وتُخفي القرار
     // الحي بصرياً فقط، لكن evaluateProject لم يكن يستبعد هذه الصفوف من
-    // التقييم الفعلي على الخادم إطلاقاً — نفس منطق النافذة الزمنية
-    // (riyadhLocalToUtcIso(planned_date, planned_time) + duration_hours
-    // ساعات) المستخدم في app/api/projects/[projectId]/route.ts:278-282
-    // يُطبَّق هنا الآن ليستبعد أي نشاط انتهت نافذته المخطَّطة فعلياً من دورة
-    // التقييم — لا تعديل على منطق الواجهة نفسه، فقط مطابقة الخادم لها.
-    const dustProfiles = (dustProfilesRaw || []).filter((row) => isDustProfileWindowActive(row, Date.now()));
+    // التقييم الفعلي على الخادم إطلاقاً. hasDustProfileWindowEnded (بخلاف
+    // الاسم القديم isDustProfileWindowActive) تحسب نهاية مدى النشاط الكلي
+    // عبر أيام العمل الفعلية (لا فترة متصلة بلا انقطاع ليلي — راجع
+    // migration 202608110012 وتعليقها الكامل في dustEvaluation.ts) —
+    // نشاط 3 أيام بدوام 8 ساعات يبقى مؤهَّلاً للتقييم طوال الأيام الثلاثة،
+    // لا يُستبعَد إلا بعد انتهاء آخر يوم عمل فعلياً.
+    const workDaysList = Array.isArray(project.work_days_list) ? (project.work_days_list as string[]) : undefined;
+    const nowMs = Date.now();
+    const dustProfiles = (dustProfilesRaw || []).filter((row) => !hasDustProfileWindowEnded(row, workDaysList, nowMs));
 
     const dustResults = await computeDustResults(dustProfiles, project, supabaseAdmin);
     if (dustResults.length === 0) {
