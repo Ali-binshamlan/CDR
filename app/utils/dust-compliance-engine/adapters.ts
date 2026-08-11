@@ -282,7 +282,17 @@ export function buildComplianceContext(
   // ويبقى undefined في أي مسار لا يجلبه (مثل الشبكة الساعية التوقّعية)،
   // فلا يُطبَّق أي قيد هناك تلقائياً. pending_resume_since منفصل تماماً عن
   // updated_at — راجع previousPendingResumeSince في types.ts للسبب الكامل.
-  previousDecision?: { decision: string; updated_at: string; pending_resume_since?: string | null; deciding_rule_code?: string | null } | null,
+  previousDecision?: {
+    decision: string;
+    updated_at: string;
+    pending_resume_since?: string | null;
+    deciding_rule_code?: string | null;
+    // خطأ مكتشَف ومُصلَح (راجع تعليق previousEvaluationUpdatedAt الكامل في
+    // types.ts): updated_at أعلاه محمَّل بدلالة "منذ متى بدأ الإيقاف" (stopped_
+    // since ?? updated_at) — raw_updated_at الخام (بلا استبدال) منفصل تماماً،
+    // لاكتشاف فجوة تقييم فقط. اختياري: undefined = لا فحص فجوة (توافقي).
+    raw_updated_at?: string | null;
+  } | null,
   // استمرار PM10 عبر الزمن (الكائن الكامل المُرجَع من computeSustainedPm10Status
   // في dustEvaluation.ts، لا الرقمين المُجرَّدين فقط) — اختياري، undefined
   // يعني "لا بيانات استمرار" فيسلك المحرك مساره الاحتياطي الآمن (معاملة
@@ -309,7 +319,12 @@ export function buildComplianceContext(
   // صراحة (لا يترك القيمة الافتراضية) حتى يمكن إعادة حساب نفس القرار لاحقاً
   // (Replay/تدقيق) بنفس النتيجة تماماً — استدعاءان منفصلان لـ Date.now() في
   // نفس التقييم قد يقعان على جانبين مختلفين من حد 4 دقائق نظرياً.
-  evaluatedAtMs: number = Date.now()
+  evaluatedAtMs: number = Date.now(),
+  // خطأ مكتشَف ومُصلَح (راجع تعليق previousDecisionQueryFailed الكامل في
+  // types.ts): true فقط عندما فشل استعلام current_dust_compliance_decisions
+  // فعلياً (لا "لا صف موجود") — مستقل عن previousDecision نفسه (قد يكون
+  // null في كلتا الحالتين، الفشل هو ما يميّزهما). افتراضي false (توافقي).
+  previousDecisionQueryFailed: boolean = false
 ): DustComplianceContext {
   // القراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite — راجع
   // mergeDustReading في dust-engine/engine.ts) متوفرة فقط إن كان dviResult
@@ -436,7 +451,9 @@ export function buildComplianceContext(
     previousDecisionCategory: (previousDecision?.decision as DustComplianceContext['previousDecisionCategory']) ?? null,
     previousDecidingRuleCode: previousDecision?.deciding_rule_code ?? null,
     previousDecisionUpdatedAt: previousDecision?.updated_at ?? null,
+    previousEvaluationUpdatedAt: previousDecision?.raw_updated_at ?? null,
     previousPendingResumeSince: previousDecision?.pending_resume_since ?? null,
+    previousDecisionQueryFailed,
     pm10SustainedMinutesAbove340: pm10Sustained?.sustainedMinutesAbove340,
     pm10SustainedMinutesAbove250: pm10Sustained?.sustainedMinutesAbove250,
     pm10ConfirmedViolation340: pm10Sustained?.isConfirmedViolation340,

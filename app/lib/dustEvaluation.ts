@@ -1433,8 +1433,25 @@ export async function computeDustComplianceResults(
   // دقائق ولو لم تتراكم دقيقة فعلية واحدة من القراءة الجيدة بعد.
   let previousDecisionsByGroup = new Map<
     string,
-    { decision: string; updated_at: string; pending_resume_since: string | null; deciding_rule_code: string | null }
+    {
+      decision: string;
+      updated_at: string;
+      raw_updated_at: string | null;
+      pending_resume_since: string | null;
+      deciding_rule_code: string | null;
+    }
   >();
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل قراءة القرار السابق يُبتلع
+  // ويزيل حماية الاستئناف"): previousDecisionsByGroup فارغة (Map جديدة) هي
+  // الحالة الطبيعية لـ"لا نشاط مرتبط بأي قرار سابق بعد" — لا وسيلة قبل هذا
+  // الإصلاح للتمييز بينها وبين "الاستعلام فشل فعلياً" (شبكة/قاعدة بيانات).
+  // كلا الحالتين كانتا تُنتجان نفس الأثر: previousDecisionCategory=null لكل
+  // نشاط، فيسقط previousWasStopped في engine.ts إلى false، وأي نشاط كان
+  // موقوفاً فعلياً يُعامَل كأنه لم يُوقَف قط — يفقد حماية RESUME-STABILITY-HOLD
+  // بالكامل بمجرد فشل شبكي عابر. previousDecisionQueryFailed أدناه يُميّز
+  // الحالتين صراحة؛ يُستهلَك لاحقاً لكل نشاط لإجبار حالة HOLD بدل السماح
+  // بقرار قد يكون استئنافاً زائفاً (راجع الاستهلاك أسفل هذه الدالة).
+  let previousDecisionQueryFailed = false;
   if (supabaseAdmin) {
     const groupIds = Array.from(
       new Set((dustResults || []).map((r) => r.activityGroupId).filter(Boolean))
@@ -1448,11 +1465,17 @@ export async function computeDustComplianceResults(
         // تماماً هنا (يؤثر على منطق استئناف/استقرار الإيقاف في engine.ts).
         // project.id ثابت طوال هذه الدالة (استدعاء واحد لمشروع واحد فقط)،
         // فإضافة .eq('project_id', ...) كافية ولا تحتاج مفتاحاً مركّباً هنا.
-        const { data } = await supabaseAdmin
+        const { data, error } = await supabaseAdmin
           .from('current_dust_compliance_decisions')
           .select('activity_group_id, decision, updated_at, stopped_since, pending_resume_since, deciding_rule_code')
           .eq('project_id', project.id)
           .in('activity_group_id', groupIds);
+        // خطأ مكتشَف ومُصلَح: Supabase (postgrest-js) لا يرمي استثناءً عند
+        // فشل الاستعلام على مستوى القاعدة (RLS/شبكة/timeout) — يُعيد
+        // {data: null, error: {...}} بصمت، فيمر عبر try بلا الدخول لـcatch
+        // إطلاقاً. الفحص الصريح لـerror هنا هو ما يكتشف الفشل فعلياً، لا
+        // بنية try/catch وحدها.
+        if (error) throw error;
         type PreviousComplianceDecisionRow = {
           activity_group_id: string;
           decision: string;
@@ -1467,13 +1490,18 @@ export async function computeDustComplianceResults(
             {
               decision: row.decision,
               updated_at: row.stopped_since ?? row.updated_at,
+              raw_updated_at: row.updated_at,
               pending_resume_since: row.pending_resume_since ?? null,
               deciding_rule_code: row.deciding_rule_code ?? null,
             },
           ])
         );
       } catch {
-        // فشل الاستعلام لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
+        // لا نُسقط التقييم بالكامل (نفس مبدأ resolveFreshProjectDevice) — لكن
+        // نُسجِّل الفشل صراحة عبر previousDecisionQueryFailed بدل ابتلاعه
+        // بصمت، ليُستهلَك أدناه ويمنع أي استئناف زائف لنشاط قد يكون موقوفاً
+        // فعلياً بقرار لم نستطع قراءته.
+        previousDecisionQueryFailed = true;
       }
     }
   }
@@ -1512,10 +1540,15 @@ export async function computeDustComplianceResults(
         const mode = determineFinalDecisionMode(r.startIso);
         const previousDecision =
           mode === 'PLANNING' || !r.activityGroupId ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
+        // نفس شرط previousDecision أعلاه بالضبط — PLANNING/بلا activityGroupId
+        // لا معنى لهما لحماية استئناف أصلاً (raisin: لا previousDecision
+        // مُطبَّق أصلاً في تلك الحالات)، فلا يجوز أن يفرض فشل الاستعلام حالة
+        // HOLD على تقييم توقّعي بحت.
+        const activityQueryFailed = mode !== 'PLANNING' && !!r.activityGroupId && previousDecisionQueryFailed;
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
-        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, deviceTrueNorthCalibration, evaluatedAtMs);
+        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, deviceTrueNorthCalibration, evaluatedAtMs, activityQueryFailed);
 
         // تسجيل قراءة PM10 — يُستخدم لحساب استمرار القراءة (دقيقتين/30
         // دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
@@ -1597,7 +1630,7 @@ export async function computeDustComplianceResults(
           pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, project.id, r.activityGroupId, row.device_id ?? null);
         }
 
-        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration, evaluatedAtMs);
+        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration, evaluatedAtMs, activityQueryFailed);
         // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
         // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
         // تصلح" (راجع buildPlanningForecastResult في engine.ts).
@@ -2149,7 +2182,11 @@ export async function persistDustComplianceEvaluations(
         // فترة الاستقرار) — وإلا لن يُسجَّل بدء الاستقرار أبداً، فيبقى عداد
         // الـ10 دقائق بلا نقطة بداية صحيحة (نفس الخلل الذي نُصلحه هنا).
         const pendingResumeChanged = (existing?.pending_resume_since ?? null) !== pendingResumeSince;
-        if (!pendingResumeChanged && shouldSkipPersist(existing?.decision, existing?.updated_at, newDecision)) return;
+        // راجع تعليق skipCompliance المطابق في persistActivityDecisionsAtomic —
+        // resumeHoldApplied=true يتجاوز الـthrottle أيضاً هنا، بنفس السبب
+        // (updated_at يجب أن يعكس آخر دورة تقييم فعلية طوال نافذة الاستقرار،
+        // لا يبقى قديماً بتصميم الـthrottle).
+        if (!pendingResumeChanged && !resumeHoldApplied && shouldSkipPersist(existing?.decision, existing?.updated_at, newDecision)) return;
 
         const { data: inserted, error: insertError } = await supabaseAdmin
           .from('dust_compliance_evaluations')
@@ -2471,8 +2508,21 @@ export async function persistActivityDecisionsAtomic(
 
           const pendingResumeSince = computePendingResumeSince(existingCompliance?.pending_resume_since, resumeHoldApplied);
           const pendingResumeChanged = (existingCompliance?.pending_resume_since ?? null) !== pendingResumeSince;
+          // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "انقطاع البيانات يُحسب ضمن
+          // مدة الاستقرار"، البند: "فجوة أكبر من 90 ثانية تصفّر العداد"):
+          // كان skipCompliance يتخطى الكتابة (throttle 5 دقائق، shouldSkipPersist)
+          // طوال نافذة الاستقرار كاملها طالما القرار لم يتغيّر، فيبقى updated_at
+          // (المصدر الوحيد لاكتشاف فجوة تقييم فعلية في engine.ts عبر
+          // previousEvaluationUpdatedAt) قديماً بتصميم لا بانقطاع حقيقي —
+          // يجعل اكتشاف الفجوة (>90 ثانية) غير موثوق تماماً أثناء الاستقرار.
+          // resumeHoldApplied=true يتجاوز الـthrottle الآن بالكامل (لا فقط
+          // pendingResumeChanged عند بداية/نهاية الاستقرار) — updated_at يعكس
+          // فعلياً "آخر دورة تقييم حقيقية" طوال نافذة الـ10 دقائق، فتصبح
+          // مقارنة الفجوة في engine.ts موثوقة.
           const skipCompliance =
-            !pendingResumeChanged && shouldSkipPersist(existingCompliance?.decision, existingCompliance?.updated_at, newComplianceDecision);
+            !pendingResumeChanged &&
+            !resumeHoldApplied &&
+            shouldSkipPersist(existingCompliance?.decision, existingCompliance?.updated_at, newComplianceDecision);
 
           if (!skipCompliance) {
             const stoppedSince = computeStoppedSince(existingCompliance?.decision, existingCompliance?.stopped_since, newComplianceDecision);

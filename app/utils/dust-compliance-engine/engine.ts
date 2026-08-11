@@ -572,14 +572,48 @@ export function evaluateDustCompliance(
   // غياب previousDecisionCategory (أول تقييم لنشاط، أو لم يُمرَّر من
   // المستدعي) يعني عدم تطبيق أي قيد — سلوك المحرك بلا تغيير.
   const RESUME_STABILITY_MINUTES = 10;
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "فجوة تقييم تُحسب ضمن مدة
+  // الاستقرار"): previousEvaluationUpdatedAt (updated_at الخام لآخر دورة
+  // محفوظة لهذا النشاط) يُقارَن بـnow؛ فجوة أطول من الوتيرة الفعلية للتقييم
+  // (دقيقة واحدة تقريباً، راجع scheduler-worker) تعني أن دورة تقييم واحدة أو
+  // أكثر لم تُنفَّذ إطلاقاً (توقّف cron/فشل شبكة/إلخ) — لا "استقرار حقيقي"
+  // خلال تلك الفجوة، لأن لا قراءة حقيقية أثبتته. 90 ثانية (لا 60 بالضبط)
+  // تسمح بتأخر دورة واحدة عابرة بلا تصفير كاذب، لكن تكتشف أي فجوة أطول.
+  const PENDING_RESUME_GAP_TOLERANCE_MS = 90_000;
+  const evaluationGapDetected =
+    ctx.previousEvaluationUpdatedAt != null &&
+    now - new Date(ctx.previousEvaluationUpdatedAt).getTime() > PENDING_RESUME_GAP_TOLERANCE_MS;
   const previousWasStopped =
     ctx.previousDecisionCategory === 'MANDATORY_STOP' ||
     ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY';
   let resumeHoldApplied = false;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل استعلام القرار السابق يُبتلع
+  // ويزيل حماية الاستئناف"): previousDecisionQueryFailed=true يعني تعذّر
+  // معرفة إن كان النشاط موقوفاً سابقاً أصلاً — لا previousWasStopped يمكن
+  // الوثوق بها هنا (=false زائفة، لا "لا إيقاف سابق حقيقي"). فشل آمن: إيقاف
+  // احترازي حتى ينجح الاستعلام مجدداً ويُثبت الحالة الفعلية، بدل افتراض
+  // "لا شيء موقوف" بلا دليل.
+  if (ctx.previousDecisionQueryFailed === true && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
+    resumeHoldApplied = true;
+    ruleHits.push(
+      ruleHit(
+        'PREVIOUS-DECISION-QUERY-FAILED-HOLD',
+        'STOP_AFFECTED_ACTIVITY',
+        'تعذّر قراءة القرار السابق لهذا النشاط (فشل استعلام) — لا يمكن التأكد من عدم وجود إيقاف سابق فعّال، فيبقى النشاط موقوفاً احترازياً',
+        'أعد المحاولة أو تحقق من اتصال قاعدة البيانات قبل اعتماد أي قرار على هذا النشاط',
+        false
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+  }
+
   if (previousWasStopped && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
-    const minutesSinceGoodReadingBegan = ctx.previousPendingResumeSince
-      ? (now - new Date(ctx.previousPendingResumeSince).getTime()) / 60000
-      : 0; // لا استقرار مسجَّل بعد = بداية الاستقرار الآن (فشل آمن نحو المنع)
+    const minutesSinceGoodReadingBegan =
+      ctx.previousPendingResumeSince && !evaluationGapDetected
+        ? (now - new Date(ctx.previousPendingResumeSince).getTime()) / 60000
+        : 0; // لا استقرار مسجَّل بعد، أو فجوة تقييم مكتشَفة = بداية الاستقرار
+             // الآن (فشل آمن نحو المنع — فجوة تُصفِّر العداد، لا "تُحتسب").
     if (minutesSinceGoodReadingBegan < RESUME_STABILITY_MINUTES) {
       resumeHoldApplied = true;
       ruleHits.push(
@@ -613,6 +647,54 @@ export function evaluateDustCompliance(
         'STOP_AFFECTED_ACTIVITY',
         'قراءة الرؤية غير متوفرة من الجهاز — لا يمكن التأكد من تحسّن الرؤية بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
         'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من الرؤية قبل اعتماد أي استئناف',
+        false
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+  }
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "انقطاع البيانات يُحسب ضمن مدة
+  // الاستقرار ويسمح بالاستئناف"): نفس ثغرة dviVisibilityDataMissing أعلاه
+  // بالضبط، لكن لسرعة الرياح — classifyWind(null)='UNKNOWN' فلا تُفعَّل
+  // بوابة الرياح (GATE-WIND-ABOVE-25-004) عند غياب القراءة، فلو كان الإيقاف
+  // السابق بسبب رياح شديدة وانقطع الجهاز الآن، decisionCategory قد "يتحسّن"
+  // بمجرد غياب البيانات لا بانخفاض الرياح فعلياً. طالما سرعة الرياح غير
+  // متوفرة (ctx.windSpeedKmh===null)، لا يجوز اعتبار الإيقاف السابق "تحسّن".
+  if (previousWasStopped && (ctx.windSpeedKmh === null || ctx.windSpeedKmh === undefined) && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
+    resumeHoldApplied = true;
+    ruleHits.push(
+      ruleHit(
+        'WIND-DATA-MISSING-RESUME-HOLD',
+        'STOP_AFFECTED_ACTIVITY',
+        'قراءة سرعة الرياح غير متوفرة من الجهاز — لا يمكن التأكد من انخفاض الرياح بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
+        'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من سرعة الرياح قبل اعتماد أي استئناف',
+        false
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+  }
+
+  // نفس المبدأ بالضبط لـPM10 — pm10EvidenceState (adapters.ts، راجع تعليقه
+  // الكامل في types.ts) يُصفِّر ctx.pm10UgM3 إلى null متى كانت قراءة الجهاز
+  // قديمة/مفقودة/مستقبلية، فيختفي أي سبب إيقاف مبني على PM10 من ruleHits
+  // بصمت (pm10ThresholdRule يعيد [] لقيمة null) — بلا فحص هنا، هذا "الاختفاء"
+  // كان قد يُقرأ كتحسّن فعلي بعد إيقاف سابق. تُطبَّق فقط لقراءة جهاز
+  // (pm10Source='device') — FRESH افتراضية دائماً لمصادر أخرى (نفس استثناء
+  // dust-engine/engine.ts وadapters.ts)، فلا تُفعِّل هذه البوابة لهما.
+  if (
+    previousWasStopped &&
+    ctx.pm10Source === 'device' &&
+    ctx.pm10EvidenceState !== undefined &&
+    ctx.pm10EvidenceState !== 'FRESH' &&
+    DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY
+  ) {
+    resumeHoldApplied = true;
+    ruleHits.push(
+      ruleHit(
+        'PM10-DATA-MISSING-RESUME-HOLD',
+        'STOP_AFFECTED_ACTIVITY',
+        'قراءة PM10 غير متوفرة/قديمة من الجهاز — لا يمكن التأكد من انخفاض تركيز الغبار بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
+        'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من تركيز PM10 قبل اعتماد أي استئناف',
         false
       )
     );

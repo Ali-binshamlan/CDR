@@ -1381,6 +1381,193 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
       expect(r.missingCriticalInputs).toContain('قراءة الرؤية غير متوفرة من الجهاز');
     });
   });
+
+  // خطأ مكتشَف ومُصلَح (طلب المستخدم — تقرير المراجعة الخارجي: "انقطاع
+  // البيانات يُحسب ضمن مدة الاستقرار ويسمح بالاستئناف"): نفس مبدأ
+  // dviVisibilityDataMissing أعلاه بالضبط، لكن لسرعة الرياح (classifyWind(null)
+  // ='UNKNOWN' فلا تُفعِّل بوابة الرياح عند غياب القراءة).
+  describe('windSpeedKmh=null بعد إيقاف سابق — لا يُعامَل كتحسّن', () => {
+    it('إيقاف سابق (STOP_AFFECTED_ACTIVITY) + استقرار 15 دقيقة مستوفى + سرعة الرياح غائبة الآن → يبقى موقوفاً', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          windSpeedKmh: null,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'WIND-DATA-MISSING-RESUME-HOLD')).toBe(true);
+      expect(r.canOverride).toBe(false);
+    });
+
+    it('لا إيقاف سابق أصلاً + سرعة الرياح غائبة الآن → لا يُطبَّق قيد الاستئناف', () => {
+      const r = evaluateDustCompliance(context({ windSpeedKmh: null }));
+      expect(r.triggeredRules.some((h) => h.code === 'WIND-DATA-MISSING-RESUME-HOLD')).toBe(false);
+    });
+  });
+
+  // اختبار قبول صريح (طلب المستخدم): "إيقاف ثم فقد PM10 11 دقيقة لا يسمح
+  // بالاستئناف" — قراءة جهاز عمرها 11 دقيقة (> LIVE_FIELD_FRESHNESS_MS = 4
+  // دقائق) تعني pm10EvidenceState='STALE'، فتبقى بوابة PM10-DATA-MISSING-
+  // RESUME-HOLD مفعَّلة رغم استيفاء نافذة الـ10 دقائق للحقول الأخرى.
+  describe('pm10EvidenceState غير FRESH بعد إيقاف سابق — لا يُعامَل كتحسّن (اختبار قبول صريح)', () => {
+    it('إيقاف سابق + استقرار 15 دقيقة مستوفى + PM10 من جهاز قديم (STALE) → يبقى موقوفاً، لا استئناف', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          pm10Source: 'device',
+          pm10EvidenceState: 'STALE',
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-DATA-MISSING-RESUME-HOLD')).toBe(true);
+      expect(r.canOverride).toBe(false);
+    });
+
+    it('إيقاف سابق + استقرار 15 دقيقة مستوفى + PM10 من جهاز MISSING (لا قراءة إطلاقاً) → يبقى موقوفاً', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          pm10Source: 'device',
+          pm10EvidenceState: 'MISSING',
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-DATA-MISSING-RESUME-HOLD')).toBe(true);
+    });
+
+    it('إيقاف سابق + استقرار مستوفى + PM10 من جهاز FRESH فعلياً → يُستأنف طبيعياً', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          pm10Source: 'device',
+          pm10EvidenceState: 'FRESH',
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    });
+
+    it('PM10 من مصدر طقس/يدوي (لا device) وقديم منطقياً → لا تُفعَّل البوابة (نفس استثناء dust-engine/engine.ts)', () => {
+      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          pm10Source: 'weather',
+          pm10EvidenceState: 'STALE',
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-DATA-MISSING-RESUME-HOLD')).toBe(false);
+    });
+  });
+
+  // اختبار قبول صريح: "فشل استعلام الحالة السابقة ينتج HOLD أو فشل تقييم،
+  // لا خريطة فارغة" — previousDecisionQueryFailed=true يفرض إيقافاً
+  // احترازياً بصرف النظر عن previousDecisionCategory (قد تكون null بالضبط
+  // لأن الاستعلام الذي كان سيجلبها فشل).
+  describe('previousDecisionQueryFailed=true — فشل استعلام القرار السابق يفرض HOLD، لا سماحاً صامتاً', () => {
+    it('previousDecisionQueryFailed=true بلا previousDecisionCategory (الاستعلام فشل قبل معرفتها) → إيقاف احترازي', () => {
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: null,
+          previousDecisionQueryFailed: true,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'PREVIOUS-DECISION-QUERY-FAILED-HOLD')).toBe(true);
+      expect(r.canOverride).toBe(false);
+    });
+
+    it('previousDecisionQueryFailed=false (الاستعلام نجح، ببساطة لا قرار سابق) → لا قيد يُطبَّق (سلوك طبيعي)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: null,
+          previousDecisionQueryFailed: false,
+        })
+      );
+      expect(r.decisionCategory).toBe('ALLOW');
+      expect(r.triggeredRules.some((h) => h.code === 'PREVIOUS-DECISION-QUERY-FAILED-HOLD')).toBe(false);
+    });
+  });
+
+  // اختبار قبول صريح: "فجوة أكبر من 90 ثانية تصفر العداد" — previousEvaluationUpdatedAt
+  // (آخر دورة تقييم فعلية محفوظة) أقدم من now بأكثر من 90 ثانية يعني توقّف
+  // دورة تقييم واحدة أو أكثر فعلياً، فيُعامَل previousPendingResumeSince
+  // كأنه غائب (بداية استقرار من الصفر الآن)، بصرف النظر عن قيمته المخزَّنة.
+  describe('فجوة تقييم (previousEvaluationUpdatedAt) — فجوة أكبر من 90 ثانية تصفّر عداد الاستقرار (اختبار قبول صريح)', () => {
+    it('previousPendingResumeSince منذ 9 دقائق (دون حد الـ10) + فجوة تقييم 91 ثانية → يُصفَّر العداد، يبقى موقوفاً كأول لحظة تحسّن', () => {
+      const now = Date.now();
+      const nineMinutesAgo = new Date(now - 9 * 60000).toISOString();
+      const gapStart = new Date(now - 91_000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: nineMinutesAgo,
+          previousEvaluationUpdatedAt: gapStart,
+        }),
+        now
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.resumeHoldApplied).toBe(true);
+    });
+
+    it('نفس previousPendingResumeSince منذ 9 دقائق، لكن فجوة تقييم 89 ثانية فقط (دون حد 90) → لا تُصفَّر، لكن يبقى موقوفاً (9 < 10 دقائق أصلاً)', () => {
+      const now = Date.now();
+      const nineMinutesAgo = new Date(now - 9 * 60000).toISOString();
+      const withinTolerance = new Date(now - 89_000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: nineMinutesAgo,
+          previousEvaluationUpdatedAt: withinTolerance,
+        }),
+        now
+      );
+      // الشاهد الحقيقي هنا: عند 9 دقائق فقط تبقى موقوفة سواء صُفِّر العداد أم
+      // لا (كلاهما <10) — الفرق يظهر فقط عند تجاوز العتبة فعلياً، كما في
+      // الاختبار التالي (11 دقيقة + فجوة تصفّر). هذا الاختبار يثبت فقط أن
+      // فجوة ضمن السماحية لا تُغيّر النتيجة (لا تُصفَّر بلا داعٍ).
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.resumeHoldApplied).toBe(true);
+    });
+
+    it('previousPendingResumeSince منذ 15 دقيقة (يتجاوز حد الـ10) لكن فجوة تقييم 91 ثانية → يُصفَّر العداد، لا استئناف رغم تجاوز الـ10 دقائق ظاهرياً', () => {
+      const now = Date.now();
+      const fifteenMinutesAgo = new Date(now - 15 * 60000).toISOString();
+      const gapStart = new Date(now - 91_000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+          previousEvaluationUpdatedAt: gapStart,
+        }),
+        now
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.resumeHoldApplied).toBe(true);
+    });
+
+    it('previousEvaluationUpdatedAt غائب (undefined) → لا فحص فجوة (توافقي، سلوك اليوم بلا تغيير)', () => {
+      const now = Date.now();
+      const fifteenMinutesAgo = new Date(now - 15 * 60000).toISOString();
+      const r = evaluateDustCompliance(
+        context({
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousPendingResumeSince: fifteenMinutesAgo,
+        }),
+        now
+      );
+      expect(r.decisionCategory).toBe('ALLOW');
+      expect(r.resumeHoldApplied).toBe(false);
+    });
+  });
 });
 
 // STONECUT-DRY-001 (قطع جاف بلا تبريد مائي/HEPA) حُذف من rulebook.ts —
