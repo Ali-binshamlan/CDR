@@ -162,6 +162,30 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // لا يعتمد على قراءة PM10 التي قد تكون قديمة.
   const dviPm10StopIsUnreliable = dviMandatoryStopIsPm10Only && evidenceUnavailable;
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "إيقاف مبني على PM10 قديم يتغلب
+  // على HOLD"): dviMandatoryStopIsPm10Only/dviPm10StopIsUnreliable أعلاه
+  // تُقرآن من dvi.stopBasis/confirmationState — لكن deriveStopBasisAndConfirmation
+  // (dust-engine/engine.ts) تُرجع دائماً stopBasis='NONE'/confirmationState=
+  // 'NOT_APPLICABLE' متى كان mandatoryStop=false، وهي بالضبط الحالة التي
+  // يمنعها pm10OnlyConfirmable هناك (PM10 لحظي فقط + قراءة قديمة/غير طازجة):
+  // mandatoryStop يُضبَط false بنجاح، لكن decisionCategory يبقى
+  // STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPENDENT_ACTIVITIES رغم
+  // ذلك — وdviCandidate أدناه كان يُطابِق تلك الفئة PROTECTIVE_STOP (رتبة 4)
+  // بلا أي فحص حداثة خاص بها، فيتغلب على HOLD_FOR_VERIFICATION (رتبة 3) من
+  // evidenceCandidate رغم أن السبب الوحيد قراءة PM10 لا يُعتمَد عليها. الحل:
+  // قراءة dvi.triggeredRules مباشرة (المصدر الوحيد الذي يبقي التمييز حتى مع
+  // mandatoryStop=false) — DVI-DUST-ACTIVITY-STOP-004-PM10-STALE يعني "قاعدة
+  // PM10 اللحظي هي من فعّلت STOP_*، والقراءة غير طازجة"، وغياب أي قاعدة خطر
+  // فيزيائي مستقل (رؤية حرجة/رياح شديدة+مواد سائبة) يعني عدم وجود سبب آخر
+  // يبرر الإيقاف الاحترازي. خطر مستقل حقيقي (رؤية<500م مثلاً) يبقى يفوز
+  // فوراً دائماً — لا يُستبعَد لمجرد وجود PM10 قديم مساهماً أيضاً بنفس اللحظة.
+  const dviTriggeredRules = dvi.triggeredRules ?? [];
+  const dviHasIndependentPhysicalHazard = dviTriggeredRules.some(
+    (r) => r.startsWith('DVI-VISIBILITY-') || r === 'DVI-WIND-LOOSE-MATERIAL-005'
+  );
+  const dviStopIsPm10StaleOnly =
+    dviTriggeredRules.includes('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE') && !dviHasIndependentPhysicalHazard;
+
   // --- محرك المرشحين (Candidates + Strictest) — القسم 4.3 من "دليل
   // الإصلاح الجذري لمنظومة مرقاب": بدل سلسلة if/else هشة (تسمح بتكرار
   // المشكلة عند إضافة فئة DVI/Compliance جديدة بلا تصنيفها)، يُبنى مرشح
@@ -191,15 +215,23 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   //   أعلى من RESTRICT، فيفوز حتى مع compliance=ALLOW نظيف).
   //   ALLOW_WITH_MONITORING → MONITOR كما كان (لا تغيير — غير مذكورة في
   //   جدول 18.1 بقيمة مختلفة).
+  // خطأ مكتشَف ومُصلَح (راجع تعليق dviStopIsPm10StaleOnly الكامل أعلاه):
+  // STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPENDENT_ACTIVITIES لا
+  // تُطابَق PROTECTIVE_STOP إن كان سببها الوحيد PM10 لحظي غير طازج — تُخفَّض
+  // إلى MONITOR (نفس درجة ALLOW_WITH_MONITORING) بدل إسقاطها لـALLOW كاملاً،
+  // حتى لا تختفي إشارة "PM10 مرتفع رآه DVI" كلياً؛ evidenceCandidate أدناه
+  // (HOLD_FOR_VERIFICATION، رتبة 3) هو من يفوز فعلياً في هذه الحالة بلا
+  // منافسة PROTECTIVE_STOP (رتبة 4) المبنية على دليل غير موثوق.
   const dviCandidate: DecisionCandidate = {
     source: 'DVI',
     decision:
-      dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
-      dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES'
+      (dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
+        dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES') &&
+      !dviStopIsPm10StaleOnly
         ? 'PROTECTIVE_STOP'
         : dvi.decisionCategory === 'RESTRICT' || dvi.decisionCategory === 'RESTRICT_SEVERE'
           ? 'RESTRICT'
-          : dvi.decisionCategory === 'ALLOW_WITH_MONITORING'
+          : dvi.decisionCategory === 'ALLOW_WITH_MONITORING' || dviStopIsPm10StaleOnly
             ? 'MONITOR'
             : 'ALLOW',
   };

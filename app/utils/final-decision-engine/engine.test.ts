@@ -464,6 +464,62 @@ describe('decideFinal — evidenceQuality وHOLD_FOR_VERIFICATION', () => {
   });
 });
 
+// اختبارا قبول صريحان (طلب المستخدم — تقرير المراجعة الخارجي: "إيقاف مبني
+// على PM10 قديم يتغلب على HOLD"). راجع تعليق dviStopIsPm10StaleOnly الكامل
+// في engine.ts للسبب: mandatoryStop يُضبَط false بنجاح لقراءة PM10 لحظية
+// قديمة (dust-engine/engine.ts)، لكن decisionCategory يبقى STOP_DUST_
+// GENERATING_ACTIVITIES رغم ذلك — وdviCandidate كان يُطابِقها PROTECTIVE_STOP
+// (رتبة 4) بلا فحص حداثة خاص، فيتغلب على HOLD_FOR_VERIFICATION (رتبة 3).
+describe('decideFinal — إيقاف DVI مبني على PM10 لحظي قديم لا يتغلب على HOLD_FOR_VERIFICATION', () => {
+  it('PM10=500 بعمر 5 دقائق (قديم) وحده، بلا أي خطر فيزيائي مستقل → HOLD_FOR_VERIFICATION، لا PROTECTIVE_STOP', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'STOP_DUST_GENERATING_ACTIVITIES',
+      mandatoryStop: false,
+      overridable: true,
+      stopBasis: 'NONE',
+      confirmationState: 'NOT_APPLICABLE',
+      triggeredRules: ['DVI-DUST-ACTIVITY-STOP-004', 'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY', 'DVI-DUST-ACTIVITY-STOP-004-PM10-STALE'],
+      shortReason: 'تركيز PM10 = 500 (قراءة قديمة)',
+    });
+    const compliance = baseCompliance({ decisionCategory: 'ALLOW', pendingConfirmation: false });
+    const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'STALE', mode: 'LIVE_OPERATIONAL' }));
+
+    expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+    expect(r.operationalDecision).not.toBe('PROTECTIVE_STOP');
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.regulatoryFinding).toBe('NOT_DETERMINABLE');
+  });
+
+  it('PM10 قديم + رؤية حية 499م (خطر مستقل حقيقي) → يبقى الإيقاف الإلزامي بسبب الرؤية', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES',
+      mandatoryStop: true,
+      overridable: false,
+      stopBasis: 'MIXED',
+      confirmationState: 'CONFIRMED',
+      visibilityKm: 0.499,
+      mandatoryVisibilityStop: true,
+      // الرؤية الحرجة (DVI-VISIBILITY-MANDATORY-STOP-001) ورؤية PM10 اللحظي
+      // القديم مساهمان معاً بنفس اللحظة — dviHasIndependentPhysicalHazard
+      // يجب أن يكتشف قاعدة الرؤية ويرفض تخفيف dviCandidate رغم وجود
+      // PM10-STALE أيضاً بين triggeredRules.
+      triggeredRules: [
+        'DVI-VISIBILITY-MANDATORY-STOP-001',
+        'DVI-DUST-ACTIVITY-STOP-004',
+        'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY',
+        'DVI-DUST-ACTIVITY-STOP-004-PM10-STALE',
+      ],
+      shortReason: 'رؤية حرجة أقل من 500م',
+    });
+    const compliance = baseCompliance({ decisionCategory: 'ALLOW', pendingConfirmation: false });
+    const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'STALE', mode: 'LIVE_OPERATIONAL' }));
+
+    expect(r.operationalDecision).toBe('MANDATORY_STOP');
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.overridable).toBe(false);
+  });
+});
+
 describe('decideFinal — reasonCodes وsnapshotId وruleBundleVersion', () => {
   it('reasonCodes يجمع رموز DVI والامتثال معاً', () => {
     const compliance = baseCompliance({
