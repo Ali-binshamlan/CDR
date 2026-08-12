@@ -40,9 +40,26 @@ export interface EvaluateProjectResult {
 // dust_compliance_evaluations.triggered_by أي قيمة تشخيصية حقيقية لتمييز
 // مصدر كل قرار مخزَّن. triggeredBy اختياري (افتراضي 'user_refresh' يحافظ
 // على التوافق مع كل الاستدعاءات القديمة التي لم تُحدِّث بعد).
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة قد
+// يفوّت مخالفة كاملة"، راجع migration 202608110019 الكامل): evaluationAtMs
+// اختياري جديد — يُمرَّر من scheduler-worker/route.ts (project_evaluation_jobs.
+// evaluation_at، مبني من observed_at الفعلي للقراءة المُحفِّزة في
+// telemetry-worker) بدل الاعتماد الضمني على Date.now() الفعلي وقت تنفيذ
+// هذا الاستدعاء. نطاق التمرير مقيَّد عمداً لسلسلة computeDustComplianceResults
+// → fetchPm10SustainedStatus → computeSustainedPm10Status (استمرار PM10
+// فقط) — لا يمس computeDustResults (حداثة الجهاز/DVI) ولا previousDecisionsByGroup/
+// RESUME-STABILITY-HOLD في computeDustComplianceResults نفسها، اللذين
+// يبقيان يعتمدان "الآن الفعلي" كما كانا (قرار نطاق صريح — محرك حي أوسع
+// مبني بنيوياً عبر عشرات الجلسات على افتراض "الآن=وقت التنفيذ" في هاتين
+// النقطتين تحديداً، تغييره يتطلب مراجعة/اختبار منفصلين). غياب evaluationAtMs
+// (كل الاستدعاءات الأخرى: POST /evaluate، devices/ingest، scheduler-tick
+// عبر enqueueEvaluationRetryJob) يعني "قيّم بوقت التنفيذ الفعلي" — سلوك
+// مطابق تماماً للسابق قبل هذا التغيير.
 export async function evaluateProject(
   projectId: string,
-  triggeredBy: string = 'user_refresh'
+  triggeredBy: string = 'user_refresh',
+  evaluationAtMs?: number
 ): Promise<EvaluateProjectResult> {
   try {
     const { data: project } = await supabaseAdmin
@@ -135,7 +152,8 @@ export async function evaluateProject(
       dustResults,
       sensitiveReceptors,
       supabaseAdmin,
-      true
+      true,
+      evaluationAtMs
     );
 
     const persistResults = await persistActivityDecisionsAtomic(

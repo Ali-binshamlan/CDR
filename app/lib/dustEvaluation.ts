@@ -829,19 +829,34 @@ export function computeSustainedPm10Status(
 // الجهاز فقط. نشاط بلا جهاز مرتبط (deviceId=null) لا يستقبل أي قراءة
 // device إطلاقاً — فقط manual الخاصة بـactivity_group_id نفسه (open-meteo
 // لم يعد يُسجَّل في هذا الجدول إطلاقاً، راجع weather_forecasts أدناه).
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة قد
+// يفوّت مخالفة كاملة"، راجع migration 202608110019 وتعليق computeDustComplianceResults
+// الكاملين): nowMs اختياري (افتراضياً Date.now()، نفس السلوك السابق تماماً)
+// — يحدد "الآن" الذي تُحسَب بالنسبة له نافذة الاستعلام (sinceIso) وnow
+// الممرَّرة لـcomputeSustainedPm10Status. حد أعلى صريح (untilIso، جديد)
+// يمنع الاستعلام من رؤية أي صف observedAt بعد nowMs — بدونه، تمرير nowMs
+// تاريخية (لإعادة بناء "كما كانت الحالة عند لحظة رصد سابقة") كان سيبقى
+// يجلب كل الصفوف حتى الوقت الفعلي الحالي (لا حد أعلى قط سابقاً)، فتظل
+// القراءة اللاحقة (100 في مثال التقرير) مرئية وتُسقِط الاستمرار تماماً كما
+// كان الخطأ الأصلي — الحد الأعلى هو ما يجعل "إعادة البناء كما كانت" ذات
+// معنى فعلياً، لا مجرد تمرير رقم مختلف لدالة حساب بلا تغيير فعلي في البيانات
+// المُستعلَمة.
 export async function fetchPm10SustainedStatus(
   supabaseAdmin: SupabaseClient,
   projectId: string,
   activityGroupId: string,
-  deviceId?: string | null
+  deviceId?: string | null,
+  nowMs: number = Date.now()
 ): Promise<Pm10SustainedStatus> {
-  const sinceIso = new Date(Date.now() - (PM10_SUSPENSION_MINUTES + 10) * 60000).toISOString();
+  const sinceIso = new Date(nowMs - (PM10_SUSPENSION_MINUTES + 10) * 60000).toISOString();
+  const untilIso = new Date(nowMs).toISOString();
   try {
     const { data } = await supabaseAdmin
       .from('pm10_readings_history')
       .select('id, pm10_ug_m3, recorded_at, activity_group_id, source, device_id, is_late, is_snapshot_only')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
+      .lte('recorded_at', untilIso)
       .order('recorded_at', { ascending: false });
 
     type Pm10HistoryRow = {
@@ -874,10 +889,10 @@ export async function fetchPm10SustainedStatus(
       id: row.id,
       isSnapshotOnly: row.is_snapshot_only ?? false,
     }));
-    return computeSustainedPm10Status(readings);
+    return computeSustainedPm10Status(readings, nowMs);
   } catch {
     // فشل الاستعلام لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
-    return computeSustainedPm10Status([]);
+    return computeSustainedPm10Status([], nowMs);
   }
 }
 
@@ -1418,13 +1433,24 @@ export interface ComplianceEvaluatableActivity {
   windowEval?: Pick<DustWindowEvaluation, 'worst'>;
 }
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة قد
+// يفوّت مخالفة كاملة"، راجع migration 202608110019 وتعليق evaluateProject.ts
+// الكاملين): evaluationAtMs اختياري — يستبدل Date.now() الداخلي أدناه
+// (evaluatedAtMs) حين يُمرَّر، ويُمرَّر أيضاً لـfetchPm10SustainedStatus
+// (نافذة استعلام pm10_readings_history + computeSustainedPm10Status) —
+// يسمح بإعادة بناء "ما كانت عليه حالة استمرار PM10 عند لحظة رصد محدَّدة"
+// بدل "الآن الفعلي وقت تنفيذ هذه الدالة" فقط. previousDecisionsByGroup/
+// RESUME-STABILITY-HOLD أعلاه في هذه الدالة (قراءة current_dust_compliance_
+// decisions الحالية) تبقيان بلا تغيير عمداً — نطاق مضيَّق صريح، راجع تعليق
+// evaluateProject.ts للسبب الكامل.
 export async function computeDustComplianceResults(
   dustRows: DustActivityRow[],
   project: ProjectRow,
   dustResults: ComplianceEvaluatableActivity[],
   sensitiveReceptors: SensitiveReceptor[] = [],
   supabaseAdmin?: SupabaseClient,
-  persistPm10Reading: boolean = false
+  persistPm10Reading: boolean = false,
+  evaluationAtMs?: number
 ): Promise<DustComplianceResultItem[]> {
   const rowsById = new Map<string, DustActivityRow>((dustRows || []).map((row) => [String(row.id), row]));
 
@@ -1544,7 +1570,19 @@ export async function computeDustComplianceResults(
         // جانبين مختلفين من حد الحداثة (راجع تعليق evaluatedAtMs الكامل في
         // adapters.ts) — يضمن قابلية إعادة حساب نفس القرار لاحقاً بنفس
         // النتيجة تماماً.
+        //
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة
+        // قد يفوّت مخالفة كاملة"): evaluatedAtMs يبقى Date.now() الفعلي عمداً
+        // — يغذّي بوابة حداثة الجهاز (buildComplianceContext) وevaluateDustCompliance
+        // (RESUME-STABILITY-HOLD وغيرها)، وهذه تبقى خارج نطاق evaluationAtMs
+        // (قرار نطاق صريح، راجع تعليق evaluateProject.ts). pm10SustainedLookupMs
+        // منفصل تماماً — يُستخدَم حصراً لاستدعاء fetchPm10SustainedStatus
+        // أدناه (نافذة استمرار PM10 التاريخية)، فيعيد بناء "ما كانت عليه
+        // حالة الاستمرار عند لحظة الرصد الفعلية" بمعزل عن حداثة الجهاز
+        // الحالية أو حالة الاستئناف الحالية، اللتين تبقيان تُقاسان بالآن
+        // الفعلي كما كانتا دائماً.
         const evaluatedAtMs = Date.now();
+        const pm10SustainedLookupMs = evaluationAtMs ?? evaluatedAtMs;
 
         // توثيق معايرة الجهاز الفعلي المرتبط بهذا النشاط تحديداً (لا
         // المشروع كله) — null إن لم يكن النشاط مرتبطاً بجهاز، أو لم يوجد
@@ -1652,7 +1690,13 @@ export async function computeDustComplianceResults(
               }
             }
           }
-          pm10Sustained = await fetchPm10SustainedStatus(supabaseAdmin, project.id, r.activityGroupId, row.device_id ?? null);
+          pm10Sustained = await fetchPm10SustainedStatus(
+            supabaseAdmin,
+            project.id,
+            r.activityGroupId,
+            row.device_id ?? null,
+            pm10SustainedLookupMs
+          );
         }
 
         const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration, evaluatedAtMs, activityQueryFailed);

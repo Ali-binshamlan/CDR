@@ -66,10 +66,17 @@ export async function GET(request: Request) {
   }>;
 
   const results: Array<{ rowId: string; projectId: string; ok: boolean; error?: string }> = [];
-  // مشاريع تلقّت قراءة مُعالَجة بنجاح فعلياً خلال هذه الدفعة — تُستهلَك في
-  // مرحلة Evaluation Coalescing (لاحقة) لإنشاء مهمة تقييم موحَّدة واحدة لكل
-  // مشروع، لا تقييماً منفصلاً لكل صف.
-  const affectedProjectIds = new Set<string>();
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة قد
+  // يفوّت مخالفة كاملة"، راجع migration 202608110019 الكامل): كانت مجموعة
+  // (Set<string>) بسيطة لمعرّفات المشاريع فقط — كافية لإنشاء مهمة واحدة لكل
+  // مشروع، لكنها تفقد أي تمييز بين دقائق الرصد المختلفة داخل نفس الدفعة.
+  // الآن Map<projectId, Set<observedMinuteBucket>> — لكل قراءة نُجحت
+  // كتابتها فعلياً، نُسجِّل دقيقة observedAt الفعلية (لا دقيقة معالجة
+  // الدفعة) ضمن مجموعة دقائق ذلك المشروع. دفعة تحوي 350←355←360 (دقيقة
+  // observed=12:03) ثم 100 (دقيقة observed=12:05) لنفس المشروع تُنتج الآن
+  // مهمتَي تقييم منفصلتين — كل واحدة evaluation_at الخاص بها — بدل مهمة
+  // واحدة تفقد رؤية التجاوز خلف القراءة الأحدث.
+  const affectedMinutesByProject = new Map<string, Set<number>>();
 
   // تسلسلي عمداً — نفس مبدأ scheduler-worker/provider-pull: يبسّط تتبع
   // الفشل الجزئي، ويحافظ على ترتيب observedAt التصاعدي داخل نفس الجهاز
@@ -122,7 +129,16 @@ export async function GET(request: Request) {
           });
         } else {
           results.push({ rowId: row.id, projectId: row.project_id, ok: true });
-          affectedProjectIds.add(row.project_id);
+          // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت
+          // المعالجة قد يفوّت مخالفة كاملة"): دقيقة الرصد الفعلية
+          // (observedAtIso القراءة نفسها) لا دقيقة معالجة الدفعة —
+          // غياب observedAtIso (نظرياً فقط، provider-pull يُرسله دائماً)
+          // يسقط لوقت المعالجة الحالي كفشل آمن، لا كسر.
+          const observedMs = row.payload.observedAtIso ? new Date(row.payload.observedAtIso).getTime() : Date.now();
+          const observedMinuteBucket = Math.floor(observedMs / 60_000);
+          const minutes = affectedMinutesByProject.get(row.project_id) ?? new Set<number>();
+          minutes.add(observedMinuteBucket);
+          affectedMinutesByProject.set(row.project_id, minutes);
         }
       } else {
         const { data: failed, error: failRpcError } = await supabaseAdmin.rpc('fail_telemetry_queue_row', {
@@ -159,22 +175,46 @@ export async function GET(request: Request) {
   // ===================================================================
   // Evaluation Coalescing — إلزامي من أول تنفيذ (لا استدعاء evaluateProject
   // مباشر هنا إطلاقاً). نفس نمط enqueueEvaluationRetryJob المُصلَح سابقاً
-  // (evaluateProject.ts): مفتاح مستقر لكل دقيقة لكل مشروع، القيد الفريد
+  // (evaluateProject.ts): مفتاح مستقر لكل (مشروع، دقيقة رصد)، القيد الفريد
   // unique(project_id, dedupe_key) الموجود بالفعل على project_evaluation_jobs
-  // يضمن بنيوياً أن عدة قراءات لنفس المشروع خلال نفس الدقيقة تُنتج مهمة
-  // تقييم واحدة فقط. scheduler-worker (بلا تعديل) يستهلكها كالمعتاد.
+  // يضمن بنيوياً أن عدة قراءات لنفس المشروع خلال نفس دقيقة الرصد تُنتج
+  // مهمة تقييم واحدة فقط.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة قد
+  // يفوّت مخالفة كاملة"، راجع migration 202608110019 الكامل): dedupe_key
+  // كان `ingest:${minuteBucket}` مبنياً من دقيقة *معالجة* الدفعة (وقت
+  // تشغيل هذا العامل تحديداً) — دفعة واحدة تحوي قراءات من عدة دقائق رصد
+  // مختلفة (350←355←360 ثم 100، كل الأربعة عولجت في نفس التشغيلة) كانت
+  // تُنتج مهمة تقييم واحدة فقط، فيرى evaluateProject لاحقاً آخر حالة فقط
+  // (100، الآمنة) ويفوّت حلقة التجاوز كاملة. الآن: مهمة منفصلة لكل (مشروع،
+  // دقيقة رصد فعلية) — dedupe_key يتضمن دقيقة الرصد نفسها، وevaluation_at
+  // (عمود جديد) يحمل نهاية تلك الدقيقة بالضبط، ليعيد evaluateProject/
+  // computeDustComplianceResults/fetchPm10SustainedStatus بناء الحالة "كما
+  // كانت" عند تلك اللحظة تحديداً (راجع تعديلات dustEvaluation.ts/
+  // evaluateProject.ts المرافقة) بدل "الآن الفعلي" وقت تنفيذ scheduler-worker.
+  // scheduler-worker (بلا تعديل في هذا القسم) يستهلك كل مهمة كالمعتاد.
   // ===================================================================
-  const minuteBucket = Math.floor(Date.now() / 60_000);
   const enqueuedProjectIds: string[] = [];
-  for (const projectId of affectedProjectIds) {
-    const { error: enqueueError } = await supabaseAdmin.from('project_evaluation_jobs').insert({
-      project_id: projectId,
-      dedupe_key: `ingest:${minuteBucket}`,
-      trigger_type: 'DEVICE_EVENT',
-    });
-    // تعارض 23505 (نفس المشروع، نفس نافذة الدقيقة) يعني مهمة موحَّدة موجودة
-    // بالفعل — فشل آمن متوقَّع، لا يُسجَّل كخطأ حقيقي.
-    if (!enqueueError) {
+  for (const [projectId, minuteBuckets] of affectedMinutesByProject) {
+    let enqueuedForProject = false;
+    for (const minuteBucket of minuteBuckets) {
+      // نهاية دقيقة الرصد (لا بدايتها) — يضمن أن كل قراءة وقعت فعلياً ضمن
+      // تلك الدقيقة تكون "ماضية" بالنسبة لـevaluation_at، فتدخل أي نافذة
+      // استمرار تُحسَب انتهاءً بهذه اللحظة (fetchPm10SustainedStatus).
+      const evaluationAtIso = new Date((minuteBucket + 1) * 60_000 - 1).toISOString();
+      const { error: enqueueError } = await supabaseAdmin.from('project_evaluation_jobs').insert({
+        project_id: projectId,
+        dedupe_key: `ingest:${minuteBucket}`,
+        trigger_type: 'DEVICE_EVENT',
+        evaluation_at: evaluationAtIso,
+      });
+      // تعارض 23505 (نفس المشروع، نفس دقيقة الرصد) يعني مهمة موحَّدة موجودة
+      // بالفعل — فشل آمن متوقَّع، لا يُسجَّل كخطأ حقيقي.
+      if (!enqueueError) {
+        enqueuedForProject = true;
+      }
+    }
+    if (enqueuedForProject) {
       enqueuedProjectIds.push(projectId);
     }
   }
@@ -190,7 +230,7 @@ export async function GET(request: Request) {
       claimed: results.length,
       failed: failedCount,
       results,
-      affectedProjects: affectedProjectIds.size,
+      affectedProjects: affectedMinutesByProject.size,
       evaluationJobsEnqueued: enqueuedProjectIds.length,
     },
     { status }

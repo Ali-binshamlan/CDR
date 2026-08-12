@@ -526,6 +526,14 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       select: () => chain,
       eq: () => chain,
       gte: () => chain,
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة
+      // قد يفوّت مخالفة كاملة"): fetchPm10SustainedStatus أضافت .lte()
+      // صريحة (حد أعلى untilIso) بعد .gte() — غياب هذه الدالة من السلسلة
+      // الوهمية هنا كان يُسقِط كل استدعاء داخل try/catch الدفاعي في الدالة
+      // الحقيقية بصمت (TypeError: chain.lte is not a function)، فيُرجع
+      // نتيجة فارغة دائماً بصرف النظر عن rows الممرَّرة — سبب فشل كل
+      // اختبارات هذا القسم دفعة واحدة عند إضافة .lte() الفعلية.
+      lte: () => chain,
       order: async () => ({ data: rows }),
     };
     return { from: vi.fn(() => chain) } as unknown as SupabaseClient;
@@ -702,6 +710,106 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
       expect(r.isConfirmedViolation340).toBe(true);
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "التقييم
+  // بحسب وقت المعالجة قد يفوّت مخالفة كاملة"): nowMs (الآن الجديد اختياري)
+  // يُحدِّد كلاً من الحد الأدنى (sinceIso) والحد الأعلى (untilIso) لاستعلام
+  // pm10_readings_history — تمرير nowMs تاريخية (لحظة رصد سابقة) يجب أن
+  // يُخفي أي قراءة وقعت بعدها فعلياً، لا فقط يغيّر رقم "الآن" الممرَّر
+  // لحساب المدة بمعزل عن البيانات المُستعلَمة.
+  describe('nowMs يحدّد حد الاستعلام الأعلى (اختبار قبول صريح — يحاكي سيناريو 350←355←360←100 من التقرير)', () => {
+    it('nowMs = لحظة ذروة التجاوز (قبل وصول القراءة الآمنة اللاحقة) → السلسلة 350←355←360 تُثبت مخالفة مؤكَّدة، رغم وجود قراءة 100 لاحقة في نفس الجدول', () => {
+      const spikeStartMs = NOW - 4 * 60000; // 350 عند -4 دقائق من "الآن الحقيقي"
+      const spikeEndMs = NOW - 1 * 60000; // 360 عند -1 دقيقة (نهاية الذروة، استمرار فعلي 3 دقائق > 2)
+      const safeReadingMs = NOW; // 100 عند "الآن الحقيقي" — بعد الذروة بدقيقة
+      const allRows = [
+        { ...readingRow(0, 350, 'device-A'), recorded_at: new Date(spikeStartMs).toISOString(), id: 'spike-1' },
+        {
+          ...readingRow(0, 355, 'device-A'),
+          recorded_at: new Date(spikeStartMs + 60_000).toISOString(),
+          id: 'spike-2',
+        },
+        {
+          ...readingRow(0, 358, 'device-A'),
+          recorded_at: new Date(spikeStartMs + 120_000).toISOString(),
+          id: 'spike-2b',
+        },
+        { ...readingRow(0, 360, 'device-A'), recorded_at: new Date(spikeEndMs).toISOString(), id: 'spike-3' },
+        { ...readingRow(0, 100, 'device-A'), recorded_at: new Date(safeReadingMs).toISOString(), id: 'safe-1' },
+      ];
+      // mockSupabase هنا (نفس نمط بقية هذا الملف) يُرجع rows الممرَّرة إليه
+      // مباشرة بلا تطبيق فعلي لـ.gte()/.lte() على القيم — فلمحاكاة الحد
+      // الأعلى الحقيقي (untilIso المشتق من nowMs داخل fetchPm10SustainedStatus
+      // نفسها) نُصفّي الصفوف يدوياً هنا، تماماً كما يفعل PostgREST الفعلي
+      // عند استلام .lte('recorded_at', untilIso). اختبار منفصل أدناه يتحقق
+      // أن .lte() تُستدعى فعلياً بالقيمة الصحيحة المشتقة من nowMs.
+      const rows = allRows.filter((r) => new Date(r.recorded_at).getTime() <= spikeEndMs);
+      const supabase = mockSupabase(rows);
+
+      // evaluation_at لدقيقة الرصد التي وقعت فيها الذروة (لا "الآن" الفعلي
+      // الذي يحمل القراءة الآمنة اللاحقة) — نفس ما يبنيه telemetry-worker
+      // الآن (نهاية دقيقة رصد كل قراءة، لا دقيقة معالجة الدفعة).
+      return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A', spikeEndMs).then((r) => {
+        expect(r.currentReadingUgM3).toBe(360);
+        expect(r.isConfirmedViolation340).toBe(true);
+        expect(r.evidenceReadingIds.sort()).toEqual(['spike-1', 'spike-2', 'spike-2b', 'spike-3'].sort());
+      });
+    });
+
+    it('nowMs = وقت "الآن" الحقيقي (بلا تمرير، افتراضي) → القراءة الآمنة اللاحقة تصبح currentReadingUgM3، الذروة السابقة غير مرئية للسلسلة (نفس الخطأ الأصلي، بلا evaluation_at)', () => {
+      const spikeStartMs = NOW - 3 * 60000;
+      const spikeEndMs = NOW - 1 * 60000;
+      const rows = [
+        { ...readingRow(0, 350, 'device-A'), recorded_at: new Date(spikeStartMs).toISOString(), id: 'spike-1' },
+        {
+          ...readingRow(0, 355, 'device-A'),
+          recorded_at: new Date(spikeStartMs + 45_000).toISOString(),
+          id: 'spike-2',
+        },
+        { ...readingRow(0, 360, 'device-A'), recorded_at: new Date(spikeEndMs).toISOString(), id: 'spike-3' },
+        { ...readingRow(0, 100, 'device-A'), recorded_at: new Date(NOW).toISOString(), id: 'safe-1' },
+      ];
+      const supabase = mockSupabase(rows);
+
+      return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+        // هذا هو السلوك القديم (بلا evaluation_at) — يبقى صحيحاً حين لا
+        // توجد لحظة رصد محدَّدة يُطلَب إعادة البناء عندها (مهام scheduler-
+        // tick الدورية مثلاً)؛ الفرق أن telemetry-worker الآن *يُمرِّر*
+        // evaluation_at فعلياً بدل ترك هذا المسار الافتراضي يُخفي الذروة.
+        expect(r.currentReadingUgM3).toBe(100);
+        expect(r.isConfirmedViolation340).toBe(false);
+      });
+    });
+
+    it('.gte و.lte يُستدعيان بالحدود الصحيحة المشتقة من nowMs الممرَّرة', async () => {
+      const calls: Array<{ fn: string; value: string }> = [];
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: () => chain,
+        gte: (_col: string, value: string) => {
+          calls.push({ fn: 'gte', value });
+          return chain;
+        },
+        lte: (_col: string, value: string) => {
+          calls.push({ fn: 'lte', value });
+          return chain;
+        },
+        order: async () => ({ data: [] }),
+      };
+      const supabase = { from: () => chain } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+
+      const nowMs = Date.parse('2026-03-01T12:10:00.000Z');
+      await fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A', nowMs);
+
+      const gteCall = calls.find((c) => c.fn === 'gte');
+      const lteCall = calls.find((c) => c.fn === 'lte');
+      expect(lteCall?.value).toBe(new Date(nowMs).toISOString());
+      // sinceIso = nowMs - (PM10_SUSPENSION_MINUTES + 10) دقيقة — نتحقق فقط
+      // أنها أقدم من nowMs فعلياً (لا القيمة الحرفية، لتفادي تكرار الثابت
+      // الداخلي هنا).
+      expect(new Date(gteCall!.value).getTime()).toBeLessThan(nowMs);
     });
   });
 });

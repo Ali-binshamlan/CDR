@@ -144,6 +144,34 @@ describe('GET /api/cron/scheduler-worker', () => {
     });
   });
 
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "التقييم
+  // بحسب وقت المعالجة قد يفوّت مخالفة كاملة"): job.evaluation_at (يملؤها
+  // telemetry-worker من observed_at الفعلي) يجب أن تصل كـnowMs (المعامل
+  // الثالث) لـevaluateProject — لا تُهمَل، ولا تُستبدَل بـDate.now() ضمنياً.
+  describe('evaluation_at → nowMs الممرَّرة لـevaluateProject (اختبار قبول صريح)', () => {
+    it('job.evaluation_at موجودة → تُمرَّر كـMs رقمي (المعامل الثالث) لـevaluateProject', async () => {
+      const evaluationAtIso = '2026-01-01T12:03:59.999Z';
+      claimedJobs = [baseJob({ evaluation_at: evaluationAtIso })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      expect(evaluateProjectMock).toHaveBeenCalledTimes(1);
+      const callArgs = evaluateProjectMock.mock.calls[0];
+      expect(callArgs[0]).toBe('project-1');
+      expect(callArgs[1]).toBe('scheduler');
+      expect(callArgs[2]).toBe(new Date(evaluationAtIso).getTime());
+    });
+
+    it('job.evaluation_at غائبة (null، مهمة scheduler-tick دورية عادية) → المعامل الثالث undefined، evaluateProject تسقط لـDate.now() داخلياً كما كانت دائماً', async () => {
+      claimedJobs = [baseJob({ evaluation_at: null })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const callArgs = evaluateProjectMock.mock.calls[0];
+      expect(callArgs[2]).toBeUndefined();
+    });
+  });
+
   // اختبار قبول صريح: complete_evaluation_job=false بعد تقييم ناجح فعلياً
   // يجب ألا يستدعي fail (القرار كُتب بالفعل — استدعاء fail كان سيُعيد مهمة
   // باتت مسؤولية عامل آخر إلى RETRY زوراً رغم نجاح التقييم).

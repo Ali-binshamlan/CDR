@@ -77,7 +77,17 @@ export async function GET(request: Request) {
     }
 
     try {
-      const evalResult = await evaluateProject(job.project_id, 'scheduler');
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة
+      // قد يفوّت مخالفة كاملة"، راجع migration 202608110019 وتعليق
+      // evaluateProject.ts الكاملين): job.evaluation_at (يملؤها telemetry-
+      // worker من observed_at الفعلي للقراءة المُحفِّزة) تُمرَّر كـnowMs
+      // بدل الاعتماد على Date.now() الضمني داخل evaluateProject — يعيد بناء
+      // "حالة استمرار PM10 كما كانت عند لحظة الرصد" بدل "الآن الفعلي وقت
+      // تنفيذ هذا العامل". غيابها (مهام scheduler-tick/retry الدورية، لا
+      // مرتبطة بلحظة رصد محدَّدة) يعني undefined → evaluateProject تسقط
+      // لـDate.now() الفعلي كما كانت دائماً.
+      const evaluationAtMs = job.evaluation_at ? new Date(job.evaluation_at as string).getTime() : undefined;
+      const evalResult = await evaluateProject(job.project_id, 'scheduler', evaluationAtMs);
       if (evalResult.success) {
         const { data: completed, error: completeError } = await supabaseAdmin.rpc('complete_evaluation_job', {
           p_job_id: job.id,

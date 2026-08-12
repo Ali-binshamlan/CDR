@@ -25,8 +25,12 @@ vi.mock('@/app/lib/supabaseAdmin', () => ({
       return { data: null, error: null };
     },
     from: (table: string) => ({
-      insert: async () => {
-        rpcCalls.push({ fn: `insert:${table}`, args: {} });
+      insert: async (values: Record<string, unknown>) => {
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "التقييم بحسب وقت المعالجة
+        // قد يفوّت مخالفة كاملة"): args تُلتقَط الآن فعلياً (كانت args: {}
+        // ثابتة سابقاً) — لازمة للتحقق من dedupe_key/evaluation_at الفعليين
+        // المُرسَلين لكل مهمة تقييم.
+        rpcCalls.push({ fn: `insert:${table}`, args: values });
         return { data: null, error: insertError };
       },
     }),
@@ -134,6 +138,67 @@ describe('GET /api/cron/telemetry-worker', () => {
 
     expect(body.affectedProjects).toBe(1);
     expect(rpcCalls.some((c) => c.fn === 'insert:project_evaluation_jobs')).toBe(true);
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "التقييم
+  // بحسب وقت المعالجة قد يفوّت مخالفة كاملة"): مهمة التقييم يجب أن تُبنى
+  // لكل (مشروع، دقيقة رصد فعلية) لا دقيقة معالجة الدفعة، مع evaluation_at
+  // يحمل نهاية دقيقة الرصد تلك تحديداً.
+  describe('evaluation_at ودقيقة الرصد لا دقيقة المعالجة (اختبار قبول صريح)', () => {
+    it('مهمة واحدة → dedupe_key وevaluation_at مبنيان من observedAtIso القراءة، لا Date.now() وقت تشغيل العامل', async () => {
+      const observedAtIso = '2026-01-01T12:03:30.000Z'; // منتصف الدقيقة 12:03
+      claimedRows = [baseRow({ payload: { observedAtIso, pm10: 340 } })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const insertCall = rpcCalls.find((c) => c.fn === 'insert:project_evaluation_jobs');
+      expect(insertCall).toBeDefined();
+      const observedMinuteBucket = Math.floor(new Date(observedAtIso).getTime() / 60_000);
+      expect(insertCall!.args.dedupe_key).toBe(`ingest:${observedMinuteBucket}`);
+      // evaluation_at = نهاية دقيقة 12:03 بالضبط (12:03:59.999)، لا وقت
+      // معالجة الدفعة الفعلي (Date.now() قد يكون بعد ذلك بدقائق).
+      expect(insertCall!.args.evaluation_at).toBe('2026-01-01T12:03:59.999Z');
+    });
+
+    it('دفعة تحوي قراءات من دقيقتَي رصد مختلفتين لنفس المشروع (سيناريو التقرير: 350←355←360 عند 12:03، ثم 100 عند 12:05) → مهمتا تقييم منفصلتان، لا مهمة واحدة', async () => {
+      claimedRows = [
+        baseRow({ id: 'row-1', payload: { observedAtIso: '2026-01-01T12:03:00.000Z', pm10: 350 } }),
+        baseRow({ id: 'row-2', payload: { observedAtIso: '2026-01-01T12:03:30.000Z', pm10: 355 } }),
+        baseRow({ id: 'row-3', payload: { observedAtIso: '2026-01-01T12:03:45.000Z', pm10: 360 } }),
+        baseRow({ id: 'row-4', payload: { observedAtIso: '2026-01-01T12:05:10.000Z', pm10: 100 } }),
+      ];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      const insertCalls = rpcCalls.filter((c) => c.fn === 'insert:project_evaluation_jobs');
+      expect(insertCalls).toHaveLength(2);
+      const dedupeKeys = insertCalls.map((c) => c.args.dedupe_key).sort();
+      const minute03 = Math.floor(new Date('2026-01-01T12:03:00.000Z').getTime() / 60_000);
+      const minute05 = Math.floor(new Date('2026-01-01T12:05:00.000Z').getTime() / 60_000);
+      expect(dedupeKeys).toEqual([`ingest:${minute03}`, `ingest:${minute05}`].sort());
+      // مهمة دقيقة 12:03 تحمل evaluation_at نهاية تلك الدقيقة — إعادة
+      // التقييم عندها لاحقاً تُعيد بناء الحالة وقت الذروة (350-355-360)،
+      // لا وقت القراءة الآمنة (100) اللاحقة في دقيقة أخرى تماماً.
+      const minute03Call = insertCalls.find((c) => c.args.dedupe_key === `ingest:${minute03}`);
+      expect(minute03Call!.args.evaluation_at).toBe('2026-01-01T12:03:59.999Z');
+      expect(body.affectedProjects).toBe(1); // مشروع واحد فقط (project-1)، لكن دقيقتا رصد
+      expect(body.evaluationJobsEnqueued).toBe(1); // مشروع واحد "أُدرِجت له مهمة" (بصرف النظر عن عددها)
+    });
+
+    it('دفعة بمشروعين مختلفين، كل منهما بدقيقة رصد واحدة فقط → مهمة واحدة لكل مشروع (لا تغيير عن السلوك السابق لهذه الحالة)', async () => {
+      claimedRows = [
+        baseRow({ id: 'row-1', project_id: 'project-A', payload: { observedAtIso: '2026-01-01T12:03:00.000Z', pm10: 340 } }),
+        baseRow({ id: 'row-2', project_id: 'project-B', payload: { observedAtIso: '2026-01-01T12:03:00.000Z', pm10: 340 } }),
+      ];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      const insertCalls = rpcCalls.filter((c) => c.fn === 'insert:project_evaluation_jobs');
+      expect(insertCalls).toHaveLength(2);
+      expect(body.affectedProjects).toBe(2);
+    });
   });
 
   // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "ملكية
