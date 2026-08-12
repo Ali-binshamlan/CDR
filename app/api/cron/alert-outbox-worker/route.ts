@@ -28,7 +28,13 @@ import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 //
 // يُستدعى خارجياً كل دقيقة أو دقيقتين عبر خدمة cron مجانية (cron-job.org) —
 // لا إضافة لـvercel.json (خطة Vercel Hobby لا تدعم جدولة أقل من يومية).
-const BATCH_SIZE = 50;
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+// العمال"، راجع migration 202608110018 الكامل): BATCH_SIZE خُفِّض من 50
+// (نفس سبب telemetry-worker) — renew_alert_outbox_lease (استدعاء جديد
+// أدناه، قبل معالجة كل صف) هو خط الدفاع الفعلي، ودفعة أصغر تقلّل عدد
+// الصفوف المعرَّضة لخطر انتهاء المهلة قبل الوصول إليها.
+const BATCH_SIZE = 20;
 const LEASE_SECONDS = 60;
 const MAX_ATTEMPTS = 5;
 
@@ -94,6 +100,19 @@ export async function GET(request: Request) {
 
   // تسلسلي عمداً — نفس مبدأ باقي عمال الـcron في هذا المشروع.
   for (const row of (rows || []) as OutboxRow[]) {
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+    // العمال"): تجديد Lease قبل معالجة كل صف — راجع تعليق telemetry-
+    // worker/route.ts المطابق تماماً لسبب التوقّف الفوري بلا fail عند false.
+    const renewed = await supabaseAdmin.rpc('renew_alert_outbox_lease', {
+      p_row_id: row.id,
+      p_worker_id: workerId,
+      p_lease_seconds: LEASE_SECONDS,
+    });
+    if (renewed.error || !renewed.data) {
+      results.push({ id: row.id, ok: false, error: 'lease لم يعد يطابق (استرجعه عامل آخر) — تم التخطي بلا معالجة' });
+      continue;
+    }
+
     try {
       let alertId: string | null;
 
@@ -130,26 +149,43 @@ export async function GET(request: Request) {
         p_alert_id: alertId,
       });
       // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "العامل يهمل بعض أخطاء
-      // تحديث PROCESSED"): فشل/عدم تحقق complete_alert_outbox_row (locked_by
-      // لم يعد يطابق — عامل آخر استرجع المهمة بعد انتهاء Lease هذا العامل)
-      // كان يُترَك بصمت سابقاً (الاستدعاء القديم لم يفحص النتيجة إطلاقاً)،
-      // فيُبلَّغ التنبيه كـ"معالَج بنجاح" في results رغم أن الصف نفسه لم
-      // يتحدَّث فعلياً — يُعاد محاولته لاحقاً بأمان (لا خطر تكرار: create_
-      // alert_atomic/close_alert_atomic كلاهما idempotent).
+      // تحديث PROCESSED"، ومراجعة كود خارجي لاحقة — "ملكية Lease غير آمنة
+      // في العمال"): فشل/عدم تحقق complete_alert_outbox_row يعني عامل آخر
+      // استرجع الصف بعد انتهاء Lease هذا العامل — لكن create_alert_atomic/
+      // close_alert_atomic أعلاه نجحا فعلياً بالفعل (التنبيه أُنشئ/أُغلق في
+      // قاعدة البيانات). استدعاء fail_alert_outbox_row هنا كان سيُعيد صفاً
+      // بات مسؤولية عامل آخر إلى RETRY/DEAD زوراً رغم نجاح العملية الفعلية
+      // — لا يجوز أن يمر عبر catch أدناه (الذي يستدعي fail لكل خطأ بلا
+      // تمييز). يُبلَّغ فشلاً في results مباشرة هنا، بلا catch، وبلا fail.
       if (completeError || !completed) {
-        throw new Error(completeError?.message || 'complete_alert_outbox_row: lease لم يعد يطابق (استرجعه عامل آخر)');
+        results.push({
+          id: row.id,
+          ok: false,
+          alertId,
+          error: completeError?.message || 'complete_alert_outbox_row: lease لم يعد يطابق (استرجعه عامل آخر) رغم نجاح العملية',
+        });
+        continue;
       }
 
       results.push({ id: row.id, ok: true, alertId });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`alert-outbox-worker: failed to process outbox row ${row.id}:`, message);
-      await supabaseAdmin.rpc('fail_alert_outbox_row', {
+      const { data: failed, error: failRpcError } = await supabaseAdmin.rpc('fail_alert_outbox_row', {
         p_row_id: row.id,
+        p_worker_id: workerId,
         p_error: message,
         p_max_attempts: MAX_ATTEMPTS,
       });
-      results.push({ id: row.id, ok: false, error: message });
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "دوال fail_* لا تتحقق من
+      // worker_id"): fail_alert_outbox_row تُرجع الآن boolean — false/خطأ
+      // هنا يعني عامل آخر بات يملك الصف؛ لا إجراء إضافي مطلوب، فقط الإبلاغ
+      // الصحيح في النتيجة (نفس مبدأ telemetry-worker/scheduler-worker).
+      results.push({
+        id: row.id,
+        ok: false,
+        error: failRpcError || !failed ? `${message} (lease لم يعد يطابق عند fail)` : message,
+      });
     }
   }
 

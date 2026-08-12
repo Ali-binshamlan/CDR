@@ -27,6 +27,12 @@ import { evaluateProject } from '@/app/lib/evaluateProject';
 //
 // يُستدعى خارجياً كل دقيقة (أو أقل) عبر خدمة cron مجانية (cron-job.org) —
 // لا إضافة لـvercel.json (خطة Vercel Hobby لا تدعم جدولة أقل من يومية).
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+// العمال"، راجع migration 202608110018 الكامل): BATCH_SIZE يبقى 20 (كان
+// أصلاً أصغر من telemetry-worker) — renew_evaluation_job_lease (استدعاء
+// جديد أدناه، قبل معالجة كل مهمة) هو خط الدفاع الفعلي ضد انتهاء المهلة
+// منتصف دفعة تحوي تقييماً بطيئاً واحداً على الأقل.
 const BATCH_SIZE = 20;
 const LEASE_SECONDS = 90;
 const MAX_ATTEMPTS = 5;
@@ -57,23 +63,63 @@ export async function GET(request: Request) {
   // تسلسلي عمداً — نفس مبدأ provider-pull/scheduler-tick: يبسّط تتبع الفشل
   // الجزئي ويتفادى إغراق قاعدة البيانات بتقييمات متزامنة ضخمة لكل دفعة.
   for (const job of jobs || []) {
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+    // العمال"): تجديد Lease قبل معالجة كل مهمة — راجع تعليق telemetry-
+    // worker/route.ts المطابق تماماً لسبب التوقّف الفوري بلا fail عند false.
+    const renewed = await supabaseAdmin.rpc('renew_evaluation_job_lease', {
+      p_job_id: job.id,
+      p_worker_id: workerId,
+      p_lease_seconds: LEASE_SECONDS,
+    });
+    if (renewed.error || !renewed.data) {
+      results.push({ jobId: job.id, projectId: job.project_id, ok: false, error: 'lease لم يعد يطابق (استرجعه عامل آخر) — تم التخطي بلا معالجة' });
+      continue;
+    }
+
     try {
       const evalResult = await evaluateProject(job.project_id, 'scheduler');
       if (evalResult.success) {
-        await supabaseAdmin.rpc('complete_evaluation_job', { p_job_id: job.id, p_worker_id: workerId });
-        results.push({ jobId: job.id, projectId: job.project_id, ok: true });
-      } else {
-        await supabaseAdmin.rpc('fail_evaluation_job', {
+        const { data: completed, error: completeError } = await supabaseAdmin.rpc('complete_evaluation_job', {
           p_job_id: job.id,
+          p_worker_id: workerId,
+        });
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "نتائج complete لا تُفحص
+        // في Scheduler/Telemetry"): راجع تعليق telemetry-worker/route.ts
+        // المطابق — التقييم نجح وكُتب فعلياً بصرف النظر عن نتيجة complete،
+        // فلا يُستدعى fail هنا حتى لو لم يعد worker_id يطابق.
+        if (completeError || !completed) {
+          results.push({
+            jobId: job.id,
+            projectId: job.project_id,
+            ok: false,
+            error: completeError?.message || 'complete_evaluation_job: lease لم يعد يطابق (استرجعه عامل آخر) رغم نجاح التقييم',
+          });
+        } else {
+          results.push({ jobId: job.id, projectId: job.project_id, ok: true });
+        }
+      } else {
+        const { data: failed, error: failRpcError } = await supabaseAdmin.rpc('fail_evaluation_job', {
+          p_job_id: job.id,
+          p_worker_id: workerId,
           p_error: evalResult.error ?? 'فشل تقييم غير محدَّد',
           p_max_attempts: MAX_ATTEMPTS,
         });
-        results.push({ jobId: job.id, projectId: job.project_id, ok: false, error: evalResult.error });
+        results.push({
+          jobId: job.id,
+          projectId: job.project_id,
+          ok: false,
+          error: failRpcError || !failed ? `${evalResult.error} (lease لم يعد يطابق عند fail)` : evalResult.error,
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`scheduler-worker: evaluateProject threw for project ${job.project_id}:`, message);
-      await supabaseAdmin.rpc('fail_evaluation_job', { p_job_id: job.id, p_error: message, p_max_attempts: MAX_ATTEMPTS });
+      await supabaseAdmin.rpc('fail_evaluation_job', {
+        p_job_id: job.id,
+        p_worker_id: workerId,
+        p_error: message,
+        p_max_attempts: MAX_ATTEMPTS,
+      });
       results.push({ jobId: job.id, projectId: job.project_id, ok: false, error: message });
     }
   }

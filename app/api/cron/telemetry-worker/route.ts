@@ -23,7 +23,16 @@ import type { NormalizedReading } from '@/app/lib/providers/types';
 // لا Promise.race/withTimeout هنا — writeDeviceReading نفسها لا تستدعي
 // شبكة خارجية (كل عملها DB بحتة عبر RPC واحدة تحمل SET LOCAL lock_timeout/
 // statement_timeout من الداخل)، فلا حاجة لغلاف مهلة جانب العميل.
-const BATCH_SIZE = 50;
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+// العمال"، راجع migration 202608110018 الكامل): BATCH_SIZE خُفِّض من 50 —
+// دفعة كبيرة تُعالَج تسلسلياً بلا أي تجديد Lease كانت تخاطر بانتهاء مهلة
+// صفوف لاحقة في الدفعة قبل الوصول إليها (كل صف بطيء واحد يستهلك من نفس
+// مهلة الـ60 ثانية المشتركة لكل الدفعة). renew_telemetry_queue_lease
+// (استدعاء جديد أدناه، قبل معالجة كل صف) يبقى خط الدفاع الأساسي بصرف
+// النظر عن حجم الدفعة — لكن دفعة أصغر تقلّل عدد الصفوف المعرَّضة لخطر
+// انتهاء المهلة بين المطالبة وبدء معالجة صف بعيد في الدفعة.
+const BATCH_SIZE = 20;
 const LEASE_SECONDS = 60;
 const MAX_ATTEMPTS = 5;
 
@@ -66,6 +75,22 @@ export async function GET(request: Request) {
   // الفشل الجزئي، ويحافظ على ترتيب observedAt التصاعدي داخل نفس الجهاز
   // (writeDeviceReading يعتمد على هذا الترتيب لتحديث last_*_at بأمان).
   for (const row of claimedRows) {
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+    // العمال"): تجديد Lease *قبل* معالجة كل صف (لا دفعة كاملة بلا تجديد) —
+    // false يعني فقدان الملكية فعلياً قبل حتى البدء (عامل آخر استرجع الصف
+    // بعد انتهاء lease هذا العامل، سيناريو نادر لكن ممكن مع دفعات بطيئة) —
+    // يُتخطَّى الصف فوراً بلا أي معالجة أو استدعاء fail (لا داعي: العامل
+    // الآخر مسؤول عنه الآن، أي تدخّل هنا قد يتصادم مع معالجته الفعلية).
+    const renewed = await supabaseAdmin.rpc('renew_telemetry_queue_lease', {
+      p_row_id: row.id,
+      p_worker_id: workerId,
+      p_lease_seconds: LEASE_SECONDS,
+    });
+    if (renewed.error || !renewed.data) {
+      results.push({ rowId: row.id, projectId: row.project_id, ok: false, error: 'lease لم يعد يطابق (استرجعه عامل آخر) — تم التخطي بلا معالجة' });
+      continue;
+    }
+
     try {
       const writeResult = await writeDeviceReading({
         deviceId: row.device_id,
@@ -75,21 +100,58 @@ export async function GET(request: Request) {
       });
 
       if (writeResult.success) {
-        await supabaseAdmin.rpc('complete_telemetry_queue_row', { p_row_id: row.id, p_worker_id: workerId });
-        results.push({ rowId: row.id, projectId: row.project_id, ok: true });
-        affectedProjectIds.add(row.project_id);
-      } else {
-        await supabaseAdmin.rpc('fail_telemetry_queue_row', {
+        const { data: completed, error: completeError } = await supabaseAdmin.rpc('complete_telemetry_queue_row', {
           p_row_id: row.id,
+          p_worker_id: workerId,
+        });
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "نتائج complete لا تُفحص
+        // في Scheduler/Telemetry"): الاستدعاء القديم كان يتجاهل النتيجة
+        // كلياً — لو لم يعد worker_id يطابق (عامل آخر استرجع الصف بين
+        // renew أعلاه وcomplete هنا، نافذة ضيقة لكن ممكنة)، كانت النتيجة
+        // تُبلَّغ "نجاح" رغم أن الصف نفسه قد لا يعكس ذلك فعلياً. الآن:
+        // false/خطأ يُبلَّغ صراحة، ولا يُستدعى fail بعده (نفس مبدأ renew
+        // أعلاه — القراءة نُجحت وكُتبت فعلياً في device_readings_history
+        // عبر writeDeviceReading، فاستدعاء fail هنا كان سيُعيد صفاً بات
+        // مسؤولية عامل آخر إلى RETRY/DEAD زوراً، رغم نجاح الكتابة الفعلية).
+        if (completeError || !completed) {
+          results.push({
+            rowId: row.id,
+            projectId: row.project_id,
+            ok: false,
+            error: completeError?.message || 'complete_telemetry_queue_row: lease لم يعد يطابق (استرجعه عامل آخر) رغم نجاح الكتابة',
+          });
+        } else {
+          results.push({ rowId: row.id, projectId: row.project_id, ok: true });
+          affectedProjectIds.add(row.project_id);
+        }
+      } else {
+        const { data: failed, error: failRpcError } = await supabaseAdmin.rpc('fail_telemetry_queue_row', {
+          p_row_id: row.id,
+          p_worker_id: workerId,
           p_error: writeResult.error,
           p_max_attempts: MAX_ATTEMPTS,
         });
-        results.push({ rowId: row.id, projectId: row.project_id, ok: false, error: writeResult.error });
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "دوال fail_* لا تتحقق من
+        // worker_id"): fail_telemetry_queue_row تُرجع الآن boolean —
+        // failRpcError/!failed لا يعني بالضرورة خطأً تقنياً، بل قد يعني
+        // أن عامل آخر بات يملك الصف (استرجعه بعد انتهاء lease هذا العامل)
+        // — لا حاجة لأي إجراء إضافي هنا، فقط الإبلاغ الصحيح في النتيجة.
+        results.push({
+          rowId: row.id,
+          projectId: row.project_id,
+          ok: false,
+          error: failRpcError || !failed ? `${writeResult.error} (lease لم يعد يطابق عند fail)` : writeResult.error,
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`telemetry-worker: writeDeviceReading threw for row ${row.id}:`, message);
-      await supabaseAdmin.rpc('fail_telemetry_queue_row', { p_row_id: row.id, p_error: message, p_max_attempts: MAX_ATTEMPTS });
+      await supabaseAdmin.rpc('fail_telemetry_queue_row', {
+        p_row_id: row.id,
+        p_worker_id: workerId,
+        p_error: message,
+        p_max_attempts: MAX_ATTEMPTS,
+      });
       results.push({ rowId: row.id, projectId: row.project_id, ok: false, error: message });
     }
   }

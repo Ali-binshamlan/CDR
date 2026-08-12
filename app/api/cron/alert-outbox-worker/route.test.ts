@@ -1,24 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// نموّه supabaseAdmin.rpc — يغطي مسار claim_alert_outbox_batch/create_alert_
-// atomic/close_alert_atomic/complete_alert_outbox_row/fail_alert_outbox_row
-// (القسم 6 من مراجعة خبير خارجي — Outbox: alert_id يُحفَظ فعلياً، نوايا
-// CLOSE تُعالَج، فشل complete لا يُهمَل بصمت).
+// نموّه supabaseAdmin.rpc — يغطي مسار claim_alert_outbox_batch/renew_alert_
+// outbox_lease/create_alert_atomic/close_alert_atomic/complete_alert_outbox_
+// row/fail_alert_outbox_row (القسم 6 من مراجعة خبير خارجي — Outbox: alert_id
+// يُحفَظ فعلياً، نوايا CLOSE تُعالَج، فشل complete لا يُهمَل بصمت. ومراجعة
+// كود خارجي لاحقة — "ملكية Lease غير آمنة في العمال": renew قبل كل صف،
+// fail_alert_outbox_row يشترط الآن worker_id ويُرجع boolean، وفشل complete
+// بعد نجاح create/close الفعلي لا يستدعي fail بعد الآن — راجع route.ts).
 let claimedRows: Array<Record<string, unknown>> = [];
 const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+let renewResult: { data: boolean | null; error: { message: string } | null } = { data: true, error: null };
 let createAlertResult: { data: string | null; error: { message: string } | null } = { data: 'alert-1', error: null };
 let closeAlertResult: { data: string | null; error: { message: string } | null } = { data: 'alert-1', error: null };
 let completeResult: { data: boolean | null; error: { message: string } | null } = { data: true, error: null };
+let failResult: { data: boolean | null; error: { message: string } | null } = { data: true, error: null };
 
 vi.mock('@/app/lib/supabaseAdmin', () => ({
   supabaseAdmin: {
     rpc: async (fn: string, args: Record<string, unknown>) => {
       rpcCalls.push({ fn, args });
       if (fn === 'claim_alert_outbox_batch') return { data: claimedRows, error: null };
+      if (fn === 'renew_alert_outbox_lease') return renewResult;
       if (fn === 'create_alert_atomic') return createAlertResult;
       if (fn === 'close_alert_atomic') return closeAlertResult;
       if (fn === 'complete_alert_outbox_row') return completeResult;
-      if (fn === 'fail_alert_outbox_row') return { data: null, error: null };
+      if (fn === 'fail_alert_outbox_row') return failResult;
       return { data: null, error: null };
     },
   },
@@ -56,9 +62,11 @@ describe('GET /api/cron/alert-outbox-worker', () => {
     process.env.ALERT_OUTBOX_CRON_SECRET = SECRET;
     claimedRows = [];
     rpcCalls.length = 0;
+    renewResult = { data: true, error: null };
     createAlertResult = { data: 'alert-1', error: null };
     closeAlertResult = { data: 'alert-1', error: null };
     completeResult = { data: true, error: null };
+    failResult = { data: true, error: null };
   });
 
   it('يرفض بلا سر مُعرَّف بالخادم', async () => {
@@ -110,10 +118,14 @@ describe('GET /api/cron/alert-outbox-worker', () => {
     expect(body.results[0]).toEqual({ id: 'row-1', ok: true, alertId: null });
   });
 
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "العامل يهمل بعض أخطاء تحديث
-  // PROCESSED"): complete_alert_outbox_row يرجع false (locked_by لم يعد
-  // يطابق — عامل آخر استرجع المهمة) يجب أن يُعامَل كفشل صريح، لا نجاحاً صامتاً.
-  it('complete_alert_outbox_row يرجع false → يُعامَل كفشل، يُستدعى fail_alert_outbox_row', async () => {
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+  // العمال"): complete_alert_outbox_row يرجع false يعني عامل آخر استرجع
+  // الصف بعد انتهاء lease هذا العامل — لكن create_alert_atomic نجح فعلياً
+  // قبل ذلك (التنبيه أُنشئ في قاعدة البيانات). النتيجة يجب أن تُعامَل كفشل
+  // في results، لكن fail_alert_outbox_row يجب ألا يُستدعى إطلاقاً (استدعاؤه
+  // كان سيُعيد صفاً بات مسؤولية عامل آخر إلى RETRY/DEAD زوراً رغم نجاح
+  // العملية الفعلية) — هذا هو الإصلاح الجوهري المطلوب صراحة في التقرير.
+  it('complete_alert_outbox_row يرجع false (بعد نجاح create فعلي) → فشل في النتيجة، لكن fail_alert_outbox_row لا يُستدعى إطلاقاً', async () => {
     completeResult = { data: false, error: null };
     claimedRows = [baseRow()];
     const { GET } = await import('./route');
@@ -122,10 +134,11 @@ describe('GET /api/cron/alert-outbox-worker', () => {
 
     expect(body.ok).toBe(false);
     expect(body.results[0].ok).toBe(false);
-    expect(rpcCalls.some((c) => c.fn === 'fail_alert_outbox_row')).toBe(true);
+    expect(body.results[0].alertId).toBe('alert-1');
+    expect(rpcCalls.some((c) => c.fn === 'fail_alert_outbox_row')).toBe(false);
   });
 
-  it('create_alert_atomic يفشل → fail_alert_outbox_row يُستدعى، لا complete', async () => {
+  it('create_alert_atomic يفشل (فشل معالجة حقيقي، لا مشكلة ملكية) → fail_alert_outbox_row يُستدعى بـp_worker_id، لا complete', async () => {
     createAlertResult = { data: null, error: { message: 'boom' } };
     claimedRows = [baseRow()];
     const { GET } = await import('./route');
@@ -133,7 +146,9 @@ describe('GET /api/cron/alert-outbox-worker', () => {
     const body = await res.json();
 
     expect(body.ok).toBe(false);
-    expect(rpcCalls.some((c) => c.fn === 'fail_alert_outbox_row')).toBe(true);
+    const failCall = rpcCalls.find((c) => c.fn === 'fail_alert_outbox_row');
+    expect(failCall).toBeDefined();
+    expect(failCall!.args.p_worker_id).toBe(body.workerId);
     expect(rpcCalls.some((c) => c.fn === 'complete_alert_outbox_row')).toBe(false);
   });
 
@@ -144,5 +159,48 @@ describe('GET /api/cron/alert-outbox-worker', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.claimed).toBe(0);
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "ملكية
+  // Lease غير آمنة في العمال"): renew_alert_outbox_lease يُستدعى قبل معالجة
+  // كل صف، وfalse منه يعني توقّف فوري بلا أي معالجة وبلا استدعاء fail.
+  describe('renew_alert_outbox_lease قبل كل صف (اختبار قبول صريح)', () => {
+    it('renew ناجح → يُستدعى بـp_worker_id/p_lease_seconds الصحيحين قبل create_alert_atomic', async () => {
+      claimedRows = [baseRow()];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const renewIndex = rpcCalls.findIndex((c) => c.fn === 'renew_alert_outbox_lease');
+      const createIndex = rpcCalls.findIndex((c) => c.fn === 'create_alert_atomic');
+      expect(renewIndex).toBeGreaterThanOrEqual(0);
+      expect(renewIndex).toBeLessThan(createIndex);
+      expect(rpcCalls[renewIndex].args.p_row_id).toBe('row-1');
+      expect(rpcCalls[renewIndex].args.p_lease_seconds).toBe(60);
+    });
+
+    it('renew يرجع false (عامل آخر استرجع الصف) → لا معالجة إطلاقاً، لا create/close/complete/fail', async () => {
+      renewResult = { data: false, error: null };
+      claimedRows = [baseRow()];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.results[0].ok).toBe(false);
+      expect(rpcCalls.some((c) => c.fn === 'create_alert_atomic')).toBe(false);
+      expect(rpcCalls.some((c) => c.fn === 'close_alert_atomic')).toBe(false);
+      expect(rpcCalls.some((c) => c.fn === 'complete_alert_outbox_row')).toBe(false);
+      expect(rpcCalls.some((c) => c.fn === 'fail_alert_outbox_row')).toBe(false);
+    });
+
+    it('renew يرجع خطأ DB → نفس معاملة false (توقّف فوري بلا معالجة)', async () => {
+      renewResult = { data: null, error: { message: 'connection lost' } };
+      claimedRows = [baseRow()];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.results[0].ok).toBe(false);
+      expect(rpcCalls.some((c) => c.fn === 'create_alert_atomic')).toBe(false);
+    });
   });
 });
