@@ -1653,21 +1653,21 @@ export async function computeDustComplianceResults(
         // حتى buildComplianceContext.
         let pm10Sustained: Pm10SustainedStatus | null = null;
         if (supabaseAdmin && r.activityGroupId && project?.id) {
+          // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات
+          // ينافس Outbox ويصنع قراءات PM10 وهمية"): كان الفرع 'onsite' هنا
+          // يعيد إدراج onsite_pm10 (حقل ثابت على project_dust_profiles، لا
+          // قراءة جديدة) في pm10_readings_history بوقت recorded_at جديد في كل
+          // مرة يُستدعى فيها evaluateProject() — أي دورة تقييم حية (ingest
+          // جهاز، إعادة محاولة مزوّد، تكة مجدول) عبر persistPm10Reading=true
+          // (evaluateProject.ts) تحوّل قياساً يدوياً واحداً حقيقياً إلى سلسلة
+          // زمنية تبدو مستمرة زوراً — بالضبط النمط الذي يبني عليه pm10ThresholdRule
+          // "مخالفة مستمرة" (RCRC-PM10-340-VIOLATION-011) خطأً. القياس اليدوي
+          // الحقيقي الآن يدخل حصراً عبر endpoint مستقل (POST /api/pm10-readings/
+          // manual) يحمل observed_at/operator_id/idempotency_key الخاصين به —
+          // لا كأثر جانبي لقراءة onsite_pm10 المعروضة فقط. فرع 'weather' أدناه
+          // غير مرتبط بهذا الخلل (جدول منفصل evidence_eligible=false) ويبقى كما هو.
           if (persistPm10Reading && preliminaryCtx.pm10UgM3 !== null) {
-            if (preliminaryCtx.pm10Source === 'onsite') {
-              // قراءة يدوية فعلية (onsite_pm10) — دليل ميداني حقيقي، تُسجَّل
-              // في pm10_readings_history كما هي دائماً.
-              try {
-                await supabaseAdmin.from('pm10_readings_history').insert({
-                  activity_group_id: r.activityGroupId,
-                  project_id: project.id,
-                  pm10_ug_m3: preliminaryCtx.pm10UgM3,
-                  source: 'manual',
-                });
-              } catch {
-                // فشل التسجيل لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
-              }
-            } else if (preliminaryCtx.pm10Source === 'weather') {
+            if (preliminaryCtx.pm10Source === 'weather') {
               // توقّع Open-Meteo — نموذج طقس عالمي بدقة ساعية، بلا محطة رصد
               // معتمدة ولا معايرة، ليس قياساً ميدانياً. يُسجَّل في جدول
               // منفصل تماماً (weather_forecasts، evidence_eligible=false

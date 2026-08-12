@@ -2,8 +2,27 @@
 // المسار: app/api/alerts/generate/route.ts
 //
 // مولّد التنبيهات — يُستدعى دورياً (عبر Cron، راجع vercel.json) ويفحص
-// كل أنشطة الغبار المجدولة، ويقرر متى يجب إنشاء كل نوع تنبيه، ويكتبه
+// كل أنشطة الغبار المجدولة، ويقرر متى يجب إنشاء تذكيرات/توقّعات، ويكتبها
 // فعلياً في قاعدة البيانات. نسخة DCR: غبار فقط، بلا حرارة أو رافعات.
+//
+// خطأ معماري حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات
+// ينافس Outbox ويصنع قراءات PM10 وهمية"): كان هذا الملف يُنشئ ويُغلق أيضاً
+// تنبيهات "الحالة الحيّة الآن" (SAFETY_BREACH/DUST/PM10_APPROACHING_LIMIT/
+// COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION) بمسار مستقل تماماً عن
+// decision_alert_outbox/persist_activity_decision_atomic — مساران غير
+// متزامنين يتنافسان على نفس صفوف alerts، بلا قفل ذرّي مشترك، وautoCloseResolvedAlerts
+// هنا كان يقدر يُغلق تنبيهاً فتحه Outbox للتو. القرار المعماري الآن:
+// **decision_alert_outbox/Reconciler هو المالك الوحيد لفتح وإغلاق كل
+// تنبيهات "الحالة الحيّة الآن"** — بلا استثناء، حتى لو لم يوجد له مقابل في
+// Outbox اليوم (DUST/PM10_APPROACHING_LIMIT الحيّتان تُركتا فراغاً معمارياً
+// صريحاً، لا مساراً منافساً مؤقتاً). هذا الملف الآن يقتصر حصراً على:
+//   1) تذكيرات BEFORE_* (زمنية بحتة، لا علاقة لها بأي قراءة حيّة)
+//   2) توقّعات FORECAST_WARNING/COMPLIANCE_ADVISORY (الساعة المسبِّبة لا تزال
+//      بالمستقبل ضمن نافذة النشاط — لا حالة حيّة فعلية الآن، فلا تنافس ممكن
+//      مع Outbox الذي يُنشئ فقط عند وقوع الحالة فعلياً).
+// كما حُذف منه إدراج onsite_pm10 في pm10_readings_history (كان يعيد نسخ قيمة
+// ثابتة بوقت جديد كل تشغيل، فيُنتج سلسلة زمنية وهمية) — القياس اليدوي الآن
+// يدخل حصراً عبر POST /api/pm10-readings/manual.
 //
 // ============================================================
 // قواعد ظهور كل نوع تنبيه (الإجابة المباشرة على: "متى تظهر؟")
@@ -21,21 +40,16 @@
 //   هذه الثلاثة "تذكيرات لمرة واحدة" لكل نشاط — تُنشأ مرة واحدة ولا
 //   تتكرر (نتحقق من عدم وجودها مسبقاً بغض النظر عن حالتها الحالية).
 //
-// تنبيهات "أثناء التنفيذ" (DURING) — فقط أثناء تنفيذ النشاط فعلياً
-// (الوقت الحالي بين وقت البداية ووقت النهاية المجدولين):
-//   • DUST          : نشاط غبار ونتيجة evaluateDustVisibilityWindow
-//                     الحيّة الآن ضمن نطاق "RED" وما فوق (score >= 65).
-//   • SAFETY_BREACH : نتيجة الغبار الحيّة تفعّل mandatoryStop = true
-//                     (تجاوز حد صارم لا يقبل تدرّجاً).
-//   • PM10_APPROACHING_LIMIT : تركيز PM10 المدموج بين 300-339 (يقترب من
-//                     حد المخالفة التنظيمي 340).
-//   • FORECAST_WARNING : أيٌّ من الشروط الثلاثة أعلاه، لكن الساعة
-//                     المسبِّبة (worst.time) لا تزال بالمستقبل ضمن نافذة
-//                     النشاط (isWorstRightNow=false، هامش 30 دقيقة) — أي
-//                     توقّع لا حالة حيّة فعلية الآن. نفس timing=DURING (لا
-//                     تزال ضمن نافذة تنفيذ النشاط)، لكن kind مختلف بنيوياً
-//                     حتى لا يظهر توقّع مستقبلي كأنه خطر قائم فعلاً هذه
-//                     اللحظة (بند 7 من مراجعة الخبير الخارجي).
+// تنبيهات "أثناء التنفيذ" (DURING) — فقط أثناء تنفيذ النشاط فعلياً، وفقط
+// حين تكون الساعة المسبِّبة (worst.time) لا تزال بالمستقبل ضمن نافذة النشاط
+// (isWorstRightNow=false، هامش 30 دقيقة) — أي توقّع لا حالة حيّة فعلية الآن:
+//   • FORECAST_WARNING  : mandatoryStop المتوقَّع=true، أو worst.score
+//                     المتوقَّع >= 65 (نطاق RED)، أو PM10 المتوقَّع 300-339.
+//   • COMPLIANCE_ADVISORY : قرار الامتثال المخزَّن = ALLOW_WITH_CONTROLS
+//                     (تنبيه استباقي قبل وقوع أي مخالفة فعلية).
+//   الحالة الحيّة الآن (isWorstRightNow=true) لا تُنشئ أي تنبيه من هذا
+//   الملف إطلاقاً — SAFETY_BREACH/COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION
+//   الحيّة من مسؤولية Outbox حصراً (راجع تعليق أعلى الملف).
 //   لتفادي الإغراق بتنبيهات مكررة: قبل إنشاء أي تنبيه DURING جديد،
 //   نتحقق أولاً من عدم وجود تنبيه بنفس (activity_source, activity_id,
 //   kind) في حالة غير مغلقة (state != CLOSED) مسبقاً.
@@ -171,20 +185,25 @@ async function alertExists(activitySource: string, activityId: string, kind: str
   return data.some((a: { state: string }) => a.state !== 'CLOSED');
 }
 
-// يُغلق تلقائياً أي تنبيه مفتوح من "أنواع القراءة الحية" (SAFETY_BREACH،
-// DUST، PM10_APPROACHING_LIMIT، COMPLIANCE_VIOLATION/RESTRICTION/ADVISORY)
-// إن لم يعد الشرط المسبب له قائماً في التقييم الحالي — طلب صريح من
-// المستخدم: بطاقة الامتثال كانت تعرض بانراً أحمر "تنبيه أمني نشط" رغم أن
-// القراءة الحية عادت آمنة (احتراز فقط)، لأن هذه الأنواع لم تكن تُغلق إلا
-// يدوياً من صفحة التنبيهات. لا يشمل BEFORE_* عمداً — تلك تذكيرات لمرة واحدة
-// بطبيعتها، لا حالة "تحسّنت" لها.
+// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات ينافس
+// Outbox ويصنع قراءات PM10 وهمية"): كانت هذه القائمة تشمل أيضاً SAFETY_BREACH/
+// DUST/PM10_APPROACHING_LIMIT/COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION —
+// أنواع "حالة حيّة الآن" (isWorstRightNow=true)، لا تذكيرات ولا توقعات.
+// autoCloseResolvedAlerts كانت بذلك تقدر تُغلق تنبيهاً من هذه الأنواع حتى لو
+// كان مملوكاً فعلياً لـdecision_alert_outbox (المالك الذري الوحيد لفتح/إغلاق
+// SAFETY_BREACH/COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION عبر create_alert_
+// atomic/close_alert_atomic) — مساران مستقلان يتنافسان على نفس الصف بلا أي
+// قفل مشترك بينهما. القرار المعماري الآن: Outbox/Reconciler هو المالك الوحيد
+// لفتح/إغلاق كل تنبيهات "الحالة الحيّة الآن" بلا استثناء (يشمل DUST/
+// PM10_APPROACHING_LIMIT رغم عدم وجود مقابل Outbox لهما اليوم — لا تُنشآن هنا
+// بعد الآن إطلاقاً، تُترك فراغاً معمارياً صريحاً بانتظار توسيع Outbox لاحقاً،
+// لا مسار منافس مؤقت). هذا المسار القديم الآن يملك حصرياً FORECAST_WARNING
+// (توقّع مستقبلي ضمن نافذة النشاط) وCOMPLIANCE_ADVISORY (تنبيه استباقي قبل
+// وقوع مخالفة) — كلاهما بلا مقابل في Outbox أصلاً (Outbox يُنشئ فقط عند وقوع
+// الحالة فعلياً، لا عند توقّعها/الاقتراب منها)، فلا تنافس ممكن عليهما. لا
+// يشمل BEFORE_* عمداً — تذكيرات لمرة واحدة بطبيعتها، لا حالة "تحسّنت" لها.
 const LIVE_CONDITION_ALERT_KINDS = [
-  'SAFETY_BREACH',
-  'DUST',
-  'PM10_APPROACHING_LIMIT',
   'FORECAST_WARNING',
-  'COMPLIANCE_VIOLATION',
-  'COMPLIANCE_RESTRICTION',
   'COMPLIANCE_ADVISORY',
 ] as const;
 
@@ -444,25 +463,15 @@ export async function checkDustActivities(projectIds?: string[]) {
       // نفسها. نفس مبدأ fetchLatestFinalDecisions: قراءة واحدة من اللقطة
       // المخزَّنة بدل حساب مستقل بمعزل.
       //
-      // القراءة اليدوية (onsite_pm10) لا تزال تُسجَّل هنا فعلياً (تأثير جانبي
-      // مطلوب بصرف النظر عن مصدر compliance المعروض) — منفصلة تماماً عن قراءة
-      // compliance المخزَّنة أدناه.
-      if (profile.activity_group_id && profile.project_id) {
-        const onsitePm10 = profile.onsite_pm10;
-        if (typeof onsitePm10 === 'number') {
-          try {
-            await supabaseAdmin.from('pm10_readings_history').insert({
-              activity_group_id: profile.activity_group_id,
-              project_id: profile.project_id,
-              pm10_ug_m3: onsitePm10,
-              source: 'manual',
-            });
-          } catch {
-            // فشل التسجيل لا يُسقط التقييم.
-          }
-        }
-      }
-
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات
+      // ينافس Outbox ويصنع قراءات PM10 وهمية"): كان هنا إدراج onsite_pm10
+      // (حقل ثابت على project_dust_profiles) في pm10_readings_history بوقت
+      // جديد في كل تشغيل — يحوّل قياساً يدوياً واحداً إلى سلسلة تبدو مستمرة
+      // زوراً (نفس الخلل بالضبط الذي كان في computeDustComplianceResults،
+      // راجع تعليقه في dustEvaluation.ts). حُذف كلياً؛ القياس اليدوي الآن
+      // يدخل حصراً عبر POST /api/pm10-readings/manual (observed_at/
+      // operator_id/idempotency_key)، لا كأثر جانبي هنا.
+      //
       // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — التقرير النهائي، القسم 4:
       // "checkDustActivities يعيد Open-Meteo إلى دورة القرار"): كان fallback
       // محلي هنا (evaluateDustCompliance/decideFinal مبسَّط مبني على worst
@@ -513,50 +522,36 @@ export async function checkDustActivities(projectIds?: string[]) {
         decisionLabelAr: storedDecision.decision_label_ar as string,
       };
 
-      // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — بند 7: "أسوأ ساعة مستقبلية
-      // قد تنتج تنبيهًا حيًا بدل FORECAST_WARNING"): worst قد يمثّل ساعة لا
-      // تزال بالمستقبل ضمن نافذة النشاط (راجع تعليق isWorstRightNow أعلاه) —
-      // من قبل كان النوع نفسه (SAFETY_BREACH/DUST) يُطلَق بصرف النظر، فيصعب
-      // على المستهلك (واجهة التنبيهات، الإغلاق التلقائي) تمييز "خطر قائم
-      // الآن فعلاً" عن "توقّع لساعة قادمة ضمن النافذة". النوعان أدناه
-      // (SAFETY_BREACH_KIND/DUST_KIND) يتحوّلان إلى FORECAST_WARNING حين
-      // isWorstRightNow=false فقط — timing يبقى DURING (لا تزال ضمن نافذة
-      // تنفيذ النشاط الفعلية)، لكن kind يميّز الحالتين بنيوياً.
-      const safetyBreachKind = isWorstRightNow ? 'SAFETY_BREACH' : 'FORECAST_WARNING';
-      const dustKind = isWorstRightNow ? 'DUST' : 'FORECAST_WARNING';
-
-      // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 6 (متابعة): "مساران
-      // متنافسان لإنشاء التنبيه: Outbox جديد ذرّي مع القرار، ومسار مباشر
-      // قديم عبر checkDustActivities يعيد استدعاء Open-Meteo"): SAFETY_BREACH
-      // الحيّة (isWorstRightNow=true فقط — لا FORECAST_WARNING، فرع مختلف
-      // تماماً بلا مقابل في Outbox) تُنشَأ الآن ذرّياً مع القرار نفسه عبر
-      // decision_alert_outbox/persist_activity_decision_atomic (202608040012/
-      // 202608040026) — بضمان idempotency حقيقي (unique index) وقفل عبر
-      // create_alert_atomic، لا alertExists/insertAlert المنفصلين هنا (سباق
-      // فعلي، بلا قفل ذرّي). إنشاؤها هنا أيضاً كان يعني مساراً منافساً قد
-      // ينتج نص/توقيت مختلفَين طفيفاً عن نفس الحالة بالضبط. لا تغيير على
-      // FORECAST_WARNING (توقّع مستقبلي، لا مقابل له في Outbox إطلاقاً).
-      if (finalDecision.mandatoryStop && !isWorstRightNow) {
-        if (!(await alertExists('dust', profile.id, safetyBreachKind, true))) {
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات
+      // ينافس Outbox ويصنع قراءات PM10 وهمية"): كانت safetyBreachKind/dustKind/
+      // pm10ApproachingKind تتحوّل إلى SAFETY_BREACH/DUST/PM10_APPROACHING_LIMIT
+      // (لا FORECAST_WARNING) حين isWorstRightNow=true — أي "حالة حيّة الآن"،
+      // لا توقّع. فرع mandatoryStop كان بالفعل مقيَّداً بـ`!isWorstRightNow`
+      // (فلا SAFETY_BREACH حيّة تُنشأ هنا عملياً)، لكن فرع DUST (`worst.score
+      // >= 65`) وفرع PM10_APPROACHING_LIMIT أدناه كانا بلا هذا القيد إطلاقاً —
+      // ينشئان تنبيهاً حيّاً فعلياً بمعزل عن Outbox (السباق المذكور في تعليق
+      // LIVE_CONDITION_ALERT_KINDS أعلاه). القرار المعماري: هذا المسار الآن
+      // يُنشئ FORECAST_WARNING فقط (توقّع ضمن نافذة النشاط) حين isWorstRightNow
+      // =false؛ لا تنبيه حيّ الآن مهما كانت شدة worst.score/pm10Value — لا
+      // مقابل في Outbox لـDUST/PM10_APPROACHING_LIMIT اليوم، فتُترك فراغاً
+      // معمارياً صريحاً بدل مسار منافس مؤقت (راجع توثيق Outbox الكامل هناك).
+      if (isWorstRightNow) {
+        // الحالة حيّة الآن فعلاً — Outbox/Reconciler وحده يملك فتح/إغلاق
+        // SAFETY_BREACH لهذه اللحظة (عبر persist_activity_decision_atomic
+        // المُستدعاة من نفس دورة evaluateProject/evaluate). DUST/
+        // PM10_APPROACHING_LIMIT الحيّة لا تُنشآن هنا بعد الآن إطلاقاً.
+      } else if (finalDecision.mandatoryStop || worst.score >= 65) {
+        if (!(await alertExists('dust', profile.id, 'FORECAST_WARNING', true))) {
+          const isMandatory = finalDecision.mandatoryStop;
           await insertAlert({
             projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
-            timing: 'DURING', kind: safetyBreachKind,
-            message: `تجاوز حد صارم ${liveTimingPhraseAr} لنشاط "${label}" — إيقاف إلزامي.`,
-            metricLabel: 'مؤشر الرؤية/الغبار', metricActual: `${worst.score}/100`, metricThreshold: 'إيقاف إلزامي',
-            recommendedAction: finalDecision.decisionLabelAr,
-          });
-        }
-      } else if (!finalDecision.mandatoryStop && worst.score >= 65) {
-        // نطاق "65 فأكثر" مطابق حرفياً لبداية نطاق RED في RISK_ZONES
-        // المستخدم بنفس القيم داخل DustWidgetCard (65-84 = RED، 85-100 =
-        // DARK_RED)، فيغطي "RED وما فوق" تماماً كما هو موصوف أعلى الملف.
-        if (!(await alertExists('dust', profile.id, dustKind, true))) {
-          await insertAlert({
-            projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
-            timing: 'DURING', kind: dustKind,
-            message: `انخفاض حاد في الرؤية ${liveTimingPhraseAr} لنشاط "${label}".`,
-            metricLabel: 'مؤشر الرؤية/الغبار', metricActual: `${worst.score}/100`, metricThreshold: '65/100 (تقييد شديد)',
-            recommendedAction: worst.decisionLabelAr,
+            timing: 'DURING', kind: 'FORECAST_WARNING',
+            message: isMandatory
+              ? `توقّع تجاوز حد صارم ${liveTimingPhraseAr} لنشاط "${label}" — إيقاف إلزامي متوقَّع.`
+              : `توقّع انخفاض حاد في الرؤية ${liveTimingPhraseAr} لنشاط "${label}".`,
+            metricLabel: 'مؤشر الرؤية/الغبار', metricActual: `${worst.score}/100`,
+            metricThreshold: isMandatory ? 'إيقاف إلزامي' : '65/100 (تقييد شديد)',
+            recommendedAction: isMandatory ? finalDecision.decisionLabelAr : worst.decisionLabelAr,
           });
         }
       }
@@ -577,16 +572,17 @@ export async function checkDustActivities(projectIds?: string[]) {
       // يُقيَّم على تقدير طقس تقديري مختلف تماماً عن قراءة الجهاز الحقيقية
       // التي يعتمدها كل قرار آخر (DVI/الامتثال/بطاقة الواجهة) لنفس اللحظة.
       const pm10Value = worst.mergedReading.pm10;
-      // نفس منطق FORECAST_WARNING أعلاه — راجع تعليق safetyBreachKind/dustKind.
-      const pm10ApproachingKind = isWorstRightNow ? 'PM10_APPROACHING_LIMIT' : 'FORECAST_WARNING';
-      if (pm10Value !== null && pm10Value !== undefined && pm10Value >= 300 && pm10Value < 340) {
-        if (!(await alertExists('dust', profile.id, pm10ApproachingKind, true))) {
+      const pm10Approaching = pm10Value !== null && pm10Value !== undefined && pm10Value >= 300 && pm10Value < 340;
+      // راجع تعليق isWorstRightNow أعلاه — لا PM10_APPROACHING_LIMIT حيّة
+      // تُنشأ هنا بعد الآن، فقط FORECAST_WARNING حين لا تزال الذروة مستقبلية.
+      if (pm10Approaching && !isWorstRightNow) {
+        if (!(await alertExists('dust', profile.id, 'FORECAST_WARNING', true))) {
           await insertAlert({
             projectId: profile.project_id, activitySource: 'dust', activityId: profile.id,
-            timing: 'DURING', kind: pm10ApproachingKind,
-            message: `تركيز الغبار (PM10) يقترب من الحد التنظيمي ${liveTimingPhraseAr} لنشاط "${label}" — إجراء وقائي فوري يجنّبك المخالفة.`,
+            timing: 'DURING', kind: 'FORECAST_WARNING',
+            message: `توقّع اقتراب تركيز الغبار (PM10) من الحد التنظيمي ${liveTimingPhraseAr} لنشاط "${label}" — إجراء وقائي يجنّبك المخالفة.`,
             metricLabel: 'PM10', metricActual: `${pm10Value} ميكروجرام/م³`, metricThreshold: '340 ميكروجرام/م³ (حد المخالفة)',
-            recommendedAction: 'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة.',
+            recommendedAction: 'فعّل التثبيط المعزز (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة عند اقتراب موعد النشاط.',
           });
         }
       }
@@ -616,29 +612,29 @@ export async function checkDustActivities(projectIds?: string[]) {
           ? 'COMPLIANCE_ADVISORY'
           : null;
 
-      // يُغلق تلقائياً أي تنبيه من الأنواع الحيّة أعلاه لم يعد شرطه قائماً في
-      // هذا التقييم (راجع تعليق autoCloseResolvedAlerts) — يمنع بقاء بانر
-      // "تنبيه أمني نشط" أحمر معروضاً في بطاقة الامتثال بعد أن تعود القراءة
-      // الحية لحالة آمنة/احتراز فقط.
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات
+      // ينافس Outbox"): stillActiveKinds/autoCloseResolvedAlerts كانا يتتبعان
+      // أيضاً SAFETY_BREACH/DUST/PM10_APPROACHING_LIMIT/COMPLIANCE_VIOLATION/
+      // COMPLIANCE_RESTRICTION — أنواع لم يعد هذا المسار يُنشئها (راجع تعليق
+      // isWorstRightNow أعلاه)، وبعضها (VIOLATION/RESTRICTION) مملوك ذرّياً
+      // لـOutbox. الآن نتتبع فقط ما يُنشئه هذا المسار فعلياً: FORECAST_WARNING
+      // وCOMPLIANCE_ADVISORY — نفس قائمة LIVE_CONDITION_ALERT_KINDS بالضبط،
+      // فـautoCloseResolvedAlerts لا يقدر إطلاقاً يلمس صفاً مملوكاً لـOutbox
+      // (kindsToClose مُشتقة من نفس القائمة المُقيَّدة).
       const stillActiveKinds = new Set<string>();
-      if (finalDecision.mandatoryStop) stillActiveKinds.add(safetyBreachKind);
-      if (worst.score >= 65) stillActiveKinds.add(dustKind);
-      if (pm10Value !== null && pm10Value !== undefined && pm10Value >= 300 && pm10Value < 340) {
-        stillActiveKinds.add(pm10ApproachingKind);
+      if (!isWorstRightNow && (finalDecision.mandatoryStop || worst.score >= 65 || pm10Approaching)) {
+        stillActiveKinds.add('FORECAST_WARNING');
       }
-      if (complianceAlertKind) stillActiveKinds.add(complianceAlertKind);
+      if (complianceAlertKind === 'COMPLIANCE_ADVISORY') stillActiveKinds.add('COMPLIANCE_ADVISORY');
       await autoCloseResolvedAlerts('dust', profile.id, stillActiveKinds);
 
-      // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 6 (متابعة): "مساران
-      // متنافسان لإنشاء التنبيه"): COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION
-      // تُنشآن الآن ذرّياً مع القرار عبر decision_alert_outbox (نفس منطق
-      // SAFETY_BREACH أعلاه بالضبط — راجع تعليقه) — لا insertAlert المنفصل
-      // هنا لهذين النوعين تحديداً. COMPLIANCE_ADVISORY يبقى بلا تغيير (تنبيه
-      // استباقي، لا مقابل له في Outbox — Outbox يُنشئ فقط عند SAFETY_BREACH/
-      // COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION الفعلية، لا الاحترازية).
-      // stillActiveKinds أعلاه يبقى يتضمن complianceAlertKind بصرف النظر —
-      // ضروري لمنع autoCloseResolvedAlerts من إغلاق تنبيه أنشأه Outbox خطأً
-      // لمجرد أن هذا المولّد لم يعد "ينشئه" بنفسه.
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 6 (متابعة)، وتقرير
+      // "المسار القديم ينافس Outbox"): COMPLIANCE_VIOLATION/COMPLIANCE_RESTRICTION
+      // تُنشآن وتُغلَقان الآن حصرياً عبر decision_alert_outbox (نفس منطق
+      // SAFETY_BREACH أعلاه بالضبط) — لا insertAlert ولا autoCloseResolvedAlerts
+      // هنا لهذين النوعين إطلاقاً بعد الآن (حذفا من LIVE_CONDITION_ALERT_KINDS).
+      // COMPLIANCE_ADVISORY وحده يبقى من مسؤولية هذا المسار (تنبيه استباقي، لا
+      // مقابل له في Outbox أصلاً).
       if (complianceAlertKind === 'COMPLIANCE_ADVISORY') {
         if (!(await alertExists('dust', profile.id, complianceAlertKind, true))) {
           // نص القاعدة المخالفة الفعلي مباشرة (shortReasonAr، مثال: "مخالفة

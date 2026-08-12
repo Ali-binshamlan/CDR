@@ -4,12 +4,17 @@ import type { DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // =====================================================================
-// اختبار قبول: فتح صفحة GET (لا يمرر persistPm10Reading) يجب ألا يكتب أي
-// عينة جديدة في pm10_readings_history — راجع ملاحظة مراجعة خارجية: كان
-// computeDustComplianceResults يُدرِج قراءة PM10 كأثر جانبي دائم بصرف
-// النظر عن استدعاء GET أم POST، فيُطيل مدة إثبات "استمرار مخالفة" لمجرد
-// تحديث صفحة. الآن الإدراج مشروط صراحة بمعامل persistPm10Reading (السادس)
-// الذي لا يُمرِّره true إلا POST /api/projects/[projectId]/evaluate.
+// اختبار قبول (مراجعة كود خارجي — "المسار القديم للتنبيهات ينافس Outbox
+// ويصنع قراءات PM10 وهمية"): computeDustComplianceResults كان يُدرِج قراءة
+// onsite_pm10 في pm10_readings_history كأثر جانبي في كل دورة evaluateProject
+// حية (device ingest/provider-pull/scheduler، لا فقط ضغطة مستخدم POST
+// صريحة) — يحوّل قياساً يدوياً واحداً حقيقياً إلى سلسلة تبدو مستمرة زوراً.
+// الإصلاح: فرع 'onsite' حُذف بالكامل من هذه الدالة. القياس اليدوي الآن
+// يدخل حصراً عبر POST /api/pm10-readings/manual (راجع اختباره المستقل).
+// الآن لا يوجد أي مسار — بأي قيمة لـpersistPm10Reading أو pm10Source — يكتب
+// في pm10_readings_history من داخل هذه الدالة على الإطلاق. فرع 'weather'
+// (توقّع Open-Meteo → weather_forecasts، evidence_eligible=false) غير
+// مرتبط بهذا الخلل ويبقى بسلوكه الأصلي بلا تغيير.
 // =====================================================================
 
 const baseRow = {
@@ -148,44 +153,35 @@ function mockSupabase(): SupabaseClient & MockSupabase {
   return mock as unknown as SupabaseClient & MockSupabase;
 }
 
-describe('computeDustComplianceResults — GET لا يكتب في pm10_readings_history', () => {
+describe('computeDustComplianceResults — لا يكتب في pm10_readings_history مهما كانت الحالة', () => {
   it('بلا تمرير persistPm10Reading (مسار GET)، لا يُستدعى insert على pm10_readings_history', async () => {
     const supabase = mockSupabase();
     await computeDustComplianceResults([baseRow], project, [dustResult()], [], supabase);
     expect(supabase._insertedTables).not.toContain('pm10_readings_history');
   });
 
-  it('بتمرير persistPm10Reading=false صراحة (نفس افتراضي GET)، لا كتابة أيضاً', async () => {
+  it('بتمرير persistPm10Reading=false صراحة، لا كتابة أيضاً', async () => {
     const supabase = mockSupabase();
     await computeDustComplianceResults([baseRow], project, [dustResult()], [], supabase, false);
     expect(supabase._insertedTables).not.toContain('pm10_readings_history');
   });
 
-  it('بتمرير persistPm10Reading=true (مسار POST /evaluate الصريح)، يُستدعى insert على pm10_readings_history', async () => {
+  it('بتمرير persistPm10Reading=true ومصدر onsite (المسار الذي كان يكتب سابقاً)، لا كتابة إطلاقاً بعد الإصلاح', async () => {
     const supabase = mockSupabase();
-    await computeDustComplianceResults([baseRow], project, [dustResult()], [], supabase, true);
-    expect(supabase._insertedTables).toContain('pm10_readings_history');
+    await computeDustComplianceResults([baseRow], project, [dustResult('onsite')], [], supabase, true);
+    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
   });
 
-  it('استدعاءات GET المتكررة (10 مرات) لا تراكم أي كتابة في السجل التاريخي', async () => {
+  it('اختبار القبول الصريح: استدعاء evaluateProject-like (persistPm10Reading=true) عشر مرات متتالية لا يزيد عدد صفوف pm10_readings_history إطلاقاً', async () => {
     const supabase = mockSupabase();
     for (let i = 0; i < 10; i++) {
-      await computeDustComplianceResults([baseRow], project, [dustResult()], [], supabase);
+      await computeDustComplianceResults([baseRow], project, [dustResult('onsite')], [], supabase, true);
     }
-    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
+    expect(supabase._inserts.filter((ins) => ins.table === 'pm10_readings_history')).toHaveLength(0);
   });
 });
 
-describe('computeDustComplianceResults — فصل توقّع Open-Meteo عن سجل الأدلة الميداني', () => {
-  it('قراءة onsite (يدوية) تُدرَج في pm10_readings_history بمصدر manual', async () => {
-    const supabase = mockSupabase();
-    await computeDustComplianceResults([baseRow], project, [dustResult('onsite')], [], supabase, true);
-    const historyInsert = supabase._inserts.find((i) => i.table === 'pm10_readings_history');
-    expect(historyInsert).toBeDefined();
-    expect(historyInsert?.payload).toMatchObject({ source: 'manual', pm10_ug_m3: 310 });
-    expect(supabase._insertedTables).not.toContain('weather_forecasts');
-  });
-
+describe('computeDustComplianceResults — توقّع Open-Meteo (weather_forecasts) يبقى بلا تغيير', () => {
   it('توقّع open-meteo (weather) يُدرَج في weather_forecasts بـ evidence_eligible=false، لا في pm10_readings_history إطلاقاً', async () => {
     const supabase = mockSupabase();
     await computeDustComplianceResults([baseRow], project, [dustResult('weather')], [], supabase, true);
