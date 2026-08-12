@@ -45,6 +45,17 @@ export interface NormalizedReading {
   // حقل موجود هنا لكن غائب من fields يستخدم observedAtIso العام كـfallback
   // (راجع resolveFieldTimestamps في deviceReadingWriter.ts).
   fields?: Partial<Record<MeasurementField, NormalizedMetricPoint>>;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مفتاح منع التكرار قابل
+  // للتصادم"): معرّف حدث حقيقي من المصدر (إن وفّرته منصة المزوّد) — provider-
+  // pull/route.ts يبنيه في provider_event_key بدل الاعتماد فقط على
+  // observedAtIso (الذي يتصادم بين قراءة أصلية وتصحيح/حقل جديد وصل بنفس
+  // الطابع الزمني بالضبط). اختياري: ThingsBoard (values/timeseries) لا
+  // يُرجع معرّف حدث لكل نقطة، فيبقى undefined هنا — route.ts يسقط حينها إلى
+  // hash قانوني للحمولة (راجع buildProviderEventKey في route.ts). أي
+  // Connector مستقبلي تدعم منصته معرّف حدث حقيقي (مثال: Kafka offset،
+  // event UUID من API) يملأ هذا الحقل مباشرة.
+  vendorEventId?: string;
 }
 
 export interface VendorStation {

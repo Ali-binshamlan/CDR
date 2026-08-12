@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const rpcResponses: Record<string, unknown> = {};
 const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 const updateCalls: Array<{ table: string; values: Record<string, unknown> }> = [];
+const upsertCalls: Array<{ table: string; rows: Record<string, unknown>[]; options: Record<string, unknown> }> = [];
 let runLockShouldFail = false;
 let queueInsertError: { message: string } | null = null;
 let queueInsertedIds: { id: string }[] = [];
@@ -52,10 +53,17 @@ vi.mock('@/app/lib/supabaseAdmin', () => ({
         runLockShouldFail
           ? { data: null, error: { message: 'duplicate key value violates unique constraint', code: '23505' } }
           : { data: null, error: null },
-      upsert: () => ({
-        select: async () =>
-          queueInsertError ? { data: null, error: queueInsertError } : { data: queueInsertedIds, error: null },
-      }),
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مفتاح منع التكرار قابل
+      // للتصادم"): يلتقط الصفوف الفعلية وخيارات onConflict الممرَّرة —
+      // يختبر أن route.ts يستخدم الآن (connection_id, provider_event_key)
+      // بدل idempotency_key وحده، وأن provider_event_key يُبنى صحيحاً.
+      upsert: (rows: Record<string, unknown>[], options: Record<string, unknown>) => {
+        upsertCalls.push({ table: 'telemetry_ingestion_queue', rows, options });
+        return {
+          select: async () =>
+            queueInsertError ? { data: null, error: queueInsertError } : { data: queueInsertedIds, error: null },
+        };
+      },
     }),
   },
 }));
@@ -120,6 +128,7 @@ describe('GET /api/cron/provider-pull', () => {
     process.env.PROVIDER_PULL_CRON_SECRET = SECRET;
     rpcCalls.length = 0;
     updateCalls.length = 0;
+    upsertCalls.length = 0;
     fetchLatestReadingMock.mockReset();
     fetchReadingsSinceMock.mockReset();
     delete rpcResponses['list_active_provider_connections'];
@@ -444,6 +453,120 @@ describe('GET /api/cron/provider-pull', () => {
       expect(fetchReadingsSinceMock.mock.calls.length).toBeGreaterThanOrEqual(3);
       const lastUpdate = findConnectionUpdate();
       expect(lastUpdate.last_pull_success).toBe(true);
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "مفتاح منع
+  // التكرار قابل للتصادم"): الفريد الفعلي الآن (connection_id, provider_
+  // event_key)، وprovider_event_key يُبنى من vendorEventId الحقيقي إن توفر،
+  // وإلا observedAtIso + hash قانوني للحمولة كاملة — تصحيح لاحق بنفس
+  // observedAtIso يُنتج مفتاحاً مختلفاً بدل أن يُرفَض كتكرار صامت.
+  describe('provider_event_key يمنع تصادم المفتاح القديم (اختبار قبول صريح)', () => {
+    it('upsert يستخدم onConflict=connection_id,provider_event_key بدل idempotency_key وحده', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      fetchReadingsSinceMock.mockResolvedValue(page([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }], Date.now()));
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      expect(upsertCalls).toHaveLength(1);
+      expect(upsertCalls[0].options.onConflict).toBe('connection_id,provider_event_key');
+      expect(upsertCalls[0].options.ignoreDuplicates).toBe(true);
+      const row = upsertCalls[0].rows[0];
+      expect(row.provider_event_key).toBeTruthy();
+      // idempotency_key يبقى مُشتقّاً من connection_id:provider_event_key —
+      // فريد عالمياً بذاته حتى بلا الفهرس الفريد المستقل السابق.
+      expect(row.idempotency_key).toBe(`${row.connection_id}:${row.provider_event_key}`);
+    });
+
+    it('vendorEventId موجود في القراءة → يُستخدَم مباشرة كـprovider_event_key (لا hash)', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      fetchReadingsSinceMock.mockResolvedValue(
+        page([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340, vendorEventId: 'tb-event-abc123' }], Date.now())
+      );
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      expect(upsertCalls[0].rows[0].provider_event_key).toBe('tb-event-abc123');
+    });
+
+    it('لا vendorEventId (حالة ThingsBoard الفعلية) → provider_event_key يُشتَق من observedAtIso + hash الحمولة', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      fetchReadingsSinceMock.mockResolvedValue(page([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }], Date.now()));
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const key = upsertCalls[0].rows[0].provider_event_key as string;
+      const prefix = '2026-01-01T00:00:00.000Z:';
+      expect(key.startsWith(prefix)).toBe(true);
+      // جزء الـhash (بعد observedAtIso الكامل — يحتوي هو نفسه ':' فلا يصلح
+      // split(':') البسيط) طوله 64 (sha256 hex) — تأكيد استخدام hash فعلي
+      // لا نص فارغ أو placeholder.
+      expect(key.slice(prefix.length)).toHaveLength(64);
+    });
+
+    it('قراءتان بنفس observedAtIso لكن قيمة PM10 مختلفة (تصحيح فعلي) → provider_event_key مختلف لكل منهما، لا تصادم', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      fetchReadingsSinceMock.mockResolvedValue(
+        page(
+          [
+            { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 },
+            { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 355 }, // تصحيح لاحق لنفس اللحظة
+          ],
+          Date.now()
+        )
+      );
+      queueInsertedIds = [{ id: 'q1' }, { id: 'q2' }];
+
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      const keys = upsertCalls[0].rows.map((r) => r.provider_event_key);
+      expect(new Set(keys).size).toBe(2);
+      // كلتا القراءتين وصلتا لدفعة الإدراج (لم تُستبعَد أي منهما داخل
+      // route.ts نفسه — الفهرس الفريد الجديد في قاعدة البيانات الفعلية هو
+      // ما يقرر القبول/الرفض، لا كود route.ts).
+      expect(upsertCalls[0].rows).toHaveLength(2);
+      expect(body.results[0].queued).toBe(2);
+    });
+
+    it('قراءتان متطابقتان تماماً (إعادة إرسال حقيقية) → نفس provider_event_key، يُترَك للفهرس الفريد ليرفض التكرار', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      const identicalReading = { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 };
+      fetchReadingsSinceMock.mockResolvedValue(page([identicalReading, { ...identicalReading }], Date.now()));
+      queueInsertedIds = [{ id: 'q1' }]; // الفهرس الفريد الفعلي يرفض الثانية
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const keys = upsertCalls[0].rows.map((r) => r.provider_event_key);
+      expect(keys[0]).toBe(keys[1]);
+    });
+
+    it('نفس provider_event_key عبر اتصالين مختلفين → مسموح (الفريد مُركَّب مع connection_id، لا عالمي)', async () => {
+      const rows = [connectionRow({ id: 'conn-a', project_id: 'project-a' }), connectionRow({ id: 'conn-b', project_id: 'project-b' })];
+      rpcResponses['list_active_provider_connections'] = { data: rows, error: null };
+      fetchReadingsSinceMock.mockResolvedValue(page([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }], Date.now()));
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      expect(upsertCalls).toHaveLength(2);
+      const keyA = upsertCalls.find((c) => c.rows[0].connection_id === 'conn-a')?.rows[0].provider_event_key;
+      const keyB = upsertCalls.find((c) => c.rows[0].connection_id === 'conn-b')?.rows[0].provider_event_key;
+      expect(keyA).toBe(keyB);
+      // idempotency_key المُشتقّ يبقى مختلفاً فعلياً رغم تطابق provider_event_key
+      // (يتضمن connection_id) — لا تصادم فعلي حتى على العمود التوافقي القديم.
+      const idA = upsertCalls.find((c) => c.rows[0].connection_id === 'conn-a')?.rows[0].idempotency_key;
+      const idB = upsertCalls.find((c) => c.rows[0].connection_id === 'conn-b')?.rows[0].idempotency_key;
+      expect(idA).not.toBe(idB);
     });
   });
 

@@ -1,9 +1,38 @@
 import { NextResponse } from 'next/server';
+import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { getConnector } from '@/app/lib/providers/registry';
 import { decryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
 import type { NormalizedReading } from '@/app/lib/providers/types';
+
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مفتاح منع التكرار قابل للتصادم"):
+// راجع تعليق migration 202608110016 الكامل. provider_event_key يُبنى من
+// vendorEventId الحقيقي إن وفّره الـConnector، وإلا observedAtIso:hash قانوني
+// للحمولة كاملة — تصحيح لاحق أو حقل جديد بنفس observedAtIso بالضبط ينتج
+// hash مختلفاً فيُقبَل كصف جديد بدل أن يُرفَض كتكرار صامت. نفس أسلوب
+// sortedStringify في computeInputSnapshotHash (dustEvaluation.ts) — مفاتيح
+// الكائنات مرتَّبة أبجدياً قبل التجزئة حتى لا يتغيّر الـhash لمجرد اختلاف
+// ترتيب الحقول بين استدعاءين لنفس البيانات فعلياً.
+function canonicalStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) => {
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      return Object.keys(val)
+        .sort()
+        .reduce((acc: Record<string, unknown>, k) => {
+          acc[k] = (val as Record<string, unknown>)[k];
+          return acc;
+        }, {});
+    }
+    return val;
+  });
+}
+
+function buildProviderEventKey(reading: NormalizedReading): string {
+  if (reading.vendorEventId) return reading.vendorEventId;
+  const payloadHash = createHash('sha256').update(canonicalStringify(reading)).digest('hex');
+  return `${reading.observedAtIso}:${payloadHash}`;
+}
 
 // حد أقصى 60 ثانية لتنفيذ الدالة كاملةً (خطة Vercel Hobby تسمح بحد أقصى
 // 60s على الدوال المحدَّدة صراحة، بدل الافتراضي 10s). بعد إعادة التصميم
@@ -294,32 +323,49 @@ export async function GET(request: Request) {
       // ===================================================================
       // النقطة الجوهرية من إعادة التصميم: بدل استدعاء writeDeviceReading
       // (RPC ثقيلة، ~20 عملية DB) لكل قراءة تسلسلياً هنا، نبني صفوف الطابور
-      // فقط ونُدرجها دفعة واحدة. idempotency key كما هو تماماً بلا تغيير
-      // (provider:vendor_station_id:observedAtIso — راجع التحليل الكامل في
-      // خطة إعادة التصميم، خاص بـThingsBoard تحديداً).
+      // فقط ونُدرجها دفعة واحدة.
+      //
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مفتاح منع التكرار قابل
+      // للتصادم"، راجع migration 202608110016 الكامل): idempotency_key
+      // القديم (provider:vendor_station_id:observedAtIso) كان يفتقد
+      // connection_id، وكان يرفض بصمت أي تصحيح/حقل جديد وصل بنفس
+      // observedAtIso بالضبط لنفس المحطة. provider_event_key الجديد
+      // (buildProviderEventKey أعلاه) يستخدم vendorEventId الحقيقي إن توفر،
+      // وإلا hash قانوني لكامل الحمولة مضافاً لـobservedAtIso — تصحيح فعلي
+      // (قيمة مختلفة) بنفس الطابع الزمني ينتج hash مختلفاً فيُقبَل كصف جديد.
+      // الفريد الفعلي الآن (connection_id, provider_event_key) — راجع
+      // uq_telemetry_connection_event. idempotency_key يبقى كعمود توافقي
+      // فقط (يُمرَّر لاحقاً كـexternalEventId في telemetry-worker)، يُبنى
+      // الآن من connection_id:provider_event_key فريداً عالمياً بذاته.
       // ===================================================================
       const queueRows = readings
         .filter((reading) => Boolean(reading.observedAtIso))
-        .map((reading) => ({
-          idempotency_key: `${conn.provider}:${conn.vendor_station_id}:${reading.observedAtIso}`,
-          connection_id: conn.id,
-          project_id: conn.project_id,
-          device_id: conn.device_id,
-          provider: conn.provider,
-          payload: reading,
-          observed_at: reading.observedAtIso as string,
-        }));
+        .map((reading) => {
+          const providerEventKey = buildProviderEventKey(reading);
+          return {
+            idempotency_key: `${conn.id}:${providerEventKey}`,
+            provider_event_key: providerEventKey,
+            connection_id: conn.id,
+            project_id: conn.project_id,
+            device_id: conn.device_id,
+            provider: conn.provider,
+            payload: reading,
+            observed_at: reading.observedAtIso as string,
+          };
+        });
 
       let queuedCount = 0;
       let lastError: string | undefined;
       if (queueRows.length > 0) {
-        // ON CONFLICT (idempotency_key) DO NOTHING عبر Prefer:
-        // resolution=ignore-duplicates — إدراج دفعي واحد لكل قراءات هذا
-        // الاتصال، لا استدعاء منفصل لكل قراءة. قراءة مكررة (retry شبكة،
-        // نافذة fetchReadingsSince متداخلة بين دورتين) تُرفَض بصمت بلا خطأ.
+        // ON CONFLICT (connection_id, provider_event_key) DO NOTHING عبر
+        // Prefer: resolution=ignore-duplicates — إدراج دفعي واحد لكل قراءات
+        // هذا الاتصال، لا استدعاء منفصل لكل قراءة. قراءة مكررة فعلياً (retry
+        // شبكة، نافذة fetchReadingsSince متداخلة بين دورتين/صفحات) تُرفَض
+        // بصمت بلا خطأ — تصحيح/حقل جديد بنفس observedAtIso لم يعد يُرفَض
+        // (hash الحمولة مختلف، راجع buildProviderEventKey).
         const { data: insertedRows, error: insertError } = await supabaseAdmin
           .from('telemetry_ingestion_queue')
-          .upsert(queueRows, { onConflict: 'idempotency_key', ignoreDuplicates: true })
+          .upsert(queueRows, { onConflict: 'connection_id,provider_event_key', ignoreDuplicates: true })
           .select('id');
 
         if (insertError) {
