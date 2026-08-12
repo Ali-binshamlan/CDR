@@ -214,16 +214,18 @@ describe('thingsboardConnector.fetchReadingsSince — كل العينات منذ
     timeseriesBody = {};
   });
 
-  it('يطلب startTs/endTs في الرابط (لا values/timeseries بلا نطاق زمني)', async () => {
+  it('يطلب startTs/endTs في الرابط (endTs=untilMs الصريحة، لا Date.now() داخلية)', async () => {
     const { thingsboardConnector } = await import('./thingsboardConnector');
     const sinceMs = Date.now() - 120_000;
+    const untilMs = Date.now();
     timeseriesBody = { pm10: [{ ts: sinceMs + 30_000, value: 350 }] };
 
-    await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs);
+    await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs, untilMs);
 
     const dataCall = fetchCalls.find((c) => c.url.includes('/values/timeseries'));
     expect(dataCall).toBeDefined();
     expect(dataCall!.url).toContain(`startTs=${sinceMs}`);
+    expect(dataCall!.url).toContain(`endTs=${untilMs}`);
     expect(dataCall!.url).toContain('orderBy=ASC');
   });
 
@@ -241,15 +243,17 @@ describe('thingsboardConnector.fetchReadingsSince — كل العينات منذ
       ],
     };
 
-    const readings = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000);
+    const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000, now);
 
-    expect(readings).toHaveLength(3);
-    expect(readings[0].pm10).toBe(345);
-    expect(readings[1].pm10).toBe(350);
-    expect(readings[2].pm10).toBe(355);
+    expect(result.readings).toHaveLength(3);
+    expect(result.readings[0].pm10).toBe(345);
+    expect(result.readings[1].pm10).toBe(350);
+    expect(result.readings[2].pm10).toBe(355);
+    expect(result.hasMore).toBe(false);
+    expect(result.coveredThroughMs).toBe(now);
     // ترتيب تصاعدي (الأقدم أولاً) — يضمن تحديث last_*_at بشكل صحيح تراكمياً.
-    expect(new Date(readings[0].observedAtIso as string).getTime()).toBeLessThan(
-      new Date(readings[2].observedAtIso as string).getTime()
+    expect(new Date(result.readings[0].observedAtIso as string).getTime()).toBeLessThan(
+      new Date(result.readings[2].observedAtIso as string).getTime()
     );
   });
 
@@ -262,26 +266,108 @@ describe('thingsboardConnector.fetchReadingsSince — كل العينات منذ
       temperature: [{ ts: sameSecond + 200, value: 35 }], // نفس الثانية (بعد التقريب لأقرب ثانية)
     };
 
-    const readings = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000);
+    const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000, now);
 
-    expect(readings).toHaveLength(1);
-    expect(readings[0].pm10).toBe(300);
-    expect(readings[0].temperatureC).toBe(35);
+    expect(result.readings).toHaveLength(1);
+    expect(result.readings[0].pm10).toBe(300);
+    expect(result.readings[0].temperatureC).toBe(35);
   });
 
-  it('لا نقاط ضمن النافذة الزمنية → مصفوفة فارغة (لا null، بخلاف fetchLatestReading)', async () => {
+  it('لا نقاط ضمن النافذة الزمنية → مصفوفة فارغة (لا null، بخلاف fetchLatestReading)، coveredThroughMs=untilMs', async () => {
     const { thingsboardConnector } = await import('./thingsboardConnector');
+    const now = Date.now();
     timeseriesBody = {};
 
-    const readings = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, Date.now() - 120_000);
+    const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, now - 120_000, now);
 
-    expect(readings).toEqual([]);
+    expect(result.readings).toEqual([]);
+    expect(result.hasMore).toBe(false);
+    expect(result.coveredThroughMs).toBe(now);
   });
 
   it('vendorStationId غير UUID → يُرفَض قبل أي طلب شبكة', async () => {
     const { thingsboardConnector } = await import('./thingsboardConnector');
     await expect(
-      thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, 'not-a-uuid', Date.now() - 120_000)
+      thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, 'not-a-uuid', Date.now() - 120_000, Date.now())
     ).rejects.toThrow(/UUID/);
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "نافذة عشر
+  // دقائق وحدود ThingsBoard تقطع البيانات بصمت"): بلوغ MAX_POINTS_PER_KEY
+  // (200) يجب أن يُعيد hasMore=true وcoveredThroughMs عند آخر نقطة مؤكَّدة
+  // فعلاً، لا untilMs كاملة — بخلاف السلوك السابق الذي كان يقتطع بصمت.
+  describe('اقتطاع حدود ThingsBoard يُعلَن صراحةً (hasMore/coveredThroughMs — اختبار قبول صريح)', () => {
+    it('مفتاح واحد يبلغ MAX_POINTS_PER_KEY (200 نقطة) → hasMore=true، coveredThroughMs = وقت آخر نقطة مُستلَمة مطروحاً 1ms', async () => {
+      const { thingsboardConnector } = await import('./thingsboardConnector');
+      const now = Date.now();
+      const sinceMs = now - 10 * 60_000;
+      // 200 نقطة PM10 بفارق ثانية واحدة بينها بدءاً من sinceMs — تبلغ الحد
+      // بالضبط (points.length >= MAX_POINTS_PER_KEY)، رغم أن النافذة
+      // المطلوبة (10 دقائق = 600 ثانية) تحتوي فعلياً على نقاط لاحقة لم تُرسَل
+      // في هذه الاستجابة (محاكاة قطع ThingsBoard الفعلي عبر limit=200).
+      const points = Array.from({ length: 200 }, (_, i) => ({ ts: sinceMs + i * 1000, value: 300 + i }));
+      timeseriesBody = { pm10: points };
+
+      const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs, now);
+
+      expect(result.hasMore).toBe(true);
+      const lastPointTs = points[points.length - 1].ts;
+      expect(result.coveredThroughMs).toBe(lastPointTs - 1);
+      // كل النقاط المُستلَمة فعلياً موجودة في readings — الاقتطاع لا يُسقِط
+      // ما وصل فعلاً، فقط يمنع المؤشر من التقدم فوق ما لم يصل.
+      expect(result.readings).toHaveLength(200);
+    });
+
+    it('لا اقتطاع (أقل من الحد بكثير) → hasMore=false، coveredThroughMs=untilMs كاملة', async () => {
+      const { thingsboardConnector } = await import('./thingsboardConnector');
+      const now = Date.now();
+      const sinceMs = now - 120_000;
+      timeseriesBody = { pm10: [{ ts: sinceMs + 10_000, value: 340 }] };
+
+      const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs, now);
+
+      expect(result.hasMore).toBe(false);
+      expect(result.coveredThroughMs).toBe(now);
+    });
+
+    it('مفتاحان: أحدهما يبلغ الحد (200) والآخر لا → coveredThroughMs يعتمد المفتاح المقتطَع (الأقدم اقتطاعاً)', async () => {
+      const { thingsboardConnector } = await import('./thingsboardConnector');
+      const now = Date.now();
+      const sinceMs = now - 10 * 60_000;
+      const pm10Points = Array.from({ length: 200 }, (_, i) => ({ ts: sinceMs + i * 1000, value: 300 + i }));
+      const windPoints = [{ ts: sinceMs + 5_000, value: 12 }];
+      timeseriesBody = { pm10: pm10Points, windSpeed: windPoints };
+
+      const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs, now);
+
+      expect(result.hasMore).toBe(true);
+      expect(result.coveredThroughMs).toBe(pm10Points[pm10Points.length - 1].ts - 1);
+      // نقطة الرياح (لم تبلغ حدها) تبقى ضمن readings كاملة رغم اقتطاع PM10.
+      const windReading = result.readings.find((r) => typeof r.windSpeedKmh === 'number');
+      expect(windReading).toBeDefined();
+    });
+  });
+
+  // اختبار قبول صريح (نفس التقرير — "التجميع على مستوى الثانية قد يستبدل
+  // نقطتين داخل الثانية نفسها"): نقطتان لنفس الحقل (pm10) بنفس الثانية يجب
+  // أن تُصبحا قراءتين منفصلتين، لا أن تستبدل الثانية الأولى بصمت.
+  describe('تصادم التجميع على مستوى الثانية لا يُسقِط نقاطاً (اختبار قبول صريح)', () => {
+    it('نقطتا PM10 بفارق 500ms (نفس الثانية بعد التقريب) → قراءتان منفصلتان، لا استبدال', async () => {
+      const { thingsboardConnector } = await import('./thingsboardConnector');
+      const now = Date.now();
+      const sinceMs = now - 120_000;
+      const sameSecond = Math.floor(sinceMs / 1000) * 1000;
+      timeseriesBody = {
+        pm10: [
+          { ts: sameSecond, value: 340 },
+          { ts: sameSecond + 500, value: 360 },
+        ],
+      };
+
+      const result = await thingsboardConnector.fetchReadingsSince!(ORIGIN, CREDENTIALS, VENDOR_STATION_ID, sinceMs, now);
+
+      const pm10Values = result.readings.map((r) => r.pm10).filter((v): v is number => typeof v === 'number');
+      expect(pm10Values.sort((a, b) => a - b)).toEqual([340, 360]);
+    });
   });
 });

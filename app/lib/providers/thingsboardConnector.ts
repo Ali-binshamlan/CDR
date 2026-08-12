@@ -234,12 +234,23 @@ export const thingsboardConnector: ProviderConnector = {
   // الطوابع لأقرب ثانية لتجميع نقاط قريبة من مفاتيح مختلفة كأنها "نفس
   // اللحظة" — نفس مبدأ observedAtIso المشترك سابقاً، لكن هنا للتجميع فقط،
   // لا لتحديد وقت الحفظ الفعلي، الذي يبقى محسوباً من fields المستقلة).
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "نافذة عشر دقائق وحدود ThingsBoard
+  // تقطع البيانات بصمت"): MAX_POINTS_PER_KEY/MAX_TOTAL_POINTS كانا يقتطعان
+  // النتيجة بصمت بلا أي إشارة للمستدعي (بلا truncated/hasMore)، فيتقدم مؤشر
+  // السحب فوق بيانات لم تُجلَب فعلاً بعد. الآن: untilMs صريح من المستدعي (لا
+  // Date.now() هنا — نافذة صفحة ثابتة، لا هدف متحرك عبر صفحات متتالية من نفس
+  // الدورة)، وكل نقطة تحمل علامة truncated لو بلغ مفتاحها MAX_POINTS_PER_KEY
+  // (قد توجد نقاط أحدث منها لنفس المفتاح لم تُجلَب). coveredThroughMs
+  // النهائي = untilMs كاملة لو لا اقتطاع إطلاقاً، وإلا أقدم نقطة اقتُطعت
+  // مطروحاً منها 1ms (ضمان عدم اعتبار تلك اللحظة أو ما بعدها "مؤكَّدة").
   async fetchReadingsSince(
     origin: string,
     credentials: ProviderCredentials,
     vendorStationId: string,
-    sinceMs: number
-  ): Promise<NormalizedReading[]> {
+    sinceMs: number,
+    untilMs: number
+  ): Promise<{ readings: NormalizedReading[]; coveredThroughMs: number; hasMore: boolean }> {
     if (!UUID_PATTERN.test(vendorStationId)) {
       throw new Error('vendorStationId غير صالح — يجب أن يكون UUID');
     }
@@ -250,14 +261,15 @@ export const thingsboardConnector: ProviderConnector = {
     const keyMap = resolveKeyMap(creds);
     const tbKeys = Object.keys(keyMap).join(',');
 
-    const endTs = Date.now();
     // حد أقصى لعدد النقاط المطلوبة لكل مفتاح — دفاع ضد إرسالية كثيفة غير
-    // متوقَّعة (نفس فلسفة MAX_POINTS في fetchLatestReading أعلاه).
+    // متوقَّعة (نفس فلسفة MAX_POINTS في fetchLatestReading أعلاه). بلوغه
+    // لمفتاح معيّن يعني وجود نقاط أحدث لم تُجلَب لذلك المفتاح تحديداً —
+    // يُسجَّل صراحةً بدل تجاهله بصمت (راجع truncatedKeys أدناه).
     const MAX_POINTS_PER_KEY = 200;
 
     const response = await safeFetch(
       `${baseUrl}/api/plugins/telemetry/DEVICE/${encodeURIComponent(vendorStationId)}/values/timeseries` +
-        `?keys=${encodeURIComponent(tbKeys)}&startTs=${sinceMs}&endTs=${endTs}&limit=${MAX_POINTS_PER_KEY}&orderBy=ASC`,
+        `?keys=${encodeURIComponent(tbKeys)}&startTs=${sinceMs}&endTs=${untilMs}&limit=${MAX_POINTS_PER_KEY}&orderBy=ASC`,
       {
         headers: { 'X-Authorization': `Bearer ${token}` },
         timeoutMs: REQUEST_TIMEOUT_MS,
@@ -266,21 +278,46 @@ export const thingsboardConnector: ProviderConnector = {
     if (!response.ok) throw new Error(`فشل جلب القراءات (HTTP ${response.status})`);
 
     const data = (await readJsonWithLimit(response)) as Record<string, { ts: number; value: string }[]>;
-    if (!data || Object.keys(data).length === 0) return [];
+    if (!data || Object.keys(data).length === 0) {
+      return { readings: [], coveredThroughMs: untilMs, hasMore: false };
+    }
 
-    // تجميع كل النقاط (عبر كل المفاتيح) بحسب طابعها الزمني — نقاط بفارق
-    // أقل من ثانية واحدة تُعامَل كأنها "نفس اللحظة" (نفس دقة ThingsBoard
-    // الافتراضية لدفعات القراءة)، تفادياً لتشظّي كل حقل إلى قراءة منفصلة
-    // تماماً حين ترسل المحطة كل الحقول معاً في نفس اللحظة عملياً.
-    const byTimestampSecond = new Map<number, Partial<Record<keyof NormalizedReading, { value: number; ts: number }>>>();
+    // خطأ مكتشَف ومُصلَح (نفس المراجعة — "التجميع على مستوى الثانية قد يستبدل
+    // نقطتين داخل الثانية نفسها"): التجميع السابق كان bucket[field] = point
+    // (استبدال مباشر) — لو حمل نفس المفتاح نقطتين ضمن نفس الثانية (ممكن فعلاً
+    // مع محطات ترسل بمعدل أعلى من 1Hz)، الثانية تُلغي الأولى بصمت بلا أي أثر.
+    // الآن: قيمة كل حقل بكل ثانية مصفوفة نقاط (لا نقطة واحدة)، ثم كل نقطة
+    // ضمنها تُصدَّر كقراءة مستقلة بدل دمجها — لا فقد لأي نقطة فعلية بغض النظر
+    // عن كثافة الإرسال داخل نفس الثانية.
+    const byTimestampSecond = new Map<number, Partial<Record<keyof NormalizedReading, { value: number; ts: number }[]>>>();
     let pointsProcessed = 0;
     const MAX_TOTAL_POINTS = 1000;
+    let truncatedAtMs: number | null = null;
 
     for (const [tbKey, points] of Object.entries(data)) {
       const field = keyMap[tbKey];
       if (!field || !Array.isArray(points)) continue;
+
+      // نقاط ThingsBoard بترتيب تصاعدي (orderBy=ASC أعلاه) — بلوغ الحد لهذا
+      // المفتاح يعني أن كل ما بعد آخر نقطة مُستلَمة هنا (زمنياً) لم يُجلَب.
+      if (points.length >= MAX_POINTS_PER_KEY) {
+        const lastPointTs = Number(points[points.length - 1]?.ts);
+        if (Number.isFinite(lastPointTs)) {
+          truncatedAtMs = truncatedAtMs === null ? lastPointTs : Math.min(truncatedAtMs, lastPointTs);
+        }
+      }
+
       for (const point of points) {
-        if (pointsProcessed >= MAX_TOTAL_POINTS) break;
+        if (pointsProcessed >= MAX_TOTAL_POINTS) {
+          // بلغنا سقف مجموع النقاط الكلي (عبر كل المفاتيح معاً) — أي نقطة
+          // بعد هذه (لنفس المفتاح أو غيره) تُعتبر غير مُجلَبة، حتى لو كان
+          // طابعها أقدم من truncatedAtMs المسجَّل من مفتاح آخر بلغ حده أولاً.
+          const ts = Number(point.ts);
+          if (Number.isFinite(ts)) {
+            truncatedAtMs = truncatedAtMs === null ? ts : Math.min(truncatedAtMs, ts);
+          }
+          break;
+        }
         pointsProcessed++;
         if (!point || typeof point.value === 'undefined') continue;
         const numValue = Number(point.value);
@@ -289,30 +326,49 @@ export const thingsboardConnector: ProviderConnector = {
         if (!Number.isFinite(ts)) continue;
         const bucketKey = Math.floor(ts / 1000);
         const bucket = byTimestampSecond.get(bucketKey) ?? {};
-        bucket[field] = { value: numValue, ts };
+        const existing = bucket[field] ?? [];
+        existing.push({ value: numValue, ts });
+        bucket[field] = existing;
         byTimestampSecond.set(bucketKey, bucket);
       }
     }
 
+    // كل نقطة (بعد التجميع بالثانية) تُصدَّر كقراءة مستقلة — نقطتان لنفس
+    // الحقل بنفس الثانية تُصبحان قراءتين منفصلتين لا قراءة واحدة تستبدل
+    // الأخرى؛ نقاط حقول مختلفة بنفس الثانية (فهرس واحد داخل كل مصفوفة حقل)
+    // تبقى تُجمَّع معاً كـ"نفس اللحظة" كالسابق تماماً.
     const readings: NormalizedReading[] = [];
     for (const bucket of byTimestampSecond.values()) {
-      const reading: Partial<NormalizedReading> = {};
-      const fields: Partial<Record<string, NormalizedMetricPoint>> = {};
-      let latestTs: number | null = null;
-      for (const [field, point] of Object.entries(bucket) as [keyof NormalizedReading, { value: number; ts: number }][]) {
-        (reading as Record<string, number>)[field] = point.value;
-        fields[field] = { value: point.value, observedAtIso: new Date(point.ts).toISOString() };
-        if (latestTs === null || point.ts > latestTs) latestTs = point.ts;
+      const fieldEntries = Object.entries(bucket) as [keyof NormalizedReading, { value: number; ts: number }[]][];
+      const maxSlot = Math.max(...fieldEntries.map(([, points]) => points.length));
+      for (let slot = 0; slot < maxSlot; slot++) {
+        const reading: Partial<NormalizedReading> = {};
+        const fields: Partial<Record<string, NormalizedMetricPoint>> = {};
+        let latestTs: number | null = null;
+        for (const [field, points] of fieldEntries) {
+          const point = points[slot];
+          if (!point) continue;
+          (reading as Record<string, number>)[field] = point.value;
+          fields[field] = { value: point.value, observedAtIso: new Date(point.ts).toISOString() };
+          if (latestTs === null || point.ts > latestTs) latestTs = point.ts;
+        }
+        if (Object.keys(fields).length === 0 || latestTs === null) continue;
+        reading.fields = fields as NormalizedReading['fields'];
+        reading.observedAtIso = new Date(latestTs).toISOString();
+        readings.push(reading as NormalizedReading);
       }
-      if (Object.keys(fields).length === 0 || latestTs === null) continue;
-      reading.fields = fields as NormalizedReading['fields'];
-      reading.observedAtIso = new Date(latestTs).toISOString();
-      readings.push(reading as NormalizedReading);
     }
 
     // ترتيب زمني تصاعدي — provider-pull يكتبها بهذا الترتيب (الأقدم أولاً)
     // حتى تتراكم last_*_at بشكل صحيح (كل كتابة أحدث من التي قبلها).
     readings.sort((a, b) => new Date(a.observedAtIso as string).getTime() - new Date(b.observedAtIso as string).getTime());
-    return readings;
+
+    const hasMore = truncatedAtMs !== null;
+    // coveredThroughMs: آخر لحظة ثبت اكتمال جلبها فعلاً. لا اقتطاع → untilMs
+    // كاملة. اقتطاع → لحظة ما قبل أول نقطة اقتُطعت (لا اللحظة نفسها، فقد
+    // تحمل تلك اللحظة نقاطاً أخرى لم تُجلَب من مفاتيح أخرى أيضاً).
+    const coveredThroughMs = hasMore ? (truncatedAtMs as number) - 1 : untilMs;
+
+    return { readings, coveredThroughMs, hasMore };
   },
 };

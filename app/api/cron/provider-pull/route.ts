@@ -136,7 +136,7 @@ export async function GET(request: Request) {
       provider_instances: c.provider_instance_id ? instancesById.get(c.provider_instance_id) ?? null : null,
     }));
 
-  const results: Array<{ connectionId: string; provider: string; ok: boolean; queued?: number; error?: string }> = [];
+  const results: Array<{ connectionId: string; provider: string; ok: boolean; queued?: number; error?: string; hasMore?: boolean }> = [];
 
   // نفس حد التزامن الموجود بالفعل (CONCURRENCY=8) — لا تغيير هنا، الفحص
   // المباشر أكَّد أنه سليم ولا يحتاج تعديلاً (لا Promise.all بلا حدود على
@@ -209,33 +209,79 @@ export async function GET(request: Request) {
       // في دورة سابقة) غير ضار: idempotency_key الفريد على
       // telemetry_ingestion_queue (ON CONFLICT DO NOTHING أدناه) يمنع أي
       // تكرار فعلي — لا حاجة لدقة مطلقة هنا، فقط عدم فقد أي عينة حقيقية.
+      //
+      // MAX_LOOKBACK_MS يبقى سقفاً مقصوداً (لا نطلب من المنصة تاريخاً غير
+      // محدود لو تعطّل الاتصال لأيام) — لا علاقة له ببق الفقد الصامت الذي
+      // يُصلِحه هذا التغيير. الفرق الجوهري الآن: أي بيانات *داخل* الميزانية
+      // (من sinceMs إلى الآن) لن تُفقَد بصمت بعد اليوم مهما بلغت حدود
+      // ThingsBoard لكل صفحة — راجع Pagination أدناه.
       const MAX_LOOKBACK_MS = 10 * 60_000;
       const OVERLAP_MARGIN_MS = 5_000;
       const sinceMs = conn.pull_cursor_at
         ? Math.max(new Date(conn.pull_cursor_at).getTime() - OVERLAP_MARGIN_MS, Date.now() - MAX_LOOKBACK_MS)
         : Date.now() - MAX_LOOKBACK_MS;
 
-      let readings: NormalizedReading[];
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "نافذة عشر دقائق وحدود
+      // ThingsBoard تقطع البيانات بصمت"): fetchReadingsSince كانت تُستدعى
+      // مرة واحدة بلا Pagination — MAX_POINTS_PER_KEY=200/MAX_TOTAL_POINTS=
+      // 1000 داخل الـConnector يقتطعان النتيجة بصمت عند إرسالية كثيفة، ثم
+      // كان المؤشر يتقدم إلى Date.now() الفعلي بلا علاقة بما اكتمل جلبه
+      // فعلاً — يُسقِط كل ما بعد نقطة الاقتطاع نهائياً وبلا أثر.
+      //
+      // الحل: حلقة صفحات محدودة (MAX_PAGES_PER_CONNECTION) داخل نفس الدورة —
+      // كل صفحة تطلب [pageSinceMs, untilMs) حيث untilMs ثابتة طوال حلقة هذا
+      // الاتصال (لا Date.now() متحركة بين الصفحات، وإلا لن تكتمل النافذة
+      // أبداً تحت تدفق مستمر). المؤشر (cursorMs أدناه) يتحرك فقط إلى
+      // coveredThroughMs الذي يُرجعه الـConnector — أي نقطة لم يثبت اكتمال
+      // جلبها فعلاً (hasMore=true) تبقى خارج المؤشر، فتُعاد محاولتها في
+      // الصفحة التالية أو الدورة التالية بدل فقدها. توقف الحلقة قبل بلوغ حد
+      // الصفحات لا يزال آمناً بنفس المنطق — المؤشر يتقدم بقدر ما اكتمل فقط.
+      const untilMs = Date.now();
+      const MAX_PAGES_PER_CONNECTION = 5;
+      let cursorMs = sinceMs;
+      let allReadings: NormalizedReading[] = [];
+      let hasMoreAfterLoop = false;
+
       if (connector.fetchReadingsSince) {
-        readings = await connector.fetchReadingsSince(origin, credentials, conn.vendor_station_id as string, sinceMs);
+        for (let page = 0; page < MAX_PAGES_PER_CONNECTION && cursorMs < untilMs; page++) {
+          const page_ = await connector.fetchReadingsSince(origin, credentials, conn.vendor_station_id as string, cursorMs, untilMs);
+          allReadings = allReadings.concat(page_.readings);
+          cursorMs = page_.coveredThroughMs;
+          if (!page_.hasMore) {
+            hasMoreAfterLoop = false;
+            break;
+          }
+          hasMoreAfterLoop = true;
+        }
       } else {
         // Connector لا يدعم fetchReadingsSince (مثال: mockConnector) — فشل
-        // آمن نحو السلوك السابق: قراءة واحدة فقط لكل دورة.
+        // آمن نحو السلوك السابق: قراءة واحدة فقط لكل دورة، والمؤشر يتقدم
+        // لحظة الاستدعاء (لا مفهوم صفحات/اقتطاع لمسار احتياطي بقراءة واحدة).
         const single = await connector.fetchLatestReading(origin, credentials, conn.vendor_station_id as string);
-        readings = single ? [single] : [];
+        allReadings = single ? [single] : [];
+        cursorMs = untilMs;
       }
 
+      const readings = allReadings;
+      // coveredThroughMs الفعلي لهذا الاتصال بعد الحلقة (قد يكون أقل من
+      // untilMs لو استُنفدت صفحات MAX_PAGES_PER_CONNECTION قبل اكتمال
+      // النافذة تحت إرسالية كثيفة جداً — يبقى صحيحاً وآمناً: يُستكمَل في
+      // الدورة التالية بدل فقده).
+      const coveredThroughMs = cursorMs;
+
       if (readings.length === 0) {
-        // لا قراءات جديدة متاحة — ليس خطأً، بل نجاح فعلي بمعنى "تحقّقنا
-        // حتى الآن ولا شيء جديد": pull_cursor_at يتقدم هنا أيضاً (لا فقط
-        // last_pull_at) — لا مبرر لإعادة فحص نفس النافذة الفارغة لاحقاً.
+        // لا قراءات جديدة متاحة — ليس خطأً، بل نجاح فعلي بمعنى "تحقّقنا حتى
+        // coveredThroughMs ولا شيء جديد": pull_cursor_at يتقدم إلى
+        // coveredThroughMs (لا Date.now() الفعلي) — لو كانت هناك نافذة لم
+        // تكتمل (hasMoreAfterLoop)، المؤشر يتوقف عندها بدل تخطّيها.
         const nowIso = new Date().toISOString();
-        results.push({ connectionId: conn.id, provider: conn.provider, ok: true, queued: 0 });
+        const coveredIso = new Date(coveredThroughMs).toISOString();
+        results.push({ connectionId: conn.id, provider: conn.provider, ok: true, queued: 0, hasMore: hasMoreAfterLoop });
         await supabaseAdmin
           .from('provider_connections')
           .update({
             last_pull_at: nowIso,
-            pull_cursor_at: nowIso,
+            pull_cursor_at: coveredIso,
             last_pull_success: true,
             last_pull_success_at: nowIso,
             last_pull_error: null,
@@ -284,18 +330,21 @@ export async function GET(request: Request) {
       }
 
       // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق OVERLAP_MARGIN_MS
-      // وmigration 202608110014 الكاملين): pull_cursor_at/last_pull_success_at
-      // يتقدمان فقط عند نجاح إدراج الدفعة كاملة بلا lastError — فشل الإدراج
-      // (queue table خطأ DB) يُبقي المؤشر عند نقطته السابقة، فتُعاد محاولة
-      // نفس النافذة الزمنية بالضبط في الدورة التالية بدل فقدها. last_pull_at
-      // (وقت المحاولة) يتقدم دائماً بصرف النظر عن النتيجة — يبقى صحيحاً
-      // كمقياس "متى آخر محاولة" لـscheduler-heartbeat.
+      // وmigration 202608110014 الكاملين، وتعليق Pagination أعلاه):
+      // pull_cursor_at/last_pull_success_at يتقدمان فقط عند نجاح إدراج
+      // الدفعة كاملة بلا lastError — وحتى عندئذ، pull_cursor_at يتقدم إلى
+      // coveredThroughMs (آخر نقطة ثبت اكتمال جلبها فعلاً) لا Date.now() —
+      // فشل الإدراج يُبقي المؤشر عند نقطته السابقة (sinceMs الأصلية)، فتُعاد
+      // محاولة نفس النافذة الزمنية بالضبط في الدورة التالية بدل فقدها.
+      // last_pull_at (وقت المحاولة) يتقدم دائماً بصرف النظر عن النتيجة —
+      // يبقى صحيحاً كمقياس "متى آخر محاولة" لـscheduler-heartbeat.
       const nowIso = new Date().toISOString();
+      const coveredIso = new Date(coveredThroughMs).toISOString();
       await supabaseAdmin
         .from('provider_connections')
         .update({
           last_pull_at: nowIso,
-          ...(lastError ? {} : { pull_cursor_at: nowIso, last_pull_success_at: nowIso }),
+          ...(lastError ? {} : { pull_cursor_at: coveredIso, last_pull_success_at: nowIso }),
           last_pull_success: !lastError,
           last_pull_error: lastError ?? null,
           updated_at: nowIso,
@@ -308,6 +357,7 @@ export async function GET(request: Request) {
         ok: !lastError,
         queued: queuedCount,
         error: lastError,
+        hasMore: hasMoreAfterLoop,
       });
     } catch (err) {
       // فشل اتصال واحد لا يوقف الباقي — نفس مبدأ الحلقات المشابهة في

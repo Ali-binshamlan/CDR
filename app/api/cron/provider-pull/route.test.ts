@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "مؤشر السحب يتقدم حتى عند فشل
 // Queue"): هذا الملف يختبر السلوك الفعلي الحالي لـprovider-pull/route.ts
-// بعد إعادة تصميم مسار الاستقبال (2026-08-09 — الملف السابق كان يختبر بنية
-// قديمة تستدعي writeDeviceReading/evaluateProject مباشرة، وهما غير
-// مستوردين إطلاقاً في route.ts الحالي؛ كل الاختبارات القديمة كانت فاشلة
-// فعلياً قبل هذا التصحيح) وبعد فصل last_pull_at (وقت آخر محاولة، يتقدم
-// دائماً) عن pull_cursor_at (مؤشر السحب الفعلي المستخدَم في sinceMs، يتقدم
-// فقط عند نجاح إدراج الدفعة كاملة في telemetry_ingestion_queue).
+// بعد إعادة تصميم مسار الاستقبال (2026-08-09) وبعد فصل last_pull_at (وقت آخر
+// محاولة، يتقدم دائماً) عن pull_cursor_at (مؤشر السحب الفعلي، يتقدم فقط عند
+// نجاح إدراج الدفعة كاملة في telemetry_ingestion_queue).
+//
+// خطأ مكتشَف ومُصلَح لاحقاً (مراجعة كود خارجي — "نافذة عشر دقائق وحدود
+// ThingsBoard تقطع البيانات بصمت"): fetchReadingsSince تُرجع الآن كائناً
+// {readings, coveredThroughMs, hasMore} بدل مصفوفة خام — pull_cursor_at
+// يتقدم إلى coveredThroughMs فقط (لا Date.now())، وroute.ts يستدعي
+// fetchReadingsSince داخل حلقة صفحات محدودة (MAX_PAGES_PER_CONNECTION=5)
+// حتى hasMore=false أو استنفاد الصفحات.
 
 const rpcResponses: Record<string, unknown> = {};
 const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
@@ -100,6 +104,12 @@ function connectionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// نتيجة صفحة واحدة كاملة (hasMore=false) — الحالة الشائعة في أغلب
+// الاختبارات (لا اقتطاع، سلوك ما قبل إصلاح Pagination بلا تغيير ظاهري).
+function page(readings: unknown[], coveredThroughMs: number, hasMore = false) {
+  return { readings, coveredThroughMs, hasMore };
+}
+
 function findConnectionUpdate(index = 0): Record<string, unknown> {
   const calls = updateCalls.filter((c) => c.table === 'provider_connections');
   return calls[index]?.values ?? {};
@@ -147,13 +157,19 @@ describe('GET /api/cron/provider-pull', () => {
     expect(res.status).toBe(401);
   });
 
-  it('Connector يدعم fetchReadingsSince: 3 قراءات مُرجَعة → صف واحد لكل قراءة في دفعة الإدراج', async () => {
+  it('Connector يدعم fetchReadingsSince: 3 قراءات مُرجَعة (hasMore=false) → صف واحد لكل قراءة في دفعة الإدراج', async () => {
     rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
-    fetchReadingsSinceMock.mockResolvedValue([
-      { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 },
-      { observedAtIso: '2026-01-01T00:00:45.000Z', pm10: 345 },
-      { observedAtIso: '2026-01-01T00:01:30.000Z', pm10: 350 },
-    ]);
+    const now = Date.now();
+    fetchReadingsSinceMock.mockResolvedValue(
+      page(
+        [
+          { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 },
+          { observedAtIso: '2026-01-01T00:00:45.000Z', pm10: 345 },
+          { observedAtIso: '2026-01-01T00:01:30.000Z', pm10: 350 },
+        ],
+        now
+      )
+    );
     queueInsertedIds = [{ id: 'q1' }, { id: 'q2' }, { id: 'q3' }];
 
     const { GET } = await import('./route');
@@ -164,6 +180,8 @@ describe('GET /api/cron/provider-pull', () => {
     expect(body.ok).toBe(true);
     expect(fetchLatestReadingMock).not.toHaveBeenCalled();
     expect(body.results[0].queued).toBe(3);
+    // hasMore=false من الـConnector → صفحة واحدة فقط، لا حلقة إضافية.
+    expect(fetchReadingsSinceMock).toHaveBeenCalledTimes(1);
   });
 
   it('Connector لا يدعم fetchReadingsSince (undefined) → يسقط إلى fetchLatestReading (قراءة واحدة فقط، سلوك سابق بلا كسر)', async () => {
@@ -188,9 +206,10 @@ describe('GET /api/cron/provider-pull', () => {
     expect(body.results[0].queued).toBe(1);
   });
 
-  it('fetchReadingsSince يُرجع مصفوفة فارغة → last_pull_success=true، pull_cursor_at وlast_pull_at يتقدمان معاً', async () => {
+  it('fetchReadingsSince يُرجع مصفوفة فارغة (hasMore=false) → last_pull_success=true، pull_cursor_at=coveredThroughMs', async () => {
     rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
-    fetchReadingsSinceMock.mockResolvedValue([]);
+    const now = Date.now();
+    fetchReadingsSinceMock.mockResolvedValue(page([], now));
 
     const { GET } = await import('./route');
     await GET(makeRequest());
@@ -198,6 +217,7 @@ describe('GET /api/cron/provider-pull', () => {
     const lastUpdate = findConnectionUpdate();
     expect(lastUpdate.last_pull_success).toBe(true);
     expect(lastUpdate.pull_cursor_at).toBeTruthy();
+    expect(new Date(lastUpdate.pull_cursor_at as string).getTime()).toBe(now);
     expect(lastUpdate.last_pull_at).toBeTruthy();
   });
 
@@ -210,7 +230,7 @@ describe('GET /api/cron/provider-pull', () => {
       data: [connectionRow({ pull_cursor_at: cursorIso, last_pull_at: staleLastPullAt })],
       error: null,
     };
-    fetchReadingsSinceMock.mockResolvedValue([]);
+    fetchReadingsSinceMock.mockResolvedValue(page([], Date.now()));
 
     const { GET } = await import('./route');
     await GET(makeRequest());
@@ -225,7 +245,7 @@ describe('GET /api/cron/provider-pull', () => {
 
   it('لا pull_cursor_at ولا last_pull_at إطلاقاً (اتصال جديد) → sinceMs يعتمد حد النظر للخلف الأقصى (10 دقائق)', async () => {
     rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
-    fetchReadingsSinceMock.mockResolvedValue([]);
+    fetchReadingsSinceMock.mockResolvedValue(page([], Date.now()));
 
     const { GET } = await import('./route');
     await GET(makeRequest());
@@ -233,6 +253,27 @@ describe('GET /api/cron/provider-pull', () => {
     const sinceMsArg = fetchReadingsSinceMock.mock.calls[0][3] as number;
     const expectedSinceMs = Date.now() - 10 * 60_000;
     expect(Math.abs(sinceMsArg - expectedSinceMs)).toBeLessThan(2000);
+  });
+
+  it('untilMs (المعامل الخامس لـfetchReadingsSince) ثابتة داخل دورة واحدة — لا Date.now() متحركة بين استدعاءات نفس الاتصال', async () => {
+    rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+    const t1 = Date.now();
+    // صفحتان: الأولى hasMore=true (تستدعي صفحة ثانية)، الثانية hasMore=false.
+    fetchReadingsSinceMock
+      .mockResolvedValueOnce(page([{ observedAtIso: new Date(t1 - 500_000).toISOString(), pm10: 300 }], t1 - 400_000, true))
+      .mockResolvedValueOnce(page([], t1));
+    queueInsertedIds = [{ id: 'q1' }];
+
+    const { GET } = await import('./route');
+    await GET(makeRequest());
+
+    expect(fetchReadingsSinceMock).toHaveBeenCalledTimes(2);
+    const untilMsCall1 = fetchReadingsSinceMock.mock.calls[0][4] as number;
+    const untilMsCall2 = fetchReadingsSinceMock.mock.calls[1][4] as number;
+    expect(untilMsCall1).toBe(untilMsCall2);
+    // الصفحة الثانية تبدأ من coveredThroughMs الذي أرجعته الصفحة الأولى.
+    const sinceMsCall2 = fetchReadingsSinceMock.mock.calls[1][3] as number;
+    expect(sinceMsCall2).toBe(t1 - 400_000);
   });
 
   // اختبارا قبول صريحان (طلب المستخدم — تقرير المراجعة الخارجي: "مؤشر
@@ -244,7 +285,7 @@ describe('GET /api/cron/provider-pull', () => {
   describe('فشل الإدراج/استثناء لا يُقدِّم pull_cursor_at (اختبار قبول صريح)', () => {
     it('فشل إدراج دفعة القراءات في telemetry_ingestion_queue → last_pull_success=false، pull_cursor_at لا يُقدَّم إطلاقاً', async () => {
       rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
-      fetchReadingsSinceMock.mockResolvedValue([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }]);
+      fetchReadingsSinceMock.mockResolvedValue(page([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 }], Date.now()));
       queueInsertError = { message: 'connection pool exhausted' };
 
       const { GET } = await import('./route');
@@ -277,13 +318,14 @@ describe('GET /api/cron/provider-pull', () => {
 
     it('عطّل Queue ثم أعِدها: دورة فاشلة لا تُقدِّم المؤشر، الدورة التالية تعيد طلب نفس النافذة وتستلم كل القراءات (لا فقد)', async () => {
       rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      const now = Date.now();
       const readings = [
         { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 },
         { observedAtIso: '2026-01-01T00:00:45.000Z', pm10: 345 },
       ];
 
       // الدورة 1: Queue "معطَّلة" — فشل إدراج الدفعة بالكامل.
-      fetchReadingsSinceMock.mockResolvedValueOnce(readings);
+      fetchReadingsSinceMock.mockResolvedValueOnce(page(readings, now));
       queueInsertError = { message: 'queue unavailable' };
       const { GET } = await import('./route');
       await GET(makeRequest());
@@ -299,7 +341,7 @@ describe('GET /api/cron/provider-pull', () => {
       updateCalls.length = 0;
       queueInsertError = null;
       queueInsertedIds = [{ id: 'q1' }, { id: 'q2' }];
-      fetchReadingsSinceMock.mockResolvedValueOnce(readings);
+      fetchReadingsSinceMock.mockResolvedValueOnce(page(readings, Date.now()));
       await GET(makeRequest());
 
       const cycle2Update = findConnectionUpdate();
@@ -308,6 +350,100 @@ describe('GET /api/cron/provider-pull', () => {
       // كلتا القراءتين وصلتا فعلياً في الدورة الثانية — لا فقد، بصرف النظر
       // عن فشل الدورة الأولى بالكامل.
       expect(fetchReadingsSinceMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "نافذة عشر
+  // دقائق وحدود ThingsBoard تقطع البيانات بصمت"): بلوغ حدود المنصة
+  // (hasMore=true) يجب ألا يُقدِّم المؤشر فوق البيانات غير المجلوبة، ويجب أن
+  // يستكمل الجلب عبر صفحات إضافية ضمن نفس الدورة حتى تكتمل النافذة أو
+  // يُستنفَد حد الصفحات.
+  describe('Pagination عند بلوغ حدود المنصة — لا فقد صامت (اختبار قبول صريح)', () => {
+    it('صفحة أولى hasMore=true → يُستدعى Connector مرة ثانية بـsinceMs=coveredThroughMs السابقة', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      const t0 = Date.now() - 600_000;
+      const midPoint = t0 + 200_000;
+      fetchReadingsSinceMock
+        .mockResolvedValueOnce(page([{ observedAtIso: new Date(t0 + 100_000).toISOString(), pm10: 320 }], midPoint, true))
+        .mockResolvedValueOnce(page([{ observedAtIso: new Date(midPoint + 100_000).toISOString(), pm10: 330 }], Date.now(), false));
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(fetchReadingsSinceMock).toHaveBeenCalledTimes(2);
+      expect(fetchReadingsSinceMock.mock.calls[1][3]).toBe(midPoint);
+      // كلتا القراءتين (من الصفحتين معاً) تصل لدفعة الإدراج النهائية.
+      expect(body.results[0].hasMore).toBe(false);
+    });
+
+    it('استنفاد MAX_PAGES_PER_CONNECTION (5) مع hasMore=true مستمر → pull_cursor_at يتقدم فقط لآخر coveredThroughMs مؤكَّد، لا أبعد، وhasMore=true في النتيجة', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      // كل صفحة تتقدم 50 ثانية فقط وhasMore=true دائماً — محاكاة إرسالية
+      // كثيفة جداً تستنفد كل الصفحات المسموحة دون اكتمال النافذة الكاملة.
+      let callIndex = 0;
+      fetchReadingsSinceMock.mockImplementation(async (_o, _c, _v, sinceMs: number) => {
+        callIndex++;
+        const covered = sinceMs + 50_000;
+        return page([{ observedAtIso: new Date(covered).toISOString(), pm10: 300 + callIndex }], covered, true);
+      });
+      queueInsertedIds = Array.from({ length: 5 }, (_, i) => ({ id: `q${i}` }));
+
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      // 5 صفحات بالضبط (MAX_PAGES_PER_CONNECTION) — لا حلقة لا نهائية.
+      expect(fetchReadingsSinceMock).toHaveBeenCalledTimes(5);
+      expect(body.results[0].hasMore).toBe(true);
+      const lastUpdate = findConnectionUpdate();
+      // المؤشر تقدَّم فقط بقدر ما جُلب فعلاً (sinceMs الفعلي للصفحة الأولى +
+      // 5×50 ثانية) — لا حتى نهاية النافذة الكاملة (untilMs)، ولا Date.now()
+      // الفعلي عند نهاية الدورة. sinceMs الفعلي للصفحة الأولى يُقرأ من نداء
+      // الـmock مباشرة (لا يُعاد حسابه هنا) لتفادي فارق ميلي ثانية محتمل مع
+      // Date.now() الداخلي في route.ts وقت التنفيذ الفعلي.
+      const firstSinceMs = fetchReadingsSinceMock.mock.calls[0][3] as number;
+      expect(new Date(lastUpdate.pull_cursor_at as string).getTime()).toBe(firstSinceMs + 5 * 50_000);
+    });
+
+    it('توقّف 20 دقيقة (لا سحب) ثم استئناف: النافذة كاملة (10 دقائق كحد أقصى) تُجلَب عبر صفحات، لا تُسقَط أول 10 دقائق منها', async () => {
+      // pull_cursor_at قديم جداً (قبل 20 دقيقة) — sinceMs يُطبَّق عليه سقف
+      // MAX_LOOKBACK_MS (10 دقائق) كحد أقصى مقصود (راجع تعليق route.ts) —
+      // هذا سقف معروف ومقبول، لا بق. البق الذي يختبره هذا الاختبار تحديداً:
+      // ضمن تلك النافذة الفعلية (10 دقائق)، حدود المنصة (hasMore) لا تُسقِط
+      // شيئاً بصمت — كل ما داخل الميزانية يصل عبر صفحات متتالية.
+      const staleCursor = new Date(Date.now() - 20 * 60_000).toISOString();
+      rpcResponses['list_active_provider_connections'] = {
+        data: [connectionRow({ pull_cursor_at: staleCursor })],
+        error: null,
+      };
+      let callIndex = 0;
+      fetchReadingsSinceMock.mockImplementation(async (_o, _c, _v, sinceMs: number, untilMs: number) => {
+        callIndex++;
+        // كل صفحة تُغطي 3 دقائق فقط (محاكاة حد صفحة من المنصة) حتى تصل
+        // untilMs الفعلية (لا تتجاوزها أبداً).
+        const covered = Math.min(sinceMs + 3 * 60_000, untilMs);
+        return page(
+          [{ observedAtIso: new Date(covered).toISOString(), pm10: 300 + callIndex }],
+          covered,
+          covered < untilMs
+        );
+      });
+      queueInsertedIds = Array.from({ length: 5 }, (_, i) => ({ id: `q${i}` }));
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      // أول sinceMs مُستلَم من الـConnector يجب ألا يكون أقدم من MAX_LOOKBACK_MS
+      // (10 دقائق) — سقف مقصود، لا فقد إضافي فوقه.
+      const firstSinceMs = fetchReadingsSinceMock.mock.calls[0][3] as number;
+      expect(Date.now() - firstSinceMs).toBeLessThanOrEqual(10 * 60_000 + 2000);
+      // كل الصفحات ضمن النافذة (10 دقائق / 3 دقائق للصفحة ≈ 4 صفحات) تصل
+      // فعلياً بلا توقف مبكر (لم تُستنفَد صفحات MAX_PAGES_PER_CONNECTION=5).
+      expect(fetchReadingsSinceMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+      const lastUpdate = findConnectionUpdate();
+      expect(lastUpdate.last_pull_success).toBe(true);
     });
   });
 
@@ -321,7 +457,7 @@ describe('GET /api/cron/provider-pull', () => {
     fetchReadingsSinceMock.mockImplementation(async () => {
       const current = callIndex++;
       if (current === 3) throw new Error('محطة معطوبة');
-      return [{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 100 }];
+      return page([{ observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 100 }], Date.now());
     });
 
     const { GET } = await import('./route');
