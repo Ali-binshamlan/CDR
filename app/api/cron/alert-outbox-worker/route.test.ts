@@ -253,4 +253,46 @@ describe('GET /api/cron/alert-outbox-worker', () => {
       expect(body.results[0].ok).toBe(true);
     });
   });
+
+  // اختبار قبول صريح (طلب المستخدم — تقرير المراجعة الخارجي: "الانتقال بين
+  // أنواع التنبيه لا يغلق النوع السابق"): العامل تسلسلي (for loop على مصفوفة
+  // rows بالترتيب المُرجَع من claim_alert_outbox_batch حرفياً، بلا إعادة
+  // ترتيب داخل route.ts نفسه) — يتحقق هذا الاختبار أن صف CLOSE (لو وصل أولاً
+  // في المصفوفة، كما يضمنه sequence_no في migration 202608110022) يُعالَج
+  // فعلياً قبل صف OPEN التالي له لنفس final_decision، لا العكس، بصرف النظر
+  // عن id عشوائي لكل صف.
+  describe('CLOSE يُعالَج قبل OPEN عند الانتقال بين نوعين (اختبار قبول صريح)', () => {
+    it('دفعة تحوي CLOSE(SAFETY_BREACH) ثم OPEN(COMPLIANCE_RESTRICTION) لنفس القرار → close_alert_atomic يُستدعى قبل create_alert_atomic، وكلاهما يُعالَج بنجاح', async () => {
+      claimedRows = [
+        baseRow({
+          id: 'row-close',
+          kind: 'SAFETY_BREACH',
+          action: 'CLOSE',
+          payload: { shortReasonAr: 'تحسّن القرار' },
+        }),
+        baseRow({
+          id: 'row-open',
+          kind: 'COMPLIANCE_RESTRICTION',
+          action: 'OPEN',
+          payload: { shortReasonAr: 'تقييد متبقٍّ' },
+        }),
+      ];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.ok).toBe(true);
+      expect(body.results).toHaveLength(2);
+      expect(body.results[0]).toEqual({ id: 'row-close', ok: true, alertId: 'alert-1' });
+      expect(body.results[1]).toEqual({ id: 'row-open', ok: true, alertId: 'alert-1' });
+
+      const closeIndex = rpcCalls.findIndex((c) => c.fn === 'close_alert_atomic');
+      const createIndex = rpcCalls.findIndex((c) => c.fn === 'create_alert_atomic');
+      expect(closeIndex).toBeGreaterThanOrEqual(0);
+      expect(createIndex).toBeGreaterThanOrEqual(0);
+      expect(closeIndex).toBeLessThan(createIndex);
+      expect(rpcCalls[closeIndex].args.p_kind).toBe('SAFETY_BREACH');
+      expect(rpcCalls[createIndex].args.p_kind).toBe('COMPLIANCE_RESTRICTION');
+    });
+  });
 });
