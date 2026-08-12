@@ -13,6 +13,23 @@ export type MeasurementField =
   | 'relativeHumidityPercent'
   | 'temperatureC';
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا يصلح
+// لإثبات الاستمرارية"): fetchLatestReading (نقطة واحدة، آخر قيمة فقط) لا
+// تستطيع رياضياً إثبات استمرار PM10 عبر نافذة زمنية (قاعدة الدقيقتين
+// pm10ThresholdRule، أو قاعدة الـ30 دقيقة pm10SuspensionRule في
+// dustEvaluation.ts) — نقطة واحدة لا "قبل" ولا "بعد" لها ضمن نفس الطلب.
+// fetchReadingsSince (سحب تاريخي كامل لنافذة زمنية) هي الوحيدة القادرة على
+// إثبات استمرار فعلي (سلسلة نقاط متعاقبة بفجوات مقبولة، راجع streakMinutesAbove).
+//
+//   HISTORY_COMPLETE: القراءة وصلت عبر جلب تاريخي كامل (fetchReadingsSince
+//     نجح لنافذة زمنية حقيقية) — تصلح دليلاً لقواعد الاستمرارية.
+//   SNAPSHOT_ONLY: القراءة نقطة لحظية وحيدة (fetchLatestReading، أو سقوط
+//     fetchReadingsSince الاحتياطي لـConnector لا يدعمها أصلاً) — تصلح
+//     للعرض/المراقبة الحية فقط، لا يجوز أن تُثبت أو تُمدِّد أي سلسلة
+//     استمرار؛ streakMinutesAbove (dustEvaluation.ts) يقطع عندها كما يقطع
+//     عند أي فجوة زمنية تتجاوز الحد المسموح.
+export type EvidenceCapability = 'HISTORY_COMPLETE' | 'SNAPSHOT_ONLY';
+
 // قياس واحد بوقت رصد مستقل — القسم 8.1 من "دليل الإصلاح الجذري لمنظومة
 // مرقاب": يحل محل افتراض "وقت رصد واحد للحمولة كلها" (observedAtIso على
 // مستوى NormalizedReading أدناه)، الذي كان يجعل ThingsBoard يأخذ أحدث
@@ -56,6 +73,16 @@ export interface NormalizedReading {
   // Connector مستقبلي تدعم منصته معرّف حدث حقيقي (مثال: Kafka offset،
   // event UUID من API) يملأ هذا الحقل مباشرة.
   vendorEventId?: string;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا يصلح
+  // لإثبات الاستمرارية"): راجع تعليق EvidenceCapability أعلاه. يُملأ في
+  // provider-pull/route.ts وقت بناء صف الطابور — HISTORY_COMPLETE لكل قراءة
+  // من fetchReadingsSince الناجحة، SNAPSHOT_ONLY لأي قراءة من fetchLatestReading
+  // (المسار الاحتياطي). اختياري: مصادر push المباشرة (devices/ingest/route.ts)
+  // لا تمرّ عبر هذا العقد أصلاً (الجهاز يرسل مباشرة، لا سحب دوري) — تبقى
+  // undefined هناك، وwriteDeviceReading تُعامِلها كـHISTORY_COMPLETE ضمنياً
+  // (قراءة جهاز حقيقية مباشرة، لا لقطة من موصل سحب).
+  evidenceCapability?: EvidenceCapability;
 }
 
 export interface VendorStation {

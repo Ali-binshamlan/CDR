@@ -612,7 +612,18 @@ const PM10_LAST_READING_FRESHNESS_MINUTES = LIVE_FIELD_FRESHNESS_MS / 60_000;
 // weather_forecasts (راجع computeDustComplianceResults أدناه) — تبقى في
 // النوع دفاعياً فقط لأي صف قديم قد يبقى قبل تطبيق migration الترحيل.
 export function computeSustainedPm10Status(
-  readings: { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo'; id?: string }[],
+  readings: {
+    pm10UgM3: number;
+    recordedAt: string;
+    source?: 'device' | 'manual' | 'open-meteo';
+    id?: string;
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا يصلح
+    // لإثبات الاستمرارية"): راجع تعليق streakMinutesAbove أدناه وmigration
+    // 202608110017 الكامل. اختياري: قراءات manual/تاريخية بلا هذا الحقل
+    // تُعامَل كـfalse (HISTORY_COMPLETE ضمنياً) — لا تراجع في صرامة القراءات
+    // الحالية.
+    isSnapshotOnly?: boolean;
+  }[],
   now: number = Date.now()
 ): Pm10SustainedStatus {
   if (readings.length === 0) {
@@ -725,6 +736,18 @@ export function computeSustainedPm10Status(
       streakStartMs = currentMs;
       sampleCount++;
       if (sorted[i].id) streakIds.push(sorted[i].id as string);
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا
+      // يصلح لإثبات الاستمرارية"، راجع migration 202608110017 وتعليق
+      // EvidenceCapability الكامل في types.ts): صف isSnapshotOnly=true وصل
+      // كنقطة لحظية وحيدة (fetchLatestReading الاحتياطي) — لا "قبل" ولا
+      // "بعد" فعلي له ضمن نفس طلب السحب، فلا يجوز أن يُمدِّد السلسلة إلى ما
+      // قبله رياضياً (قد تكون هناك فجوة زمنية حقيقية غير مُثبَتة بينه وبين
+      // العينة السابقة له في sorted، حتى لو كان فارق recordedAt نفسه صغيراً
+      // — العينة اللحظية لا تثبت استمراراً، توجد فقط). العينة نفسها تدخل
+      // السلسلة (sampleCount++/streakIds أعلاه — تصلح "آخر نقطة معروفة"
+      // للعرض/isAbove340Now) لكن الحلقة تتوقف فور معالجتها — تماماً كما
+      // تتوقف عند فجوة زمنية تتجاوز الحد المسموح.
+      if (sorted[i].isSnapshotOnly) break;
     }
     // عينة واحدة فقط بالسلسلة = لا استمرار مُثبَت بين عينتين فعليتين، بصرف
     // النظر عن قِدمها — فشل آمن نحو "صفر" لا "منذ وصولها وحتى الآن".
@@ -816,7 +839,7 @@ export async function fetchPm10SustainedStatus(
   try {
     const { data } = await supabaseAdmin
       .from('pm10_readings_history')
-      .select('id, pm10_ug_m3, recorded_at, activity_group_id, source, device_id, is_late')
+      .select('id, pm10_ug_m3, recorded_at, activity_group_id, source, device_id, is_late, is_snapshot_only')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
       .order('recorded_at', { ascending: false });
@@ -829,6 +852,7 @@ export async function fetchPm10SustainedStatus(
       source?: 'device' | 'manual' | 'open-meteo';
       device_id: string | null;
       is_late?: boolean | null;
+      is_snapshot_only?: boolean | null;
     };
     const relevant = ((data as Pm10HistoryRow[]) || []).filter((row) => {
       // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "القراءات المتأخرة يجب أن
@@ -848,6 +872,7 @@ export async function fetchPm10SustainedStatus(
       recordedAt: row.recorded_at,
       source: row.source,
       id: row.id,
+      isSnapshotOnly: row.is_snapshot_only ?? false,
     }));
     return computeSustainedPm10Status(readings);
   } catch {

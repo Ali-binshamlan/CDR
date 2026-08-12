@@ -399,4 +399,44 @@ describe('writeDeviceReading', () => {
     if (result.success) expect(result.late).toBe(false);
     expect(rpcCalls[0].args.p_is_late).toBe(false);
   });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "الموصل
+  // Snapshot-only لا يصلح لإثبات الاستمرارية"): reading.evidenceCapability
+  // (provider-pull/route.ts) يُترجَم هنا لـp_is_snapshot_only Boolean يصل
+  // للـRPC — راجع migration 202608110017 وstreakMinutesAbove في
+  // dustEvaluation.ts (يقطع سلسلة الاستمرار عند أي صف isSnapshotOnly=true).
+  describe('evidenceCapability → p_is_snapshot_only (اختبار قبول صريح)', () => {
+    it("evidenceCapability='SNAPSHOT_ONLY' → p_is_snapshot_only=true", async () => {
+      const { writeDeviceReading } = await import('./deviceReadingWriter');
+      const result = await writeDeviceReading({
+        deviceId: 'd1',
+        projectId: 'p1',
+        reading: { pm10: 340, observedAtIso: new Date().toISOString(), evidenceCapability: 'SNAPSHOT_ONLY' },
+      });
+      expect(result.success).toBe(true);
+      expect(rpcCalls[0].args.p_is_snapshot_only).toBe(true);
+    });
+
+    it("evidenceCapability='HISTORY_COMPLETE' → p_is_snapshot_only=false", async () => {
+      const { writeDeviceReading } = await import('./deviceReadingWriter');
+      const result = await writeDeviceReading({
+        deviceId: 'd1',
+        projectId: 'p1',
+        reading: { pm10: 340, observedAtIso: new Date().toISOString(), evidenceCapability: 'HISTORY_COMPLETE' },
+      });
+      expect(result.success).toBe(true);
+      expect(rpcCalls[0].args.p_is_snapshot_only).toBe(false);
+    });
+
+    it('evidenceCapability غائب (مصدر push مباشر عبر devices/ingest/route.ts) → p_is_snapshot_only=false افتراضياً (لا تراجع في صرامة القراءات الحالية)', async () => {
+      const { writeDeviceReading } = await import('./deviceReadingWriter');
+      const result = await writeDeviceReading({
+        deviceId: 'd1',
+        projectId: 'p1',
+        reading: { pm10: 340, observedAtIso: new Date().toISOString() },
+      });
+      expect(result.success).toBe(true);
+      expect(rpcCalls[0].args.p_is_snapshot_only).toBe(false);
+    });
+  });
 });

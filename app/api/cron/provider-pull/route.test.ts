@@ -456,6 +456,72 @@ describe('GET /api/cron/provider-pull', () => {
     });
   });
 
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "الموصل
+  // Snapshot-only لا يصلح لإثبات الاستمرارية"): كل قراءة من fetchReadingsSince
+  // (جلب تاريخي كامل) تُوسَم HISTORY_COMPLETE، وكل قراءة من fetchLatestReading
+  // (السقوط الاحتياطي لـConnector لا يدعم fetchReadingsSince) تُوسَم
+  // SNAPSHOT_ONLY — الوسم يصل إلى payload صف الطابور (نفس القراءة كاملة)،
+  // ومن هناك إلى pm10_readings_history.is_snapshot_only عبر deviceReadingWriter.ts
+  // (راجع اختباراته المنفصلة) وstreakMinutesAbove (dustEvaluation.ts).
+  describe('evidenceCapability يُوسَم صراحة حسب مصدر الجلب (اختبار قبول صريح)', () => {
+    it('قراءات من fetchReadingsSince (جلب تاريخي) → evidenceCapability=HISTORY_COMPLETE لكل قراءة', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      const now = Date.now();
+      fetchReadingsSinceMock.mockResolvedValue(
+        page(
+          [
+            { observedAtIso: new Date(now - 60_000).toISOString(), pm10: 340 },
+            { observedAtIso: new Date(now).toISOString(), pm10: 345 },
+          ],
+          now
+        )
+      );
+      queueInsertedIds = [{ id: 'q1' }, { id: 'q2' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      expect(upsertCalls).toHaveLength(1);
+      const payloads = upsertCalls[0].rows.map((r) => (r.payload as { evidenceCapability?: string }).evidenceCapability);
+      expect(payloads).toEqual(['HISTORY_COMPLETE', 'HISTORY_COMPLETE']);
+    });
+
+    it('قراءة من fetchLatestReading (Connector لا يدعم fetchReadingsSince) → evidenceCapability=SNAPSHOT_ONLY', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      fetchReadingsSinceMock.mockReset();
+      const { getConnector } = await import('@/app/lib/providers/registry');
+      vi.mocked(getConnector).mockReturnValueOnce({
+        id: 'thingsboard',
+        requiresProviderInstance: false,
+        fetchLatestReading: fetchLatestReadingMock,
+      } as never);
+      fetchLatestReadingMock.mockResolvedValue({ observedAtIso: new Date().toISOString(), pm10: 340 });
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      expect(upsertCalls).toHaveLength(1);
+      const payload = upsertCalls[0].rows[0].payload as { evidenceCapability?: string };
+      expect(payload.evidenceCapability).toBe('SNAPSHOT_ONLY');
+    });
+
+    it('الاتصال يحمل vendorEventId من الـConnector (تمرير شفاف عبر السقوط الاحتياطي وHISTORY_COMPLETE معاً) — evidenceCapability لا يُسقِط أي حقل آخر من القراءة', async () => {
+      rpcResponses['list_active_provider_connections'] = { data: [connectionRow()], error: null };
+      fetchReadingsSinceMock.mockResolvedValue(
+        page([{ observedAtIso: new Date().toISOString(), pm10: 340, vendorEventId: 'evt-xyz' }], Date.now())
+      );
+      queueInsertedIds = [{ id: 'q1' }];
+
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const payload = upsertCalls[0].rows[0].payload as { evidenceCapability?: string; vendorEventId?: string };
+      expect(payload.evidenceCapability).toBe('HISTORY_COMPLETE');
+      expect(payload.vendorEventId).toBe('evt-xyz');
+    });
+  });
+
   // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "مفتاح منع
   // التكرار قابل للتصادم"): الفريد الفعلي الآن (connection_id, provider_
   // event_key)، وprovider_event_key يُبنى من vendorEventId الحقيقي إن توفر،

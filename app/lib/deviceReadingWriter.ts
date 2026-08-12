@@ -144,6 +144,18 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
   // observedAt المشترك — لا تغيير في ذلك المسار.
   const pm10ObservedAtIso = reading.fields?.pm10?.observedAtIso ?? null;
 
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا يصلح
+  // لإثبات الاستمرارية"): reading.evidenceCapability (provider-pull/route.ts،
+  // 'HISTORY_COMPLETE' لقراءات fetchReadingsSince، 'SNAPSHOT_ONLY' لسقوط
+  // fetchLatestReading الاحتياطي) يُترجَم هنا لعلَم Boolean واحد يُمرَّر
+  // لـpm10_readings_history عبر الـRPC — راجع migration 202608110017 الكامل
+  // وstreakMinutesAbove في dustEvaluation.ts (يقطع سلسلة الاستمرار عند أي
+  // صف isSnapshotOnly=true). غياب evidenceCapability كلياً (مصادر push
+  // المباشرة عبر devices/ingest/route.ts — جهاز حقيقي يرسل مباشرة، لا لقطة
+  // من موصل سحب) يُعامَل كـHISTORY_COMPLETE ضمنياً (isSnapshotOnly=false) —
+  // لا تراجع في صرامة القراءات الحالية القادمة من مصادر push.
+  const isSnapshotOnly = reading.evidenceCapability === 'SNAPSHOT_ONLY';
+
   // نفس القياسات بصيغة V2 ({value, observedAtIso} مستقل لكل حقل) — يُبنى
   // هنا فقط للحقول التي فعلياً تملك fields مستقلة (reading.fields)، لا لكل
   // حقل بلا استثناء؛ الـRPC نفسه يبني fallback بـp_observed_at المشتركة لأي
@@ -224,6 +236,7 @@ export async function writeDeviceReading(params: WriteDeviceReadingParams): Prom
       p_pm10_observed_at: pm10ObservedAtIso,
       p_measurements_v2: measurementsV2,
       p_is_late: isLate,
+      p_is_snapshot_only: isSnapshotOnly,
     });
     if (error) return { ok: false, error: error.message };
     return { ok: true, value: data };

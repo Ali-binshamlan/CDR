@@ -12,13 +12,14 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 function readingsBackFromNow(
   now: number,
-  values: { minutesAgo: number; pm10: number; source?: 'device' | 'manual' | 'open-meteo'; id?: string }[]
-): { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo'; id?: string }[] {
+  values: { minutesAgo: number; pm10: number; source?: 'device' | 'manual' | 'open-meteo'; id?: string; isSnapshotOnly?: boolean }[]
+): { pm10UgM3: number; recordedAt: string; source?: 'device' | 'manual' | 'open-meteo'; id?: string; isSnapshotOnly?: boolean }[] {
   return values.map((v) => ({
     pm10UgM3: v.pm10,
     recordedAt: new Date(now - v.minutesAgo * 60000).toISOString(),
     source: v.source,
     id: v.id,
+    isSnapshotOnly: v.isSnapshotOnly,
   }));
 }
 
@@ -243,6 +244,78 @@ describe('computeSustainedPm10Status', () => {
   // فتخلط مستوى التحذير [250,340] بمستوى المخالفة (>340). الآن: أي قراءة
   // >340 تقطع سلسلة استمرار 250 فوراً وتُخرِجها من النافذة كلياً — عداد
   // دقائق الاستمرار في التحذير لا يتراكم عبر قفزة فوق 340.
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "الموصل
+  // Snapshot-only لا يصلح لإثبات الاستمرارية"): قراءة isSnapshotOnly=true
+  // (وصلت عبر fetchLatestReading الاحتياطي، لا fetchReadingsSince) لا يجوز
+  // أن تُثبت أو تُمدِّد أي سلسلة استمرار — streakMinutesAbove يقطع عندها
+  // تماماً كفجوة زمنية غير مقبولة (راجع migration 202608110017).
+  describe('قراءة isSnapshotOnly=true لا تُثبت استمراراً (اختبار قبول صريح)', () => {
+    it('قراءة snapshot-only وحيدة ≥340 → معلَّق فقط أبداً، لا مؤكَّدة (لا فرق عن قراءة عادية وحيدة، sampleCount<2)', () => {
+      const readings = readingsBackFromNow(NOW, [{ minutesAgo: 0, pm10: 350, source: 'device', isSnapshotOnly: true }]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isPendingViolation340).toBe(true);
+      expect(r.isConfirmedViolation340).toBe(false);
+    });
+
+    it('قراءتان تاريخيتان كاملتان (>دقيقتين استمرار حقيقي) ثم قراءة snapshot-only أحدث فوقهما → لا تُصعِّد الاستمرار المؤكَّد أصلاً، فلا فرق هنا (يبقى مؤكَّداً من القراءتين الحقيقيتين فقط)', () => {
+      // القراءتان الأقدم (device، HISTORY_COMPLETE ضمنياً) تُثبتان استمراراً
+      // >دقيقتين بالفعل بمعزل عن الأحدث — الأحدث (snapshot-only) لا تُضيف
+      // ولا تُنقِص من ذلك الإثبات المُسبَق؛ فقط لا يجوز أن *تكون* هي مصدر
+      // الإثبات بذاتها.
+      const readings = readingsBackFromNow(NOW, [
+        { minutesAgo: 3, pm10: 350, source: 'device' },
+        { minutesAgo: 1, pm10: 345, source: 'device' },
+        { minutesAgo: 0, pm10: 360, source: 'device', isSnapshotOnly: true },
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      // القراءة الحالية (الأحدث زمنياً) هي نفسها snapshot-only — السلسلة
+      // تبدأ منها وتتوقف فوراً بعدها (لا تمتد للقراءتين الأقدم رغم كونهما
+      // فعليتين)، فـsampleCount=1 من نقطة الانطلاق فقط → لا استمرار مؤكَّد.
+      expect(r.isConfirmedViolation340).toBe(false);
+      expect(r.isPendingViolation340).toBe(true);
+    });
+
+    it('سلسلة تاريخية كاملة (3 قراءات device حقيقية، استمرار >دقيقتين) لا تحوي أي snapshot-only → تبقى مؤكَّدة كما كانت (لا تراجع في السلوك الحالي)', () => {
+      const readings = readingsBackFromNow(NOW, [
+        { minutesAgo: 3, pm10: 350, source: 'device', isSnapshotOnly: false },
+        { minutesAgo: 2, pm10: 345, source: 'device', isSnapshotOnly: false },
+        { minutesAgo: 1, pm10: 355, source: 'device', isSnapshotOnly: false },
+        { minutesAgo: 0, pm10: 342, source: 'device', isSnapshotOnly: false },
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isConfirmedViolation340).toBe(true);
+    });
+
+    it('قراءة snapshot-only في منتصف سلسلة تاريخية كاملة → تقطع الاستمرار عندها تماماً كفجوة زمنية (القراءات الأقدم منها لا تُحتسَب ضمن السلسلة الحالية)', () => {
+      const readings = readingsBackFromNow(NOW, [
+        { minutesAgo: 5, pm10: 350, source: 'device' }, // أقدم من نقطة القطع — لا يدخل السلسلة الحالية
+        { minutesAgo: 3, pm10: 345, source: 'device', isSnapshotOnly: true }, // نقطة القطع
+        { minutesAgo: 1, pm10: 355, source: 'device' },
+        { minutesAgo: 0, pm10: 342, source: 'device' },
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      // السلسلة الحالية (من الأحدث للخلف): 0د، 1د تدخلان، ثم 3د (snapshot-only)
+      // تدخل هي نفسها ثم تقطع الحلقة فوراً — 3 عينات فقط (لا 4)، فارق حقيقي
+      // بين أقدم/أحدث في السلسلة = دقيقتان بالضبط (0 إلى 3 دقائق) — لا يتجاوز
+      // دقيقتين فعلياً (>)، فيبقى معلَّقاً لا مؤكَّداً؛ الأهم: القراءة الأقدم
+      // (5 دقائق) مستبعدة تماماً من evidenceReadingIds/الحساب.
+      expect(r.isPendingViolation340).toBe(true);
+      expect(r.isConfirmedViolation340).toBe(false);
+    });
+
+    it('تعليق 250 لمدة 30 دقيقة يتطلب استمراراً حقيقياً — سلسلة كلها snapshot-only لا تصل أبداً لتعليق رغم 31 نقطة', () => {
+      const readings = readingsBackFromNow(
+        NOW,
+        Array.from({ length: 31 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 255, source: 'device' as const, isSnapshotOnly: true }))
+      );
+      const r = computeSustainedPm10Status(readings, NOW);
+      // كل نقطة snapshot-only تقطع السلسلة فور دخولها — أقصى ما يمكن إثباته
+      // هو نقطة واحدة في كل مرة (sampleCount=1 دائماً)، فلا تعليق 30 دقيقة
+      // يمكن إثباته إطلاقاً من بيانات لحظية بحتة.
+      expect(r.isSuspended250For30Min).toBe(false);
+    });
+  });
+
   describe('سلسلة استمرار 250 تنقطع عند أي قراءة >340 (مستويان منفصلان تماماً)', () => {
     it('قراءة واحدة >340 في منتصف سلسلة 250 → تقطع الاستمرار، لا تعليق 30 دقيقة رغم امتداد النافذة الزمنية بالكامل', () => {
       const readings = readingsBackFromNow(NOW, [
@@ -466,7 +539,8 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     activityGroupId: string | null = null,
     source: 'device' | 'manual' | 'open-meteo' = 'device',
     isLate = false,
-    id?: string
+    id?: string,
+    isSnapshotOnly = false
   ) {
     return {
       id: id ?? `row-${minutesAgo}-${pm10}`,
@@ -476,6 +550,7 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       source,
       device_id: deviceId,
       is_late: isLate,
+      is_snapshot_only: isSnapshotOnly,
     };
   }
 
@@ -595,6 +670,38 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       expect(r.currentReadingUgM3).toBeNull();
       expect(r.isConfirmedViolation340).toBe(false);
       expect(r.isPendingViolation340).toBe(false);
+    });
+  });
+
+  // اختبار قبول صريح (طلب المستخدم — "الموصل Snapshot-only لا يصلح لإثبات
+  // الاستمرارية"): يتحقق أن is_snapshot_only يصل فعلياً من صف قاعدة البيانات
+  // (select الفعلي في fetchPm10SustainedStatus) إلى computeSustainedPm10Status
+  // — لا مجرد أن المنطق يعمل بمعزل (مُختبَر أعلاه)، بل أن السلك الفعلي بين
+  // القراءة من pm10_readings_history والحساب سليم بالكامل.
+  it('is_snapshot_only=true من صف قاعدة البيانات يقطع الاستمرار عبر fetchPm10SustainedStatus كاملة (لا فقط computeSustainedPm10Status المعزولة)', () => {
+    const rows = [
+      readingRow(3, 350, 'device-A', null, 'device', false, 'r1', false),
+      readingRow(1, 345, 'device-A', null, 'device', false, 'r2', false),
+      readingRow(0, 360, 'device-A', null, 'device', false, 'r3', true), // snapshot-only — أحدث نقطة
+    ];
+    const supabase = mockSupabase(rows);
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      // الأحدث (snapshot-only) هي نقطة الانطلاق، تقطع الحلقة فوراً بعدها —
+      // لا يمكن أن تُثبت مؤكَّدة رغم وجود قراءتين حقيقيتين أقدم منها.
+      expect(r.isConfirmedViolation340).toBe(false);
+      expect(r.isPendingViolation340).toBe(true);
+    });
+  });
+
+  it('is_snapshot_only غائب من صف قاعدة البيانات (null، صف قديم قبل الترحيل) → يُعامَل كـfalse (HISTORY_COMPLETE ضمنياً)، لا تراجع في السلوك الحالي', () => {
+    const rows = [
+      { ...readingRow(2.5, 350, 'device-A', null, 'device', false, 'r1'), is_snapshot_only: null },
+      { ...readingRow(1, 345, 'device-A', null, 'device', false, 'r2'), is_snapshot_only: null },
+      { ...readingRow(0, 342, 'device-A', null, 'device', false, 'r3'), is_snapshot_only: null },
+    ];
+    const supabase = mockSupabase(rows);
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      expect(r.isConfirmedViolation340).toBe(true);
     });
   });
 });

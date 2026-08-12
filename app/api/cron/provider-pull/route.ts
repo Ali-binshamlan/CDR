@@ -282,12 +282,25 @@ export async function GET(request: Request) {
           }
           hasMoreAfterLoop = true;
         }
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا
+        // يصلح لإثبات الاستمرارية"): كل قراءة من fetchReadingsSince وصلت عبر
+        // جلب تاريخي فعلي لنافذة زمنية — تصلح دليل استمرار (راجع تعليق
+        // EvidenceCapability الكامل في types.ts). لا تُستبدَل قيمة موجودة
+        // مسبقاً (احتراماً لأي Connector مستقبلي يملأ evidenceCapability بنفسه
+        // بدقة أعلى، مثال: صفحة واحدة SNAPSHOT_ONLY داخل استجابة مختلطة).
+        allReadings = allReadings.map((r) => ({ evidenceCapability: 'HISTORY_COMPLETE', ...r }));
       } else {
-        // Connector لا يدعم fetchReadingsSince (مثال: mockConnector) — فشل
-        // آمن نحو السلوك السابق: قراءة واحدة فقط لكل دورة، والمؤشر يتقدم
-        // لحظة الاستدعاء (لا مفهوم صفحات/اقتطاع لمسار احتياطي بقراءة واحدة).
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "الموصل Snapshot-only لا
+        // يصلح لإثبات الاستمرارية"، راجع migration 202608110017 الكامل):
+        // Connector لا يدعم fetchReadingsSince (مثال: mockConnector) — نقطة
+        // واحدة فقط (آخر قيمة)، لا "قبل" ولا "بعد" لها ضمن هذا الطلب. تصلح
+        // للعرض الحي (Live Data Layer، project_devices.last_*) لكن لا يجوز
+        // أن تُثبت أو تُمدِّد أي سلسلة استمرار (قاعدة الدقيقتين/الـ30 دقيقة
+        // في dustEvaluation.ts) — تُوسَم SNAPSHOT_ONLY صراحة، تُكتَب في
+        // pm10_readings_history بهذا الوسم (is_snapshot_only)، وstreakMinutesAbove
+        // يقطع السلسلة عندها كما يقطع عند أي فجوة زمنية غير مقبولة.
         const single = await connector.fetchLatestReading(origin, credentials, conn.vendor_station_id as string);
-        allReadings = single ? [single] : [];
+        allReadings = single ? [{ evidenceCapability: 'SNAPSHOT_ONLY' as const, ...single }] : [];
         cursorMs = untilMs;
       }
 
