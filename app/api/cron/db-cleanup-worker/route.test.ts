@@ -80,7 +80,8 @@ describe('GET /api/cron/db-cleanup-worker', () => {
     expect(res.status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.totalDeleted).toBe(0);
-    // 6 أهداف status + 4 أهداف عمر = 10 نتائج
+    // 5 أهداف status (telemetry_ingestion_queue/DEAD حُذف — راجع اختبار
+    // الأرشفة أدناه) + 4 أهداف عمر + هدف أرشفة telemetry الجديد = 10 نتائج
     expect(body.results.length).toBe(10);
     for (const r of body.results) {
       expect(r.deleted).toBe(0);
@@ -153,7 +154,7 @@ describe('GET /api/cron/db-cleanup-worker', () => {
     expect(body.ok).toBe(false);
     const failedResults = body.results.filter((r: { error?: string }) => r.error);
     expect(failedResults.length).toBe(2); // decision_alert_outbox له هدفان (PROCESSED وDEAD)
-    // بقية الجداول (10 - 2 = 8) تبقى ناجحة رغم فشل decision_alert_outbox
+    // بقية الأهداف (10 - 2 = 8) تبقى ناجحة رغم فشل decision_alert_outbox
     const succeededResults = body.results.filter((r: { error?: string }) => !r.error);
     expect(succeededResults.length).toBe(8);
   });
@@ -170,5 +171,59 @@ describe('GET /api/cron/db-cleanup-worker', () => {
     for (const call of rpcCalls) {
       expect(evidenceTableNames).not.toContain(call.args.p_table_name);
     }
+  });
+
+  // =====================================================================
+  // اختبار قبول (مراجعة كود خارجي — "صفوف Telemetry الميتة تُحذف بعد سبعة
+  // أيام"): telemetry_ingestion_queue/DEAD يجب ألا يُحذف مباشرة بعد الآن —
+  // فقط يُؤرشف عبر archive_dead_telemetry_batch (نقل ذرّي إلى telemetry_
+  // dead_letter، لا حذف نهائي).
+  // =====================================================================
+  it('DEAD telemetry لا يُحذف مباشرة عبر cleanup_transient_table_batch إطلاقاً', async () => {
+    const { GET } = await import('./route');
+    await GET(makeRequest());
+
+    const directDeleteOfDeadTelemetry = rpcCalls.filter(
+      (c) =>
+        c.fn === 'cleanup_transient_table_batch' &&
+        c.args.p_table_name === 'telemetry_ingestion_queue' &&
+        (c.args.p_status_values as string[])?.includes('DEAD')
+    );
+    expect(directDeleteOfDeadTelemetry.length).toBe(0);
+  });
+
+  it('يستدعي archive_dead_telemetry_batch (لا حذف مباشر) لأرشفة DEAD telemetry، ويُدرجها في النتائج', async () => {
+    rpcResponder = (fn) => {
+      if (fn === 'archive_dead_telemetry_batch') return { data: 42, error: null };
+      return { data: 0, error: null };
+    };
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    const archiveCalls = rpcCalls.filter((c) => c.fn === 'archive_dead_telemetry_batch');
+    expect(archiveCalls.length).toBe(1);
+
+    const archiveResult = body.results.find(
+      (r: { table: string }) => r.table === 'telemetry_ingestion_queue→telemetry_dead_letter'
+    );
+    expect(archiveResult).toBeDefined();
+    expect(archiveResult.deleted).toBe(42);
+  });
+
+  it('فشل archive_dead_telemetry_batch يُبلَّغ كخطأ جزئي بلا إسقاط بقية الأهداف (207)', async () => {
+    rpcResponder = (fn) => {
+      if (fn === 'archive_dead_telemetry_batch') return { data: null, error: { message: 'archive failed' } };
+      return { data: 0, error: null };
+    };
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(207);
+    const archiveResult = body.results.find(
+      (r: { table: string }) => r.table === 'telemetry_ingestion_queue→telemetry_dead_letter'
+    );
+    expect(archiveResult.error).toBe('archive failed');
   });
 });
