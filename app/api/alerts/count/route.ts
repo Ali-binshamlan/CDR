@@ -32,6 +32,11 @@ export async function GET(request: NextRequest) {
     // (COMPLIANCE_VIOLATION) — نفس القيد المطبَّق في app/api/admin/alerts/
     // route.ts، حتى يطابق عداد الشارة عدد الصفوف المعروضة فعلياً في جدول
     // التنبيهات (AllAlertsTable)، لا كل الأنواع.
+    //
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
+    // والاحترازي"، راجع migration 202608110020 الكامل): هذا الفلتر صحيح
+    // منطقياً دائماً — الإصلاح الفعلي كان في persist_activity_decision_atomic
+    // (لم تكن تُنتج kind='COMPLIANCE_VIOLATION' إطلاقاً)، لا هنا.
     query = query.eq('kind', 'COMPLIANCE_VIOLATION');
   }
   const { count, error } = await query;

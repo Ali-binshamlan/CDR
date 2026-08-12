@@ -25,6 +25,7 @@ import {
   AlertTriangle,
   Scale,
   ShieldQuestion,
+  ShieldOff,
 } from 'lucide-react';
 
 // ============================================================
@@ -32,9 +33,12 @@ import {
 // ============================================================
 type AlertTiming = 'BEFORE' | 'DURING';
 type AlertState = 'NEW' | 'REVIEWED' | 'ACTION_TAKEN' | 'CLOSED';
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
+// والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
+// مستقل جديد — إيقاف احترازي معلَّق (لم يُؤكَّد بعد)، لا يُعامَل كـSAFETY_BREACH.
 type AlertKind =
   | 'BEFORE_2H' | 'BEFORE_1H' | 'BEFORE_START'
-  | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH'
+  | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH' | 'PROTECTIVE_STOP'
   | 'NO_DECISION_YET' | 'PM10_APPROACHING_LIMIT' | 'FORECAST_WARNING'
   | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'COMPLIANCE_ADVISORY';
 type Severity = 'CRITICAL' | 'WARNING' | 'INFO';
@@ -67,6 +71,7 @@ const alertKindIcon: Record<AlertKind, React.ElementType> = {
   LOW_VISIBILITY: Eye,
   DUST: Wind,
   SAFETY_BREACH: ShieldAlert,
+  PROTECTIVE_STOP: ShieldOff,
   COMPLIANCE_VIOLATION: Scale,
   COMPLIANCE_RESTRICTION: ShieldQuestion,
   COMPLIANCE_ADVISORY: AlertTriangle,
@@ -82,6 +87,7 @@ const alertKindLabel: Record<AlertKind, string> = {
   LOW_VISIBILITY: 'انعدام/انخفاض الرؤية',
   DUST: 'عاصفة غبارية محتملة',
   SAFETY_BREACH: 'تجاوز حدود السلامة',
+  PROTECTIVE_STOP: 'إيقاف احترازي معلَّق (بانتظار تأكيد)',
   COMPLIANCE_VIOLATION: 'مخالفة تنظيمية (امتثال الغبار)',
   COMPLIANCE_RESTRICTION: 'تقييد تنظيمي (امتثال الغبار)',
   COMPLIANCE_ADVISORY: 'تنبيه استباقي (امتثال الغبار)',
@@ -143,7 +149,9 @@ interface ActivityLabelInfo {
 // ============================================================
 function getSeverity(kind: AlertKind): Severity {
   if (['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(kind)) return 'CRITICAL';
-  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'FORECAST_WARNING', 'COMPLIANCE_RESTRICTION', 'COMPLIANCE_ADVISORY'].includes(kind)) return 'WARNING';
+  // PROTECTIVE_STOP: النشاط متوقف فعلياً الآن لكن غير مؤكَّد بعد (قد يتحول
+  // إلى ALLOW لاحقاً) — تحذير، لا خطورة عالية قطعية كـSAFETY_BREACH المؤكَّد.
+  if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'FORECAST_WARNING', 'COMPLIANCE_RESTRICTION', 'COMPLIANCE_ADVISORY', 'PROTECTIVE_STOP'].includes(kind)) return 'WARNING';
   return 'INFO';
 }
 
@@ -154,6 +162,8 @@ function getFallbackRecommendedAction(kind: AlertKind): string {
       return 'راجع مستوى الرؤية الفعلي، وأوقف تشغيل المعدات الثقيلة إذا انخفض عن الحد الآمن للنشاط.';
     case 'SAFETY_BREACH':
       return 'هذا تجاوز لحد سلامة صارم — أوقف النشاط فورًا وراجع تفاصيل الحد الذي تم تجاوزه.';
+    case 'PROTECTIVE_STOP':
+      return 'إيقاف احترازي معلَّق بانتظار تأكيد — راجع الحالة الآن؛ قد يتحول تلقائياً إلى استئناف أو إيقاف إلزامي بالتقييم التالي.';
     case 'COMPLIANCE_VIOLATION':
       return 'راجع قسم "الامتثال التنظيمي" في تفاصيل النشاط لمعرفة القاعدة المخالفة وشروط الاستئناف.';
     case 'COMPLIANCE_RESTRICTION':

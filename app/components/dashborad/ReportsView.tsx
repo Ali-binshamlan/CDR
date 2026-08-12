@@ -134,8 +134,15 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     // DCR: كل الأنشطة والتنبيهات مصدرها الغبار فقط — التنبيهات الحرجة هي
     // تجاوز فيزيائي صارم (SAFETY_BREACH) أو مخالفة تنظيمية فعلية توقف
     // النشاط (COMPLIANCE_VIOLATION، من محرك الامتثال).
+    //
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
+    // والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
+    // مستقل جديد — النشاط متوقف فعلياً الآن (نفس أثر SAFETY_BREACH التشغيلي)
+    // رغم عدم تأكيد الحالة إدارياً بعد، فيُحتسَب ضمن التنبيهات الحرجة هنا
+    // أيضاً — عدّه ضمن "تحذير متوسط" فقط كان يُقلِّل عدد الحالات الحرجة
+    // المعروضة زوراً عن العدد الفعلي.
     const criticalAlerts = filteredAlerts.filter(a =>
-      ['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(a.kind)
+      ['SAFETY_BREACH', 'PROTECTIVE_STOP', 'COMPLIANCE_VIOLATION'].includes(a.kind)
     ).length;
 
     // حساب المشروع الأكثر تضرراً

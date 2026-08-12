@@ -23,6 +23,14 @@ export async function GET(request: NextRequest) {
   // (COMPLIANCE_VIOLATION) — طلب صريح من المستخدم: لا تريد كل أنواع
   // التنبيهات (استعداد/بدء نشاط/بلا قرار/تقييد/تنبيه استباقي) ظاهرة لها،
   // فقط المخالفة المؤكَّدة. السوبر أدمن يبقى يرى كل الأنواع كالمعتاد.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
+  // والاحترازي"): هذا الفلتر كان صحيحاً منطقياً دائماً، لكن persist_activity_
+  // decision_atomic (راجع migration 202608110020 الكامل) لم تكن تُنتج
+  // kind='COMPLIANCE_VIOLATION' في decision_alert_outbox إطلاقاً — فتبقى
+  // هذه الشاشة فارغة دوماً لجهة الرصد رغم وجود مخالفات تنظيمية مؤكَّدة
+  // فعلياً. لا تغيير مطلوب هنا؛ الإصلاح كان في مصدر البيانات (الدالة التي
+  // تملأ decision_alert_outbox)، لا في هذا الفلتر نفسه.
   let alertsQuery = supabaseAdmin
     .from('alerts')
     .select('*, projects!inner(id, name, city, neighborhood, latitude, longitude, project_manager, user_id)')

@@ -38,15 +38,21 @@ const BATCH_SIZE = 20;
 const LEASE_SECONDS = 60;
 const MAX_ATTEMPTS = 5;
 
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
+// والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
+// مستقل جديد — عامل هذا الملف كان يُسمّي كل صف SAFETY_BREACH (بما فيها
+// PROTECTIVE_STOP قبل الإصلاح) "إيقافاً إلزامياً" — مضلِّل لإيقاف احترازي
+// معلَّق لم يُؤكَّد بعد. payload.mandatoryStop أصبح boolean حقيقي (لا نص
+// "true"/"false") بعد إصلاح persist_activity_decision_atomic.
 interface OutboxRow {
   id: string;
   final_decision_id: string;
   project_id: string;
   activity_group_id: string;
   activity_id: string;
-  kind: 'SAFETY_BREACH' | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION';
+  kind: 'SAFETY_BREACH' | 'PROTECTIVE_STOP' | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION';
   action: 'OPEN' | 'CLOSE';
-  payload: { shortReasonAr?: string; decisionLabelAr?: string; mandatoryStop?: string; level?: string };
+  payload: { shortReasonAr?: string; decisionLabelAr?: string; mandatoryStop?: boolean; level?: string };
   attempts: number;
 }
 
@@ -65,6 +71,19 @@ function deriveAlertMessage(row: OutboxRow): {
       recommendedAction: row.payload?.decisionLabelAr || 'إيقاف إلزامي نظامي',
       metricLabel: 'القرار التشغيلي',
       metricThreshold: 'إيقاف إلزامي',
+    };
+  }
+  // خطأ مكتشَف ومُصلَح (نفس المراجعة أعلاه): PROTECTIVE_STOP إيقاف احترازي
+  // معلَّق (pendingConfirmation=true في FinalDecision — قد يتحول تلقائياً
+  // إلى ALLOW أو MANDATORY_STOP بالتقييم التالي، راجع تعليق OperationalDecision
+  // الكامل في app/utils/final-decision-engine/types.ts) — نص منفصل تماماً
+  // عن "إيقاف إلزامي" النهائي أعلاه، حتى لا يُضلِّل المستخدم بيقين غير موجود.
+  if (row.kind === 'PROTECTIVE_STOP') {
+    return {
+      message: `إيقاف احترازي معلَّق (بانتظار تأكيد): ${reason}`,
+      recommendedAction: row.payload?.decisionLabelAr || 'إيقاف احترازي — راجع الحالة للتأكد قبل الاستئناف',
+      metricLabel: 'القرار التشغيلي',
+      metricThreshold: 'إيقاف احترازي معلَّق',
     };
   }
   return {

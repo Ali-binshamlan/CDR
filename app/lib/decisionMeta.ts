@@ -31,6 +31,14 @@ export const ALERT_KIND_WEIGHT: Record<string, number> = {
   // السبب تنظيمياً أو فيزيائياً.
   SAFETY_BREACH: 4,
   COMPLIANCE_VIOLATION: 4,
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
+  // والاحترازي"، راجع migration 202608110020 الكامل): kind مستقل جديد —
+  // إيقاف احترازي معلَّق (pendingConfirmation=true، operationalDecision=
+  // PROTECTIVE_STOP) لم يعد يُصنَّف SAFETY_BREACH. النشاط متوقف فعلياً الآن
+  // (نفس أثر mandatoryStop=true التشغيلي)، فيبقى وزنه أعلى من DUST/أي تحذير
+  // آخر — لكن أقل من الإيقاف المؤكَّد قطعياً (SAFETY_BREACH/COMPLIANCE_VIOLATION)
+  // لتمييز عدم اليقين الفعلي في الواجهة (قد يتحول لاحقاً إلى ALLOW).
+  PROTECTIVE_STOP: 3,
   DUST: 3,
   // تنبيه استباقي PM10 (300-339 ميكروجرام/م³، قبل حد المخالفة التنظيمي
   // 340) — أخطر من "نشاط بلا قرار" لكن أقل من DUST/SAFETY_BREACH الفعليين.
@@ -56,6 +64,10 @@ export function alertKindToDecision(kind: string): Decision {
   switch (kind) {
     case 'SAFETY_BREACH': return 'stopped';
     case 'COMPLIANCE_VIOLATION': return 'stopped';
+    // إيقاف احترازي معلَّق — النشاط متوقف فعلياً الآن (نفس أثر mandatoryStop
+    // التشغيلي)، فيُصنَّف 'stopped' كالإيقاف المؤكَّد، لا 'postpone'/'caution'
+    // (تصنيفان أخف لا يعكسان أن النشاط متوقف بالفعل هذه اللحظة).
+    case 'PROTECTIVE_STOP': return 'stopped';
     case 'DUST': return 'postpone';
     case 'COMPLIANCE_RESTRICTION': return 'restricted';
     case 'COMPLIANCE_ADVISORY': return 'caution';
@@ -81,6 +93,7 @@ export const alertKindLabelAr: Record<string, string> = {
   BEFORE_START: 'بدء النشاط الآن',
   DUST: 'عاصفة غبارية محتملة',
   SAFETY_BREACH: 'تجاوز حدود السلامة',
+  PROTECTIVE_STOP: 'إيقاف احترازي معلَّق (بانتظار تأكيد)',
   COMPLIANCE_VIOLATION: 'مخالفة تنظيمية (امتثال الغبار)',
   COMPLIANCE_RESTRICTION: 'تقييد تنظيمي (امتثال الغبار)',
   COMPLIANCE_ADVISORY: 'تنبيه استباقي (امتثال الغبار)',

@@ -203,4 +203,54 @@ describe('GET /api/cron/alert-outbox-worker', () => {
       expect(rpcCalls.some((c) => c.fn === 'create_alert_atomic')).toBe(false);
     });
   });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "Outbox
+  // يخلط الإيقاف الإلزامي والاحترازي"): PROTECTIVE_STOP يجب أن يُنتج نصاً
+  // منفصلاً تماماً عن "إيقاف إلزامي" (SAFETY_BREACH) — لا يُعامَل بنفس
+  // deriveAlertMessage القديمة التي كانت تُسمّي كليهما "إيقافاً إلزامياً".
+  describe('PROTECTIVE_STOP يُعامَل بنص منفصل عن SAFETY_BREACH (اختبار قبول صريح)', () => {
+    it("kind='PROTECTIVE_STOP' → نص التنبيه يذكر 'احترازي معلَّق'، لا 'إيقاف إلزامي'", async () => {
+      claimedRows = [baseRow({ kind: 'PROTECTIVE_STOP', payload: { shortReasonAr: 'قيد التأكيد' } })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const createCall = rpcCalls.find((c) => c.fn === 'create_alert_atomic');
+      expect(createCall).toBeDefined();
+      const message = createCall!.args.p_message as string;
+      expect(message).toContain('احترازي معلَّق');
+      expect(message).not.toContain('إيقاف إلزامي');
+      expect(createCall!.args.p_kind).toBe('PROTECTIVE_STOP');
+    });
+
+    it("kind='SAFETY_BREACH' → نص التنبيه يبقى 'إيقاف إلزامي' كالسابق (لا تراجع في السلوك القديم لهذا النوع تحديداً)", async () => {
+      claimedRows = [baseRow({ kind: 'SAFETY_BREACH', payload: { shortReasonAr: 'تجاوز' } })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const createCall = rpcCalls.find((c) => c.fn === 'create_alert_atomic');
+      const message = createCall!.args.p_message as string;
+      expect(message).toContain('إيقاف إلزامي');
+    });
+
+    it("kind='PROTECTIVE_STOP' → p_viewer_message يبقى null (نفس معاملة SAFETY_BREACH/COMPLIANCE_RESTRICTION، ليس COMPLIANCE_VIOLATION)", async () => {
+      claimedRows = [baseRow({ kind: 'PROTECTIVE_STOP' })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const createCall = rpcCalls.find((c) => c.fn === 'create_alert_atomic');
+      expect(createCall!.args.p_viewer_message).toBeNull();
+    });
+
+    it("payload.mandatoryStop كـboolean حقيقي (لا نص) لا يكسر deriveAlertMessage — القيمة غير مقروءة فعلياً هناك، فقط النوع يجب أن يقبل boolean", async () => {
+      claimedRows = [
+        baseRow({ kind: 'SAFETY_BREACH', payload: { shortReasonAr: 'سبب', mandatoryStop: true } }),
+      ];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.results[0].ok).toBe(true);
+    });
+  });
 });
