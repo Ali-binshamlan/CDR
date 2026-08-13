@@ -785,6 +785,27 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // على وحدات A6 (خلاطات)/A4/كسارات إن وُجدت، أو يرسل صفاً واحداً لبقية
   // الأنشطة. كل وحدة كسارة/خلاطة تُحفظ كصف مستقل بموقعها الخاص، بنفس نمط
   // الحفظ متعدد الصفوف المستخدم أصلاً للخلاطات وأسطح التوقف.
+  //
+  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي:
+  // "القرار الرسمي لمجموعة نشاط لها أكثر من dust profile يمكن أن يعتمد على
+  // الوحدة التي تفوز عشوائياً في التزامن، بدلاً من حفظ أسوأ قرار دائماً"):
+  // كل الوحدات (خلاطات/كسارات/أسطح متوقفة) كانت تشترك في نفس baseInsert.
+  // activity_group_id (currentActivityGroupId الواحد للنشاط بأكمله) —
+  // persistDustEvaluations/persistDustComplianceEvaluations (dustEvaluation.ts)
+  // تعالج كل وحدة بمعزل تام ثم تكتب بالتوازي (Promise.all) على نفس الصف
+  // current_dust_decisions/current_dust_compliance_decisions (مفتاحه
+  // activity_group_id وحده) عبر compare-and-swap — الحماية هذه تمنع فقط
+  // "كتابة قديمة تدهس جديدة لنفس الوحدة عبر الزمن"، لا تحل "أي وحدة من عدة
+  // وحدات مختلفة الآن يجب أن يفوز قرارها؟". الفائز الفعلي هو من نجح في
+  // الـCAS أولاً بصرف النظر عن شدة قراره — خلاطة مخالفة صراحة قد "تخسر
+  // السباق" أمام خلاطة ملتزمة فيظهر القرار الرسمي "ملتزم" رغم مخالفة فعلية
+  // غير مرئية. لا يوجد أي منطق تجميع "أسوأ بين الوحدات" في أي مكان آخر.
+  //
+  // الإصلاح الجذري (بدل بناء منطق دمج/ترجيح شدة معقّد): كل وحدة تأخذ
+  // activity_group_id مستقلاً خاصاً بها بدل مشاركة معرّف النشاط الواحد —
+  // فتصبح كل وحدة نشاطاً مستقلاً تماماً بقراره الخاص، لا تعارض تزامن ممكن
+  // بين وحدات مختلفة إطلاقاً (نشاط بوحدة واحدة فقط، الحالة الغالبة، لا يتأثر
+  // بتاتاً — لا يزال يحمل نفس activity_group_id الأصلي).
   const submitRegulatoryEntry = async (
     item: RegulatoryActivityItem,
     dailyStartTime: string,
@@ -796,11 +817,20 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     const fields = item.fields;
     const units = { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits };
     const baseInsert = buildDustBaseInsert(item, dailyStartTime, durationHours, aeiScore, aeiStatus, dailyHours);
+    // معرّف فرعي فريد لكل وحدة عند تعدد الوحدات — وحدة وحيدة (unitIndex=0
+    // وطول القائمة=1) تحتفظ بـactivity_group_id الأصلي حرفياً، بلا أي تغيير
+    // في سلوك الحالة الشائعة (نشاط بوحدة واحدة).
+    const unitGroupId = (unitIndex: number, totalUnits: number): string | null =>
+      totalUnits > 1 ? `${baseInsert.activity_group_id}-u${unitIndex + 1}` : baseInsert.activity_group_id;
+
     if (fields.regulatoryActivity === 'BATCHING_PLANT') {
-      for (const unit of units.batchingUnits) {
+      const totalUnits = units.batchingUnits.length;
+      for (let i = 0; i < totalUnits; i++) {
+        const unit = units.batchingUnits[i];
         await apiClient.post('/dust-profiles', {
           insert: {
             ...baseInsert,
+            activity_group_id: unitGroupId(i, totalUnits),
             batching_lat: unit.batchingLat === '' ? null : Number(unit.batchingLat),
             batching_lng: unit.batchingLng === '' ? null : Number(unit.batchingLng),
             silos_sealed: unit.silosSealed,
@@ -812,10 +842,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         });
       }
     } else if (fields.regulatoryActivity === 'IDLE_SURFACE') {
-      for (const unit of units.idleSurfaceUnits) {
+      const totalUnits = units.idleSurfaceUnits.length;
+      for (let i = 0; i < totalUnits; i++) {
+        const unit = units.idleSurfaceUnits[i];
         await apiClient.post('/dust-profiles', {
           insert: {
             ...baseInsert,
+            activity_group_id: unitGroupId(i, totalUnits),
             idle_days: unit.idleDays === '' ? null : Number(unit.idleDays),
             idle_surface_stabilized: unit.idleSurfaceStabilized,
             idle_surface_cover_intact: unit.idleSurfaceCoverIntact,
@@ -823,10 +856,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         });
       }
     } else if (fields.regulatoryActivity === 'CRUSHER') {
-      for (const unit of units.crusherUnits) {
+      const totalUnits = units.crusherUnits.length;
+      for (let i = 0; i < totalUnits; i++) {
+        const unit = units.crusherUnits[i];
         await apiClient.post('/dust-profiles', {
           insert: {
             ...baseInsert,
+            activity_group_id: unitGroupId(i, totalUnits),
             crusher_lat: unit.crusherLat === '' ? null : Number(unit.crusherLat),
             crusher_lng: unit.crusherLng === '' ? null : Number(unit.crusherLng),
             crusher_distance_to_receptor_m: unit.crusherDistanceToReceptorM === '' ? null : Number(unit.crusherDistanceToReceptorM),

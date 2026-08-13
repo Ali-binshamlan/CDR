@@ -68,20 +68,15 @@ const COMPLIANCE_RELEVANT_CONTROL_KEYS = new Set<keyof DustForm>(['dustScreensAv
 // في dust-engine/engine.ts)، ولا علاقة لها بمحرك الامتثال التنظيمي إطلاقاً.
 const SHOW_CONTROL_MEASURES_SECTION = false;
 
-// خطأ مكتشَف: كانت هذي القائمة تقصر خيار "عملية مغلقة" على 3 أنشطة فقط
-// (DEMOLITION/CRUSHER/STONE_CUTTING)، فيختفي الخيار عن كل نشاط آخر رغم أن
-// isEnclosedExemptFromHighWind في dust-compliance-engine/engine.ts (سطر
-// ~270-278) يستخدم isEnclosedOperation كإعفاء من بوابة إيقاف الرياح >25
-// كم/س لكل الأنشطة المولّدة للغبار بلا استثناء (EARTHWORKS/SITE_TRAFFIC/
-// MATERIAL_HANDLING_STOCKPILE/CD_WASTE_TRANSPORT/IDLE_SURFACE/OTHER أيضاً،
-// لا الثلاثة فقط) — فكان أي نشاط مغلق فعلياً خارج هذي الثلاثة يُعامَل معاملة
-// "مكشوف" قسراً بلا أي وسيلة لتصحيح ذلك من الواجهة.
-//
-// BATCHING_PLANT وحدها مستثناة عمداً: إعفاء بوابة الرياح لمحطة الخلط لا
-// يعتمد على isEnclosedOperation إطلاقاً (راجع isEnclosedExemptFromHighWind)
-// — يكفي إحكام إغلاق الصوامع (silosSealed، مدخل موجود أصلاً لكل وحدة خلط) +
-// فلتر PM10 ≥99%، طلب صريح من المستخدم بعدم اشتراط إغلاق المحطة فيزيائياً.
-const ENCLOSED_OPTION_EXCLUDED_ACTIVITIES = new Set(['BATCHING_PLANT']);
+// خطأ واجهة مكتشَف ومُصلَح (طلب صريح من المستخدم — "الزر ما فيه فايدة
+// أصلاً"): checkbox "عملية مغلقة" (isEnclosedOperation) كان يُعرَض لكل
+// الأنشطة ما عدا محطة الخلط، موحياً بإعفاء من بوابة إيقاف الرياح >25 كم/س
+// — لكن isEnclosedExemptFromHighWind الفعلية في dust-compliance-engine/
+// engine.ts مقفولة حصراً بـregulatoryActivity==='BATCHING_PLANT'؛
+// isEnclosedOperation وحدها لا تُعفي أي نشاط آخر إطلاقاً (راجع تعليق
+// dust-compliance-engine/types.ts الكامل). الحقل والـcheckbox حُذفا معاً —
+// محطة الخلط (المسار الوحيد الحقيقي للإعفاء) تعتمد على silosSealed/
+// pm10FilterEfficiencyPercent في نموذجها الخاص، لا على هذا الحقل.
 
 // -----------------------------------------------------------------------
 // تنبيهات عامة (نصية فقط، لا إدخال) لكل نشاط تنظيمي — بديل حقول الضوابط
@@ -227,7 +222,6 @@ export function DustStep({
 
           {regulatoryActivity && (() => {
             const item = regulatoryActivity;
-            const showEnclosedOption = !ENCLOSED_OPTION_EXCLUDED_ACTIVITIES.has(item.fields.regulatoryActivity as string);
             const alerts = GENERAL_ALERTS_AR[item.fields.regulatoryActivity as string] ?? [];
             const hasLocation = typeof item.lat === 'number' && typeof item.lng === 'number';
 
@@ -760,26 +754,23 @@ export function DustStep({
                         </div>
                       )}
 
-                      {/* isEnclosedOperation يبقى مدخلاً حقيقياً (لا تنبيهاً
-                          نصياً) لأنه يتحكم مباشرة في بوابة إيقاف إلزامي مرتبطة
-                          ببيانات الرياح الحية (GATE-WIND-ABOVE-25-004،
-                          DEMO-WIND-STOP-001، وقواعد الكسارة/قطع الأحجار) — هذا
-                          سؤال بنيوي عن طبيعة العملية نفسها، وليس تفصيل ضبط
-                          يمكن تعميمه كتنبيه عام. */}
-                      {showEnclosedOption && (
-                        <div className="flex items-center gap-2">
-                          <input
-                            id={`enclosed-${item.id}`}
-                            type="checkbox"
-                            checked={item.fields.isEnclosedOperation}
-                            onChange={(e) => updateRegulatoryActivityField(item.id, 'isEnclosedOperation', e.target.checked)}
-                            className="w-4 h-4 accent-orange-500"
-                          />
-                          <label htmlFor={`enclosed-${item.id}`} className="text-sm text-[#061B40]">
-                            عملية مغلقة (محكمة الإغلاق)
-                          </label>
-                        </div>
-                      )}
+                      {/* خطأ واجهة مكتشَف ومُصلَح (طلب صريح من المستخدم —
+                          "الزر ما فيه فايدة أصلاً"): checkbox "عملية مغلقة"
+                          كان يُعرَض لكل الأنشطة ما عدا محطة الخلط، موحياً
+                          بأن تفعيله يُعفي النشاط من بوابة إيقاف الرياح >25
+                          كم/س (GATE-WIND-ABOVE-25-004) — لكن isEnclosedExemptFromHighWind
+                          الفعلية في dust-compliance-engine/engine.ts مقفولة
+                          حصراً بـregulatoryActivity==='BATCHING_PLANT'؛
+                          isEnclosedOperation وحدها لا تُعفي أي نشاط آخر من
+                          أي بوابة رياح إطلاقاً (راجع تعليق dust-compliance-
+                          engine/types.ts الكامل للتفصيل). التعليق السابق هنا
+                          كان مبنياً على فهم قديم للمحرك سبق إصلاحه — تفعيل
+                          هذا الـcheckbox لهدم/حفر/كسارة/إلخ لم يكن يغيّر أي
+                          قرار فعلي، فقط يُضلِّل المستخدم بإيهامه بإجراء
+                          مؤثر. حُذف بالكامل — محطة الخلط (المسار الوحيد
+                          الحقيقي للإعفاء) تعتمد على حقول منفصلة تماماً
+                          (silosSealed/pm10FilterEfficiencyPercent) في
+                          نموذجها الخاص، لا على هذا الحقل. */}
 
                       {item.fields.regulatoryActivity === 'DEMOLITION' && (
                         <div>
