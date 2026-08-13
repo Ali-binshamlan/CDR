@@ -178,3 +178,42 @@ export async function refreshRuleParameters(supabaseAdmin: SupabaseClient): Prom
     // فشل الاستعلام (شبكة/DB) لا يُسقط التقييم — يبقى current/currentVersionIds كما هما.
   }
 }
+
+// =============================================================
+// قفل زمني صريح (async mutex) — إصلاح سباق تزامن حرج (طلب صريح من
+// المستخدم — "لقطة القواعد قابلة لسباق تزامن، ولقطة المدخلات لا تكفي
+// لإعادة إنتاج القرار تاريخياً"):
+//
+// current/currentVersionIds أعلاه متغيّرات module-level مشتركة على مستوى
+// الـprocess بأكمله — لا معزولة لكل دورة تقييم. evaluateProject تُستدعى من
+// 3 مصادر مستقلة تماماً (POST /evaluate، devices/ingest عند كل قراءة جهاز،
+// scheduler-worker الدوري)، وبينها قد تتشابك على نفس الـinstance
+// (serverless warm reuse). بين refreshRuleParameters() ولحظة استهلاك
+// getRuleParameters() الفعلي داخل computeDustResults/computeDustComplianceResults
+// (rulebook.ts/dust-engine/engine.ts) يقع عدة await حقيقية (استعلامات DB:
+// evaluation_runs، project_dust_profiles، project_shifts، sensitive_receptors)
+// — نقاط توقف يمكن لـevent loop أن يُشغِّل خلالها دورة evaluateProject
+// أخرى متزامنة، والتي بدورها تستدعي refreshRuleParameters الخاصة بها
+// وتُغيِّر current/currentVersionIds العالميتين *قبل* أن تصل الدورة الأولى
+// فعلياً لاستهلاكهما. النتيجة: rule_parameter_version_snapshot المحفوظة
+// نهائياً في final_decisions قد تشير لمعرّفات نسخ لا تطابق فعلياً القيم
+// التي استُخدمت لحساب dvi/compliance في تلك الدورة بالذات — بصمة كاذبة
+// تُفشل أي محاولة إعادة إنتاج/تدقيق لاحقة.
+//
+// الحل: قفل صريح يضمن تنفيذ متسلسل (لا متشابك) لكل القسم الحرج (من
+// refreshRuleParameters حتى نهاية استهلاك القيم/persist) عبر كل دورات
+// evaluateProject المتزامنة — لا حاجة لتمرير RuleParameters صراحةً عبر كل
+// طبقة استدعاء (rulebook.ts/engine.ts/dust-engine تبقى بتوقيعاتها الحالية
+// بلا أي تغيير)؛ يكفي ضمان أن current لا تتبدّل تحت أقدام دورة قيد التنفيذ.
+// runQueue Promise chain بسيط (لا مكتبة خارجية) — كل استدعاء withRuleParametersLock
+// ينتظر دوره في الطابور، لا حجم قفل مشترك معقّد.
+let runQueue: Promise<unknown> = Promise.resolve();
+
+export function withRuleParametersLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = runQueue.then(fn, fn);
+  // نتجاهل نتيجة/خطأ هذا الاستدعاء تحديداً عند بناء سلسلة الانتظار التالية
+  // (catch(() => {})) — فشل دورة تقييم واحدة يجب ألا يمنع الدورة التالية في
+  // الطابور من البدء؛ الخطأ نفسه لا يزال يصل للمستدعي عبر result المُرجَعة.
+  runQueue = result.catch(() => {});
+  return result;
+}

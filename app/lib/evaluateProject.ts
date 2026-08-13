@@ -5,7 +5,7 @@ import {
   persistActivityDecisionsAtomic,
   hasDustProfileWindowEnded,
 } from '@/app/lib/dustEvaluation';
-import { buildSensitiveReceptor, refreshRuleParameters, getActiveParameterVersionIds } from '@/app/utils/dust-compliance-engine';
+import { buildSensitiveReceptor, refreshRuleParameters, getActiveParameterVersionIds, withRuleParametersLock } from '@/app/utils/dust-compliance-engine';
 import { checkDustActivities } from '@/app/api/alerts/generate/route';
 
 // منطق إعادة تقييم مشروع كامل (DVI + Compliance + FinalDecision) — مُستخرَج
@@ -80,92 +80,119 @@ export async function evaluateProject(
       return { success: true, persisted: 0 };
     }
 
-    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا نظام إدارة قواعد حقيقي؛ لا
-    // نشر، لا rollback"): يُحدَّث getRuleParameters() هنا أولاً، قبل
-    // computeDustResults (DVI، يستهلك BATCHING_PM10_FILTER_MIN_PERCENT()
-    // مباشرة) وcomputeDustComplianceResults كليهما — لا فقط الثاني — حتى لا
-    // يُقرأ DVI بقيمة افتراضية/قديمة بينما Compliance يُقرأ بأحدث نسخة
-    // منشورة في نفس دورة التقييم الواحدة (كانا سيتباعدان لو تأخر التحديث
-    // لبداية computeDustComplianceResults وحدها).
-    await refreshRuleParameters(supabaseAdmin);
-    // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات مع القرار"):
-    // بصمة نسخ rule_parameter_versions.id الفعلية وقت هذه الدورة تحديداً —
-    // تُلتقَط هنا مباشرة بعد refresh (نفس لحظة evaluationRunId أدناه)، لا
-    // في persistActivityDecisionsAtomic لاحقاً حيث قد تكون current تبدَّلت
-    // بالفعل بدورة تقييم متزامنة أخرى.
-    const activeParameterVersionIds = getActiveParameterVersionIds();
+    // خطأ سباق تزامن حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لقطة
+    // القواعد قابلة لسباق تزامن، ولقطة المدخلات لا تكفي لإعادة إنتاج القرار
+    // تاريخياً"): current/currentVersionIds في ruleParameters.ts متغيّرات
+    // module-level مشتركة على مستوى الـprocess بأكمله — evaluateProject
+    // تُستدعى من 3 مصادر مستقلة (POST /evaluate، devices/ingest، scheduler-
+    // worker) قد تتشابك على نفس الـinstance. بين refreshRuleParameters()
+    // ولحظة الاستهلاك الفعلي داخل computeDustResults/computeDustComplianceResults
+    // (عدة await من استعلامات DB تتخللها) كانت نافذة سباق حقيقية: دورة
+    // تقييم متزامنة أخرى قد تستدعي refreshRuleParameters الخاصة بها وتُغيِّر
+    // current/currentVersionIds *قبل* أن تصل هذه الدورة فعلياً لاستهلاكهما
+    // — فتُحفَظ rule_parameter_version_snapshot تشير لمعرّفات نسخ لا تطابق
+    // فعلياً القيم المستخدَمة في الحساب، بصمة كاذبة تُفشل أي إعادة
+    // إنتاج/تدقيق لاحقة. withRuleParametersLock (قفل تسلسلي صريح، async
+    // mutex) يضمن أن لا تتشابك دورتا تقييم متزامنتان إطلاقاً من refresh حتى
+    // نهاية persist — بلا حاجة لتمرير RuleParameters عبر كل طبقة استدعاء
+    // (rulebook.ts/engine.ts/dust-engine تبقى بتوقيعاتها الحالية بلا تغيير).
+    type CriticalSectionResult =
+      | { earlyReturn: EvaluateProjectResult }
+      | {
+          evaluationRunId: string | null;
+          dustResults: Awaited<ReturnType<typeof computeDustResults>>;
+          persistResults: Awaited<ReturnType<typeof persistActivityDecisionsAtomic>>;
+        };
+    const criticalSection = await withRuleParametersLock<CriticalSectionResult>(async () => {
+      // يُحدَّث getRuleParameters() هنا أولاً، قبل computeDustResults (DVI،
+      // يستهلك BATCHING_PM10_FILTER_MIN_PERCENT() مباشرة) وcomputeDustComplianceResults
+      // كليهما — لا فقط الثاني — حتى لا يُقرأ DVI بقيمة افتراضية/قديمة بينما
+      // Compliance يُقرأ بأحدث نسخة منشورة في نفس دورة التقييم الواحدة.
+      await refreshRuleParameters(supabaseAdmin);
+      // بصمة نسخ rule_parameter_versions.id الفعلية وقت هذه الدورة تحديداً —
+      // تُلتقَط هنا مباشرة بعد refresh، ضمن نفس القفل الذي يحمي الاستهلاك
+      // الفعلي أدناه بأكمله.
+      const activeParameterVersionIds = getActiveParameterVersionIds();
 
-    // القسم 11.2 — Evaluation Run: يربط كل دورة تقييم فعلية بمعرّف واحد،
-    // بصرف النظر عن مصدر التحفيز. as_of هو لحظة بداية هذه الدورة تحديداً
-    // (لا وقت الحفظ لاحقاً) — يسمح لاحقاً بإعادة إنتاج "ما كانت الحالة عليه
-    // وقت هذا التقييم بالضبط" حتى لو تغيّرت البيانات بعده.
-    const asOf = new Date().toISOString();
-    const { data: runRow } = await supabaseAdmin
-      .from('evaluation_runs')
-      .insert({ project_id: projectId, trigger_type: normalizeTriggerType(triggeredBy), as_of: asOf, status: 'RUNNING' })
-      .select('id')
-      .single();
-    const evaluationRunId = runRow?.id ?? null;
+      // القسم 11.2 — Evaluation Run: يربط كل دورة تقييم فعلية بمعرّف واحد،
+      // بصرف النظر عن مصدر التحفيز. as_of هو لحظة بداية هذه الدورة تحديداً
+      // (لا وقت الحفظ لاحقاً) — يسمح لاحقاً بإعادة إنتاج "ما كانت الحالة عليه
+      // وقت هذا التقييم بالضبط" حتى لو تغيّرت البيانات بعده.
+      const asOf = new Date().toISOString();
+      const { data: runRow } = await supabaseAdmin
+        .from('evaluation_runs')
+        .insert({ project_id: projectId, trigger_type: normalizeTriggerType(triggeredBy), as_of: asOf, status: 'RUNNING' })
+        .select('id')
+        .single();
+      const evaluationRunId = runRow?.id ?? null;
 
-    const [{ data: dustProfilesRaw }, { data: projectShifts }] = await Promise.all([
-      // archived_at is null — نشاط مؤرشَف (راجع DELETE في app/api/activities/
-      // route.ts، الأرشفة حلّت محل الحذف الفعلي) يجب ألا يدخل دورة تقييم حية
-      // جديدة، رغم بقاء أدلته التاريخية قابلة للقراءة دائماً في مكان آخر.
-      supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).is('archived_at', null),
-      supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
-    ]);
-    project.shifts = projectShifts || [];
+      const [{ data: dustProfilesRaw }, { data: projectShifts }] = await Promise.all([
+        // archived_at is null — نشاط مؤرشَف (راجع DELETE في app/api/activities/
+        // route.ts، الأرشفة حلّت محل الحذف الفعلي) يجب ألا يدخل دورة تقييم حية
+        // جديدة، رغم بقاء أدلته التاريخية قابلة للقراءة دائماً في مكان آخر.
+        supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).is('archived_at', null),
+        supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
+      ]);
+      project.shifts = projectShifts || [];
 
-    // خطأ مكتشَف ومُصلَح (المستخدم لاحظ أن نشاطاً تعرضه الواجهة كـ"انتهى
-    // النشاط" — planned_date/planned_time/duration_hours انقضت نافذته
-    // الزمنية — استمر يستقبل قرارات جديدة في final_decisions): الواجهة
-    // (MultiIndicatorActivityBox.tsx) تحسب status==='past' وتُخفي القرار
-    // الحي بصرياً فقط، لكن evaluateProject لم يكن يستبعد هذه الصفوف من
-    // التقييم الفعلي على الخادم إطلاقاً. hasDustProfileWindowEnded (بخلاف
-    // الاسم القديم isDustProfileWindowActive) تحسب نهاية مدى النشاط الكلي
-    // عبر أيام العمل الفعلية (لا فترة متصلة بلا انقطاع ليلي — راجع
-    // migration 202608110012 وتعليقها الكامل في dustEvaluation.ts) —
-    // نشاط 3 أيام بدوام 8 ساعات يبقى مؤهَّلاً للتقييم طوال الأيام الثلاثة،
-    // لا يُستبعَد إلا بعد انتهاء آخر يوم عمل فعلياً.
-    const workDaysList = Array.isArray(project.work_days_list) ? (project.work_days_list as string[]) : undefined;
-    const nowMs = Date.now();
-    const dustProfiles = (dustProfilesRaw || []).filter((row) => !hasDustProfileWindowEnded(row, workDaysList, nowMs));
+      // خطأ مكتشَف ومُصلَح (المستخدم لاحظ أن نشاطاً تعرضه الواجهة كـ"انتهى
+      // النشاط" — planned_date/planned_time/duration_hours انقضت نافذته
+      // الزمنية — استمر يستقبل قرارات جديدة في final_decisions): الواجهة
+      // (MultiIndicatorActivityBox.tsx) تحسب status==='past' وتُخفي القرار
+      // الحي بصرياً فقط، لكن evaluateProject لم يكن يستبعد هذه الصفوف من
+      // التقييم الفعلي على الخادم إطلاقاً. hasDustProfileWindowEnded (بخلاف
+      // الاسم القديم isDustProfileWindowActive) تحسب نهاية مدى النشاط الكلي
+      // عبر أيام العمل الفعلية (لا فترة متصلة بلا انقطاع ليلي — راجع
+      // migration 202608110012 وتعليقها الكامل في dustEvaluation.ts) —
+      // نشاط 3 أيام بدوام 8 ساعات يبقى مؤهَّلاً للتقييم طوال الأيام الثلاثة،
+      // لا يُستبعَد إلا بعد انتهاء آخر يوم عمل فعلياً.
+      const workDaysList = Array.isArray(project.work_days_list) ? (project.work_days_list as string[]) : undefined;
+      const nowMs = Date.now();
+      const dustProfiles = (dustProfilesRaw || []).filter((row) => !hasDustProfileWindowEnded(row, workDaysList, nowMs));
 
-    const dustResults = await computeDustResults(dustProfiles, project, supabaseAdmin);
-    if (dustResults.length === 0) {
-      await completeEvaluationRun(evaluationRunId, { status: 'SUCCEEDED', activitiesEvaluated: 0, activitiesFailed: 0 });
-      return { success: true, persisted: 0 };
+      const dustResults = await computeDustResults(dustProfiles, project, supabaseAdmin);
+      if (dustResults.length === 0) {
+        await completeEvaluationRun(evaluationRunId, { status: 'SUCCEEDED', activitiesEvaluated: 0, activitiesFailed: 0 });
+        return { earlyReturn: { success: true, persisted: 0 } as EvaluateProjectResult };
+      }
+
+      const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
+        .from('sensitive_receptors')
+        .select('id, name, receptor_type, lat, lng');
+      if (sensitiveReceptorsError) {
+        await completeEvaluationRun(evaluationRunId, { status: 'FAILED', error: sensitiveReceptorsError.message });
+        return { earlyReturn: { success: false, persisted: 0, error: sensitiveReceptorsError.message } as EvaluateProjectResult };
+      }
+      const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
+
+      const dustComplianceResults = await computeDustComplianceResults(
+        dustProfiles || [],
+        project,
+        dustResults,
+        sensitiveReceptors,
+        supabaseAdmin,
+        true,
+        evaluationAtMs
+      );
+
+      const persistResults = await persistActivityDecisionsAtomic(
+        supabaseAdmin,
+        projectId,
+        dustResults,
+        dustComplianceResults,
+        triggeredBy,
+        triggeredBy,
+        evaluationRunId,
+        activeParameterVersionIds
+      );
+
+      return { evaluationRunId, dustResults, persistResults };
+    });
+
+    if ('earlyReturn' in criticalSection) {
+      return criticalSection.earlyReturn;
     }
-
-    const { data: sensitiveReceptorRows, error: sensitiveReceptorsError } = await supabaseAdmin
-      .from('sensitive_receptors')
-      .select('id, name, receptor_type, lat, lng');
-    if (sensitiveReceptorsError) {
-      await completeEvaluationRun(evaluationRunId, { status: 'FAILED', error: sensitiveReceptorsError.message });
-      return { success: false, persisted: 0, error: sensitiveReceptorsError.message };
-    }
-    const sensitiveReceptors = (sensitiveReceptorRows || []).map(buildSensitiveReceptor);
-
-    const dustComplianceResults = await computeDustComplianceResults(
-      dustProfiles || [],
-      project,
-      dustResults,
-      sensitiveReceptors,
-      supabaseAdmin,
-      true,
-      evaluationAtMs
-    );
-
-    const persistResults = await persistActivityDecisionsAtomic(
-      supabaseAdmin,
-      projectId,
-      dustResults,
-      dustComplianceResults,
-      triggeredBy,
-      triggeredBy,
-      evaluationRunId,
-      activeParameterVersionIds
-    );
+    const { evaluationRunId, dustResults, persistResults } = criticalSection;
 
     const allFailedActivityIds = persistResults.filter((r) => r.failed).map((r) => r.activityId);
 

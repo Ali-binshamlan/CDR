@@ -6,6 +6,7 @@ import {
   resetRuleParametersForTests,
   DEFAULT_RULE_PARAMETERS,
   getActiveParameterVersionIds,
+  withRuleParametersLock,
 } from './ruleParameters';
 
 // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
@@ -138,6 +139,79 @@ describe('ruleParameters', () => {
 
       resetRuleParametersForTests();
       expect(getActiveParameterVersionIds()).toEqual({});
+    });
+  });
+
+  // خطأ سباق تزامن حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لقطة القواعد
+  // قابلة لسباق تزامن، ولقطة المدخلات لا تكفي لإعادة إنتاج القرار تاريخياً"):
+  // withRuleParametersLock يضمن تنفيذاً تسلسلياً (لا متشابكاً) لكل القسم
+  // الحرج من refresh حتى استهلاك القيم عبر دورات evaluateProject المتزامنة
+  // — راجع تعليق evaluateProject.ts الكامل للسيناريو الفعلي (3 مصادر
+  // استدعاء مستقلة قد تتشابك على نفس الـinstance).
+  describe('withRuleParametersLock', () => {
+    it('استدعاءان متزامنان يُنفَّذان بالتسلسل — الثاني ينتظر انتهاء الأول كاملاً قبل البدء', async () => {
+      const executionOrder: string[] = [];
+      const first = withRuleParametersLock(async () => {
+        executionOrder.push('first:start');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        executionOrder.push('first:end');
+        return 'first-result';
+      });
+      const second = withRuleParametersLock(async () => {
+        executionOrder.push('second:start');
+        executionOrder.push('second:end');
+        return 'second-result';
+      });
+
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+      expect(firstResult).toBe('first-result');
+      expect(secondResult).toBe('second-result');
+      // second:start لا يظهر إلا بعد first:end — لا تشابك بينهما إطلاقاً.
+      expect(executionOrder).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
+    });
+
+    it('refreshRuleParameters + قراءة القيم داخل نفس القفل لا تتأثر بـrefresh متزامن من قفل آخر', async () => {
+      const slowSupabase = mockSupabase([{ id: 'v-slow', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 11 }]);
+      const fastSupabase = mockSupabase([{ id: 'v-fast', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 22 }]);
+
+      // القفل الأول: refresh ثم "استهلاك" متأخر (يحاكي await فعلي بين
+      // refresh والاستهلاك، مثل استعلامات DB الوسيطة في evaluateProject.ts).
+      const firstCapturedValue: { value?: number; versionId?: string } = {};
+      const first = withRuleParametersLock(async () => {
+        await refreshRuleParameters(slowSupabase);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        firstCapturedValue.value = getRuleParameters().STONE_CUTTING_WIND_STOP_KMH;
+        firstCapturedValue.versionId = getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH;
+      });
+
+      // القفل الثاني (محاولة تزامن): لولا القفل، refresh هذا كان سيُغيِّر
+      // current تحت أقدام القفل الأول أثناء انتظاره.
+      const secondCapturedValue: { value?: number; versionId?: string } = {};
+      const second = withRuleParametersLock(async () => {
+        await refreshRuleParameters(fastSupabase);
+        secondCapturedValue.value = getRuleParameters().STONE_CUTTING_WIND_STOP_KMH;
+        secondCapturedValue.versionId = getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH;
+      });
+
+      await Promise.all([first, second]);
+
+      // القفل الأول يجب أن يرى قيمته الخاصة (11/v-slow) رغم التأخير، لا
+      // قيمة القفل الثاني التي "تسرّبت" أثناء انتظاره.
+      expect(firstCapturedValue.value).toBe(11);
+      expect(firstCapturedValue.versionId).toBe('v-slow');
+      // القفل الثاني (نفّذ بعد انتهاء الأول بالكامل) يرى قيمته الخاصة.
+      expect(secondCapturedValue.value).toBe(22);
+      expect(secondCapturedValue.versionId).toBe('v-fast');
+    });
+
+    it('فشل دالة داخل القفل لا يمنع الاستدعاء التالي من البدء', async () => {
+      const failing = withRuleParametersLock(async () => {
+        throw new Error('boom');
+      });
+      await expect(failing).rejects.toThrow('boom');
+
+      const after = await withRuleParametersLock(async () => 'recovered');
+      expect(after).toBe('recovered');
     });
   });
 });

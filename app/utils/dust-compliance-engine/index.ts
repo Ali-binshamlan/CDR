@@ -24,5 +24,6 @@ export {
   DEFAULT_RULE_PARAMETERS,
   getActiveParameterVersionIds,
   resetRuleParameterVersionIdsForTests,
+  withRuleParametersLock,
 } from './ruleParameters';
 export type { RuleParameters, RuleParameterVersionSnapshot } from './ruleParameters';
