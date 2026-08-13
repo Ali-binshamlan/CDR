@@ -942,6 +942,21 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                       const hStyle = hourGated
                         ? { bg: 'bg-slate-900/5', border: 'border-slate-700', text: 'text-slate-800' }
                         : getDecisionStyle(h.decisionCategory, h.mandatoryStop);
+                      // خطأ ثقة مكتشَف ومُصلَح (طلب صريح من المستخدم — "قراءة
+                      // PM10 المستقبلية قد تنتهي إلى ALLOW مع جودة دليل OK"):
+                      // h.decisionLabelAr هنا مصدره محرك DVI الخام مباشرة (مثال
+                      // "تشغيل عادي" لـALLOW) — لا يمر عبر decideFinal/
+                      // evidenceQuality (final-decision-engine/engine.ts) الذي
+                      // يشترط mode==='LIVE_OPERATIONAL' تحديداً ليُفعِّل
+                      // evidenceUnavailable؛ شبكة hasWorkDayHourly بأكملها
+                      // mode='PLANNING' (توقّع طقس بحت عبر Open-Meteo، لا قراءة
+                      // جهاز حقيقية — راجع treatAsForecast في dust-engine/
+                      // engine.ts) فلا يظهر أي تحذير جودة دليل على مستوى
+                      // البطاقة الفردية لكل ساعة، فقط عنوان عام واحد أعلى
+                      // الشبكة كاملة ("توقعات الطقس طوال فترة الدوام") — سهل
+                      // تفويته، خصوصاً على بطاقات ALLOW الخضراء المطمئنة بصرياً.
+                      // شارة توقّع صريحة على كل بطاقة توقّعية (لا على windowEval.
+                      // hourly الحي) توضح أن هذا تقدير طقس، لا قرار مؤكَّد.
                       return (
                         <div key={h.time} className={`rounded-2xl border p-3 ${hStyle.bg} ${hStyle.border}`}>
                           <div className="flex items-center justify-between">
@@ -953,6 +968,12 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
                             </div>
                           </div>
                           <div className={`text-[11px] font-bold ${hStyle.text}`}>{h.decisionLabelAr}</div>
+
+                          {hasWorkDayHourly && !hourGated && (
+                            <div className="bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-bold px-2 py-1 rounded-md mt-1.5 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" /> توقّع طقس تقديري — ليس قراءة جهاز مؤكَّدة
+                            </div>
+                          )}
 
                           {hourGated && (
                             <div className="bg-slate-900 text-white text-[10px] font-black px-2 py-1 rounded-md mt-1.5 flex items-center gap-1">
