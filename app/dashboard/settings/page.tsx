@@ -4,7 +4,7 @@ import { useForm, useWatch, FormProvider } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import * as Yup from "yup";
 import { useState, useEffect } from "react";
-import { toast, Toaster } from "react-hot-toast";
+import { toast } from "react-hot-toast";
 import { apiClient } from "@/app/lib/apiClient";
 import {
   User,
@@ -143,7 +143,7 @@ export default function SettingsProfilePage() {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] py-8 px-4 sm:px-6 lg:px-8 font-sans" dir="rtl">
-      <Toaster position="top-center" />
+      {/* Toaster عام الآن في app/layout.tsx — راجع تعليقه للسبب الكامل. */}
 
       <div className="max-w-4xl mx-auto">
         {/* رأس الصفحة */}

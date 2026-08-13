@@ -6,7 +6,7 @@ import * as Yup from "yup";
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { toast, Toaster } from "react-hot-toast";
+import { toast } from "react-hot-toast";
 import { supabase } from '@/app/lib/supabase';
 import {
   Mail,
@@ -93,7 +93,7 @@ const onSubmit = async (data: LoginFormData) => {
       className="min-h-screen flex items-center justify-center py-4 px-4 relative overflow-hidden bg-gray-50"
       dir="rtl"
     >
-      <Toaster position="top-center" reverseOrder={false} />
+      {/* Toaster عام الآن في app/layout.tsx — راجع تعليقه للسبب الكامل. */}
 
       {/* الخلفية العامة */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">

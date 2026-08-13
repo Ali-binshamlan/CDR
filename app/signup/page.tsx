@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
 
 import { useState } from "react";
-import { toast, Toaster } from "react-hot-toast";
+import { toast } from "react-hot-toast";
 import {
   User,
   Mail,
@@ -223,7 +223,7 @@ export default function RegisterPage() {
     >
       {/* الخلفية العامة */}
 
-      <Toaster position="top-center" reverseOrder={false} />
+      {/* Toaster عام الآن في app/layout.tsx — راجع تعليقه للسبب الكامل. */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <motion.div
           initial={{ opacity: 0 }}
