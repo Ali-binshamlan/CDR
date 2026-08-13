@@ -19,8 +19,7 @@ export interface IndicatorSummary {
   reasonText?: string;
 }
 
-// DCR: activity_source مقيَّد بـ CHECK على 'dust' فقط في decision_records
-// (راجع supabase-dcr-full-schema.sql) — لا 'heat'/'crane' كما في مرقاب.
+// DCR: مصدر واحد فقط (dust) — لا 'heat'/'crane' كما في مرقاب.
 export interface UnifiedDecisionTarget {
   projectId: string;
   activityId: string;

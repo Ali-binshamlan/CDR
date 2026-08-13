@@ -47,11 +47,13 @@ interface ReportsViewProps {
   apiEndpoint?: string;
 }
 
+// status مُشتَق من final_decisions (operational_decision + mandatory_stop)
+// عبر app/lib/finalDecisionStatus.ts على الخادم — راجع تعليق fetchReportData
+// أدناه لتفاصيل هذا التحوّل من decision_records (ميزة محذوفة).
 interface RawDecisionRow {
   id: string;
   project_id: string;
-  status: string;
-  activity_source: string;
+  status: 'safe' | 'caution' | 'restricted' | 'stopped';
 }
 
 interface RawAlertRow {
@@ -79,6 +81,16 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
   // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب كان يعني كل مؤشرات
   // KPI تُصفَّر (0 أنشطة آمنة/موقوفة/تنبيهات) وجدول "لا توجد بيانات للفترة
   // المحددة" — تقرير تنفيذي قد يُقرأ كـ"كل شيء مثالي" أو "لا نشاط" خطأً.
+  //
+  // خطأ معماري مكتشَف ومُصلَح ("المكوّن الذي يحفظ decision_records مخفي،
+  // بينما التقارير تعتمد عليها؛ لذلك قد تظهر التقارير صفراً رغم وجود قرارات
+  // آلية"): decision_records كان جدول قرارات موثَّقة يدوياً فقط (زر "قرار
+  // ميداني مباشر" في DustWidgetCard — المكوّن محذوف الآن بالكامل، كان
+  // معطَّلاً فعلياً خلف {false && ...} في صفحة المشروع). القرارات الآلية
+  // الفعلية من محرك التقييم تُكتب في final_decisions حصراً، فكان بالإمكان أن
+  // يعمل النظام آلياً بالكامل ومع ذلك يعرض هذا التقرير أصفاراً تامة. الـAPI
+  // (dashboard/reports وviewer/reports) يبني الآن decisions من final_decisions
+  // مباشرة — هذا المكوّن لا يحتاج أي تعديل إضافي لأن شكل status يبقى مطابقاً.
   const [error, setError] = useState<string | null>(null);
 
   const fetchReportData = useCallback(async () => {
@@ -136,7 +148,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
   const metrics = useMemo<ReportMetrics>(() => {
     const totalActivities = filteredDecisions.length;
     const safeActivities = filteredDecisions.filter(d => d.status === 'safe' || d.status === 'caution').length;
-    const stoppedActivities = filteredDecisions.filter(d => d.status === 'stopped' || d.status === 'postpone').length;
+    const stoppedActivities = filteredDecisions.filter(d => d.status === 'stopped').length;
 
     const totalAlerts = filteredAlerts.length;
     // DCR: كل الأنشطة والتنبيهات مصدرها الغبار فقط — التنبيهات الحرجة هي
@@ -155,7 +167,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
 
     // حساب المشروع الأكثر تضرراً
     const projectImpactCount: Record<string, number> = {};
-    rawDecisions.filter(d => d.status === 'stopped' || d.status === 'postpone').forEach(d => {
+    rawDecisions.filter(d => d.status === 'stopped').forEach(d => {
       projectImpactCount[d.project_id] = (projectImpactCount[d.project_id] || 0) + 1;
     });
     let mostAffected = null;
@@ -168,7 +180,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     });
 
     // العامل المناخي السائد — DCR لا يملك سوى مصدر الغبار
-    const stoppedCount = rawDecisions.filter(d => d.status === 'stopped' || d.status === 'postpone').length;
+    const stoppedCount = rawDecisions.filter(d => d.status === 'stopped').length;
     const dominantWeatherFactor = stoppedCount > 0 ? 'انعدام الرؤية/الغبار' : 'مستقر';
 
     return { totalActivities, safeActivities, stoppedActivities, totalAlerts, criticalAlerts, mostAffectedProject: mostAffected, dominantWeatherFactor };
@@ -187,7 +199,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
       if (stat) {
         stat.total++;
         if (d.status === 'safe' || d.status === 'caution') stat.safe++;
-        if (d.status === 'stopped' || d.status === 'postpone') stat.stopped++;
+        if (d.status === 'stopped') stat.stopped++;
       }
     });
 

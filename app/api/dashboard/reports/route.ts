@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
+import { toReportDecisionRow } from '@/app/lib/finalDecisionStatus';
 
 // يستبدل fetchReportData المباشر في dashboard/reports/page.tsx
 export async function GET(request: NextRequest) {
@@ -30,10 +31,17 @@ export async function GET(request: NextRequest) {
   const endOfDay = new Date(toDate);
   endOfDay.setHours(23, 59, 59, 999);
 
+  // خطأ معماري مكتشَف ومُصلَح ("المكوّن الذي يحفظ decision_records مخفي، بينما
+  // التقارير تعتمد عليها؛ لذلك قد تظهر التقارير صفراً رغم وجود قرارات آلية"):
+  // كانت التقارير تُبنى من decision_records — جدول قرارات موثَّقة يدوياً فقط
+  // (زر "قرار ميداني مباشر" في DustWidgetCard، المكوّن نفسه محذوف الآن، كان
+  // معطَّلاً بالفعل خلف {false && ...}). القرارات الآلية الفعلية (من محرك
+  // التقييم عبر device ingest/cron) تُكتب في final_decisions فقط — لا علاقة
+  // لها بـdecision_records. التقارير الآن تُبنى من final_decisions مباشرة.
   const [decisionsRes, alertsRes] = await Promise.all([
     supabaseAdmin
-      .from('decision_records')
-      .select('id, project_id, status, activity_source')
+      .from('final_decisions')
+      .select('id, project_id, operational_decision, mandatory_stop')
       .in('project_id', projectIds)
       .gte('created_at', new Date(fromDate).toISOString())
       .lte('created_at', endOfDay.toISOString()),
@@ -49,7 +57,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     projects: dbProjects || [],
-    decisions: decisionsRes.data || [],
+    decisions: (decisionsRes.data || []).map(toReportDecisionRow),
     alerts: alertsRes.data || [],
   });
 }

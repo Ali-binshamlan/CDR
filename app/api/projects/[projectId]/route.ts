@@ -32,27 +32,6 @@ const INDICATOR_LABELS: Record<'dust', string> = {
   dust: 'الغبار والرؤية (DVI)',
 };
 
-// تحويل حالة القرار المخزنة في decision_records إلى نص عربي مناسب لعرضه كـ decisionLabel
-function decisionStatusLabel(status: string | undefined): string {
-  switch (status) {
-    case 'safe': return 'آمن للتنفيذ';
-    case 'caution': return 'التنفيذ بحذر';
-    case 'restricted': return 'مقيّد جزئياً';
-    case 'postpone': return 'مؤجَّل احترازياً';
-    case 'stopped': return 'موقوف إلزامياً';
-    default: return 'بانتظار التقييم';
-  }
-}
-
-function getRiskWeight(value: string | undefined | null): number {
-  if (!value) return 0;
-  const normalized = String(value).toUpperCase();
-  if (['STOP', 'CRITICAL', 'EXTREME', 'HIGH'].includes(normalized)) return 3;
-  if (['WARNING', 'MODERATE', 'MEDIUM', 'RESTRICT', 'CAUTION'].includes(normalized)) return 2;
-  if (['SAFE', 'LOW', 'NORMAL', 'ALLOW'].includes(normalized)) return 1;
-  return 0;
-}
-
 // ----------------------------------------------------------------------
 // الدوال المساعدة للحسابات
 // ----------------------------------------------------------------------
@@ -116,8 +95,9 @@ function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { de
 // دمج صفوف الغبار في مصفوفة أنشطة موحّدة تطابق شكل RecentActivityItem
 // المتوقع في page.tsx (activityGroupId, kinds, summaries...)
 //
-// الملخص العلوي (البانر) يعكس الآن قرار المحرك الحي مباشرةً عبر خريطة
-// dustByGroup، فإن لم تتوفر نتيجة محرك نرجع لآخر قرار موثّق في decision_records.
+// الملخص العلوي (البانر) يعكس قرار المحرك الحي مباشرةً عبر خريطة dustByGroup،
+// فإن لم تتوفر نتيجة محرك نرجع لآخر قرار مخزَّن في final_decisions
+// (finalDecisionsByGroup)، وإلا "بانتظار التقييم" (نشاط لم يُقيَّم بعد إطلاقاً).
 interface DecisionTarget {
   projectId: string;
   activityId: string;
@@ -143,7 +123,6 @@ interface RecentActivityItem {
 function buildRecentActivities(
   projectId: string,
   dustRows: DustActivityRow[],
-  decisionsMap: Map<string, string>,
   dustByGroup: Map<string, DustResultItem>,
   finalDecisionsByGroup: Map<string, StoredFinalDecisionRow>
 ): RecentActivityItem[] {
@@ -183,7 +162,6 @@ function buildRecentActivities(
     // إن لم يكن للصف activity_group_id، نعامله كنشاط مستقل بمعرّف خاص به
     // حتى لا تختلط أنشطة غير مرتبطة ببعضها تحت نفس البطاقة
     const groupId: string = row.activity_group_id || `${kind}-${row.id}`;
-    const decisionStatus = decisionsMap.get(`${kind}-${row.id}`);
 
     let acc = groups.get(groupId);
     if (!acc) {
@@ -237,13 +215,11 @@ function buildRecentActivities(
     } else if (storedDecision) {
       summaryFields = summaryFromStoredDecision(storedDecision);
     } else {
-      // لا نتيجة محرك حية ولا قرار مخزَّن (أول تقييم لم يُستدعَ evaluate
-      // عليه بعد): نرجع لآخر قرار موثّق في decision_records، وإلا "بانتظار
-      // التقييم"
+      // لا نتيجة محرك حية ولا قرار مخزَّن — نشاط لم يُستدعَ evaluate عليه بعد إطلاقاً.
       summaryFields = {
-        decisionLabel: decisionStatusLabel(decisionStatus),
-        riskWeight: getRiskWeight(decisionStatus),
-        reasonText: decisionStatus ? undefined : 'لم يصدر قرار موثّق لهذا المؤشر بعد',
+        decisionLabel: 'بانتظار التقييم',
+        riskWeight: 0,
+        reasonText: 'لم يصدر قرار موثّق لهذا المؤشر بعد',
       };
     }
 
@@ -256,8 +232,7 @@ function buildRecentActivities(
     // هدف قرار موحّد لهذا المؤشر — يفعّل أزرار الاعتماد/التأجيل في البانر
     if (engineResult) {
       const r = engineResult.windowEval.worst;
-      // اللقطة المناخية وقت القرار — تُحفظ ضمن decision_records.weather_snapshot
-      // وتُعرض في سجل القرارات.
+      // اللقطة المناخية وقت القرار — تُعرض ضمن بطاقة النشاط في الواجهة.
       const snapshot = [
         { label: 'الرؤية', value: r.visibilityKm != null ? `${r.visibilityKm} كم` : '—' },
         { label: 'الرياح الفعّالة', value: r.effectiveWindKmh != null ? `${r.effectiveWindKmh} كم/س` : '—' },
@@ -291,13 +266,8 @@ function buildRecentActivities(
     .map((acc) => {
       // إيقاف إلزامي مؤكَّد إن قال أي مؤشر بذلك — riskWeight=4 (الأسود) حصراً،
       // لا 3 (الأحمر، يشمل حالات معلَّقة/مؤقتة مثل MRQ-PM10-BLACK-PENDING-104
-      // لا يجوز معاملتها كإيقاف إلزامي نهائي). موثوق أكثر من مطابقة نص
-      // "موقوف إلزامياً"/"إيقاف إلزامي نظامي" حرفياً (decisionStatusLabel
-      // القديم لا يزال يستخدم "موقوف إلزامياً" لمسار decision_records
-      // الموثّق بلا محرك حي — يبقى مطابقاً هنا لتغطية ذلك المسار أيضاً).
-      const mandatoryStop =
-        acc.summaries.some((s) => s.riskWeight === 4) ||
-        acc.summaries.some((s) => s.decisionLabel === 'موقوف إلزامياً');
+      // لا يجوز معاملتها كإيقاف إلزامي نهائي).
+      const mandatoryStop = acc.summaries.some((s) => s.riskWeight === 4);
       const isFutureActivity = acc.windowStartIso ? new Date(acc.windowStartIso).getTime() > nowMs : false;
 
       // العنوان النهائي = كل الأنشطة التنظيمية المميّزة مدموجة (مثال:
@@ -360,7 +330,6 @@ export async function GET(
     // 2. جلب البيانات المرتبطة
     const [
       { data: dustProfiles },
-      { data: recentDecisions },
       { data: projectShifts },
       { data: projectDevices },
     ] = await Promise.all([
@@ -368,7 +337,6 @@ export async function GET(
       // route.ts) لا يجب أن يظهر في لوحة المشروع النشطة بعد أرشفته، رغم بقاء
       // صفه وأدلته التاريخية محفوظة دائماً في قاعدة البيانات.
       supabaseAdmin.from('project_dust_profiles').select('*').eq('project_id', projectId).is('archived_at', null).order('id', { ascending: false }),
-      supabaseAdmin.from('decision_records').select('activity_id, activity_source, status').eq('project_id', projectId).order('created_at', { ascending: false }),
       supabaseAdmin.from('project_shifts').select('*').eq('project_id', projectId).order('sort_order', { ascending: true }),
       supabaseAdmin.from('project_devices').select('is_active').eq('project_id', projectId),
     ]);
@@ -387,15 +355,6 @@ export async function GET(
     // buildProjectComplianceProfile (adapters.ts) يقرأ نفس الاسم دون أي
     // تعديل على توقيعه.
     project.monitoring_station_count = (projectDevices || []).filter((d: { is_active: boolean }) => d.is_active).length;
-
-    // 3. بناء خريطة القرارات
-    const latestDecisionsMap = new Map<string, string>();
-    (recentDecisions || []).forEach((d: { activity_source: string; activity_id: string; status: string }) => {
-      const key = `${d.activity_source}-${d.activity_id}`;
-      if (!latestDecisionsMap.has(key)) {
-        latestDecisionsMap.set(key, d.status);
-      }
-    });
 
     // خطأ أداء مكتشَف: computeDustResults (DVI/طقس، قد يستدعي Open-Meteo لكل
     // نشاط)، استعلام sensitive_receptors، واكتشاف مستقبِلات OSM عبر
@@ -657,16 +616,16 @@ export async function GET(
     const finalDecisionsByGroup =
       finalDecisionsByGroupForAei ?? (await fetchLatestFinalDecisions(supabaseAdmin, allActivityGroupTargets));
 
-    // 5. معالجة الأنشطة الحديثة (Recent Activities) — البانر يعكس الآن قرار
-    // المحرك الحي عبر الخريطة أعلاه، ويرجع لـ decision_records عند غيابه.
-    // نمرّر قائمة الغبار الكاملة (dustProfiles) لا المقتطعة بـ limit(6): الحد
-    // كان يقصّ صفوفاً فردية فيضيع أحياناً صف نشاط تنظيمي ضمن مجموعة تضم أكثر
-    // من نشاط (كسارة + هدم)، فيظهر عنوان المجموعة ناقصاً. buildRecentActivities
-    // يجمع حسب activity_group_id ويقصّ إلى أحدث 6 مجموعات داخلياً.
+    // 5. معالجة الأنشطة الحديثة (Recent Activities) — البانر يعكس قرار المحرك
+    // الحي عبر الخريطة أعلاه، ويرجع لآخر قرار مخزَّن في final_decisions عند
+    // غيابه. نمرّر قائمة الغبار الكاملة (dustProfiles) لا المقتطعة بـ
+    // limit(6): الحد كان يقصّ صفوفاً فردية فيضيع أحياناً صف نشاط تنظيمي ضمن
+    // مجموعة تضم أكثر من نشاط (كسارة + هدم)، فيظهر عنوان المجموعة ناقصاً.
+    // buildRecentActivities يجمع حسب activity_group_id ويقصّ إلى أحدث 6
+    // مجموعات داخلياً.
     const recentActivitiesRaw: RecentActivityItem[] = buildRecentActivities(
       projectId,
       dustProfiles || [],
-      latestDecisionsMap,
       dustByGroup,
       finalDecisionsByGroup
     );

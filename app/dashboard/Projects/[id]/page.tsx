@@ -17,9 +17,10 @@ import MultiIndicatorActivityBox, {
   IndicatorSummary,
   UnifiedDecisionTarget,
 } from '@/app/components/dashborad/projectdashborad/MultiIndicatorActivityBox';
-import DustWidgetCard from '@/app/components/dashborad/projectdashborad/Dustwidgetcard';
 import ComplianceWidgetCard from '@/app/components/dashborad/projectdashborad/Compliancewidgetcard';
 import type { ProjectRow } from '@/app/lib/dustEvaluation';
+import type { DustWindowEvaluation, DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
+import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 
 // ---------------------------------------------------------------------
 // عقد البيانات المتوقّع من الـ API لكل نشاط مُجمّع (activity group).
@@ -42,15 +43,15 @@ interface RecentActivityItem {
 
 // عنصر مصفوفة dustResults المُعادة من GET — يطابق dustResultsGrouped في
 // app/api/projects/[projectId]/route.ts، بشكل مبسَّط هنا (props فعلية
-// تحتاجها DustWidgetCard/ComplianceWidgetCard فقط) بدل استيراد الأنواع
-// الكاملة من dustEvaluation.ts (ملف خادم فقط) داخل حزمة العميل.
+// تحتاجها ComplianceWidgetCard فقط) بدل استيراد الأنواع الكاملة من
+// dustEvaluation.ts (ملف خادم فقط) داخل حزمة العميل.
 interface DustResultDisplayItem {
   activityId: string;
   activityGroupId: string;
   activityType: string;
-  windowEval: React.ComponentProps<typeof DustWidgetCard>['windowEval'];
-  aei: React.ComponentProps<typeof DustWidgetCard>['aei'];
-  hourlyForecasts?: React.ComponentProps<typeof DustWidgetCard>['hourlyForecasts'];
+  windowEval: DustWindowEvaluation;
+  aei: AeiEvaluationResult;
+  hourlyForecasts?: DviHourlyEvaluation[];
   complianceList?: React.ComponentProps<typeof ComplianceWidgetCard>['complianceList'];
   complianceHourly?: React.ComponentProps<typeof ComplianceWidgetCard>['complianceHourly'];
   unitReceptors?: React.ComponentProps<typeof ComplianceWidgetCard>['unitReceptors'];
@@ -404,26 +405,6 @@ export default function ProjectDetailsPage({
 
                     return (
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-                        {/* بطاقة مؤشر الرؤية والغبار (DVI) الفيزيائي — مخفاة
-                            مؤقتاً بطلب صريح من المستخدم؛ قرار الامتثال
-                            التنظيمي في ComplianceWidgetCard أدناه يبقى القرار
-                            الملزم المعروض. الكود محفوظ كاملاً (غير محذوف)
-                            لتفادي فقدان أي منطق عند إعادة تفعيلها لاحقاً. */}
-                        {false && dust.map((r) => (
-                          <DustWidgetCard
-                            key={`dust-${r.activityId}`}
-                            activityType={r.activityType}
-                            windowEval={r.windowEval}
-                            aei={r.aei}
-                            complianceList={r.complianceList}
-                            hourlyForecasts={r.hourlyForecasts}
-                            projectId={id}
-                            activityId={r.activityId}
-                            projectName={project.name}
-                            hideDecisionPanel
-                            hideSchedule
-                          />
-                        ))}
                         {/* بطاقة الامتثال التنظيمي (الرياض) — المؤشر الرئيسي
                             المعروض حالياً لأنشطة الغبار: قرار الامتثال +
                             قابلية التنفيذ (AEI) + توقعات ساعات الدوام القادمة. */}

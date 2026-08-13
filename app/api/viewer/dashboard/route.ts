@@ -33,7 +33,6 @@ export async function GET(request: NextRequest) {
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'viewer/dashboard alerts fetch failed') }, { status: 500 });
 
   let dustData: DustActivityRow[] = [];
-  let decisionsData: Record<string, unknown>[] = [];
   let liveActivityByProjectId: Record<
     string,
     {
@@ -55,18 +54,14 @@ export async function GET(request: NextRequest) {
     // تزال ممتدة اليوم. gte/lte يوسّعان النطاق؛ isDustProfileWithinDailyWindow
     // أدناه يبقى الفلتر الدقيق الفعلي.
     const lookbackDateStr = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-    const [dustRes, decisionsRes] = await Promise.all([
-      supabaseAdmin
-        .from('project_dust_profiles')
-        .select('*')
-        .in('project_id', projectIds)
-        .gte('planned_date', lookbackDateStr)
-        .lte('planned_date', todayStr)
-        .is('archived_at', null),
-      supabaseAdmin.from('decision_records').select('*').in('project_id', projectIds).order('created_at', { ascending: false }),
-    ]);
+    const dustRes = await supabaseAdmin
+      .from('project_dust_profiles')
+      .select('*')
+      .in('project_id', projectIds)
+      .gte('planned_date', lookbackDateStr)
+      .lte('planned_date', todayStr)
+      .is('archived_at', null);
     dustData = dustRes.data || [];
-    decisionsData = decisionsRes.data || [];
 
     // حالة النشاط الجاري الفعلية — تُحسب لكل الأنشطة الجارية الآن فعلياً
     // (لا نشاط واحد فقط)، لتلوين نقطة الخريطة بأسوأ حالة حية بين كل أنشطة
@@ -198,7 +193,6 @@ export async function GET(request: NextRequest) {
     projects: projectsData || [],
     alerts: alerts || [],
     dustActivities: dustData,
-    decisions: decisionsData,
     executionWindows: [],
     liveActivityByProjectId,
   });

@@ -12,7 +12,6 @@ import {
   Users,
   FolderKanban,
   Bell,
-  ClipboardList,
   ArrowLeft,
   ShieldAlert,
   Scale,
@@ -31,7 +30,6 @@ interface AdminStats {
   projectsByCity: Record<string, number>;
   totalActiveAlerts: number;
   alertsByKind: Record<string, number>;
-  totalDecisions: number;
 }
 
 export default function AdminOverviewPage() {
@@ -123,7 +121,6 @@ export default function AdminOverviewPage() {
     { href: '/dashboard/admin/projects', label: 'المشاريع', icon: FolderKanban, count: stats.totalProjects },
     { href: '/dashboard/admin/users', label: 'المستخدمون', icon: Users, count: stats.totalUsers },
     { href: '/dashboard/admin/alerts', label: 'التنبيهات', icon: Bell, count: stats.totalActiveAlerts },
-    { href: '/dashboard/admin/decisions', label: 'القرارات', icon: ClipboardList, count: stats.totalDecisions },
     { href: '/dashboard/admin/rules', label: 'قواعد الامتثال', icon: Scale, count: totalRulesCount },
     { href: '/dashboard/admin/provider-instances', label: 'منصات مصادر البيانات', icon: Wifi, count: undefined },
   ];

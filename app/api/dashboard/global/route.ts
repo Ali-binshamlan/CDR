@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
 
   // archived_at is null: مشاريع مؤرشفة لا تظهر على لوحة التحكم الرئيسية
   // (الخريطة/الأنشطة الحية/التنبيهات) — projectIds أدناه يشتق من هذا
-  // الاستعلام، فيُطبَّق نفس الاستثناء تلقائياً على dustData/decisionsData.
+  // الاستعلام، فيُطبَّق نفس الاستثناء تلقائياً على dustData.
   const { data: projectsData, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('*')
@@ -38,7 +38,6 @@ export async function GET(request: NextRequest) {
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/global alerts fetch failed') }, { status: 500 });
 
   let dustData: DustActivityRow[] = [];
-  let decisionsData: Record<string, unknown>[] = [];
   let liveActivityByProjectId: Record<string, { decisionLabelAr: string; shortReason: string; level: string; mandatoryStop: boolean }> = {};
 
   if (projectIds.length > 0) {
@@ -52,18 +51,14 @@ export async function GET(request: NextRequest) {
     // الدقيق الفعلي (يستبعد أي نشاط انتهى مداه فعلياً بصرف النظر عن هذا
     // النطاق الأولي الواسع).
     const lookbackDateStr = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-    const [dustRes, decisionsRes] = await Promise.all([
-      supabaseAdmin
-        .from('project_dust_profiles')
-        .select('*')
-        .in('project_id', projectIds)
-        .gte('planned_date', lookbackDateStr)
-        .lte('planned_date', todayStr)
-        .is('archived_at', null),
-      supabaseAdmin.from('decision_records').select('*').in('project_id', projectIds).order('created_at', { ascending: false }),
-    ]);
+    const dustRes = await supabaseAdmin
+      .from('project_dust_profiles')
+      .select('*')
+      .in('project_id', projectIds)
+      .gte('planned_date', lookbackDateStr)
+      .lte('planned_date', todayStr)
+      .is('archived_at', null);
     dustData = dustRes.data || [];
-    decisionsData = decisionsRes.data || [];
 
     // حالة النشاط الجاري الفعلية — تُحسب لكل الأنشطة الجارية الآن فعلياً
     // (لا نشاط واحد فقط)، لتلوين نقطة الخريطة بأسوأ حالة حية بين كل أنشطة
@@ -153,7 +148,6 @@ export async function GET(request: NextRequest) {
     projects: projectsData || [],
     alerts: alerts || [],
     dustActivities: dustData,
-    decisions: decisionsData,
     executionWindows: [],
     liveActivityByProjectId,
   });

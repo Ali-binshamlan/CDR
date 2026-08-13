@@ -14,14 +14,12 @@ export async function GET(request: NextRequest) {
     { count: totalUsers },
     { data: allProjects },
     { data: allAlerts },
-    { count: totalDecisions },
   ] = await Promise.all([
     supabaseAdmin.from('profiles').select('id', { count: 'exact', head: true }),
     // archived_at is null: إحصائيات "المشاريع حسب الحالة/المدينة" تعكس
     // المشاريع النشطة — إدراج المؤرشفة يُضخّم المجموع بلا معنى تشغيلي فعلي.
     supabaseAdmin.from('projects').select('id, city, project_status').is('archived_at', null),
     supabaseAdmin.from('alerts').select('id, kind').neq('state', 'CLOSED'),
-    supabaseAdmin.from('decision_records').select('id', { count: 'exact', head: true }),
   ]);
 
   const projects = allProjects || [];
@@ -48,7 +46,6 @@ export async function GET(request: NextRequest) {
       projectsByCity,
       totalActiveAlerts: alerts.length,
       alertsByKind,
-      totalDecisions: totalDecisions || 0,
     },
   });
 }

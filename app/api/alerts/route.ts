@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// يجلب التنبيه النشط (غير CLOSED) لنشاط محدد — يُستخدم من Dustwidgetcard.tsx.
+// يجلب التنبيه النشط (غير CLOSED) لنشاط محدد — يُستخدم من Compliancewidgetcard.tsx.
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;

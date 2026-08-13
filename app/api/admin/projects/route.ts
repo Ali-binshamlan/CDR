@@ -20,7 +20,12 @@ export async function GET(request: NextRequest) {
     supabaseAdmin.from('projects').select('*').order('created_at', { ascending: false }),
     supabaseAdmin.from('profiles').select('id, username, company_name'),
     supabaseAdmin.from('alerts').select('project_id').neq('state', 'CLOSED'),
-    supabaseAdmin.from('decision_records').select('project_id'),
+    // decisionsCount كان يُحسَب من decision_records (قرارات موثَّقة يدوياً —
+    // ميزة محذوفة بالكامل، راجع app/lib/finalDecisionStatus.ts). final_decisions
+    // هي القرارات الآلية الفعلية التي يصدرها محرك التقييم — المعنى تحوّل من
+    // "كم مرة أكّد مستخدم قراراً يدوياً" إلى "كم مرة قيّم المحرك هذا المشروع
+    // آلياً"، والعدد سيكون أعلى بكثير (final_decisions تُكتب كل دورة تقييم).
+    supabaseAdmin.from('final_decisions').select('project_id'),
   ]);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'admin/projects fetch failed') }, { status: 500 });
 
