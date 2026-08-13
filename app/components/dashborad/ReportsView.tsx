@@ -204,6 +204,94 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
 
   const projectsList = Array.from(projectsMap.entries());
 
+  // تصدير PDF تنفيذي: بلا مكتبة PDF عميلة (jsPDF لا يدعم العربية/RTL بخطوطه
+  // المدمجة افتراضياً) — نافذة طباعة مخصصة بتنسيق تقرير مستقل عن الصفحة
+  // الحالية، يختار المستخدم "حفظ كـPDF" من مربع حوار طباعة المتصفح، الذي
+  // يدعم العربية وRTL بشكل كامل عبر CSS.
+  const handleExportPdf = useCallback(() => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const generatedAt = new Date().toLocaleString('ar-SA', { calendar: 'gregory', dateStyle: 'long', timeStyle: 'short' });
+    const projectFilterLabel = projectFilter === 'ALL' ? 'جميع المشاريع' : (projectsMap.get(projectFilter) || projectFilter);
+
+    const rowsHtml = projectStats.length === 0
+      ? `<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8;">لا توجد بيانات للفترة المحددة</td></tr>`
+      : projectStats.map((s) => `
+        <tr>
+          <td>${s.projectName}</td>
+          <td style="text-align:center;">${s.total}</td>
+          <td style="text-align:center;color:#059669;">${s.safe}</td>
+          <td style="text-align:center;color:#dc2626;">${s.stopped}</td>
+          <td style="text-align:center;">${s.alerts}</td>
+          <td style="text-align:center;">${s.impactPercentage}%</td>
+        </tr>`).join('');
+
+    printWindow.document.write(`<!doctype html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8" />
+<title>التقرير التنفيذي — DCR</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; color: #061B40; padding: 32px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .meta { color: #64748b; font-size: 12px; margin-bottom: 24px; }
+  .meta div { margin-bottom: 2px; }
+  .summary { background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 12px; padding: 16px; font-size: 13px; line-height: 1.8; margin-bottom: 24px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .kpi { border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; }
+  .kpi .value { font-size: 22px; font-weight: 900; }
+  .kpi .label { font-size: 11px; color: #64748b; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid #e2e8f0; padding: 8px 10px; text-align: right; }
+  th { background: #f8fafc; font-weight: 800; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h1>التقرير التنفيذي — الامتثال التنظيمي للغبار</h1>
+  <div class="meta">
+    <div>الفترة: من ${fromDate} إلى ${toDate}</div>
+    <div>النطاق: ${projectFilterLabel}</div>
+    <div>تاريخ الإصدار: ${generatedAt}</div>
+  </div>
+  <div class="summary">
+    خلال الفترة المحددة، تم تقييم <strong>${metrics.totalActivities}</strong> نشاطاً ميدانياً.
+    نجح النظام في تأمين <strong>${metrics.safeActivities}</strong> نشاطاً لاستمرارية العمل،
+    بينما تطلب الأمر التدخل وإيقاف/تأجيل <strong>${metrics.stoppedActivities}</strong> نشاطاً لضمان الامتثال والسلامة.
+    ${metrics.mostAffectedProject && projectFilter === 'ALL' ? `المشروع الأكثر تضرراً هو <strong>${metrics.mostAffectedProject}</strong>. ` : ''}
+    العامل ذو التأثير الأكبر على تعطل الأعمال كان <strong>${metrics.dominantWeatherFactor}</strong>.
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="value">${metrics.safeActivities}</div><div class="label">الأنشطة المنفذة بأمان</div></div>
+    <div class="kpi"><div class="value" style="color:#dc2626;">${metrics.stoppedActivities}</div><div class="label">أنشطة تم إيقافها/تأجيلها</div></div>
+    <div class="kpi"><div class="value">${metrics.totalAlerts}</div><div class="label">إجمالي التنبيهات الصادرة</div></div>
+    <div class="kpi"><div class="value">${metrics.criticalAlerts}</div><div class="label">تنبيهات عالية الخطورة</div></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>اسم المشروع</th>
+        <th style="text-align:center;">إجمالي الأنشطة</th>
+        <th style="text-align:center;">آمنة</th>
+        <th style="text-align:center;">متوقفة</th>
+        <th style="text-align:center;">التنبيهات</th>
+        <th style="text-align:center;">نسبة التأثر</th>
+      </tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+</body>
+</html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    // تأجيل الطباعة حتى يكتمل تحميل المستند في النافذة الجديدة.
+    printWindow.onload = () => {
+      printWindow.print();
+    };
+  }, [projectStats, metrics, fromDate, toDate, projectFilter, projectsMap]);
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] text-[#061B40]">
@@ -249,10 +337,18 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
           </div>
 
           <div className="flex items-center gap-3 w-full lg:w-auto">
-            <button className="bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 flex items-center gap-2 shadow-sm transition-all w-full lg:w-auto justify-center">
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 flex items-center gap-2 shadow-sm transition-all w-full lg:w-auto justify-center"
+            >
               <Printer className="w-4 h-4" /> طباعة التقرير
             </button>
-            <button className="bg-[#061B40] border border-[#061B40] text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-[#0a275e] flex items-center gap-2 shadow-sm transition-all w-full lg:w-auto justify-center">
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              className="bg-[#061B40] border border-[#061B40] text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-[#0a275e] flex items-center gap-2 shadow-sm transition-all w-full lg:w-auto justify-center"
+            >
               <Download className="w-4 h-4" /> تصدير PDF تنفيذي
             </button>
           </div>

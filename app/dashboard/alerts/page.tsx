@@ -15,7 +15,6 @@ import {
   Wind,
   Eye,
   ShieldAlert,
-  Settings2,
   ChevronDown,
   ChevronUp,
   Loader2,
@@ -346,9 +345,6 @@ export default function AlertsPage() {
           </div>
 
           <div className="flex items-center gap-3 w-full lg:w-auto">
-            <button className="bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 flex items-center gap-2 shadow-sm transition-all w-full lg:w-auto justify-center">
-              <Settings2 className="w-4 h-4" /> إعدادات النظام
-            </button>
             <Link
               href="/dashboard/Projects"
               className="bg-[#061B40] hover:bg-[#0a275e] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all w-full lg:w-auto justify-center"

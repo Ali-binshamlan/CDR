@@ -12,7 +12,8 @@ import {
   Bell,
   ArrowLeft,
   CloudRain,
-  Loader2
+  Loader2,
+  ChevronDown
 } from 'lucide-react';
 
 // ============================================================
@@ -48,7 +49,16 @@ interface ProjectCard {
   alertsCount: number;
   lastDecisionText: string;
   originalData: DashboardProjectRow;
+  createdAtMs: number;
 }
+
+type SortOption = 'newest' | 'oldest' | 'name';
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: 'newest', label: 'الأحدث أولاً' },
+  { value: 'oldest', label: 'الأقدم أولاً' },
+  { value: 'name', label: 'الاسم (أ-ي)' },
+];
 
 export default function ProjectsPage() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +70,8 @@ export default function ProjectsPage() {
   // بخطأ من المستخدم بينما السبب فشل شبكة فعلي.
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
+  const [sortOption, setSortOption] = useState<SortOption>('newest');
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
 
   useEffect(() => {
     const fetchProjectsData = async () => {
@@ -81,6 +93,9 @@ export default function ProjectsPage() {
             : 'لا يوجد قرار مسجل بعد';
           const totalActivitiesCount = allActivities.filter((a) => a.project_id === p.id).length;
 
+          const createdAtRaw = p.created_at;
+          const createdAtMs = typeof createdAtRaw === 'string' ? new Date(createdAtRaw).getTime() : 0;
+
           return {
             id: p.id,
             name: p.name,
@@ -90,6 +105,7 @@ export default function ProjectsPage() {
             alertsCount: projectAlerts.length,
             lastDecisionText,
             originalData: p,
+            createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : 0,
           };
         });
 
@@ -106,10 +122,14 @@ export default function ProjectsPage() {
     fetchProjectsData();
   }, [retryTick]);
 
-  // تصفية المشاريع بالبحث النصي فقط
-  const filteredProjects = projects.filter(p => 
-    p.name.includes(searchQuery) || p.city.includes(searchQuery)
-  );
+  // تصفية المشاريع بالبحث النصي، ثم الفرز حسب الخيار المختار
+  const filteredProjects = projects
+    .filter(p => p.name.includes(searchQuery) || p.city.includes(searchQuery))
+    .sort((a, b) => {
+      if (sortOption === 'name') return a.name.localeCompare(b.name, 'ar');
+      if (sortOption === 'oldest') return a.createdAtMs - b.createdAtMs;
+      return b.createdAtMs - a.createdAtMs; // newest
+    });
 
   if (isLoading) {
     return (
@@ -157,9 +177,35 @@ export default function ProjectsPage() {
               className="w-full pr-10 pl-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-sm"
             />
           </div>
-          <button className="w-full sm:w-auto bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors">
-            <Filter className="w-4 h-4" /> فرز
-          </button>
+          <div className="relative w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setIsSortMenuOpen((v) => !v)}
+              className="w-full sm:w-auto bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors"
+            >
+              <Filter className="w-4 h-4" /> فرز: {SORT_OPTIONS.find((o) => o.value === sortOption)?.label}
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+            {isSortMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setIsSortMenuOpen(false)} />
+                <div className="absolute z-20 mt-2 w-full sm:w-48 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden right-0">
+                  {SORT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => { setSortOption(opt.value); setIsSortMenuOpen(false); }}
+                      className={`w-full text-right px-4 py-2.5 text-sm font-bold transition-colors ${
+                        sortOption === opt.value ? 'bg-blue-50 text-[#0176FB]' : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <Link
             href="/dashboard/Projects/create"
             className="w-full sm:w-auto bg-[#3995FF] hover:bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors"
