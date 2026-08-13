@@ -483,6 +483,135 @@ describe('Outbox — نية تنبيه واحدة فقط لكل قرار (unique
       .single();
     expect(outboxRow!.evaluation_run_id).toBe(evaluationRunId);
   });
+
+  // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — "لقطة القواعد قابلة
+  // لسباق تزامن، ولقطة المدخلات لا تكفي لإعادة إنتاج القرار تاريخياً" —
+  // الشق الثاني، migration 202608130006): final_decisions.dvi_evaluation_id/
+  // compliance_evaluation_id يجب أن يشيرا لصفَّي dust_evaluations/
+  // dust_compliance_evaluations الفعليين اللذين بُني منهما القرار — لا رابط
+  // زمني تقريبي. هذا الاختبار يثبت الحالة الشائعة (dvi/compliance يُدرجان
+  // في نفس الاستدعاء الذي يحفظ final_decisions).
+  it('final_decisions.dvi_evaluation_id/compliance_evaluation_id يشيران لصفَّي dust_evaluations/dust_compliance_evaluations المُدرَجين في نفس الاستدعاء', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    const { error } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: baseDviResult(),
+      p_dvi_triggered_by: 'user_refresh',
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: { decisionCategory: 'ALLOW', triggeredRules: [], shortReasonAr: 'test', rulebookVersion: 'test' },
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: activityId,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecision('ALLOW'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(error).toBeNull();
+
+    const { data: decisionRow } = await admin
+      .from('final_decisions')
+      .select('dvi_evaluation_id, compliance_evaluation_id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+
+    const { data: dviRow } = await admin
+      .from('dust_evaluations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+    const { data: complianceRow } = await admin
+      .from('dust_compliance_evaluations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+
+    expect(decisionRow!.dvi_evaluation_id).toBe(dviRow!.id);
+    expect(decisionRow!.compliance_evaluation_id).toBe(complianceRow!.id);
+  });
+
+  // نفس الميزة — الحالة الأدق: dvi/compliance لم يتغيّرا هذه الدورة
+  // (shouldSkipPersist في dustEvaluation.ts تخطّت إدراج صف جديد)، فلا
+  // v_dvi_evaluation_id/v_compliance_evaluation_id محليين — يجب أن تسقط
+  // الدالة لقراءة current_dust_decisions/current_dust_compliance_decisions.
+  // latest_evaluation_id (الصف الموجود مسبقاً فعلياً) بدل ترك العمودين null.
+  it('final_decisions.dvi_evaluation_id/compliance_evaluation_id يسقطان لـlatest_evaluation_id الحالي عند p_dvi_result/p_compliance_result=null (لم يتغيّرا هذه الدورة)', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    // دورة أولى: تُدرج dust_evaluations/dust_compliance_evaluations فعلياً.
+    await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: baseDviResult(),
+      p_dvi_triggered_by: 'user_refresh',
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: { decisionCategory: 'ALLOW', triggeredRules: [], shortReasonAr: 'test', rulebookVersion: 'test' },
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: activityId,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: null,
+      p_final_evaluated_at: null,
+    });
+
+    const { data: dviRow } = await admin
+      .from('dust_evaluations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+    const { data: complianceRow } = await admin
+      .from('dust_compliance_evaluations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+
+    // دورة ثانية: p_dvi_result/p_compliance_result=null (لم يتغيّرا)، لكن
+    // p_final_decision موجود — يجب أن يربط بالصفَّين من الدورة الأولى.
+    const { error } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: null,
+      p_compliance_rulebook_version: null,
+      p_compliance_triggered_by: null,
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecision('ALLOW'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(error).toBeNull();
+
+    const { data: decisionRow } = await admin
+      .from('final_decisions')
+      .select('dvi_evaluation_id, compliance_evaluation_id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+
+    expect(decisionRow!.dvi_evaluation_id).toBe(dviRow!.id);
+    expect(decisionRow!.compliance_evaluation_id).toBe(complianceRow!.id);
+  });
 });
 
 describe('عزل الأنشطة بين مشروعين يشتركان في نفس activity_group_id', () => {
