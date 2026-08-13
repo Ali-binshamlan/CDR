@@ -80,15 +80,6 @@ export interface DustProjectComplianceProfile {
   entryExitCamerasInstalled: boolean | null;
   cameraRetentionDays: number | null;
   sensitivityMapPrepared: boolean | null;
-
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي موضوع على
-  // مستوى المشروع، بينما يجب أن يكون مرتبطاً بكل محطة أو حساس اتجاه رياح"):
-  // trueNorthAlignmentDocumented (boolean واحد هنا على مستوى المشروع كله)
-  // أُزيل من هذا الملف الشخصي — لا يميّز بين محطتين مختلفتين لنفس المشروع.
-  // المصدر الفعلي الآن هو DeviceTrueNorthCalibration (adapters.ts)، مبني
-  // على project_devices.true_north_* (راجع migration
-  // 202608060001_device_true_north_calibration.sql) — كل جهاز يحمل توثيق
-  // معايرته الخاص، لا حقلاً واحداً مشتركاً لكل أجهزة المشروع.
 }
 
 // أدلة ضوابط التحكم الفعلية المتوفرة فعلياً على النشاط (وليس المطلوبة نظرياً).
@@ -249,9 +240,8 @@ export interface DustActivityMeasurements {
   crusherDistanceToResidentialReceptorAutoM: number | null;
   // MRQ-RECEPTOR-DOWNWIND-120: أقرب مسافة لمستقبِل سكني/مدرسي/صحي يقع
   // فعلياً باتجاه هبوب الرياح الحالي من موقع الكسارة — null إن كان اتجاه
-  // الرياح غير صالح (محاذاة الشمال الحقيقي غير موثّقة، راجع
-  // MRQ-DATA-TRUE-NORTH-111) أو الموقع غير معروف؛ Infinity إن لم يوجد أي
-  // مستقبِل باتجاه الريح حالياً.
+  // الرياح غير متوفر أو الموقع غير معروف؛ Infinity إن لم يوجد أي مستقبِل
+  // باتجاه الريح حالياً.
   crusherDistanceToDownwindReceptorAutoM: number | null;
 
   // A3 — الدخول والخروج

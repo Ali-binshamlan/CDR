@@ -48,47 +48,34 @@ export function buildProjectComplianceProfile(project: Record<string, unknown> |
   };
 }
 
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي موضوع على
-// مستوى المشروع، بينما يجب أن يكون مرتبطاً بكل محطة أو حساس اتجاه رياح"):
-// كان trueNorthAlignmentDocumented معاملاً boolean فرداً مصدره
-// projects.true_north_alignment_documented (عمود واحد لكل المشروع). الآن
-// كائن كامل مصدره project_devices (الجهاز الفعلي المرتبط بالنشاط تحديداً،
-// راجع migration 202608060001) — كل جهاز يحمل توثيقه الخاص، ويحمل أيضاً
-// deviationDeg (الانحراف بين الشمال المغناطيسي المقروء والحقيقي) ليُطبَّق
-// على windDirectionDeg الخام قبل استخدامه، لا فقط علم وجود/غياب.
-export interface DeviceTrueNorthCalibration {
-  documented: boolean | null;
-  deviationDeg: number | null;
-}
-
 export function buildActivityComplianceProfile(
   row: Record<string, unknown> | null | undefined,
   sensitiveReceptors: SensitiveReceptor[] = [],
   // اتجاه الرياح الفعلي المُدمَج (بعد أولوية جهاز > طقس > onsite — نفس
   // الاتجاه المعروض فعلياً للمستخدم في evidence.windDirectionDeg، لا عينة
-  // الطقس الخام قبل الدمج) وتوثيق معايرة الشمال الحقيقي للجهاز المرتبط —
-  // تُستخدمان فقط لحساب crusherDistanceToDownwindReceptorAutoM
-  // (MRQ-RECEPTOR-DOWNWIND-120). windDirectionDeg يُتجاهَل كلياً إن لم تُوثَّق
-  // معايرة الجهاز (فشل آمن نحو "غير صالح"، راجع MRQ-DATA-TRUE-NORTH-111) —
-  // بلا ذلك يُبنى قرار تنظيمي على اتجاه رياح قد يكون غير معايَر أصلاً (شمال
-  // مغناطيسي/تقريبي). deviationDeg (إن وُجد) يُصحَّح به الاتجاه الخام قبل
-  // الاستخدام — انحراف مغناطيسي موثَّق يبقى صالحاً للاستخدام بعد تصحيحه، لا
-  // "غير صالح" بالكامل كما كانت الحالة الثنائية القديمة تفرضه ضمنياً.
-  windDirectionDeg: number | null = null,
-  deviceTrueNorthCalibration: DeviceTrueNorthCalibration | null = null
+  // الطقس الخام قبل الدمج) — يُستخدم لحساب crusherDistanceToDownwindReceptorAutoM
+  // (MRQ-RECEPTOR-DOWNWIND-120).
+  //
+  // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — "معايرة الشمال
+  // الحقيقي ونسخة المعايرة لا تُحفظان بالكامل داخل لقطة القرار... هذه
+  // الميزة ملغية، احذفها تماماً"): كان windDirectionDeg يُتجاهَل كلياً إن لم
+  // تُوثَّق معايرة الجهاز (DeviceTrueNorthCalibration، migration
+  // 202608060001) — لكن قيمة المعايرة المُستخدَمة فعلياً وقت اتخاذ القرار
+  // لم تكن تُحفظ ضمن DustComplianceResult المُخزَّنة إطلاقاً (لا حقل يوثّق
+  // documented/deviationDeg في dust_compliance_evaluations/final_decisions)
+  // — تُستهلَك وتُفقَد فوراً، بلا أي أثر قابل لإعادة الحساب لاحقاً (Replay/
+  // تدقيق، مبدأ H-07). ميزة غير مكتملة — حُذفت بالكامل (migration
+  // 202608130005 تحذف الأعمدة السبعة على project_devices والعمود القديم
+  // على projects). windDirectionDeg يُستخدَم الآن مباشرة كما هو، بلا شرط
+  // توثيق معايرة إضافي.
+  windDirectionDeg: number | null = null
 ): DustActivityComplianceProfile {
   const regulatoryActivity: RegulatoryDustActivity = (row?.regulatory_activity as RegulatoryDustActivity) ?? 'OTHER';
 
   const crusherLat = toNullableNumber(row?.crusher_lat);
   const crusherLng = toNullableNumber(row?.crusher_lng);
   const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(crusherLat, crusherLng, sensitiveReceptors);
-  const isAlignmentDocumented = deviceTrueNorthCalibration?.documented === true;
-  const correctedWindDirectionDeg =
-    windDirectionDeg !== null && deviceTrueNorthCalibration?.deviationDeg
-      ? ((windDirectionDeg + deviceTrueNorthCalibration.deviationDeg) % 360 + 360) % 360
-      : windDirectionDeg;
-  const validWindDirectionDeg = isAlignmentDocumented ? correctedWindDirectionDeg : null;
-  const crusherDownwindM = nearestDownwindReceptorDistanceM(crusherLat, crusherLng, validWindDirectionDeg, sensitiveReceptors);
+  const crusherDownwindM = nearestDownwindReceptorDistanceM(crusherLat, crusherLng, windDirectionDeg, sensitiveReceptors);
 
   const stockpileLat = toNullableNumber(row?.stockpile_lat);
   const stockpileLng = toNullableNumber(row?.stockpile_lng);
@@ -307,11 +294,6 @@ export function buildComplianceContext(
     isSuspended250For30Min: boolean;
     evidenceReadingIds?: string[];
   } | null,
-  // توثيق معايرة الشمال الحقيقي للجهاز الفعلي المرتبط بهذا النشاط (لا
-  // المشروع كله — راجع تعليق buildActivityComplianceProfile الكامل).
-  // اختياري: undefined/null يعني "لا جهاز مرتبط أو لا توثيق مسجَّل"، فيُعامَل
-  // اتجاه الرياح كغير صالح لقاعدة المستقبِل باتجاه الريح (فشل آمن).
-  deviceTrueNorthCalibration?: DeviceTrueNorthCalibration | null,
   // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق Pm10EvidenceState
   // الكامل في types.ts): وقت "الآن" المستخدَم لحساب حداثة قراءة PM10 —
   // Date.now() افتراضياً (توافقي مع كل الاستدعاءات القديمة)، لكن المستدعي
@@ -399,8 +381,7 @@ export function buildComplianceContext(
     activity: buildActivityComplianceProfile(
       activityRow,
       sensitiveReceptors,
-      mergedWindDirectionDeg,
-      deviceTrueNorthCalibration ?? null
+      mergedWindDirectionDeg
     ),
     isForecastStale,
     dviScore: dviResult.score,

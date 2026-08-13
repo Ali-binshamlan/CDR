@@ -1941,46 +1941,19 @@ describe('محرك امتثال الغبار — حساب مسافة الكسا�
   });
 });
 
-describe('محرك امتثال الغبار — MRQ-DATA-TRUE-NORTH-111 (صلاحية اتجاه الرياح، معايرة الجهاز)', () => {
-  const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
-  const northReceptor: SensitiveReceptor[] = [
-    { id: 'r1', name: 'سكني شمالي قريب', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
-  ];
-
-  it('لا توثيق معايرة للجهاز إطلاقاً (null) → crusherDistanceToDownwindReceptorAutoM يبقى null بصرف النظر عن اتجاه الرياح', () => {
-    const profile = buildActivityComplianceProfile(row, northReceptor, 180, null);
-    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
-  });
-
-  it('معايرة الجهاز موثّقة صراحة كـ documented=false (غير معايَر) → يبقى null أيضاً', () => {
-    const profile = buildActivityComplianceProfile(row, northReceptor, 180, { documented: false, deviationDeg: null });
-    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
-  });
-
-  it('معايرة الجهاز موثّقة (documented=true) → يُحسب اتجاه الريح فعلياً ويجد المستقبِل باتجاه الريح', () => {
-    const profile = buildActivityComplianceProfile(row, northReceptor, 180, { documented: true, deviationDeg: null });
-    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
-    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeLessThan(1000);
-  });
-
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — نفس البند: "الانحراف المطبق"
-  // يجب أن يُصحِّح الاتجاه الخام فعلياً، لا مجرد علم وجود/غياب توثيق):
-  // انحراف مغناطيسي موثَّق (deviationDeg) يُصحَّح به windDirectionDeg قبل
-  // البحث عن المستقبِل باتجاه الريح — جهاز يقرأ 180° مغناطيسياً بانحراف
-  // موثَّق +5° يعني اتجاهاً حقيقياً فعلياً 185°، لا 180° الخام.
-  it('معايرة موثّقة بانحراف مغناطيسي (deviationDeg) → يُصحَّح الاتجاه الخام قبل البحث عن المستقبِل باتجاه الريح', () => {
-    // northReceptor يقع شمال الكسارة — "باتجاه الريح" فقط إذا الريح قادمة
-    // من الجنوب (windDirectionDeg=180 بمعيار "من أين تهب"، راجع الاختبار
-    // أعلاه). اتجاه خام=90 (شرقي، لا يضع المستقبِل باتجاه الريح) + انحراف
-    // موثَّق +90° يصحّحه فعلياً إلى 180° فيجد المستقبِل.
-    const profile = buildActivityComplianceProfile(row, northReceptor, 90, { documented: true, deviationDeg: 90 });
-    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
-    expect(profile.measurements.crusherDistanceToDownwindReceptorAutoM).toBeLessThan(1000);
-  });
-});
+// خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — "معايرة الشمال الحقيقي
+// ونسخة المعايرة لا تُحفظان بالكامل داخل لقطة القرار... هذه الميزة ملغية،
+// احذفها تماماً"): describe('MRQ-DATA-TRUE-NORTH-111 ...') كان يختبر
+// deviceTrueNorthCalibration (documented/deviationDeg) — القيمة كانت تُصحِّح
+// windDirectionDeg قبل استخدامه في MRQ-RECEPTOR-DOWNWIND-120 لكنها لا
+// تُحفظ ضمن DustComplianceResult المُخزَّنة (لا أثر قابل لإعادة الحساب
+// لاحقاً). الميزة والاختبارات المرتبطة بها حُذفت بالكامل مع buildActivityComplianceProfile
+// (adapters.ts) وأعمدة project_devices.true_north_* (migration 202608130005).
+// windDirectionDeg يُستخدَم الآن مباشرة بلا شرط توثيق معايرة — راجع اختبارات
+// MRQ-RECEPTOR-DOWNWIND-120 أدناه لتغطية السلوك الحالي.
 
 describe('محرك امتثال الغبار — MRQ-RECEPTOR-DOWNWIND-120 (تصعيد الاستجابة عبر evaluateDustCompliance)', () => {
-  it('مستقبِل سكني باتجاه الريح فعلياً (محاذاة موثّقة) وضمن 500م → RESTRICT_ACTIVITY', () => {
+  it('مستقبِل سكني باتجاه الريح فعلياً وضمن 500م → RESTRICT_ACTIVITY', () => {
     const r = evaluateDustCompliance(
       context({
         activity: activityProfile({
@@ -2011,7 +1984,7 @@ describe('محرك امتثال الغبار — MRQ-RECEPTOR-DOWNWIND-120 (تص
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(false);
   });
 
-  it('اتجاه الرياح غير صالح (null، محاذاة غير موثّقة) → القاعدة لا تُفعَّل إطلاقاً', () => {
+  it('اتجاه الرياح غير متوفر (null) → القاعدة لا تُفعَّل إطلاقاً', () => {
     const r = evaluateDustCompliance(
       context({
         activity: activityProfile({
@@ -2713,7 +2686,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
         sources: { ...mergedReadingFixture().sources, pm10: 'device' },
       }),
     };
-    const ctx = buildComplianceContext({}, { onsite_pm10: 999 }, dviHourly, [], null, null, null, evaluatedAtMs);
+    const ctx = buildComplianceContext({}, { onsite_pm10: 999 }, dviHourly, [], null, null, evaluatedAtMs);
     expect(ctx.pm10UgM3).toBe(260);
     expect(ctx.pm10RawUgM3).toBe(260);
     expect(ctx.pm10EvidenceState).toBe('FRESH');
@@ -2738,7 +2711,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
           sources: { ...mergedReadingFixture().sources, pm10: 'device' },
         }),
       };
-      return buildComplianceContext({}, {}, dviHourly, [], null, null, null, evaluatedAtMs);
+      return buildComplianceContext({}, {}, dviHourly, [], null, null, evaluatedAtMs);
     }
 
     it('عمر 4:00.000 بالضبط → FRESH، pm10UgM3=500 يدخل القرار، ينتج STOP', () => {
@@ -2897,8 +2870,7 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       dviHourly,
       receptorNorthOfCrusher,
       undefined,
-      undefined,
-      { documented: true, deviationDeg: null }
+      undefined
     );
     // الدليل المعروض يعكس اتجاه الجهاز (180)، ونفس الاتجاه هو ما استُخدم
     // فعلياً لحساب المستقبِل باتجاه الريح — فيجده (ليس Infinity).

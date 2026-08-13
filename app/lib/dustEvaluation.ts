@@ -12,7 +12,6 @@ import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
 import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT } from '@/app/utils/dust-compliance-engine';
-import type { DeviceTrueNorthCalibration } from '@/app/utils/dust-compliance-engine';
 import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
 import { LIVE_FIELD_FRESHNESS_MS, DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
@@ -961,32 +960,6 @@ async function resolveProjectDeviceMap(
   return map;
 }
 
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي موضوع على
-// مستوى المشروع، بينما يجب أن يكون مرتبطاً بكل محطة أو حساس اتجاه رياح"):
-// يجلب توثيق معايرة الشمال الحقيقي لكل أجهزة المشروع دفعة واحدة (نفس مبدأ
-// resolveProjectDeviceMap أعلاه) من project_devices.true_north_* (راجع
-// migration 202608060001_device_true_north_calibration.sql) — كل جهاز
-// يحمل توثيقه الخاص، لا حقلاً واحداً مشتركاً على المشروع كله.
-async function resolveDeviceTrueNorthCalibrationMap(
-  supabaseAdmin: SupabaseClient,
-  projectId: string
-): Promise<Map<string, DeviceTrueNorthCalibration>> {
-  const map = new Map<string, DeviceTrueNorthCalibration>();
-  const { data } = await supabaseAdmin
-    .from('project_devices')
-    .select('id, true_north_alignment_documented, true_north_deviation_deg')
-    .eq('project_id', projectId);
-
-  type DeviceCalibrationRow = { id: string; true_north_alignment_documented: boolean | null; true_north_deviation_deg: number | null };
-  for (const row of (data as DeviceCalibrationRow[]) || []) {
-    map.set(row.id, {
-      documented: row.true_north_alignment_documented ?? null,
-      deviationDeg: row.true_north_deviation_deg ?? null,
-    });
-  }
-  return map;
-}
-
 // يجلب لقطات forecast_snapshots لكل أنشطة مشروع دفعة واحدة — القسم 9 من
 // "دليل الإصلاح الجذري لمنظومة مرقاب". لا fetch هنا إطلاقاً؛ قراءة جدول
 // مخزَّن مسبقاً فقط (يملؤه refreshForecastSnapshots أدناه بمسار منفصل).
@@ -1462,14 +1435,6 @@ export async function computeDustComplianceResults(
   // عبر evaluateProject (نادرة، إن وُجدت) تعتمد على آخر قيم مُحدَّثة سابقاً
   // أو الافتراضي — نفس فشل آمن معتاد في هذا الملف.
 
-  // توثيق معايرة الشمال الحقيقي لكل جهاز — راجع تعليق
-  // resolveDeviceTrueNorthCalibrationMap الكامل. غيابه (لا supabaseAdmin،
-  // أو فشل الاستعلام) يعني معاملة كل نشاط كـ"لا توثيق" (فشل آمن نحو تجاهل
-  // اتجاه الرياح في قاعدة المستقبِل باتجاه الريح، لا كسر).
-  const deviceTrueNorthMap = supabaseAdmin && project?.id
-    ? await resolveDeviceTrueNorthCalibrationMap(supabaseAdmin, project.id).catch(() => new Map<string, DeviceTrueNorthCalibration>())
-    : new Map<string, DeviceTrueNorthCalibration>();
-
   // جلب مجمَّع لآخر قرار مسجَّل لكل activity_group_id ذي صلة — نداء واحد
   // بدل نداء لكل نشاط، بنفس روح تجميع resolveFreshProjectDevice. يُستخدم
   // فقط لتغذية منع الاستئناف التلقائي الفوري بعد إيقاف في engine.ts —
@@ -1584,11 +1549,6 @@ export async function computeDustComplianceResults(
         const evaluatedAtMs = Date.now();
         const pm10SustainedLookupMs = evaluationAtMs ?? evaluatedAtMs;
 
-        // توثيق معايرة الجهاز الفعلي المرتبط بهذا النشاط تحديداً (لا
-        // المشروع كله) — null إن لم يكن النشاط مرتبطاً بجهاز، أو لم يوجد
-        // توثيق مسجَّل له بعد (فشل آمن نحو تجاهل اتجاه الرياح في القاعدة).
-        const deviceTrueNorthCalibration = row.device_id ? deviceTrueNorthMap.get(row.device_id) ?? null : null;
-
         // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
         // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts)
         // لا يجوز أن تُطبَّق عليه قاعدة RESUME-STABILITY-HOLD (استقرار 10
@@ -1611,7 +1571,7 @@ export async function computeDustComplianceResults(
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
-        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, deviceTrueNorthCalibration, evaluatedAtMs, activityQueryFailed);
+        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, evaluatedAtMs, activityQueryFailed);
 
         // تسجيل قراءة PM10 — يُستخدم لحساب استمرار القراءة (دقيقتين/30
         // دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
@@ -1699,7 +1659,7 @@ export async function computeDustComplianceResults(
           );
         }
 
-        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, deviceTrueNorthCalibration, evaluatedAtMs, activityQueryFailed);
+        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, evaluatedAtMs, activityQueryFailed);
         // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
         // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
         // تصلح" (راجع buildPlanningForecastResult في engine.ts).
@@ -1766,7 +1726,7 @@ export function computeDustComplianceHourly(
 
       const hourlyCompliance = hourly.map((hour) => {
         const hourEvaluatedAtMs = Date.now();
-        const ctx = buildComplianceContext(project, row, hour, sensitiveReceptors, null, null, null, hourEvaluatedAtMs);
+        const ctx = buildComplianceContext(project, row, hour, sensitiveReceptors, null, null, hourEvaluatedAtMs);
         // isPlanning=true: كل ساعة هنا توقّع طقس بحت (شبكة hourly كاملة) —
         // نفس السبب بالضبط الذي يمنع STOP/تعليق إلزامي على PLANNING أعلاه
         // بـcomputeDustComplianceResults، راجع buildPlanningForecastResult.

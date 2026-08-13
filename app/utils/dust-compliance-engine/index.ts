@@ -13,7 +13,6 @@ export {
   buildActivityComplianceProfile,
   buildSensitiveReceptor,
 } from './adapters';
-export type { DeviceTrueNorthCalibration } from './adapters';
 export { evaluateDustCompliance } from './engine';
 export { haversineDistanceM, nearestReceptorDistancesM, receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from './geo';
 export type { ReceptorWithinRadius } from './geo';

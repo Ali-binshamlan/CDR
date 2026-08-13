@@ -111,8 +111,7 @@ export function nearestReceptorDistancesM(
 
 // أقرب مسافة (م) لمستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً "باتجاه الريح"
 // من نقطة الأصل — MRQ-RECEPTOR-DOWNWIND-120. يُرجع null إن كان اتجاه
-// الرياح غير صالح (windDirectionFromDeg=null، مثال: محاذاة الشمال الحقيقي
-// غير موثّقة — راجع MRQ-DATA-TRUE-NORTH-111) أو الموقع غير معروف، أو
+// الرياح غير متوفر (windDirectionFromDeg=null) أو الموقع غير معروف، أو
 // Infinity إن لم يوجد أي مستقبِل ضمن قطاع اتجاه الريح (لا خطر اتجاهي
 // حالياً، بصرف النظر عن وجود مستقبِلات في اتجاهات أخرى).
 export function nearestDownwindReceptorDistanceM(

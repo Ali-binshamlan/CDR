@@ -566,9 +566,9 @@ function crusherRules(
 
   // MRQ-RECEPTOR-DOWNWIND-120: تصعيد الاستجابة عند وجود مستقبِل حساس فعلياً
   // باتجاه هبوب الرياح (لا مجرد قريب بالمسافة المستقيمة) — يُطبَّق فقط لو
-  // كان اتجاه الرياح صالحاً وموثّقاً (crusherDistanceToDownwindReceptorAutoM
-  // يبقى null تلقائياً لو trueNorthAlignmentDocumented ليست true، راجع
-  // adapters.ts). لا يتكرر مع CRUSHER-DISTANCE-500-002C أعلاه: تلك تفحص
+  // كان اتجاه الرياح متوفراً (crusherDistanceToDownwindReceptorAutoM يبقى
+  // null لو غاب اتجاه الرياح أصلاً، راجع adapters.ts). لا يتكرر مع
+  // CRUSHER-DISTANCE-500-002C أعلاه: تلك تفحص
   // أقرب مستقبِل بصرف النظر عن الاتجاه (وتوقف إلزامياً)، وهذه تفحص الاتجاه
   // تحديداً (تقييد لا إيقاف كامل — الاتجاه عامل تصعيد إضافي، لا مخالفة
   // مسافة مستقلة).

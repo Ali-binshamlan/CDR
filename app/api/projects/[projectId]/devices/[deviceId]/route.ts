@@ -4,50 +4,7 @@ import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
 const DEVICE_SAFE_COLUMNS =
-  'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url';
-
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "توثيق الشمال الحقيقي: يجب أن
-// يكون مرتبطاً بكل محطة أو حساس اتجاه رياح، ويتضمن: تاريخ التوجيه، طريقة
-// التحقق، الشخص المنفذ، الشمال الحقيقي أو المغناطيسي، الانحراف المطبق،
-// مستند أو صورة الإثبات"): الأعمدة الستة (migration
-// 202608060001_device_true_north_calibration.sql) تُحدَّث هنا فقط —
-// documented=true لا يجوز أن يُضبَط ذاتياً بلا الحقول الداعمة الأساسية
-// (النوع + طريقة التحقق + المنفذ) حتى لا يصبح مجرد علم بلا سياق موثَّق
-// فعلياً، بنفس الفلسفة التي انتقدها التقرير أصلاً.
-const TRUE_NORTH_ALIGNMENT_TYPES = new Set(['TRUE_NORTH', 'MAGNETIC_NORTH']);
-
-function extractTrueNorthUpdates(body: Record<string, unknown> | null): Record<string, unknown> {
-  const updates: Record<string, unknown> = {};
-  if (!body || typeof body !== 'object' || !('trueNorth' in body)) return updates;
-  const tn = body.trueNorth as Record<string, unknown> | null;
-  if (!tn || typeof tn !== 'object') return updates;
-
-  const alignmentType = typeof tn.alignmentType === 'string' ? tn.alignmentType : null;
-  const verificationMethod = typeof tn.verificationMethod === 'string' ? tn.verificationMethod.trim() : null;
-  const verifiedBy = typeof tn.verifiedBy === 'string' ? tn.verifiedBy.trim() : null;
-  const deviationDeg = typeof tn.deviationDeg === 'number' && Number.isFinite(tn.deviationDeg) ? tn.deviationDeg : null;
-  const evidenceUrl = typeof tn.evidenceUrl === 'string' ? tn.evidenceUrl.trim() : null;
-  const documentedRequested = tn.documented === true;
-
-  if (alignmentType !== null && !TRUE_NORTH_ALIGNMENT_TYPES.has(alignmentType)) {
-    throw new Error('نوع محاذاة الشمال يجب أن يكون TRUE_NORTH أو MAGNETIC_NORTH');
-  }
-
-  // documented=true يتطلب حداً أدنى من التوثيق الفعلي (نوع + طريقة تحقق +
-  // منفذ) — بلا هذا الشرط، الحقل يعود لنفس مشكلة "علم بلا سياق" التي
-  // انتقدها التقرير أصلاً في عمود projects.true_north_alignment_documented
-  // القديم.
-  const documented = documentedRequested && alignmentType !== null && !!verificationMethod && !!verifiedBy;
-
-  updates.true_north_alignment_documented = documented;
-  updates.true_north_alignment_type = alignmentType;
-  updates.true_north_verification_method = verificationMethod;
-  updates.true_north_verified_by = verifiedBy;
-  updates.true_north_verified_at = documented ? new Date().toISOString() : null;
-  updates.true_north_deviation_deg = deviationDeg;
-  updates.true_north_evidence_url = evidenceUrl;
-  return updates;
-}
+  'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at';
 
 // يتحقق أن الجهاز المطلوب فعلاً ينتمي للمشروع في الرابط — دفاع إضافي رخيص
 // فوق verifyProjectOwnership: يمنع مالك مشروع A من التأثير على صف جهاز
@@ -87,12 +44,6 @@ export async function PATCH(
     // الإلغاء يُسجَّل بطابع زمني (revoked_at)؛ إعادة التفعيل تمسحه — يطابق
     // دلالة "متى أُلغي آخر مرة"، لا "هل أُلغي يوماً ما".
     updates.revoked_at = body.is_active ? null : new Date().toISOString();
-  }
-
-  try {
-    Object.assign(updates, extractTrueNorthUpdates(body));
-  } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'بيانات معايرة الشمال الحقيقي غير صالحة' }, { status: 400 });
   }
 
   if (Object.keys(updates).length === 0) {

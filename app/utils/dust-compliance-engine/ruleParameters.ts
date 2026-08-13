@@ -25,8 +25,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // التغيير بالضبط — fallback آمن يبقي كل سلوك التقييم مطابقاً تماماً للحالة
 // السابقة إن لم يُنشَر أي معامل بعد. refreshRuleParameters (تُستدعى مرة
 // واحدة لكل دورة تقييم في computeDustComplianceResults، بنفس نمط
-// resolveDeviceTrueNorthCalibrationMap/resolveProjectDeviceMap الموجود
-// مسبقاً في dustEvaluation.ts) تجلب كل نسخة PUBLISHED حالياً وتُحدِّث هذه
+// resolveProjectDeviceMap الموجود مسبقاً في dustEvaluation.ts) تجلب كل
+// نسخة PUBLISHED حالياً وتُحدِّث هذه
 // المتغيرات دفعة واحدة قبل أي تقييم جديد. rulebook.ts/engine.ts يبقيان
 // دالتين نقيتين تماماً (بلا I/O) تقرآن هذه المتغيرات كقيم عادية — لا تغيير
 // في تواقيعهما ولا في نمط استدعائهما.
@@ -148,7 +148,7 @@ export function setRuleParametersForTests(overrides: Partial<RuleParameters>): v
 }
 
 // تُستدعى مرة واحدة في بداية كل دورة computeDustComplianceResults (نفس نمط
-// resolveDeviceTrueNorthCalibrationMap) — تجلب كل نسخة PUBLISHED حالية دفعة
+// resolveProjectDeviceMap) — تجلب كل نسخة PUBLISHED حالية دفعة
 // واحدة (استعلام واحد، لا استعلام لكل معامل) وتبني كائناً جديداً كاملاً قبل
 // التبديل الذري. فشل الاستعلام لا يُسقط التقييم (نفس مبدأ resolveFreshProjectDevice)
 // — يُبقي current كما كان (آخر قيم معروفة جيدة)، لا رجوعاً صامتاً للافتراضي
