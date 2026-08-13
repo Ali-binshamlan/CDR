@@ -5,6 +5,7 @@ import { checkRateLimit } from '@/app/lib/rateLimit';
 import { checkDistributedRateLimit } from '@/app/lib/distributedRateLimit';
 import { verifyTurnstileToken } from '@/app/lib/captcha';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
+import { normalizeProfileRole } from '@/app/lib/profileRoles';
 
 // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي: "محدد
 // المعدل غير موزع ومسار التسجيل يحتاج إعادة ضبط") — أربعة إصلاحات مستقلة:
@@ -34,17 +35,13 @@ const REGISTER_MAX_ATTEMPTS_PER_WINDOW = 5;
 const REGISTER_WINDOW_MS = 10 * 60_000;
 const REGISTER_WINDOW_SECONDS = REGISTER_WINDOW_MS / 1000;
 
-// القيم المسموحة لحقل profiles.role (تصنيف عرض فقط — لا صلة بـ
-// is_super_admin/account_role المعزولين في user_authorizations). أي قيمة
-// خارج هذه القائمة تُرفض بدل إدراجها كما هي من جسم الطلب.
-const ALLOWED_ROLES = ['owner', 'manager', 'contractor', 'engineer', 'other'] as const;
-type AllowedRole = typeof ALLOWED_ROLES[number];
-
-function normalizeRole(role: unknown): AllowedRole {
-  return (ALLOWED_ROLES as readonly string[]).includes(role as string)
-    ? (role as AllowedRole)
-    : 'other';
-}
+// خطأ مكتشَف ومُصلَح ("قيم الأدوار في التسجيل لا تطابق API، فتتحول غالبية
+// الاختيارات إلى other"): القائمة البيضاء كانت مجموعة قيم عامة قديمة (owner/
+// manager/contractor/engineer) لا تطابق إطلاقاً القيم السبع الفعلية التي
+// يرسلها نموذج التسجيل (roleOptions في app/signup/page.tsx) — فكل تسجيل كان
+// يُسقَط إلى 'other' بلا استثناء. normalizeProfileRole (app/lib/profileRoles.ts)
+// هي الآن المصدر المشترك الوحيد لهذه القائمة، تُستخدَم هنا وفي PATCH
+// /api/profile معاً حتى لا تتكرر/تتباعد القائمتان مستقبلاً.
 
 // راجع تعليق (2) أعلى الملف — عميل anon معزول لكل طلب، مخصص حصراً لـ
 // auth.signUp. لا service_role هنا: signUp عملية مستخدم عادية لا تحتاج
@@ -92,7 +89,7 @@ export async function POST(request: Request) {
       role: rawRole,
       captchaToken,
     } = await request.json();
-    const role = normalizeRole(rawRole);
+    const role = normalizeProfileRole(rawRole);
 
     // التحقق من وجود الحقول الأساسية
     if (!email || !password || !username) {

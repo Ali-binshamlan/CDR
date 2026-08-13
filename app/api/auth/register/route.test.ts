@@ -84,7 +84,7 @@ const validBody = {
   companyName: 'Acme',
   username: 'testuser',
   phoneNumber: '0500000000',
-  role: 'owner',
+  role: 'project_owner',
   captchaToken: 'valid-token',
 };
 

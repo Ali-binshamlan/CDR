@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
+import { normalizeProfileRole } from '@/app/lib/profileRoles';
 
 // ملف المستخدم — الهوية تُشتق من التوكن (requireUserId)، فكل مستخدم يقرأ/
 // يعدّل ملفه فقط. أعمدة profiles الفعلية: id, company_name, username,
@@ -57,7 +58,11 @@ export async function PATCH(request: NextRequest) {
   if (typeof body.companyName === 'string') updates.company_name = body.companyName;
   if (typeof body.username === 'string') updates.username = body.username;
   if (typeof body.phoneNumber === 'string') updates.phone_number = body.phoneNumber;
-  if (typeof body.role === 'string') updates.role = body.role;
+  // خطأ مكتشَف ومُصلَح ("قيم الأدوار في التسجيل لا تطابق API"، فجوة مرتبطة):
+  // كان هذا الحقل يقبل أي نص حر بلا أي تحقق — يسمح نظرياً بحفظ قيمة عشوائية
+  // في profiles.role عبر صفحة الإعدادات، بخلاف مسار التسجيل الذي يتحقق من
+  // القائمة عبر normalizeProfileRole. نفس التحقق الآن مطبَّق هنا للاتساق.
+  if (typeof body.role === 'string') updates.role = normalizeProfileRole(body.role);
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'لا توجد حقول صالحة للتحديث' }, { status: 400 });
