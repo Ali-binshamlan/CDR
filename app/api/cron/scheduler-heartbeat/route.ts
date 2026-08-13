@@ -230,7 +230,6 @@ export async function GET(request: Request) {
   });
   const workerHealthAlert = workerStatuses.some((w) => w.alert);
 
-  const lastHeartbeatMs = heartbeat?.last_heartbeat_at ? new Date(heartbeat.last_heartbeat_at).getTime() : null;
   // راجع البند (1) أعلى الملف — last_successful_project_evaluation_at
   // (تقييم ناجح فعلياً) هو المقياس الأساسي الآن، لا last_heartbeat_at
   // (إنشاء المهام فقط). evaluation_lag_seconds المعروضة تعكس هذا المصدر.
