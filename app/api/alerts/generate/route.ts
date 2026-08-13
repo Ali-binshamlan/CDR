@@ -209,11 +209,10 @@ const LIVE_CONDITION_ALERT_KINDS = [
 
 // خطأ أمني مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "سجل القرارات والتنبيهات
 // قابل للتعديل والحذف"): كان هذا يُنفِّذ UPDATE alerts SET state='CLOSED'
-// مباشرة — مسار كتابة ثانٍ (بجانب PATCH /api/alerts/[alertId]) كان سيتجاوز
-// أي إصلاح يقتصر على مسار الـPATCH وحده. الآن يكتب حدثاً في
-// alert_state_events لكل صف يُغلَق (actor_user_id=null يعني تغييراً آلياً
-// من هذا المولّد، لا فعل مستخدم بشري — راجع تعليق العمود في migration).
-// trigger في قاعدة البيانات يزامن alerts.state تلقائياً بعد كل إدراج.
+// مباشرة بلا أثر تدقيق. الآن يكتب حدثاً في alert_state_events لكل صف
+// يُغلَق (actor_user_id=null يعني تغييراً آلياً من هذا المولّد، لا فعل
+// مستخدم بشري — راجع تعليق العمود في migration). trigger في قاعدة
+// البيانات يزامن alerts.state تلقائياً بعد كل إدراج.
 async function autoCloseResolvedAlerts(
   activitySource: 'dust',
   activityId: string,
