@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { toast } from 'react-hot-toast';
 import { apiClient } from '@/app/lib/apiClient';
 import { useNow } from '@/app/lib/useNow';
 import {
@@ -276,6 +277,10 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
   const [isSaving, setIsSaving] = useState(false);
   const [activeAlert, setActiveAlert] = useState<ActiveAlertRow | null>(null);
   const [confirmedDecision, setConfirmedDecision] = useState<{status: string, time: string} | null>(null);
+  // راجع تعليق fetchInitialData الكامل أدناه (نفس الإصلاح المطبَّق في
+  // Compliancewidgetcard.tsx) — يميّز "فشل التحقق من التنبيه" عن "لا يوجد
+  // تنبيه" بصرياً، بدل اختفاء صامت تام.
+  const [alertFetchFailed, setAlertFetchFailed] = useState(false);
 
   const result = windowEval.worst;
 
@@ -377,28 +382,52 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
   const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
 
   useEffect(() => {
+    let cancelled = false;
     async function fetchInitialData() {
       if (!projectId || !activityId) return;
-      
-      const { data: alertResp } = await apiClient.get('/alerts', {
-        params: { projectId, activityId, activitySource: 'dust' },
-      });
-      const alertData = alertResp?.data;
-      if (alertData && alertData.length > 0) setActiveAlert(alertData[0]);
 
-      const { data: decisionResp } = await apiClient.get('/decisions', {
-        params: { projectId, activityId, activitySource: 'dust' },
-      });
-      const decisionData = decisionResp?.data;
-
-      if (decisionData) {
-        setConfirmedDecision({
-          status: decisionData.status,
-          time: new Date(decisionData.created_at).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })
+      // خطأ سلامة حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة
+      // تتحول غالباً إلى أرقام صفرية أو حالات فارغة مضللة"): كان هذا
+      // الاستدعاء بلا try/catch إطلاقاً — فشل شبكة كان يعني activeAlert
+      // يبقى null بصمت تامة (شريط "تنبيه أمني نشط" يختفي تماماً كأن لا
+      // تنبيه موجود)، بلا أي أثر حتى في الكونسول.
+      try {
+        const { data: alertResp } = await apiClient.get('/alerts', {
+          params: { projectId, activityId, activitySource: 'dust' },
         });
+        if (cancelled) return;
+        const alertData = alertResp?.data;
+        if (alertData && alertData.length > 0) setActiveAlert(alertData[0]);
+        setAlertFetchFailed(false);
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Dustwidgetcard: فشل جلب التنبيه النشط:', error);
+        setAlertFetchFailed(true);
+        toast.error('تعذّر التحقق من وجود تنبيه أمني نشط لهذا النشاط — تحقّق من الاتصال وأعد المحاولة.');
+      }
+
+      try {
+        const { data: decisionResp } = await apiClient.get('/decisions', {
+          params: { projectId, activityId, activitySource: 'dust' },
+        });
+        if (cancelled) return;
+        const decisionData = decisionResp?.data;
+        if (decisionData) {
+          setConfirmedDecision({
+            status: decisionData.status,
+            time: new Date(decisionData.created_at).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Riyadh' })
+          });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Dustwidgetcard: فشل جلب آخر قرار مؤكَّد:', error);
+        toast.error('تعذّر جلب آخر قرار مؤكَّد لهذا النشاط.');
       }
     }
     fetchInitialData();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId, activityId]);
 
   const saveDecision = async (dbStatus: 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped') => {
@@ -484,6 +513,14 @@ export default function DustWidgetCard({ activityType, windowEval, aei, complian
           <div className="bg-red-500 text-white text-[10px] font-black px-4 py-1.5 flex items-center gap-2 animate-pulse">
             <AlertOctagon className="w-3.5 h-3.5" />
             يوجد تنبيه أمني نشط لهذا النشاط يرجى المراجعة!
+          </div>
+        )}
+
+        {/* راجع تعليق alertFetchFailed أعلى المكوّن — تحذير باقٍ، لا اختفاء صامت. */}
+        {alertFetchFailed && (
+          <div className="bg-amber-500 text-white text-[10px] font-black px-4 py-1.5 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            تعذّر التحقق من وجود تنبيه أمني نشط — قد تكون هناك حالة غير معروضة، تحقّق من الاتصال
           </div>
         )}
 

@@ -57,24 +57,32 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
   const [todayActivities, setTodayActivities] = useState<DashboardActivityRow[]>([]);
   const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, LiveActivitySummary>>({});
   const [isLoading, setIsLoading] = useState(true);
+  // راجع تعليق IntegratedDashboard.tsx الكامل (نفس الإصلاح) — بلا هذا، فشل
+  // شبكة كان يعني خريطة فارغة برسالة "لا تتوفر إحداثيات للمشاريع بعد" رغم
+  // وجودها فعلياً، لجهة المراقبة الخارجية (viewer) أيضاً.
+  const [error, setError] = useState<string | null>(null);
+  const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
         setIsLoading(true);
+        setError(null);
         const { data: dash } = await apiClient.get(apiEndpoint);
         setProjects(dash?.projects || []);
         setTodayActivities(dash?.dustActivities || []);
         setLiveActivityByProjectId(dash?.liveActivityByProjectId || {});
-      } catch (error) {
-        console.error('Error fetching dashboard data:', error);
+      } catch (err) {
+        console.error('Error fetching dashboard data:', err);
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        setError(axiosErr?.response?.data?.error || 'تعذّر جلب بيانات المشاريع — تحقّق من الاتصال وأعد المحاولة.');
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchDashboardData();
-  }, [apiEndpoint]);
+  }, [apiEndpoint, retryTick]);
 
   // نقاط الخريطة — القرار يأتي حصراً من النشاط الجاري فعلياً الآن (القرار
   // الموحد للنشاط: DVI + الامتثال التنظيمي، راجع computeUnifiedActivityDecision
@@ -118,6 +126,24 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
         <div className="flex flex-col items-center gap-4 text-[#061B40]">
           <Loader2 className="w-10 h-10 animate-spin text-[#0176FB]" />
           <h2 className="font-bold text-lg">جاري جلب بيانات المشاريع...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="h-full bg-[#F4F7FB] flex items-center justify-center" dir="rtl">
+        <div className="flex flex-col items-center gap-4 text-center max-w-md px-4">
+          <h2 className="text-xl font-black text-red-600">تعذّر تحميل الخريطة</h2>
+          <p className="text-slate-500 text-sm font-medium">{error}</p>
+          <button
+            type="button"
+            onClick={() => setRetryTick((t) => t + 1)}
+            className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+          >
+            إعادة المحاولة
+          </button>
         </div>
       </div>
     );

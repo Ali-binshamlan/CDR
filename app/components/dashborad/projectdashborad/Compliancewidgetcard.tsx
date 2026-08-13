@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { toast } from 'react-hot-toast';
 import { apiClient } from '@/app/lib/apiClient';
 import { useNow } from '@/app/lib/useNow';
 import {
@@ -425,6 +426,15 @@ export default function ComplianceWidgetCard({
 }: ComplianceWidgetCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeAlert, setActiveAlert] = useState<Record<string, unknown> | null>(null);
+  // خطأ سلامة حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة
+  // تتحول غالباً إلى أرقام صفرية أو حالات فارغة مضللة"): fetchInitialData
+  // أدناه كانت بلا try/catch إطلاقاً — فشل شبكة (لا اتصال، مهلة، 500) كان
+  // يعني activeAlert يبقى null بصمت تامة، فيختفي شريط "تنبيه أمني نشط"
+  // الأحمر (سطر ~630) تماماً كأن لا تنبيه موجود، بلا أي أثر حتى في الكونسول
+  // (unhandled promise rejection فقط). alertFetchFailed يميّز الآن صراحة
+  // "تحقّقنا ولا يوجد تنبيه" عن "فشل التحقق نفسه" — الحالة الثانية تستحق
+  // تحذيراً بصرياً مستقلاً، لا اختفاءً صامتاً، لأنها مؤشر سلامة/امتثال.
+  const [alertFetchFailed, setAlertFetchFailed] = useState(false);
   // "الآن" يتحدّث كل دقيقة — يكفي لحالات "منتهٍ؟"/"جهاز متوقف؟" أدناه (ليست
   // عدّاداً تنازلياً بدقة الثانية كـuseCountdownRemainingSeconds أعلاه).
   const now = useNow(60000);
@@ -604,20 +614,33 @@ export default function ComplianceWidgetCard({
   const allAdvisoryTips = isEnded ? [] : stalenessAdvisory ? [stalenessAdvisory, ...advisoryTips] : advisoryTips;
 
   useEffect(() => {
+    let cancelled = false;
     async function fetchInitialData() {
       if (!projectId || !activityId) return;
 
-      // DCR: activity_source مقيَّد بـ CHECK على 'dust' فقط (لا 'dust_compliance'
-      // منفصلة كما في مرقاب) — راجع supabase-dcr-full-schema.sql وapp/api/
-      // alerts/generate/route.ts. بطاقة DVI الفيزيائية (Dustwidgetcard) مخفاة
-      // فعلياً في واجهة DCR فلا يوجد تعارض عملي على نفس activityId.
-      const { data: alertResp } = await apiClient.get('/alerts', {
-        params: { projectId, activityId, activitySource: 'dust' },
-      });
-      const alertData = alertResp?.data;
-      if (alertData && alertData.length > 0) setActiveAlert(alertData[0]);
+      try {
+        // DCR: activity_source مقيَّد بـ CHECK على 'dust' فقط (لا 'dust_compliance'
+        // منفصلة كما في مرقاب) — راجع supabase-dcr-full-schema.sql وapp/api/
+        // alerts/generate/route.ts. بطاقة DVI الفيزيائية (Dustwidgetcard) مخفاة
+        // فعلياً في واجهة DCR فلا يوجد تعارض عملي على نفس activityId.
+        const { data: alertResp } = await apiClient.get('/alerts', {
+          params: { projectId, activityId, activitySource: 'dust' },
+        });
+        if (cancelled) return;
+        const alertData = alertResp?.data;
+        if (alertData && alertData.length > 0) setActiveAlert(alertData[0]);
+        setAlertFetchFailed(false);
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Compliancewidgetcard: فشل جلب التنبيه النشط:', error);
+        setAlertFetchFailed(true);
+        toast.error('تعذّر التحقق من وجود تنبيه أمني نشط لهذا النشاط — تحقّق من الاتصال وأعد المحاولة.');
+      }
     }
     fetchInitialData();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId, activityId]);
 
   if (!worst) return null;
@@ -631,6 +654,16 @@ export default function ComplianceWidgetCard({
           <div className="bg-red-500 text-white text-[10px] font-black px-4 py-1.5 flex items-center gap-2 animate-pulse">
             <ShieldAlert className="w-3.5 h-3.5" />
             يوجد تنبيه أمني نشط لهذا النشاط يرجى المراجعة!
+          </div>
+        )}
+
+        {/* راجع تعليق alertFetchFailed أعلى المكوّن — تحذير باقٍ (لا toast
+            مؤقت فقط) لأن هذا مؤشر سلامة/امتثال: "لا نعرف" يجب ألا يبدو
+            بصرياً كـ"لا يوجد تنبيه". */}
+        {!isEnded && alertFetchFailed && (
+          <div className="bg-amber-500 text-white text-[10px] font-black px-4 py-1.5 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            تعذّر التحقق من وجود تنبيه أمني نشط — قد تكون هناك حالة غير معروضة، تحقّق من الاتصال
           </div>
         )}
 

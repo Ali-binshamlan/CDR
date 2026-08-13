@@ -23,6 +23,29 @@ export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة") — نفس نمط admin/projects/page.tsx.
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchUsers = React.useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { data } = await apiClient.get('/admin/users');
+      setUsers(data?.data || []);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 403) {
+        setAccessDenied(true);
+      } else {
+        console.error('Error fetching admin users:', err);
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        setError(axiosErr?.response?.data?.error || 'تعذّر جلب المستخدمين — تحقّق من الاتصال وأعد المحاولة.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const check = async () => {
@@ -33,17 +56,10 @@ export default function AdminUsersPage() {
         router.replace('/dashboard');
         return;
       }
-      try {
-        const { data } = await apiClient.get('/admin/users');
-        setUsers(data?.data || []);
-      } catch (error: unknown) {
-        if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
-      } finally {
-        setIsLoading(false);
-      }
+      await fetchUsers();
     };
     check();
-  }, [router]);
+  }, [router, fetchUsers]);
 
   if (isSuperAdmin === undefined || isLoading) {
     return (
@@ -61,6 +77,22 @@ export default function AdminUsersPage() {
       <div className="min-h-screen bg-[#F4F7FB] flex flex-col items-center justify-center text-slate-500" dir="rtl">
         <ShieldAlert className="w-16 h-16 mb-4 opacity-30" />
         <p className="font-bold text-lg text-slate-700">غير مصرح لك بالوصول لهذه الصفحة</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#F4F7FB] flex flex-col items-center justify-center gap-4 text-center px-4" dir="rtl">
+        <h2 className="text-xl font-black text-red-600">تعذّر تحميل المستخدمين</h2>
+        <p className="text-slate-500 text-sm font-medium max-w-md">{error}</p>
+        <button
+          type="button"
+          onClick={() => { void fetchUsers(); }}
+          className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

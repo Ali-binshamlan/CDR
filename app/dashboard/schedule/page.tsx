@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { displayActivityLabel } from '@/app/lib/activityLabels';
@@ -70,27 +70,39 @@ export default function SchedulePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [projects, setProjects] = useState<ScheduleProjectRow[]>([]);
   const [activities, setActivities] = useState<ScheduleActivityRow[]>([]);
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب كان يعني كل أيام
+  // الأسبوع تعرض "لا توجد أنشطة مجدولة" — قد يُفهم كأسبوع فارغ فعلياً.
+  const [error, setError] = useState<string | null>(null);
 
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
 
-  useEffect(() => {
-    const fetchSchedule = async () => {
-      setIsLoading(true);
-      try {
-        const { data } = await apiClient.get('/dashboard/schedule', {
-          params: { from: toDateStr(weekStart), to: toDateStr(weekEnd) },
-        });
-        setProjects(data?.projects || []);
-        setActivities(data?.activities || []);
-      } catch (error) {
-        console.error('Error fetching schedule:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    fetchSchedule();
+  const fetchSchedule = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { data } = await apiClient.get('/dashboard/schedule', {
+        params: { from: toDateStr(weekStart), to: toDateStr(weekEnd) },
+      });
+      setProjects(data?.projects || []);
+      setActivities(data?.activities || []);
+    } catch (err) {
+      console.error('Error fetching schedule:', err);
+      const axiosErr = err as { response?: { data?: { error?: string } } };
+      setError(axiosErr?.response?.data?.error || 'تعذّر جلب جدول الأسبوع — تحقّق من الاتصال وأعد المحاولة.');
+    } finally {
+      setIsLoading(false);
+    }
   }, [weekStart, weekEnd]);
+
+  useEffect(() => {
+    // جدولة عبر microtask بدل استدعاء fetchSchedule مباشرة من جسم الـEffect —
+    // القاعدة الاستاتيكية react-hooks/set-state-in-effect تفحص استدعاء الدالة
+    // نفسها من جسم الـEffect، بصرف النظر عن أي await داخل الدالة المُستدعاة.
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) fetchSchedule(); });
+    return () => { cancelled = true; };
+  }, [fetchSchedule]);
 
   const projectNameById = useMemo(
     () => new Map(projects.map((p) => [p.id, p.name])),
@@ -154,6 +166,18 @@ export default function SchedulePage() {
           <div className="flex flex-col items-center justify-center py-24 text-[#061B40]">
             <Loader2 className="w-10 h-10 animate-spin text-[#0176FB] mb-4" />
             <h2 className="font-bold text-lg">جاري تحميل الجدول...</h2>
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center py-24 gap-4 text-center px-4">
+            <h2 className="text-xl font-black text-red-600">تعذّر تحميل الجدول</h2>
+            <p className="text-slate-500 text-sm font-medium max-w-md">{error}</p>
+            <button
+              type="button"
+              onClick={() => { void fetchSchedule(); }}
+              className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+            >
+              إعادة المحاولة
+            </button>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-7 gap-4">

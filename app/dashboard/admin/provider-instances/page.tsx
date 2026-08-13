@@ -25,17 +25,28 @@ export default function AdminProviderInstancesPage() {
   const [instances, setInstances] = useState<ProviderInstance[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة") — نفس نمط admin/projects/page.tsx.
+  const [error, setError] = useState<string | null>(null);
 
   const [provider, setProvider] = useState('thingsboard');
   const [origin, setOrigin] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const load = async () => {
+    setError(null);
     try {
       const { data } = await apiClient.get('/admin/provider-instances');
       setInstances(data?.instances || []);
-    } catch (error: unknown) {
-      if ((error as { response?: { status?: number } })?.response?.status === 403) setAccessDenied(true);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 403) {
+        setAccessDenied(true);
+      } else {
+        console.error('Error fetching provider instances:', err);
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        setError(axiosErr?.response?.data?.error || 'تعذّر جلب منصات مصادر البيانات — تحقّق من الاتصال وأعد المحاولة.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -104,6 +115,22 @@ export default function AdminProviderInstancesPage() {
       <div className="min-h-screen bg-[#F4F7FB] flex flex-col items-center justify-center text-slate-500" dir="rtl">
         <ShieldAlert className="w-16 h-16 mb-4 opacity-30" />
         <p className="font-bold text-lg text-slate-700">غير مصرح لك بالوصول لهذه الصفحة</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#F4F7FB] flex flex-col items-center justify-center gap-4 text-center px-4" dir="rtl">
+        <h2 className="text-xl font-black text-red-600">تعذّر تحميل المنصات</h2>
+        <p className="text-slate-500 text-sm font-medium max-w-md">{error}</p>
+        <button
+          type="button"
+          onClick={() => { void load(); }}
+          className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

@@ -37,6 +37,9 @@ export interface MenuItem {
   href: string; // الرابط الفعلي للصفحة بدل id داخلي فقط
   icon: React.ElementType;
   badge?: number;
+  // راجع تعليق alertsCountFetchFailed الكامل في Sidebar — true يعني "لم
+  // نتمكن من التحقق من العدد الفعلي"، لا "العدد صفر فعلياً".
+  badgeFetchFailed?: boolean;
 }
 
 // ==========================================
@@ -97,6 +100,15 @@ const SidebarNavItem = ({
 
           {isCollapsed && !!item.badge && (
             <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#F97316] rounded-full"></span>
+          )}
+
+          {/* لا نعرض "0" مضلِّلة عند فشل الجلب — نقطة رمادية صغيرة تدل على
+              "العدد غير معروف حالياً"، بدل اختفاء أي إشارة كأن لا تنبيهات. */}
+          {!item.badge && item.badgeFetchFailed && (
+            <span
+              className="w-2 h-2 rounded-full bg-slate-300 border border-slate-400"
+              title="تعذّر جلب العدد الفعلي — تحقّق من الاتصال"
+            ></span>
           )}
 
           <item.icon
@@ -173,6 +185,15 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [alertsCount, setAlertsCount] = useState<number>(0);
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل fetchAlertsCount كان يُسجَّل
+  // في console.error فقط، بينما alertsCount يبقى 0 — الشارة البرتقالية
+  // بجانب "التنبيهات" تختفي تماماً (badge يُعرض فقط عند !!count)، فمستخدم
+  // لديه تنبيهات حرجة غير مغلقة يرى القائمة الجانبية "نظيفة" بلا أي إشارة.
+  // alertsCountFetchFailed يعرض نقطة تحذير صغيرة بدل الاختفاء الصامت — بلا
+  // toast متكرر (هذا الجلب يتكرر مع كل حدث Realtime، toast لكل فشل كان
+  // سيُزعج المستخدم).
+  const [alertsCountFetchFailed, setAlertsCountFetchFailed] = useState(false);
   const pathname = usePathname();
 
   // -----------------------------------------------------------
@@ -204,10 +225,14 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
     async function fetchAlertsCount() {
       try {
         const { data } = await apiClient.get('/alerts/count');
-        if (isMounted) setAlertsCount(data?.count ?? 0);
+        if (!isMounted) return;
+        setAlertsCount(data?.count ?? 0);
+        setAlertsCountFetchFailed(false);
       } catch (error) {
+        if (!isMounted) return;
         const err = error as AxiosError<{ error?: string }>;
         console.error('fetchAlertsCount failed:', err?.response?.data?.error || err?.message);
+        setAlertsCountFetchFailed(true);
       }
     }
 
@@ -262,13 +287,13 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
   const menuItems: MenuItem[] = accountRole === 'viewer'
     ? [
         { id: 'home', name: 'لوحة التحكم', href: '/dashboard/viewer', icon: Home },
-        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/viewer/alerts', icon: Bell, badge: alertsCount },
+        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/viewer/alerts', icon: Bell, badge: alertsCount, badgeFetchFailed: alertsCountFetchFailed },
         { id: 'reports', name: 'التقارير', href: '/dashboard/viewer/reports', icon: FileText },
       ]
     : [
         { id: 'home', name: 'لوحة التحكم', href: '/dashboard', icon: Home },
         { id: 'projects', name: 'المشاريع', href: '/dashboard/Projects', icon: FolderKanban },
-        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/alerts', icon: Bell, badge: alertsCount },
+        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/alerts', icon: Bell, badge: alertsCount, badgeFetchFailed: alertsCountFetchFailed },
         { id: 'schedule', name: 'جدول الأسبوع', href: '/dashboard/schedule', icon: CalendarDays },
         { id: 'settings', name: 'الإعدادات', href: '/dashboard/settings', icon: Settings },
         // "الإدارة" عنصر واحد فقط لسوبر أدمن — نفس نمط "المشاريع" (عنصر

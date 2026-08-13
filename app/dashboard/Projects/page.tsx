@@ -54,10 +54,17 @@ export default function ProjectsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب كان يعني شبكة بطاقات
+  // فارغة + رسالة "لا توجد مشاريع مطابقة — حاول تغيير معايير البحث"، توحي
+  // بخطأ من المستخدم بينما السبب فشل شبكة فعلي.
+  const [error, setError] = useState<string | null>(null);
+  const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
     const fetchProjectsData = async () => {
       setIsLoading(true);
+      setError(null);
       try {
         const { data: list } = await apiClient.get('/dashboard/projects-list');
         const dbProjects: DashboardProjectRow[] = list?.projects || [];
@@ -87,15 +94,17 @@ export default function ProjectsPage() {
         });
 
         setProjects(processedProjects);
-      } catch (error) {
-        console.error("Error fetching projects:", error);
+      } catch (err) {
+        console.error("Error fetching projects:", err);
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        setError(axiosErr?.response?.data?.error || 'تعذّر جلب بيانات المشاريع — تحقّق من الاتصال وأعد المحاولة.');
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchProjectsData();
-  }, []);
+  }, [retryTick]);
 
   // تصفية المشاريع بالبحث النصي فقط
   const filteredProjects = projects.filter(p => 
@@ -107,6 +116,22 @@ export default function ProjectsPage() {
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] text-[#061B40]">
         <Loader2 className="w-10 h-10 animate-spin text-[#0176FB] mb-4" />
         <h2 className="font-bold text-lg">جاري تحميل بيانات المشاريع...</h2>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] gap-4 text-center px-4">
+        <h2 className="text-xl font-black text-red-600">تعذّر تحميل المشاريع</h2>
+        <p className="text-slate-500 text-sm font-medium max-w-md">{error}</p>
+        <button
+          type="button"
+          onClick={() => setRetryTick((t) => t + 1)}
+          className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

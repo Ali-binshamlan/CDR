@@ -75,6 +75,11 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
   const [fromDate, setFromDate] = useState<string>(defaultFromDate.toLocaleDateString('en-CA'));
   const [toDate, setToDate] = useState<string>(new Date().toLocaleDateString('en-CA'));
   const [projectFilter, setProjectFilter] = useState<string>('ALL');
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب كان يعني كل مؤشرات
+  // KPI تُصفَّر (0 أنشطة آمنة/موقوفة/تنبيهات) وجدول "لا توجد بيانات للفترة
+  // المحددة" — تقرير تنفيذي قد يُقرأ كـ"كل شيء مثالي" أو "لا نشاط" خطأً.
+  const [error, setError] = useState<string | null>(null);
 
   const fetchReportData = useCallback(async () => {
     // await فوري (microtask) قبل أول setState — يفصل استدعاء الدالة نفسه
@@ -83,6 +88,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     // https://react.dev/learn/you-might-not-need-an-effect.
     await Promise.resolve();
     setIsLoading(true);
+    setError(null);
     try {
       const { data: list } = await apiClient.get(apiEndpoint, { params: { fromDate, toDate } });
       const dbProjects = list?.projects || [];
@@ -94,8 +100,10 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
       setRawDecisions(list?.decisions || []);
       setRawAlerts(list?.alerts || []);
 
-    } catch (error: unknown) {
-      console.error('Error fetching report data:', (error as { message?: string })?.message || error);
+    } catch (err: unknown) {
+      console.error('Error fetching report data:', (err as { message?: string })?.message || err);
+      const axiosErr = err as { response?: { data?: { error?: string } } };
+      setError(axiosErr?.response?.data?.error || 'تعذّر جلب بيانات التقرير — تحقّق من الاتصال وأعد المحاولة.');
     } finally {
       setIsLoading(false);
     }
@@ -201,6 +209,22 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] text-[#061B40]">
         <Loader2 className="w-10 h-10 animate-spin text-[#0176FB] mb-4" />
         <h2 className="font-bold text-lg">جاري تجهيز التقارير التحليلية...</h2>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] gap-4 text-center px-4">
+        <h2 className="text-xl font-black text-red-600">تعذّر تحميل التقارير</h2>
+        <p className="text-slate-500 text-sm font-medium max-w-md">{error}</p>
+        <button
+          type="button"
+          onClick={() => { void fetchReportData(); }}
+          className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

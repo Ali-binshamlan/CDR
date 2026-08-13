@@ -208,12 +208,18 @@ export default function AlertsPage() {
   const [alertTimingFilter, setAlertTimingFilter] = useState<AlertTiming | 'الكل'>('الكل');
   const [alertProjectFilter, setAlertProjectFilter] = useState<string>('الكل');
   const [alertStateFilterVal, setAlertStateFilterVal] = useState<AlertState | 'الكل'>('الكل');
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
+  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب في "غرفة التحكم" هذه
+  // كان يعني "لا توجد تنبيهات نشطة حالياً" — نفس الرسالة تماماً سواء لم
+  // توجد تنبيهات فعلاً أو فشل الجلب، رغم احتمال إخفاء مخالفة تنظيمية نشطة.
+  const [error, setError] = useState<string | null>(null);
 
   const fetchAlertsData = useCallback(async () => {
     // await فوري (microtask) قبل أول setState — يفصل الاستدعاء المباشر من
     // جسم الـEffect عن أول تعديل حالة متزامن، بلا تأخير محسوس.
     await Promise.resolve();
     setIsLoading(true);
+    setError(null);
     try {
       const { data: list } = await apiClient.get('/dashboard/alerts-list');
       const dbProjects = list?.projects || [];
@@ -262,8 +268,10 @@ export default function AlertsPage() {
 
       setAlertsData(formattedAlerts);
 
-    } catch (error) {
-      console.error('Error fetching alerts data:', error instanceof Error ? error.message : error);
+    } catch (err) {
+      console.error('Error fetching alerts data:', err instanceof Error ? err.message : err);
+      const axiosErr = err as { response?: { data?: { error?: string } } };
+      setError(axiosErr?.response?.data?.error || 'تعذّر جلب بيانات التنبيهات — تحقّق من الاتصال وأعد المحاولة.');
     } finally {
       setIsLoading(false);
     }
@@ -298,6 +306,22 @@ export default function AlertsPage() {
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] text-[#061B40]">
         <Loader2 className="w-10 h-10 animate-spin text-[#0176FB] mb-4" />
         <h2 className="font-bold text-lg">جاري تحميل غرفة العمليات...</h2>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F4F7FB] gap-4 text-center px-4">
+        <h2 className="text-xl font-black text-red-600">تعذّر تحميل غرفة العمليات</h2>
+        <p className="text-slate-500 text-sm font-medium max-w-md">{error}</p>
+        <button
+          type="button"
+          onClick={() => { void fetchAlertsData(); }}
+          className="bg-[#0176FB] hover:bg-[#0176FB]/90 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }
