@@ -9,7 +9,7 @@ import {
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { ArrowRight, Gauge, RefreshCw } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
 
 // نفس حدود PM10 التشغيلية في حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE) —
 // تُقرأ من الحزمة مباشرة (لا تُكرَّر كأرقام هنا) فقط لرسم خطوط مرجعية على

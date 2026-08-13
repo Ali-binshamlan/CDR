@@ -1,7 +1,7 @@
 // سيناريو اختبار مبسّط لنفس جهاز ThingsBoard: PM10 يبدأ بمرحلة مخالفة
 // مؤكَّدة (فوق حد 340) لمدة ثابتة، ثم ينزل لنطاق "مسموح" (ALLOW نظيف، تحت
 // حد normalMaxInclusive=200 في RIYADH_DUST_2026_2 — راجع
-// app/utils/rule-bundles/riyadh-dust-2026.3.ts) ويستمر بالإرسال حتى يتجاوز
+// app/utils/rule-bundles/riyadh-dust-2026.2.ts) ويستمر بالإرسال حتى يتجاوز
 // مهلة استقرار الاستئناف الكاملة (RESUME_STABILITY_MINUTES=10 في
 // dust-compliance-engine/engine.ts) بهامش أمان — أي لا يتوقف السكربت عند
 // أول قراءة نظيفة، بل يستمر حتى يضمن وصول القرار الفعلي لحالة "مسموح"

@@ -14,7 +14,7 @@ import type {
   DustRuleHit,
   DustWindBand,
 } from './types';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
 import { getRuleParameters } from './ruleParameters';
 
 export const RULEBOOK_VERSION = ACTIVE_RULE_BUNDLE.id;

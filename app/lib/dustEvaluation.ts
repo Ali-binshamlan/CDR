@@ -12,7 +12,7 @@ import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
 import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT } from '@/app/utils/dust-compliance-engine';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.3';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
 import { LIVE_FIELD_FRESHNESS_MS, DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
 import type { ReceptorWithinRadius } from '@/app/utils/dust-compliance-engine/geo';
