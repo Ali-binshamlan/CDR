@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { MapContainer, TileLayer, Marker, useMap, useMapEvent } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { apiClient } from '@/app/lib/apiClient';
@@ -51,6 +51,14 @@ function FitBounds({ points }: { points: { latitude: number; longitude: number }
     }
   }, [points, map]);
 
+  return null;
+}
+
+// يغلق البطاقة المثبَّتة عند النقر على أي جزء آخر من الخريطة (خلفية بلا
+// نقطة مشروع) — إغلاق click على العلامة نفسه يُعالَج مباشرة في eventHandlers
+// أعلاه، هذا فقط للنقر خارج أي علامة.
+function CloseCardOnMapClick({ onClose }: { onClose: () => void }) {
+  useMapEvent('click', onClose);
   return null;
 }
 
@@ -117,17 +125,27 @@ function formatDecisionTimeAr(iso: string): string {
   return `${datePart} — ${timePart}`;
 }
 
-// بطاقة معلومات تظهر عند الهوفر (mouseover) على نقطة مشروع — موضعة بإحداثيات
-// شاشة ثابتة (screenPosition) بدل Popup الافتراضي لأن الأخير يفتح بالنقر فقط
-// ولا يدعم "تتبع الفأرة" بسلاسة. قراءات الطقس الحية (رياح/PM10/PM2.5) تُجلب
-// كسولاً هنا فقط عند الهوفر الفعلي — لا دفعة واحدة لكل مشاريع الخريطة — عبر
-// /api/weather (استثناء متعمَّد لقاعدة "لا نعرض رقماً خاماً" في dust-engine،
-// مبرَّر هنا لأنها نظرة عامة على الخريطة لا شاشة قرار تشغيلي لنشاط محدد).
+// بطاقة معلومات لنقطة مشروع — موضعة بإحداثيات شاشة ثابتة (screenPosition)
+// بدل Popup الافتراضي لأن الأخير لا يدعم "تتبع الفأرة" بسلاسة عند الهوفر.
+// قراءات الطقس الحية (رياح/PM10/PM2.5) تُجلب كسولاً هنا فقط عند فتح البطاقة
+// فعلياً — لا دفعة واحدة لكل مشاريع الخريطة — عبر /api/weather (استثناء
+// متعمَّد لقاعدة "لا نعرض رقماً خاماً" في dust-engine، مبرَّر هنا لأنها نظرة
+// عامة على الخريطة لا شاشة قرار تشغيلي لنشاط محدد).
+//
+// خطأ إتاحة مكتشَف ومُصلَح ("الخريطة تعتمد على hover، ما يضعف استخدامها
+// باللمس ولوحة المفاتيح"): كانت هذه البطاقة تظهر حصراً عبر mouseover/
+// mousemove/mouseout — بلا أي مسار بديل عبر اللمس (لا يُطلق هذه الأحداث
+// إطلاقاً) أو لوحة المفاتيح (التركيز كان يصل فقط لمعالج click، لا للهوفر).
+// الآن تُفتح بالنقر/الضغط، أو بالتركيز عبر لوحة المفاتيح (Tab)، أو بـEnter/
+// Space على العلامة نفسها، وتُغلق بالنقر خارجها، Escape، أو زر الإغلاق
+// الصريح داخلها — نفس المحتوى بلا استثناء آلية الوصول.
 function HoverCard({
   point,
   screenPosition,
   hideRawReadings = false,
   minimal = false,
+  onSelect,
+  onClose,
 }: {
   point: ProjectPoint;
   screenPosition: { x: number; y: number };
@@ -140,6 +158,11 @@ function HoverCard({
   // اسم المشروع/المدينة وحالة المخالفة — تُخفى كل التفاصيل الأخرى (سبب
   // الحالة، الحالة الإدارية، عدد أنشطة اليوم، وقراءات الطقس بالكامل).
   minimal?: boolean;
+  // زر "عرض التفاصيل" داخل البطاقة — النقرة الأولى على العلامة تفتح
+  // البطاقة (بديل الهوفر)، لا تنقل مباشرة؛ الانتقال الفعلي لصفحة المشروع
+  // يتم فقط من هذا الزر الصريح داخل البطاقة.
+  onSelect?: () => void;
+  onClose: () => void;
 }) {
   const [weather, setWeather] = useState<LiveWeather | null>(null);
   // القيمة الابتدائية تعكس ما إذا كان الطلب سيُطلَق فعلياً — hideRawReadings/
@@ -176,11 +199,23 @@ function HoverCard({
 
   return (
     <div
-      className="absolute z-[1000] pointer-events-none bg-white rounded-xl shadow-lg border border-slate-200 p-3 min-w-[220px]"
+      role="dialog"
+      aria-label={`تفاصيل ${point.name}`}
+      className="absolute z-[1000] bg-white rounded-xl shadow-lg border border-slate-200 p-3 min-w-[220px]"
       style={{ left: screenPosition.x + 14, top: screenPosition.y - 14, transform: 'translateY(-100%)' }}
       dir="rtl"
     >
-      <div className="font-black text-[#061B40] text-sm mb-1">{point.name}</div>
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <div className="font-black text-[#061B40] text-sm">{point.name}</div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="إغلاق"
+          className="shrink-0 text-slate-400 hover:text-slate-600 text-xs font-bold leading-none w-4 h-4 flex items-center justify-center"
+        >
+          ✕
+        </button>
+      </div>
       {point.city && <div className="text-xs text-slate-500 mb-2">{point.city}</div>}
       <div className="flex items-center gap-1.5 mb-1">
         <span
@@ -252,7 +287,114 @@ function HoverCard({
           )}
         </div>
       )}
+
+      {onSelect && (
+        <button
+          type="button"
+          onClick={onSelect}
+          className="mt-2 pt-2 border-t border-slate-100 w-full text-center text-[11px] font-bold text-[#0176FB] hover:underline"
+        >
+          عرض التفاصيل
+        </button>
+      )}
     </div>
+  );
+}
+
+interface ActiveCardState {
+  point: ProjectPoint;
+  screenPosition: { x: number; y: number };
+  pinned: boolean;
+}
+
+type SetActiveCard = Dispatch<SetStateAction<ActiveCardState | null>>;
+
+// علامة مشروع واحدة على الخريطة. مُستخرَجة كمكوّن مستقل (بدل Marker مضمَّن
+// مباشرة في الحلقة) لأن ربط حدث 'focus' يحتاج وصولاً مباشراً لكائن
+// L.Marker عبر ref — 'focus' مدعوم فعلياً وقت التشغيل في Leaflet (marker
+// icon قابل للتركيز افتراضياً، tabIndex=0 + role=button) لكنه غير موجود
+// إطلاقاً في نوع LeafletEventHandlerFnMap المستخدَم في prop eventHandlers،
+// فلا يمكن تمريره عبرها مباشرة بأمان من ناحية الأنواع.
+function ProjectMarker({ point: p, setActiveCard }: { point: ProjectPoint; setActiveCard: SetActiveCard }) {
+  const markerRef = useRef<L.Marker | null>(null);
+
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker) return;
+    const handleFocus = () => {
+      const map = (marker as unknown as { _map: L.Map })._map;
+      const containerPoint = map.latLngToContainerPoint(marker.getLatLng());
+      setActiveCard({ point: p, screenPosition: { x: containerPoint.x, y: containerPoint.y }, pinned: true });
+    };
+    marker.on('focus', handleFocus);
+    return () => {
+      marker.off('focus', handleFocus);
+    };
+  }, [p, setActiveCard]);
+
+  return (
+    <Marker
+      ref={markerRef}
+      position={[p.latitude, p.longitude]}
+      icon={makeIcon(p.decision ? decisionColor[p.decision] : NO_ACTIVITY_COLOR)}
+      eventHandlers={{
+        // النقر/الضغط (وكذلك Enter/Space عبر لوحة المفاتيح، أو Tab للتركيز
+        // — راجع marker.on('focus', ...) أعلاه) يفتح بطاقة المعلومات نفسها
+        // المعروضة سابقاً بالهوفر فقط — بديل متكافئ يعمل باللمس ولوحة
+        // المفاتيح معاً. نقرة ثانية على نفس النقطة (أو زر الإغلاق داخل
+        // البطاقة) تُغلقها. زر "عرض التفاصيل" داخل البطاقة هو المسار الوحيد
+        // للتنقل الفعلي لصفحة المشروع (onSelect) — يختفي تلقائياً في وضع
+        // minimal لأن onSelect غير مُمرَّرة أصلاً من الأب في تلك الحالة.
+        click: (e) => {
+          // منع وصول الحدث لمعالج نقر الخريطة (CloseCardOnMapClick) — بدونه،
+          // نقر العلامة كان سيفتح البطاقة ثم يغلقها فوراً بنفس النقرة عبر
+          // فقاعة الحدث للخريطة.
+          L.DomEvent.stopPropagation(e);
+          const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
+          setActiveCard((prev) =>
+            prev?.pinned && prev.point.id === p.id
+              ? null
+              : { point: p, screenPosition: { x: containerPoint.x, y: containerPoint.y }, pinned: true }
+          );
+        },
+        keypress: (e) => {
+          const key = e.originalEvent.key;
+          if (key !== 'Enter' && key !== ' ') return;
+          const containerPoint = e.target._map.latLngToContainerPoint(e.target.getLatLng());
+          setActiveCard({ point: p, screenPosition: { x: containerPoint.x, y: containerPoint.y }, pinned: true });
+        },
+        keydown: (e) => {
+          if (e.originalEvent.key !== 'Escape') return;
+          setActiveCard((prev) => (prev?.point.id === p.id ? null : prev));
+        },
+        // عمداً بلا معالج blur لإغلاق البطاقة — البطاقة تُرسم خارج شجرة DOM
+        // الخاصة بالعلامة (موضع مطلق فوق الخريطة)، فـTab من العلامة للوصول
+        // لأزرارها (إغلاق/عرض التفاصيل) لا يمر عبر "تركيز العلامة نفسها" بل
+        // يقفز للعنصر التالي في تسلسل الصفحة. لو أُغلقت البطاقة عند blur، لن
+        // يصل أي مستخدم لوحة مفاتيح لتلك الأزرار إطلاقاً. البطاقة تبقى
+        // مفتوحة حتى إغلاق صريح (زر الإغلاق، Escape، أو النقر خارجها عبر
+        // CloseCardOnMapClick).
+        //
+        // الهوفر يبقى معاينة سريعة إضافية لمستخدمي الفأرة فقط — لا يُبدّل
+        // بطاقة مثبَّتة بالفعل بالنقر/التركيز لنقطة أخرى.
+        mouseover: (e) => {
+          setActiveCard((prev) => {
+            if (prev?.pinned) return prev;
+            const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
+            return { point: p, screenPosition: { x: containerPoint.x, y: containerPoint.y }, pinned: false };
+          });
+        },
+        mousemove: (e) => {
+          const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
+          setActiveCard((prev) =>
+            prev && !prev.pinned && prev.point.id === p.id
+              ? { ...prev, screenPosition: { x: containerPoint.x, y: containerPoint.y } }
+              : prev
+          );
+        },
+        mouseout: () => setActiveCard((prev) => (prev?.pinned ? prev : null)),
+      }}
+    />
   );
 }
 
@@ -269,7 +411,11 @@ export default function ProjectsMap({
   // المدينة وحالة القرار — كل التفاصيل الأخرى مخفاة (راجع HoverCard أعلاه).
   minimal?: boolean;
 }) {
-  const [hovered, setHovered] = useState<{ point: ProjectPoint; screenPosition: { x: number; y: number } } | null>(null);
+  // activeCard: بطاقة "مثبَّتة" (pinned=true) فُتحت بالنقر/الضغط أو التركيز
+  // بلوحة المفاتيح — تبقى ظاهرة حتى تُغلَق صراحة (زر الإغلاق، Escape، أو
+  // النقر خارجها)، على عكس الهوفر اللحظي (pinned=false) الذي يختفي عند
+  // mouseout كمعاينة سريعة فقط، ولا يستبدل أي بطاقة مثبَّتة بالفعل.
+  const [activeCard, setActiveCard] = useState<ActiveCardState | null>(null);
 
   return (
     <div className="relative w-full h-full">
@@ -287,35 +433,20 @@ export default function ProjectsMap({
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <FitBounds points={points} />
+        <CloseCardOnMapClick onClose={() => setActiveCard((prev) => (prev?.pinned ? null : prev))} />
         {points.map((p) => (
-          <Marker
-            key={p.id}
-            position={[p.latitude, p.longitude]}
-            icon={makeIcon(p.decision ? decisionColor[p.decision] : NO_ACTIVITY_COLOR)}
-            eventHandlers={{
-              // طلب صريح: جهة المراقبة (minimal) لا تملك صلاحية الوصول لصفحة
-              // تفاصيل المشروع (تلك الصفحة تتحقق من ملكية المستخدم، لا دور
-              // viewer) — النقر مُلغى تماماً في هذا الوضع، لا فقط onSelect
-              // غير مُمرَّرة من الأب (دفاع مضاعف صريح هنا).
-              click: () => {
-                if (minimal) return;
-                onSelect?.(p.id);
-              },
-              mouseover: (e) => {
-                const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
-                setHovered({ point: p, screenPosition: { x: containerPoint.x, y: containerPoint.y } });
-              },
-              mousemove: (e) => {
-                const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
-                setHovered((prev) => (prev ? { ...prev, screenPosition: { x: containerPoint.x, y: containerPoint.y } } : prev));
-              },
-              mouseout: () => setHovered(null),
-            }}
-          />
+          <ProjectMarker key={p.id} point={p} setActiveCard={setActiveCard} />
         ))}
       </MapContainer>
-      {hovered && (
-        <HoverCard point={hovered.point} screenPosition={hovered.screenPosition} hideRawReadings={hideRawReadings} minimal={minimal} />
+      {activeCard && (
+        <HoverCard
+          point={activeCard.point}
+          screenPosition={activeCard.screenPosition}
+          hideRawReadings={hideRawReadings}
+          minimal={minimal}
+          onSelect={onSelect ? () => onSelect(activeCard.point.id) : undefined}
+          onClose={() => setActiveCard(null)}
+        />
       )}
     </div>
   );
