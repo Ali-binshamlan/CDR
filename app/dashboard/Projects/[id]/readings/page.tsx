@@ -9,6 +9,7 @@ import {
 import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import { ArrowRight, Gauge, RefreshCw } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
+import { supabase } from '@/app/lib/supabase';
 import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
 
 // نفس حدود PM10 التشغيلية في حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE) —
@@ -19,10 +20,14 @@ const PM10_WARNING_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.warningThresholdIn
 const PM10_RED_RESTRICT_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.controlsMaxInclusive;
 const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
 
-// دورة التحديث التلقائي — دقيقة واحدة (طلب صريح: تحديث لايف كل دقيقة بدل
-// دقيقتين بكل نظام الواجهة)، حتى يبقى الرسم البياني حياً بلا حاجة لريفريش
-// يدوي أثناء بقاء المستخدم بالصفحة.
-const REFRESH_INTERVAL_MS = 60 * 1000;
+// خطأ أداء مكتشَف ومُصلَح (تحقيق ضغط Compute/CPU/Disk IO على خطة Free):
+// كانت هذه الصفحة تستطلع (poll) كل دقيقة بصرف النظر عن وجود قراءة جديدة
+// فعلاً أم لا — الآن التحديث الفوري يصل عبر اشتراك Realtime (INSERT على
+// pm10_readings_history مقيَّد بـproject_id، نفس نمط final_decisions في
+// Projects/[id]/page.tsx). REFRESH_INTERVAL_MS يبقى فقط كشبكة أمان احتياطية
+// بطيئة جداً (5 دقائق بدل دقيقة) تغطي حالة نادرة: فشل اتصال WebSocket صامت
+// (شبكة مقيَّدة/بروكسي يحجب Realtime) بلا سقوط ظاهري للمستخدم.
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 // نطاقات زمنية جاهزة للاختيار — 6 ساعات افتراضياً (كافية لمتابعة نوبة عمل
 // واحدة)، مع خيار يوم/3 أيام/أسبوع للمراجعة الرجعية.
@@ -130,6 +135,52 @@ export default function ProjectReadingsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, hours]);
 
+  // اشتراك Realtime — يستدعي fetchHistory فوراً عند وصول قراءة PM10 جديدة
+  // لهذا المشروع، بدل انتظار دورة الاستطلاع الاحتياطي (5 دقائق أعلاه). نفس
+  // نمط final-decisions في Projects/[id]/page.tsx بالضبط: setAuth عند فتح
+  // القناة + إعادته عند كل تجديد جلسة فعلي (JWT صالح لساعة واحدة فقط، لا
+  // يتجدد تلقائياً على قناة مفتوحة مسبقاً).
+  useEffect(() => {
+    if (!id) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
+
+    const openChannel = () => {
+      if (channel) return;
+      channel = supabase
+        .channel(`pm10-readings-${id}`)
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'pm10_readings_history', filter: `project_id=eq.${id}` },
+          () => fetchHistory(true)
+        )
+        .subscribe();
+    };
+
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token || cancelled) return;
+      await supabase.realtime.setAuth(token);
+      if (cancelled) return;
+      openChannel();
+    })();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!session?.access_token) return;
+      await supabase.realtime.setAuth(session.access_token);
+    });
+
+    return () => {
+      cancelled = true;
+      authListener.subscription.unsubscribe();
+      if (channel) supabase.removeChannel(channel);
+    };
+    // fetchHistory عمداً خارج القائمة — نفس سبب Projects/[id]/page.tsx
+    // (إعادة إنشاء القناة بلا داعٍ في كل render لو أُدرجت).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const visibleActivities = useMemo(
     () => (selectedIds ? activities.filter((a) => selectedIds.has(a.activityGroupId)) : activities),
     [activities, selectedIds]
@@ -155,7 +206,7 @@ export default function ProjectReadingsPage({
               <Gauge className="w-6 h-6 text-[#3995FF]" /> سجل قراءات PM10 لكل نشاط
             </h1>
             <p className="text-sm font-bold text-slate-500">
-              كل نقطة تمثّل قراءة فعلية مسجَّلة — يتحدّث تلقائياً كل دقيقة
+              كل نقطة تمثّل قراءة فعلية مسجَّلة — يتحدّث تلقائياً فور وصول قراءة جديدة
             </p>
           </div>
           <Link

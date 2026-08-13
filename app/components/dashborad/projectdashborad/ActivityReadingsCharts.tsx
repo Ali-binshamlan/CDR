@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -8,6 +8,7 @@ import type { ValueType } from 'recharts/types/component/DefaultTooltipContent';
 import type { AxiosError } from 'axios';
 import { LineChart as LineChartIcon } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
+import { useProjectDeviceReadingsRealtime } from '@/app/lib/useProjectDeviceReadingsRealtime';
 
 // عناصر القياس السبعة — كل عنصر رسمه الخاص المستقل (لا محور مزدوج أبداً،
 // راجع dataviz skill: "قياسان مختلفا النطاق → رسمان منفصلان، لا محور ثانٍ").
@@ -47,8 +48,14 @@ const ELEMENTS: {
   { key: 'temperatureC', titleAr: 'درجة الحرارة', unit: '°م', color: '#EF4444' },
 ];
 
-// دقيقة واحدة (طلب صريح: تحديث لايف كل دقيقة بدل دقيقتين بكل نظام الواجهة).
-const REFRESH_INTERVAL_MS = 60 * 1000;
+// خطأ أداء مكتشَف ومُصلَح (تحقيق ضغط Compute/CPU/Disk IO على خطة Free):
+// كانت هذه البطاقة تستطلع (poll) كل دقيقة بصرف النظر عن وصول قراءة جديدة
+// فعلاً أم لا — بل تُركَّب مرة لكل بطاقة نشاط ظاهرة، فعدة بطاقات معاً تعني
+// عدة استطلاعات متوازية لنفس المشروع. التحديث الفوري يصل الآن عبر اشتراك
+// Realtime مُشترَك (useProjectDeviceReadingsRealtime، قناة واحدة لكل مشروع
+// بصرف النظر عن عدد البطاقات). REFRESH_INTERVAL_MS يبقى فقط كشبكة أمان
+// احتياطية بطيئة جداً تغطي فشل اتصال WebSocket صامت.
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_HOURS = 6;
 
 function formatTimeAr(iso: string): string {
@@ -154,6 +161,10 @@ export default function ActivityReadingsCharts({
   const [loading, setLoading] = useState(Boolean(projectId && activityGroupId));
   const [error, setError] = useState<string | null>(null);
 
+  // يُستدعى أيضاً من useProjectDeviceReadingsRealtime عند وصول قراءة جديدة
+  // لهذا المشروع (silent=true) — راجع تعليق REFRESH_INTERVAL_MS أعلاه.
+  const fetchHistoryRef = useRef<(silent?: boolean) => void>(() => {});
+
   useEffect(() => {
     if (!projectId || !activityGroupId) return;
     let cancelled = false;
@@ -177,6 +188,7 @@ export default function ActivityReadingsCharts({
       }
     };
 
+    fetchHistoryRef.current = fetchHistory;
     fetchHistory();
     const intervalId = window.setInterval(() => fetchHistory(true), REFRESH_INTERVAL_MS);
     return () => {
@@ -185,6 +197,8 @@ export default function ActivityReadingsCharts({
     };
   }, [projectId, activityGroupId]);
 
+  useProjectDeviceReadingsRealtime(projectId, () => fetchHistoryRef.current(true));
+
   if (!projectId || !activityGroupId) return null;
 
   return (
@@ -192,7 +206,7 @@ export default function ActivityReadingsCharts({
       <div className="flex items-center gap-2 mb-3">
         <LineChartIcon className="w-4 h-4 text-[#3995FF]" />
         <h3 className="text-[12px] font-black text-[#061B40]">مؤشر القراءات لهذا النشاط</h3>
-        <span className="text-[10px] font-bold text-slate-400">— آخر {DEFAULT_HOURS} ساعات، يتحدّث تلقائياً كل دقيقة</span>
+        <span className="text-[10px] font-bold text-slate-400">— آخر {DEFAULT_HOURS} ساعات، يتحدّث تلقائياً فور وصول قراءة جديدة</span>
       </div>
 
       {loading && (
