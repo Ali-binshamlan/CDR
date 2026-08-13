@@ -1,0 +1,354 @@
+"use client";
+
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import type { AxiosError } from 'axios';
+import { supabase } from '@/app/lib/supabase';
+import { apiClient } from '@/app/lib/apiClient';
+import {
+  Home, FolderKanban, Bell,
+  FileText, ChevronLeft, ChevronRight, Menu, X,
+  LogOut, ShieldCheck, CalendarDays, Settings
+} from 'lucide-react';
+
+// ==========================================
+// 1. تعريف الواجهات (Types)
+// ==========================================
+export interface UserData {
+  name: string;
+  email: string;
+  avatarUrl?: string; // اختياري إذا كان هناك صورة شخصية
+}
+
+export interface SidebarProps {
+  user?: UserData; // بيانات المستخدم
+  onLogout?: () => void; // دالة تسجيل الخروج
+  // 'user' | 'super_admin' | 'viewer' | undefined (أثناء التحميل) — يحدد
+  // قائمة عناصر السايدبار بالكامل. جهة المراقبة (viewer) قائمة منفصلة
+  // كلياً (3 عناصر: لوحة تحكم/تنبيهات/تقارير فقط، بلا مشاريع ولا إدارة)،
+  // لا نسخة مُصفّاة من قائمة المستخدم العادي.
+  accountRole?: 'user' | 'super_admin' | 'viewer';
+}
+
+export interface MenuItem {
+  id: string;
+  name: string;
+  href: string; // الرابط الفعلي للصفحة بدل id داخلي فقط
+  icon: React.ElementType;
+  badge?: number;
+}
+
+// ==========================================
+// 2. مكون الشعار (SidebarLogo)
+// ==========================================
+const SidebarLogo = ({ isCollapsed }: { isCollapsed: boolean }) => (
+  <Link href="/dashboard" className="pt-6 pb-4 flex flex-col items-center justify-center shrink-0 min-h-[80px]">
+    {!isCollapsed ? (
+      <span className="text-2xl font-black text-[#061B40] tracking-wide">DCR</span>
+    ) : (
+      <div className="w-10 h-10 bg-[#061B40] text-white rounded-xl flex items-center justify-center font-bold text-xl shadow-md">
+        D
+      </div>
+    )}
+  </Link>
+);
+
+// ==========================================
+// 3. مكون عنصر القائمة (SidebarNavItem)
+// ==========================================
+const SidebarNavItem = ({
+  item,
+  isActive,
+  onClick,
+  isCollapsed
+}: {
+  item: MenuItem;
+  isActive: boolean;
+  onClick: () => void;
+  isCollapsed: boolean;
+}) => {
+  return (
+    <div className="relative group">
+      <Link
+        href={item.href}
+        onClick={onClick}
+        className={`w-full flex items-center py-2.5 px-4 rounded-xl transition-all duration-300 font-bold ${
+          isCollapsed ? 'justify-center' : 'justify-between'
+        } ${
+          isActive
+            ? 'bg-[#061B40] text-white shadow-md'
+            : 'text-slate-600 hover:bg-slate-50 hover:text-[#061B40]'
+        }`}
+        title={isCollapsed ? item.name : undefined}
+      >
+        {!isCollapsed && (
+          <div className="flex items-center gap-4">
+            <span className="text-[13px] whitespace-nowrap">{item.name}</span>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 relative">
+          {!isCollapsed && !!item.badge && (
+            <span className="bg-[#F97316] text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+              {item.badge > 99 ? '99+' : item.badge}
+            </span>
+          )}
+
+          {isCollapsed && !!item.badge && (
+            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#F97316] rounded-full"></span>
+          )}
+
+          <item.icon
+            className={`w-5 h-5 transition-colors ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-[#061B40]'}`}
+            strokeWidth={isActive ? 2.5 : 2}
+          />
+        </div>
+      </Link>
+
+      {isActive && !isCollapsed && (
+        <div className="absolute top-1/2 -left-1.5 w-3 h-3 bg-[#061B40] transform -translate-y-1/2 rotate-45 rounded-sm z-[-1]"></div>
+      )}
+    </div>
+  );
+};
+
+// ==========================================
+// 4. مكون الملف الشخصي للمستخدم (SidebarUserProfile)
+// ==========================================
+const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, isCollapsed: boolean, onLogout?: () => void }) => {
+  if (!user) return null;
+
+  // استخراج أول حرف من الاسم كصورة افتراضية
+  const initial = user.name ? user.name.charAt(0).toUpperCase() : 'م';
+
+  return (
+    <div className="px-4 py-4 shrink-0 border-t border-slate-100 transition-all duration-300 bg-slate-50/50 mt-2">
+      <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'}`}>
+
+        <div className="flex items-center gap-3 overflow-hidden" title={isCollapsed ? user.name : undefined}>
+          {/* الصورة الرمزية (Avatar) */}
+          <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#fb8801] to-[#ffb766] text-white flex items-center justify-center font-bold shrink-0 shadow-sm">
+            {user.avatarUrl ? (
+              // next/image يتطلب تسجيل نطاقات remotePatterns مسبقاً في
+              // next.config — avatarUrl لا مصدر فعلي يملؤه حالياً في أي
+              // استعلام بالمشروع (حقل معرَّف تحسباً لميزة مستقبلية)، فلا
+              // نطاق معروف اليوم لتسجيله. <img> عادي مقبول لصورة أفاتار
+              // صغيرة (36×36) بلا تكلفة LCP فعلية تُذكر.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={user.avatarUrl} alt={user.name} className="w-full h-full rounded-full object-cover" />
+            ) : (
+              <span>{initial}</span>
+            )}
+          </div>
+
+          {/* تفاصيل المستخدم (تختفي عند التصغير) */}
+          {!isCollapsed && (
+            <div className="flex flex-col truncate">
+              <span className="text-[13px] font-extrabold text-[#061B40] truncate">{user.name}</span>
+              <span className="text-[10px] font-semibold text-slate-500 truncate">{user.email}</span>
+            </div>
+          )}
+        </div>
+
+        {/* زر تسجيل الخروج */}
+        {!isCollapsed && onLogout && (
+          <button
+            onClick={onLogout}
+            className="text-slate-400 hover:text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors shrink-0"
+            title="تسجيل الخروج"
+          >
+            <LogOut className="w-[18px] h-[18px]" strokeWidth={2.5} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ==========================================
+// 5. المكون الرئيسي (Sidebar Main Container)
+// ==========================================
+export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [alertsCount, setAlertsCount] = useState<number>(0);
+  const pathname = usePathname();
+
+  // -----------------------------------------------------------
+  // رقم التنبيهات: نجلبه من جدول alerts (عدد التنبيهات غير المغلقة)،
+  // ونشترك بتحديثات Realtime على نفس الجدول عشان الرقم يتحدث فورًا لحظة
+  // ما يضيف مولّد التنبيهات (cron) صفًا جديدًا بالخلفية.
+  //
+  // خطأ أداء جذري مكتشَف ومُصلَح (سياق: تنبيه Supabase حول استهلاك Disk IO
+  // Budget، 2026-08-13 — راجع migration 202608130001/202608130002 لإصلاحات
+  // مماثلة على cron jobs، وmigration 202608130003 لتفاصيل هذا الإصلاح
+  // الكاملة): قياس فعلي عبر pg_stat_statements كشف أن realtime.list_changes
+  // وحدها تستهلك ~131 مليون كتلة I/O — أكثر من 100 ضعف أي استعلام آخر في
+  // كامل قاعدة البيانات، رغم 1-5 مستخدمين متزامنين فقط. السبب الجذري: هذه
+  // القناة كانت تشترك بـevent:'*' بلا أي filter على جدول alerts بأكمله (لا
+  // project_id ولا user_id)، مع RLS تحتوي subquery على projects لكل صف —
+  // يُعاد تقييمها لكل حدث WAL من قِبل كل جلسة مشترِكة، بصرف النظر عن ملاءمة
+  // الصف لتلك الجلسة. بما أن هذا Sidebar مشترَك في كل صفحة (اشتراك دائم
+  // مفتوح طوال الجلسة)، الأثر التراكمي كان ضخماً.
+  //
+  // الإصلاح الجذري (لا polling — الحل الدائم): alerts.user_id عمود مباشر
+  // جديد (denormalized من projects.user_id، migration 202608130003) يسمح
+  // بفلترة الاشتراك نفسه على مستوى بروتوكول Realtime (filter: user_id=eq.
+  // <uid>) بدل الاشتراك بالجدول بأكمله — كل جلسة تستقبل فقط أحداثها الخاصة
+  // من الأساس، بلا أي تنازل عن الفورية.
+  // -----------------------------------------------------------
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchAlertsCount() {
+      try {
+        const { data } = await apiClient.get('/alerts/count');
+        if (isMounted) setAlertsCount(data?.count ?? 0);
+      } catch (error) {
+        const err = error as AxiosError<{ error?: string }>;
+        console.error('fetchAlertsCount failed:', err?.response?.data?.error || err?.message);
+      }
+    }
+
+    fetchAlertsCount();
+
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    // setAuth(access_token) ضروري قبل الاشتراك: اتصال WebSocket الخاص
+    // بـRealtime منفصل عن apiClient (axios)، فبدونه تُفتح القناة بلا هوية
+    // مصادَق عليها وتفشل صامتاً إن كانت policy الجدول تشترط "to authenticated".
+    //
+    // onAuthStateChange ضروري أيضاً: توكن getSession() صالح لساعة واحدة
+    // فقط؛ بعدها القناة المفتوحة مسبقاً تبقى مصادَقة بتوكن منتهي الصلاحية
+    // (لا تتجدد تلقائياً مع تجديد axios للتوكن)، فتُرفض الأحداث صامتاً رغم
+    // بقاء القناة SUBSCRIBED ظاهرياً — راجع نفس الشرح المفصّل في
+    // app/dashboard/Projects/[id]/page.tsx.
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      const uid = data.session?.user?.id;
+      if (!token || !uid || !isMounted) return;
+      await supabase.realtime.setAuth(token);
+      if (!isMounted) return;
+
+      channel = supabase
+        .channel('sidebar-alerts-count')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'alerts', filter: `user_id=eq.${uid}` },
+          () => {
+            fetchAlertsCount();
+          }
+        )
+        .subscribe();
+    })();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!session?.access_token) return;
+      await supabase.realtime.setAuth(session.access_token);
+    });
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // جهة المراقبة (viewer) قائمة منفصلة كلياً — 3 عناصر فقط بروابط /dashboard/
+  // viewer/**، بلا "المشاريع" ولا "الإدارة" إطلاقاً. المستخدم العادي/الأدمن
+  // يشتركان بنفس القائمة الأساسية، مع "الإدارة" الإضافية للأدمن فقط.
+  const menuItems: MenuItem[] = accountRole === 'viewer'
+    ? [
+        { id: 'home', name: 'لوحة التحكم', href: '/dashboard/viewer', icon: Home },
+        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/viewer/alerts', icon: Bell, badge: alertsCount },
+        { id: 'reports', name: 'التقارير', href: '/dashboard/viewer/reports', icon: FileText },
+      ]
+    : [
+        { id: 'home', name: 'لوحة التحكم', href: '/dashboard', icon: Home },
+        { id: 'projects', name: 'المشاريع', href: '/dashboard/Projects', icon: FolderKanban },
+        { id: 'alerts', name: 'التنبيهات', href: '/dashboard/alerts', icon: Bell, badge: alertsCount },
+        { id: 'schedule', name: 'جدول الأسبوع', href: '/dashboard/schedule', icon: CalendarDays },
+        { id: 'settings', name: 'الإعدادات', href: '/dashboard/settings', icon: Settings },
+        // "الإدارة" عنصر واحد فقط لسوبر أدمن — نفس نمط "المشاريع" (عنصر
+        // رئيسي واحد رغم وجود صفحات فرعية كثيرة تحته)
+        ...(accountRole === 'super_admin' ? [{ id: 'admin', name: 'الإدارة', href: '/dashboard/admin', icon: ShieldCheck }] : []),
+      ];
+
+  // تحديد العنصر النشط بناءً على المسار الحالي (route) بدل state داخلي
+  const isItemActive = (href: string) => {
+    if (href === '/dashboard') {
+      // الرئيسية تكون نشطة فقط عند التطابق التام، لتجنب تفعيلها مع كل المسارات الفرعية
+      return pathname === '/dashboard';
+    }
+    return pathname === href || pathname?.startsWith(href + '/');
+  };
+
+  const handleNavigation = () => {
+    setIsMobileOpen(false);
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setIsMobileOpen(true)}
+        className="md:hidden fixed top-4 right-4 z-40 bg-white p-2 rounded-lg shadow-md text-[#061B40]"
+      >
+        <Menu className="w-6 h-6" />
+      </button>
+
+      {isMobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden transition-opacity"
+          onClick={() => setIsMobileOpen(false)}
+        />
+      )}
+
+      <aside
+        className={`fixed md:relative top-0 bottom-0 right-0 z-50 bg-white border-l border-slate-100 flex flex-col font-sans overflow-visible shrink-0 transition-all duration-300 ease-in-out shadow-2xl md:shadow-[[-5px_0_15px_rgba(0,0,0,0.02)]]
+          ${isCollapsed ? 'md:w-20' : 'md:w-72'}
+          ${isMobileOpen ? 'w-72 translate-x-0' : 'translate-x-full md:translate-x-0'}
+        `}
+        dir="rtl"
+      >
+        <button
+          onClick={() => setIsMobileOpen(false)}
+          className="md:hidden absolute top-4 left-4 p-2 text-slate-400 hover:text-slate-600"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        <button
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="hidden md:flex absolute top-8 -left-3.5 w-7 h-7 bg-white border border-slate-200 rounded-full items-center justify-center text-slate-500 hover:text-[#061B40] hover:bg-slate-50 shadow-sm z-10 transition-transform"
+        >
+          {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        </button>
+
+        <SidebarLogo isCollapsed={isCollapsed} />
+
+        <nav className="flex-1 px-3 flex flex-col justify-start pt-2 space-y-1.5 overflow-y-auto no-scrollbar">
+          {menuItems.map((item) => (
+            <SidebarNavItem
+              key={item.id}
+              item={item}
+              isActive={isItemActive(item.href)}
+              onClick={handleNavigation}
+              isCollapsed={isCollapsed}
+            />
+          ))}
+        </nav>
+
+        {/* عرض بيانات المستخدم هنا في الأسفل */}
+        <SidebarUserProfile user={user} isCollapsed={isCollapsed} onLogout={onLogout} />
+
+        <div className="text-center py-3 shrink-0 transition-all bg-slate-50 border-t border-slate-100">
+          <p className="text-[9px] font-bold text-slate-400 whitespace-nowrap">
+            {isCollapsed ? '©' : 'DCR - جميع الحقوق محفوظة'}
+          </p>
+        </div>
+      </aside>
+    </>
+  );
+}

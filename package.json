@@ -1,0 +1,53 @@
+{
+  "name": "dcr-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:db": "supabase db reset --local && vitest run --config vitest.db.config.ts",
+    "test:e2e": "playwright test",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run test:db && npm run test:e2e && npm run build"
+  },
+  "dependencies": {
+    "@geoman-io/leaflet-geoman-free": "^2.20.0",
+    "@hookform/resolvers": "^5.4.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "@upstash/redis": "^1.38.2",
+    "axios": "^1.18.1",
+    "date-fns": "^4.4.0",
+    "framer-motion": "^12.40.0",
+    "leaflet": "^1.9.4",
+    "libphonenumber-js": "^1.13.9",
+    "lucide-react": "^1.18.0",
+    "next": "^16.2.12",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-hook-form": "^7.79.0",
+    "react-hot-toast": "^2.6.0",
+    "react-leaflet": "^5.0.0",
+    "recharts": "^3.10.1",
+    "yup": "^1.7.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.21",
+    "@types/node": "^20",
+    "@types/pg": "^8.20.3",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.9",
+    "pg": "^8.22.0",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,828 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { Wind, Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { DUST_FORM_DEFAULTS, getInputClass, labelClass, sectionTitleClass, REGULATORY_ACTIVITY_LABEL_AR } from './constants';
+import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem } from './constants';
+import type { ProjectLite, ProjectDeviceLite } from './types';
+import { MultiActivityMapPicker, buildMapPoints } from './MultiActivityMapPicker';
+import type { MapPoint } from './MultiActivityMapPicker';
+import { buildProjectZoneFromRow, haversineDistanceM } from '@/app/utils/geo/zone';
+import type { PlacementPrecheck } from './index';
+
+type DustForm = typeof DUST_FORM_DEFAULTS;
+
+interface DustStepProps {
+  project: ProjectLite;
+  isMounted: boolean;
+  dustForm: DustForm;
+  updateDustField: <K extends keyof DustForm>(field: K, value: DustForm[K]) => void;
+  dustLoading: boolean;
+  onSubmit: (e: React.FormEvent) => void;
+  // طلب صريح من المستخدم — إزالة آلية "أكثر من نشاط في نفس الجلسة": نشاط
+  // تنظيمي واحد فقط لكل جلسة مودال (بدل مصفوفة تُعرَض كأكورديون قابل
+  // للحذف). null يعني "لم يُختَر نشاط بعد" — لا تُعرَض هذه الخطوة حينها
+  // أصلاً (index.tsx لا يصل لخطوة 'indicators' قبل اختيار نشاط).
+  regulatoryActivity: RegulatoryActivityItem | null;
+  updateRegulatoryActivityField: <K extends keyof RegulatoryActivityFields>(itemId: string, field: K, value: RegulatoryActivityFields[K]) => void;
+  updateRegulatoryActivityLocation: (itemId: string, lat: number | null, lng: number | null) => void;
+  projectDevices: ProjectDeviceLite[];
+  updateRegulatoryActivityTiming: (itemId: string, field: 'startDate' | 'endDate' | 'customStartTime' | 'customEndTime', value: string) => void;
+  updateRegulatoryActivityTimingMode: (itemId: string, timingMode: 'shift' | 'custom') => void;
+  updateRegulatoryActivityShift: (itemId: string, shiftId: string | null) => void;
+  updateBatchingUnit: <K extends keyof BatchingUnit>(itemId: string, index: number, field: K, value: BatchingUnit[K]) => void;
+  addBatchingUnit: (itemId: string) => void;
+  removeBatchingUnit: (itemId: string, index: number) => void;
+  updateIdleSurfaceUnit: <K extends keyof IdleSurfaceUnit>(itemId: string, index: number, field: K, value: IdleSurfaceUnit[K]) => void;
+  addIdleSurfaceUnit: (itemId: string) => void;
+  removeIdleSurfaceUnit: (itemId: string, index: number) => void;
+  updateCrusherUnit: <K extends keyof CrusherUnit>(itemId: string, index: number, field: K, value: CrusherUnit[K]) => void;
+  addCrusherUnit: (itemId: string) => void;
+  removeCrusherUnit: (itemId: string, index: number) => void;
+  // طلب صريح من المستخدم — نتيجة تحقق فوري (crusher-precheck) لكل وحدة
+  // كسارة، مفتاحها `${itemId}:${unit.id}` (معرّف وحدة ثابت، لا رقم فهرس) —
+  // تُحدَّث من index.tsx (تملك الحالة لأن handleDustSubmit يحتاجها لمنع
+  // الحفظ فعلياً)، هنا للعرض فقط.
+  crusherPrecheckResults: Record<string, PlacementPrecheck | undefined>;
+  // نفس المبدأ أعلاه بالضبط، لمحطة الخلط (batching-precheck).
+  batchingPrecheckResults: Record<string, PlacementPrecheck | undefined>;
+  // خطأ مكتشَف ومُصلَح (المستخدم: "أقدر أسوي حفظ قبل ما يظهر التنبيه") —
+  // true طالما يوجد فحص كسارة/محطة خلط لم تصل نتيجته بعد (debounce 600ms
+  // أو استجابة شبكة قيد الانتظار). زر الحفظ يُعطَّل طوال هذه الفترة، بدل
+  // السماح بضغطة قد ترفضها route.ts بعد ذلك بلا أي إشارة بصرية سابقة.
+  precheckPending: boolean;
+}
+
+// ملاحظة: من بين الحقول ضمن DUST_CONTROL_CHECKBOXES، dustScreensAvailable فقط
+// تُستخدم فعلياً في قواعد الامتثال التنظيمي (rulebook.ts).
+const DUST_CONTROL_CHECKBOXES: { key: keyof DustForm; label: string }[] = [
+  { key: 'wateringAvailable', label: 'رش الطرق متوفر' },
+  { key: 'stockpilesCovered', label: 'الأكوام مغطاة' },
+  { key: 'speedLimitApplied', label: 'تحديد سرعة داخلي' },
+  { key: 'wheelWashAvailable', label: 'مغسلة إطارات متوفرة' },
+  { key: 'dustScreensAvailable', label: 'شاشات غبار متوفرة' },
+  { key: 'fieldMonitoringAvailable', label: 'مراقبة ميدانية فعّالة' },
+];
+const COMPLIANCE_RELEVANT_CONTROL_KEYS = new Set<keyof DustForm>(['dustScreensAvailable']);
+// مخفي مؤقتاً: هذه الحقول تؤثر فقط على محرك DVI الفيزيائي (mitigationScore
+// في dust-engine/engine.ts)، ولا علاقة لها بمحرك الامتثال التنظيمي إطلاقاً.
+const SHOW_CONTROL_MEASURES_SECTION = false;
+
+// خطأ مكتشَف: كانت هذي القائمة تقصر خيار "عملية مغلقة" على 3 أنشطة فقط
+// (DEMOLITION/CRUSHER/STONE_CUTTING)، فيختفي الخيار عن كل نشاط آخر رغم أن
+// isEnclosedExemptFromHighWind في dust-compliance-engine/engine.ts (سطر
+// ~270-278) يستخدم isEnclosedOperation كإعفاء من بوابة إيقاف الرياح >25
+// كم/س لكل الأنشطة المولّدة للغبار بلا استثناء (EARTHWORKS/SITE_TRAFFIC/
+// MATERIAL_HANDLING_STOCKPILE/CD_WASTE_TRANSPORT/IDLE_SURFACE/OTHER أيضاً،
+// لا الثلاثة فقط) — فكان أي نشاط مغلق فعلياً خارج هذي الثلاثة يُعامَل معاملة
+// "مكشوف" قسراً بلا أي وسيلة لتصحيح ذلك من الواجهة.
+//
+// BATCHING_PLANT وحدها مستثناة عمداً: إعفاء بوابة الرياح لمحطة الخلط لا
+// يعتمد على isEnclosedOperation إطلاقاً (راجع isEnclosedExemptFromHighWind)
+// — يكفي إحكام إغلاق الصوامع (silosSealed، مدخل موجود أصلاً لكل وحدة خلط) +
+// فلتر PM10 ≥99%، طلب صريح من المستخدم بعدم اشتراط إغلاق المحطة فيزيائياً.
+const ENCLOSED_OPTION_EXCLUDED_ACTIVITIES = new Set(['BATCHING_PLANT']);
+
+// -----------------------------------------------------------------------
+// تنبيهات عامة (نصية فقط، لا إدخال) لكل نشاط تنظيمي — بديل حقول الضوابط
+// التفصيلية التي كانت تُدخَل يدوياً سابقاً. حُذف تأثيرها من قرار الامتثال
+// فعلياً في dust-compliance-engine/rulebook.ts (القواعد المرتبطة بهذه
+// الحقول أُزيلت من applyActivityRules)، فهذا النص توعوي بحت لا يُغذّي أي
+// قاعدة — القرار الفعلي يعتمد فقط على الحقول التي بقيت مدخلات حقيقية
+// (المواقع، والحقول الرقمية العتبية القليلة أدناه لكل نشاط).
+const GENERAL_ALERTS_AR: Record<string, string[]> = {
+  EARTHWORKS: [
+    'رشّ التربة إلزامي أثناء الحفر والتحميل والتفريغ.',
+    'ارتفاع تفريغ التربة يجب ألا يتجاوز 1.5م اعتيادياً، أو 1م أثناء رياح ≥15 كم/س.',
+    'دكّ التربة مباشرة بعد الحفر، وتخصيص مسارات مغطاة لعبور الشاحنات.',
+    'عند توقف الأعمال أكثر من 5 أيام، استخدم مواد مثبتة للغبار على السطح المكشوف.',
+  ],
+  SITE_TRAFFIC: [
+    'رشّ الطرق غير المسفلتة يومياً، وتثبيت لافتات تحدد السرعة (10 كم/س للطرق غير المسفلتة، 20 كم/س للمسفلتة).',
+    'تغطية جميع الحمولات والحاويات قبل التحرك وفحصها قبل المغادرة.',
+    'وحدة غسيل إطارات عاملة عند المخرج، وكنس الطرق المجاورة آلياً بانتظام.',
+    'تنظيف أي انسكاب خلال 15 دقيقة من وقوعه.',
+  ],
+  MATERIAL_HANDLING_STOCKPILE: [
+    'تخزين مركزي للمواد بدل توزيعها في مواقع متفرقة، وتغطية الأكوام غير المستخدمة يومياً.',
+    'رشّ المواد فوراً بعد التنزيل، وشكل الأكوام منخفض ومستدير لتقليل انجراف الغبار.',
+    'الإسمنت في صوامع محكمة الإغلاق مزودة بفلاتر PM10.',
+    'السيور الناقلة مغلقة وتستخدم رشاً آلياً، ومصدات رياح بمحاذاة اتجاه الريح السائد.',
+  ],
+  DEMOLITION: [
+    // بند فعلي مؤثر في القرار (لا توعوي بحت كبقية القائمة) — DEMO-AREA-002
+    // في rulebook.ts يوقف النشاط (RESTRICT_ACTIVITY) فوراً إن تجاوزت مساحة
+    // الهدم النشطة هذا الحد، بصرف النظر عن أي إجراء آخر.
+    'أعمال الهدم يجب ألا تتجاوز 100 م² في المرة الواحدة — قسّم العمل لمراحل إن تجاوزت المساحة هذا الحد.',
+    'رش رذاذ مستمر أو مدفع رذاذ (مدى 20-30م) طوال أعمال الهدم.',
+    'تغطية الكسارات المستخدمة في الهدم، ونقاط التحميل/التنزيل مزودة برشاشات.',
+    'استخدام مناشير مزودة بالمياه أو أنظمة شفط بدل الأدوات العادية للقطع.',
+    'الضغط الرملي (إن استُخدم) يجب أن يتم داخل صندوق مغلق فقط.',
+  ],
+  CRUSHER: [
+    'تغطية وحدات الكسارة بالكامل، ونقاط التحميل/التنزيل مزودة برشاشات أو أنظمة ضباب.',
+    'مدافع رذاذ حول الكسارة، وناقلات مغطاة، وتقليل ارتفاع نقاط التفريغ.',
+    'أنظمة شفط وفلترة مطلوبة للكسارة غير المغلقة.',
+  ],
+  BATCHING_PLANT: [
+    'صيانة دورية لفلاتر PM10 وفحص موانع التسرب دورياً.',
+    'فحص أنظمة تثبيط الغبار يومياً، وحظر الكنس اليدوي الجاف والهواء المضغوط صراحة في إجراءات الموقع.',
+    'الحفاظ على رطوبة النفايات وتغطيتها أثناء النقل.',
+  ],
+  STONE_CUTTING: [
+    'قطع مبلل بتبريد مائي مستمر، أو شفط هواء HEPA ضمن تشغيل مغلق.',
+    'تنظيف مخلفات وبودرة القطع فور الانتهاء من كل عملية.',
+    'إيقاف القطع المكشوف عند تجاوز سرعة الرياح 15 كم/س يُحسب تلقائياً من بيانات الرياح الحية.',
+  ],
+  CD_WASTE_TRANSPORT: [
+    'رش المخلفات قبل التحميل والتفريغ، وتخزينها في منطقة مركزية واحدة.',
+    'إزالة يومية للمخلفات، أو تغطيتها بأغطية محكمة إن لم تُزل.',
+    'تغطية جميع شاحنات النقل، وعدم تجاوز الحمولة السعة الاستيعابية.',
+  ],
+  IDLE_SURFACE: [
+    'تثبيت السطح غير النشط بمواد مناسبة (بوليمرات أو أغطية واقية) عند توقف العمل عليه.',
+    'التحقق من سلامة الغطاء دورياً، خاصة عند رياح ≥20 كم/س.',
+    'حواجز رياح قرب مناطق تجميع المواد، وجدولة استئناف البناء مباشرة بعد التجهيز لتقليل مدة التعرض.',
+  ],
+  OTHER: [
+    'طبّق ضوابط الحد من الغبار العامة المناسبة لطبيعة هذا النشاط حسب دليل RCRC/NCEC.',
+  ],
+};
+
+export function DustStep({
+  project, isMounted,
+  dustForm, updateDustField, dustLoading, onSubmit,
+  regulatoryActivity,
+  updateRegulatoryActivityField, updateRegulatoryActivityLocation, updateRegulatoryActivityTiming, updateRegulatoryActivityTimingMode, updateRegulatoryActivityShift,
+  projectDevices,
+  updateBatchingUnit, addBatchingUnit, removeBatchingUnit,
+  updateIdleSurfaceUnit, addIdleSurfaceUnit, removeIdleSurfaceUnit,
+  updateCrusherUnit, addCrusherUnit, removeCrusherUnit,
+  crusherPrecheckResults, batchingPrecheckResults, precheckPending,
+}: DustStepProps) {
+  const mapCenterLat = project.latitude || 24.7136;
+  const mapCenterLng = project.longitude || 46.6753;
+  const projectZone = useMemo(() => buildProjectZoneFromRow(project), [project]);
+  const projectShifts = Array.isArray(project.shifts) ? project.shifts : [];
+
+  // buildMapPoints/MultiActivityMapPicker يبقيان عامَّين على مصفوفة (يعرضان
+  // نقطة لكل وحدة خلاطة/كسارة ضمن النشاط الواحد — تعدد مشروع ومختلف تماماً
+  // عن تعدد الأنشطة نفسها) — نمرّر مصفوفة من عنصر واحد فقط، أو فارغة إن لم
+  // يُختَر نشاط بعد.
+  const activityList = regulatoryActivity ? [regulatoryActivity] : [];
+
+  // النقطة النشِطة حالياً على الخريطة (النشاط نفسه، أو وحدة خلاطة/كسارة
+  // محددة ضمنه) — النقر على الخريطة يحدد موقع هذه النقطة تحديداً. تبدأ
+  // بأول نقطة متاحة، وتتبع أي تغيير في قائمة النقاط إن لم تعد النقطة
+  // الحالية موجودة (وحدة حُذفت).
+  const mapPoints = buildMapPoints(activityList);
+  const [selectedMapPointId, setActiveMapPointId] = useState<string | null>(mapPoints[0]?.id ?? null);
+  // النقطة المحدَّدة فعلياً تُشتق أثناء الـrender نفسه (لا مزامنة عبر Effect)
+  // — لو selectedMapPointId لم يعد موجوداً ضمن mapPoints الحالية (نشاط/وحدة
+  // حُذفت)، نرجع فوراً لأول نقطة متاحة بلا انتظار دورة render إضافية.
+  const activeMapPointId = mapPoints.some((p) => p.id === selectedMapPointId)
+    ? selectedMapPointId
+    : (mapPoints[0]?.id ?? null);
+
+  const handlePointLocationChange = (point: MapPoint, lat: number, lng: number) => {
+    const idParts = point.id.split(':');
+    if (idParts.length === 3 && idParts[1] === 'batching') {
+      updateBatchingUnit(point.itemId, Number(idParts[2]), 'batchingLat', lat);
+      updateBatchingUnit(point.itemId, Number(idParts[2]), 'batchingLng', lng);
+    } else if (idParts.length === 3 && idParts[1] === 'crusher') {
+      updateCrusherUnit(point.itemId, Number(idParts[2]), 'crusherLat', lat);
+      updateCrusherUnit(point.itemId, Number(idParts[2]), 'crusherLng', lng);
+    } else {
+      updateRegulatoryActivityLocation(point.itemId, lat, lng);
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      <form onSubmit={onSubmit} className="space-y-5">
+
+        {/* النشاط التنظيمي المُختار في الشاشة السابقة — موقعه يُحدَّد من
+            الخريطة أدناه، وتوقيته الخاص (بداية/نهاية)، وتنبيهات عامة بدل
+            حقول إدخال تفصيلية (باستثناء عدد قليل من الحقول الحرجة الباقية
+            كمدخلات حقيقية — راجع GENERAL_ALERTS_AR أعلاه). */}
+        <div className="space-y-3 border-t border-[#061B40]/10 pt-4">
+          <h3 className={sectionTitleClass + ' flex items-center gap-1.5'}>
+            النشاط التنظيمي
+          </h3>
+
+          {/* خريطة موقع النشاط — نقطة واحدة له، أو نقطة لكل وحدة خلاطة/كسارة
+              ضمنه */}
+          {regulatoryActivity && (
+            <MultiActivityMapPicker
+              items={activityList}
+              activePointId={activeMapPointId}
+              onActivate={(pointId) => setActiveMapPointId(pointId)}
+              onPointLocationChange={handlePointLocationChange}
+              isMounted={isMounted}
+              centerLat={mapCenterLat}
+              centerLng={mapCenterLng}
+              projectZone={projectZone}
+            />
+          )}
+
+          {regulatoryActivity && (() => {
+            const item = regulatoryActivity;
+            const showEnclosedOption = !ENCLOSED_OPTION_EXCLUDED_ACTIVITIES.has(item.fields.regulatoryActivity as string);
+            const alerts = GENERAL_ALERTS_AR[item.fields.regulatoryActivity as string] ?? [];
+            const hasLocation = typeof item.lat === 'number' && typeof item.lng === 'number';
+
+            return (
+                <div className="rounded-xl border border-[#061B40]/10 overflow-hidden">
+                  <div className="flex items-center justify-between bg-[#F4F7FB] px-4 py-3">
+                    <span className="flex items-center gap-2 flex-1 text-sm font-bold text-[#061B40]">
+                      {REGULATORY_ACTIVITY_LABEL_AR[item.fields.regulatoryActivity] || item.fields.regulatoryActivity}
+                      {!hasLocation && (
+                        <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3" /> بلا موقع
+                        </span>
+                      )}
+                    </span>
+                  </div>
+
+                    <div className="p-4 space-y-4 bg-white">
+                      {/* موقع هذا النشاط يُحدَّد من الخريطة الموحدة أعلاه —
+                          هذا الزر فقط ينشّط النشاط عليها إن لم يكن مفعّلاً.
+                          لا يظهر لأنشطة الخلاطة/الكسارة — موقعها يأتي من
+                          موقع الوحدة الأولى ضمن أقسامها أدناه مباشرة. */}
+                      {item.fields.regulatoryActivity !== 'BATCHING_PLANT' && item.fields.regulatoryActivity !== 'CRUSHER' && (
+                        <div className="flex items-center justify-between rounded-lg border border-[#061B40]/10 bg-[#F4F7FB] px-3 py-2">
+                          <span className="text-xs font-bold text-[#061B40]">
+                            {hasLocation ? `الموقع محدَّد (${item.lat!.toFixed(5)}, ${item.lng!.toFixed(5)})` : 'لم يُحدَّد الموقع بعد'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setActiveMapPointId(item.id)}
+                            className={`text-xs font-bold px-3 py-1 rounded-full border transition-colors ${
+                              activeMapPointId === item.id
+                                ? 'bg-[#3995FF] text-white border-[#3995FF]'
+                                : 'bg-white text-[#3995FF] border-[#3995FF]/40 hover:bg-blue-50'
+                            }`}
+                          >
+                            {activeMapPointId === item.id ? 'نشِط على الخريطة أعلاه' : 'حدّد موقعه على الخريطة'}
+                          </button>
+                        </div>
+                      )}
+
+                      {/* توقيت هذا النشاط تحديداً — مدى تاريخ مستقل (قد يمتد
+                          لأيام/أشهر)، وساعات عمل يومية تنطبق على كل يوم ضمن
+                          هذا المدى: إما وردية جاهزة أو وقت مخصص، خيار واحد
+                          فقط لا الاثنين معاً. */}
+                      <div className="space-y-3">
+                        <p className="text-[11px] font-bold text-[#061B40]/50">
+                          هذا التوقيت خاص بهذا النشاط التنظيمي فقط.
+                        </p>
+                        {(() => {
+                          const WEEK_DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                          const WEEK_DAY_LABELS_AR: Record<string, string> = {
+                            sun: 'الأحد', mon: 'الاثنين', tue: 'الثلاثاء', wed: 'الأربعاء', thu: 'الخميس', fri: 'الجمعة', sat: 'السبت',
+                          };
+                          const workDays = project.work_days_list;
+                          // يوم البداية/النهاية تحديداً يجب أن يقعا ضمن أيام
+                          // عمل المشروع — أيام الإجازة بينهما مسموحة (النشاط
+                          // يتوقف فيها تلقائياً، لا يُرفض الحفظ بسببها).
+                          const isNonWorkDay = (dateStr: string) => {
+                            if (!dateStr || !Array.isArray(workDays) || workDays.length === 0) return false;
+                            const dayId = WEEK_DAY_IDS[new Date(`${dateStr}T00:00:00`).getDay()];
+                            return !workDays.includes(dayId);
+                          };
+                          const startInvalid = isNonWorkDay(item.startDate);
+                          const endInvalid = isNonWorkDay(item.endDate);
+                          // أدنى تاريخ مسموح = اليوم بتوقيت الرياض — يمنع
+                          // منتقي التاريخ من اختيار يوم ماضٍ (نشاط بتاريخ ماضٍ
+                          // لا يملك توقعاً ساعياً فتظهر شبكة الساعات فارغة).
+                          const todayRiyadh = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
+                          const invalidInputClass =
+                            'w-full border-2 border-red-500 rounded-lg p-2 text-sm bg-red-50 text-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 transition-all';
+                          const allowedDaysAr = Array.isArray(workDays) ? workDays.map((d) => WEEK_DAY_LABELS_AR[d] || d).join('، ') : '';
+                          return (
+                            <>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                  <label className={labelClass}>تاريخ بداية النشاط</label>
+                                  <input
+                                    required
+                                    type="date"
+                                    min={todayRiyadh}
+                                    value={item.startDate}
+                                    onChange={(e) => updateRegulatoryActivityTiming(item.id, 'startDate', e.target.value)}
+                                    className={startInvalid ? invalidInputClass : getInputClass(false)}
+                                  />
+                                </div>
+                                <div>
+                                  <label className={labelClass}>تاريخ نهاية النشاط</label>
+                                  <input
+                                    required
+                                    type="date"
+                                    min={item.startDate || todayRiyadh}
+                                    value={item.endDate}
+                                    onChange={(e) => updateRegulatoryActivityTiming(item.id, 'endDate', e.target.value)}
+                                    className={endInvalid ? invalidInputClass : getInputClass(false)}
+                                  />
+                                </div>
+                              </div>
+                              {(startInvalid || endInvalid) && (
+                                <p className="text-[11px] font-bold text-red-600">
+                                  ⛔ {startInvalid && endInvalid
+                                    ? 'تاريخا البداية والنهاية يقعان في أيام إجازة'
+                                    : startInvalid
+                                    ? 'تاريخ البداية يقع في يوم إجازة'
+                                    : 'تاريخ النهاية يقع في يوم إجازة'}
+                                  {' '}— يجب أن يبدأ وينتهي النشاط في يوم عمل. أيام العمل: {allowedDaysAr}.
+                                  (أيام الإجازة بين البداية والنهاية مسموحة).
+                                </p>
+                              )}
+                            </>
+                          );
+                        })()}
+
+                        {/* اختيار نوع الساعات اليومية — وردية جاهزة أو وقت
+                            مخصص، خيار واحد فقط. لا يظهر اختيار الوردية إن لم
+                            تُعرَّف ورديات فعلية على المشروع أصلاً. */}
+                        {projectShifts.length > 0 && (
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => updateRegulatoryActivityTimingMode(item.id, 'shift')}
+                              className={`flex-1 text-xs font-bold px-3 py-2 rounded-lg border transition-colors ${
+                                item.timingMode === 'shift'
+                                  ? 'bg-[#3995FF] text-white border-[#3995FF]'
+                                  : 'bg-white text-[#061B40] border-[#061B40]/20 hover:bg-gray-50'
+                              }`}
+                            >
+                              وردية جاهزة
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateRegulatoryActivityTimingMode(item.id, 'custom')}
+                              className={`flex-1 text-xs font-bold px-3 py-2 rounded-lg border transition-colors ${
+                                item.timingMode === 'custom'
+                                  ? 'bg-[#3995FF] text-white border-[#3995FF]'
+                                  : 'bg-white text-[#061B40] border-[#061B40]/20 hover:bg-gray-50'
+                              }`}
+                            >
+                              وقت مخصص
+                            </button>
+                          </div>
+                        )}
+
+                        {item.timingMode === 'shift' && projectShifts.length > 0 ? (
+                          <div>
+                            <label className={labelClass}>أي وردية يتبع هذا النشاط؟</label>
+                            <select
+                              required
+                              value={item.shiftId ?? ''}
+                              onChange={(e) => updateRegulatoryActivityShift(item.id, e.target.value || null)}
+                              className={getInputClass(false)}
+                            >
+                              <option value="">اختر وردية...</option>
+                              {projectShifts.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.name} ({s.start_time.slice(0, 5)} – {s.end_time.slice(0, 5)})
+                                </option>
+                              ))}
+                            </select>
+                            <p className="text-[11px] text-[#061B40]/50 mt-1">وقت النشاط اليومي = وقت الوردية نفسه، لا حاجة لإدخال إضافي.</p>
+                          </div>
+                        ) : (() => {
+                          const toMin = (hhmm: string) => {
+                            const [h, m] = hhmm.split(':').map(Number);
+                            return (h || 0) * 60 + (m || 0);
+                          };
+                          const workStart = project.work_hours_start ? project.work_hours_start.slice(0, 5) : null;
+                          const workEnd = project.work_hours_end ? project.work_hours_end.slice(0, 5) : null;
+                          const isOutOfRange = (t: string) => {
+                            if (!t || !workStart || !workEnd) return false;
+                            const m = toMin(t);
+                            return m < toMin(workStart) || m > toMin(workEnd);
+                          };
+                          const startInvalid = isOutOfRange(item.customStartTime);
+                          const endInvalid = isOutOfRange(item.customEndTime);
+                          const orderInvalid =
+                            item.customStartTime && item.customEndTime && toMin(item.customEndTime) <= toMin(item.customStartTime);
+                          const invalidInputClass =
+                            'w-full border-2 border-red-500 rounded-lg p-2 text-sm bg-red-50 text-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 transition-all';
+                          return (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className={labelClass}>وقت البداية اليومي</label>
+                                <input
+                                  required
+                                  type="time"
+                                  value={item.customStartTime}
+                                  min={workStart || undefined}
+                                  max={workEnd || undefined}
+                                  onChange={(e) => updateRegulatoryActivityTiming(item.id, 'customStartTime', e.target.value)}
+                                  className={startInvalid ? invalidInputClass : getInputClass(false)}
+                                />
+                              </div>
+                              <div>
+                                <label className={labelClass}>وقت النهاية اليومي</label>
+                                <input
+                                  required
+                                  type="time"
+                                  value={item.customEndTime}
+                                  min={workStart || undefined}
+                                  max={workEnd || undefined}
+                                  onChange={(e) => updateRegulatoryActivityTiming(item.id, 'customEndTime', e.target.value)}
+                                  className={endInvalid || orderInvalid ? invalidInputClass : getInputClass(false)}
+                                />
+                              </div>
+                              {(startInvalid || endInvalid) && workStart && workEnd && (
+                                <p className="text-[11px] font-bold text-red-600 md:col-span-2">
+                                  ⛔ الوقت المحدد خارج دوام المشروع (<span dir="ltr">{workStart} – {workEnd}</span>) — الرجاء التعديل قبل الحفظ.
+                                </p>
+                              )}
+                              {!startInvalid && !endInvalid && orderInvalid && (
+                                <p className="text-[11px] font-bold text-red-600 md:col-span-2">
+                                  ⛔ وقت النهاية يجب أن يكون بعد وقت البداية.
+                                </p>
+                              )}
+                              {!startInvalid && !endInvalid && !orderInvalid && workStart && workEnd && (
+                                <p className="text-[11px] text-[#061B40]/50 md:col-span-2">
+                                  يجب أن يقع الوقت ضمن دوام المشروع: <span dir="ltr" className="font-bold">{workStart} – {workEnd}</span>
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* المدة الإجمالية — معلوماتية فقط، تُحسب تلقائياً
+                            (ساعات اليوم × عدد أيام العمل ضمن المدى). لا تُعرض
+                            إطلاقاً إن كان الوقت المخصص خارج دوام المشروع أو
+                            غير منطقي (نهاية قبل بداية)، حتى لا تُوهم المستخدم
+                            برقم محسوب على أساس وقت لن يُقبل عند الحفظ أصلاً. */}
+                        {(() => {
+                          const toMin = (hhmm: string) => {
+                            const [h, m] = hhmm.split(':').map(Number);
+                            return (h || 0) * 60 + (m || 0);
+                          };
+                          if (item.timingMode === 'custom') {
+                            const workStart = project.work_hours_start ? project.work_hours_start.slice(0, 5) : null;
+                            const workEnd = project.work_hours_end ? project.work_hours_end.slice(0, 5) : null;
+                            const isOutOfRange = (t: string) => {
+                              if (!t || !workStart || !workEnd) return false;
+                              const m = toMin(t);
+                              return m < toMin(workStart) || m > toMin(workEnd);
+                            };
+                            if (isOutOfRange(item.customStartTime) || isOutOfRange(item.customEndTime)) return null;
+                            if (item.customStartTime && item.customEndTime && toMin(item.customEndTime) <= toMin(item.customStartTime)) return null;
+                          }
+                          const daily =
+                            item.timingMode === 'shift'
+                              ? (() => {
+                                  const s = projectShifts.find((sh) => sh.id === item.shiftId);
+                                  return s ? { start: s.start_time.slice(0, 5), end: s.end_time.slice(0, 5) } : null;
+                                })()
+                              : item.customStartTime && item.customEndTime
+                              ? { start: item.customStartTime, end: item.customEndTime }
+                              : null;
+                          if (!daily || !item.startDate || !item.endDate) return null;
+                          const dailyHours = (toMin(daily.end) - toMin(daily.start)) / 60;
+                          if (dailyHours <= 0) return null;
+                          const start = new Date(`${item.startDate}T00:00:00`);
+                          const end = new Date(`${item.endDate}T00:00:00`);
+                          if (isNaN(start.getTime()) || isNaN(end.getTime()) || end < start) return null;
+                          const workDays = project.work_days_list;
+                          let days = 0;
+                          for (let i = 0, d = new Date(start); d <= end && i < 370; d.setDate(d.getDate() + 1), i++) {
+                            if (Array.isArray(workDays) && workDays.length > 0) {
+                              const WEEK_DAY_IDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                              if (!workDays.includes(WEEK_DAY_IDS[d.getDay()])) continue;
+                            }
+                            days++;
+                          }
+                          if (days <= 0) return null;
+                          const totalHours = dailyHours * days;
+                          return (
+                            <p className="text-[11px] font-bold text-[#061B40]/70 bg-[#F4F7FB] rounded-lg px-3 py-2">
+                              المدة الإجمالية المحسوبة: {dailyHours} ساعة/يوم × {days} يوم عمل = <span className="text-[#3995FF]">{totalHours.toFixed(1)} ساعة</span>
+                            </p>
+                          );
+                        })()}
+                      </div>
+
+                      {/* التنبيهات العامة — نص توعوي بحت، لا يُغذّي أي قاعدة
+                          امتثال (حُذف تأثير هذه الضوابط من rulebook.ts فعلياً) */}
+                      {alerts.length > 0 && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1.5">
+                          <p className="text-[11px] font-black text-amber-800 flex items-center gap-1.5">
+                            <AlertTriangle className="w-3.5 h-3.5" /> تنبيهات عامة — متطلبات الامتثال لهذا النشاط
+                          </p>
+                          {alerts.map((a, i) => (
+                            <p key={i} className="text-[12px] text-amber-900 pr-4">⚠ {a}</p>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* الحقول التي بقيت مدخلات حقيقية — راجع التعليق أعلى
+                          GENERAL_ALERTS_AR لتبرير الإبقاء عليها تحديداً */}
+                      {item.fields.regulatoryActivity === 'BATCHING_PLANT' && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-xs font-bold text-[#061B40]">بيانات محطات الخلط (وحدة لكل محطة/صومعة)</h4>
+                            <button type="button" onClick={() => addBatchingUnit(item.id)} className="flex items-center gap-1 text-xs font-bold text-orange-600 hover:text-orange-700 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200">
+                              <Plus className="w-3.5 h-3.5" /> إضافة محطة أخرى
+                            </button>
+                          </div>
+                          {item.batchingUnits.map((unit, i) => (
+                            <div key={i} className="p-3 rounded-xl border border-orange-200 bg-orange-50/40 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-orange-700">محطة/صومعة رقم {i + 1}</span>
+                                {item.batchingUnits.length > 1 && (
+                                  <button type="button" onClick={() => removeBatchingUnit(item.id, i)} className="text-red-500 hover:text-red-600">
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                              {(() => {
+                                const pointId = `${item.id}:batching:${i}`;
+                                const hasUnitLocation = typeof unit.batchingLat === 'number' && typeof unit.batchingLng === 'number';
+                                return (
+                                  <div className="flex items-center justify-between rounded-lg border border-orange-200 bg-white px-3 py-2">
+                                    <span className="text-xs font-bold text-[#061B40]">
+                                      {hasUnitLocation ? `الموقع محدَّد (${Number(unit.batchingLat).toFixed(5)}, ${Number(unit.batchingLng).toFixed(5)})` : 'لم يُحدَّد الموقع بعد'}
+                                      {i === 0 && <span className="text-[10px] text-[#061B40]/50"> — هذا الموقع هو نفسه موقع النشاط</span>}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveMapPointId(pointId)}
+                                      className={`text-xs font-bold px-3 py-1 rounded-full border transition-colors shrink-0 ${
+                                        activeMapPointId === pointId
+                                          ? 'bg-orange-500 text-white border-orange-500'
+                                          : 'bg-white text-orange-600 border-orange-300 hover:bg-orange-50'
+                                      }`}
+                                    >
+                                      {activeMapPointId === pointId ? 'نشِط على الخريطة أعلاه' : 'حدّد موقعها على الخريطة'}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                              {/* طلب صريح من المستخدم — تنبيه فوري (Hard Block عند الحفظ، راجع
+                                  index.tsx/handleDustSubmit) عند مسافة أقل من 200م عن أقرب مستقبل
+                                  حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)، فور تحديد الموقع على الخريطة. */}
+                              {(() => {
+                                const precheck = batchingPrecheckResults[`${item.id}:${unit.id}`];
+                                if (!precheck || precheck.status !== 'blocked') return null;
+                                return (
+                                  <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-1">
+                                    <p className="text-[11px] font-black text-red-700 flex items-center gap-1.5">
+                                      <AlertTriangle className="w-3.5 h-3.5" /> هذا الموقع غير مسموح لإنشاء محطة الخلط
+                                    </p>
+                                    {precheck.reasonsAr.map((reason, ri) => (
+                                      <p key={ri} className="text-[12px] text-red-800 pr-4">⚠ {reason}</p>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                  <label className={labelClass}>هل الصوامع محكمة الإغلاق؟ <span className="text-red-500">*</span></label>
+                                  <select required value={String(unit.silosSealed)} onChange={(e) => updateBatchingUnit(item.id, i, 'silosSealed', e.target.value === 'true')} className={getInputClass(false)}>
+                                    <option value="true">نعم، محكمة الإغلاق</option>
+                                    <option value="false">لا</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className={labelClass}>كفاءة فلتر PM10 (%) <span className="text-red-500">*</span></label>
+                                  <input required type="number" step="0.1" min={0} max={100} placeholder="مثال: 99.5" value={unit.pm10FilterEfficiencyPercent} onChange={(e) => updateBatchingUnit(item.id, i, 'pm10FilterEfficiencyPercent', e.target.value)} className={getInputClass(false)} />
+                                </div>
+                                <div>
+                                  <label className={labelClass}>هل رُصد تسرب من الصومعة/النقل؟ <span className="text-red-500">*</span></label>
+                                  <select required value={String(unit.leakDetected)} onChange={(e) => updateBatchingUnit(item.id, i, 'leakDetected', e.target.value === 'true')} className={getInputClass(false)}>
+                                    <option value="false">لا يوجد تسرب</option>
+                                    <option value="true">نعم، يوجد تسرب</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className={labelClass}>هل استُخدم الكنس الجاف/النفخ بالهواء المضغوط؟ <span className="text-red-500">*</span></label>
+                                  <select required value={String(unit.dryCleaningMethodUsed)} onChange={(e) => updateBatchingUnit(item.id, i, 'dryCleaningMethodUsed', e.target.value === 'true')} className={getInputClass(false)}>
+                                    <option value="false">لا (شفط/تنظيف رطب)</option>
+                                    <option value="true">نعم (ممنوع تنظيمياً)</option>
+                                  </select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input id={`batching-suppression-${item.id}-${i}`} type="checkbox" checked={!!unit.dustSuppressionSystemOperational} onChange={(e) => updateBatchingUnit(item.id, i, 'dustSuppressionSystemOperational', e.target.checked)} className="w-4 h-4 accent-orange-500" />
+                                  <label htmlFor={`batching-suppression-${item.id}-${i}`} className="text-sm text-[#061B40]">نظام تثبيط الغبار عامل عند هذه المحطة</label>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {item.fields.regulatoryActivity === 'IDLE_SURFACE' && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-xs font-bold text-[#061B40]">بيانات الأسطح غير النشطة (وحدة لكل سطح)</h4>
+                            <button type="button" onClick={() => addIdleSurfaceUnit(item.id)} className="flex items-center gap-1 text-xs font-bold text-orange-600 hover:text-orange-700 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200">
+                              <Plus className="w-3.5 h-3.5" /> إضافة سطح آخر
+                            </button>
+                          </div>
+                          {item.idleSurfaceUnits.map((unit, i) => (
+                            <div key={i} className="p-3 rounded-xl border border-orange-200 bg-orange-50/40 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-orange-700">سطح رقم {i + 1}</span>
+                                {item.idleSurfaceUnits.length > 1 && (
+                                  <button type="button" onClick={() => removeIdleSurfaceUnit(item.id, i)} className="text-red-500 hover:text-red-600">
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                  <label className={labelClass}>عدد أيام التوقف عن العمل <span className="text-red-500">*</span></label>
+                                  <input required type="number" min={0} placeholder="مثال: 7" value={unit.idleDays} onChange={(e) => updateIdleSurfaceUnit(item.id, i, 'idleDays', e.target.value)} className={getInputClass(false)} />
+                                </div>
+                                <div>
+                                  <label className={labelClass}>هل السطح مثبت؟ <span className="text-red-500">*</span></label>
+                                  <select required value={String(unit.idleSurfaceStabilized)} onChange={(e) => updateIdleSurfaceUnit(item.id, i, 'idleSurfaceStabilized', e.target.value === 'true')} className={getInputClass(false)}>
+                                    <option value="true">نعم، مثبت</option>
+                                    <option value="false">لا</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className={labelClass}>هل غطاء السطح سليم؟ <span className="text-red-500">*</span></label>
+                                  <select required value={String(unit.idleSurfaceCoverIntact)} onChange={(e) => updateIdleSurfaceUnit(item.id, i, 'idleSurfaceCoverIntact', e.target.value === 'true')} className={getInputClass(false)}>
+                                    <option value="true">نعم، سليم</option>
+                                    <option value="false">لا، تالف أو غير موجود</option>
+                                  </select>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {item.fields.regulatoryActivity === 'CRUSHER' && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-xs font-bold text-[#061B40]">بيانات الكسارات (وحدة لكل كسارة)</h4>
+                            <button type="button" onClick={() => addCrusherUnit(item.id)} className="flex items-center gap-1 text-xs font-bold text-orange-600 hover:text-orange-700 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200">
+                              <Plus className="w-3.5 h-3.5" /> إضافة كسارة أخرى
+                            </button>
+                          </div>
+                          {item.crusherUnits.map((unit, i) => (
+                            <div key={i} className="p-3 rounded-xl border border-orange-200 bg-orange-50/40 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-orange-700">كسارة رقم {i + 1}</span>
+                                {item.crusherUnits.length > 1 && (
+                                  <button type="button" onClick={() => removeCrusherUnit(item.id, i)} className="text-red-500 hover:text-red-600">
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                              {(() => {
+                                const pointId = `${item.id}:crusher:${i}`;
+                                const hasUnitLocation = typeof unit.crusherLat === 'number' && typeof unit.crusherLng === 'number';
+                                return (
+                                  <div className="flex items-center justify-between rounded-lg border border-orange-200 bg-white px-3 py-2">
+                                    <span className="text-xs font-bold text-[#061B40]">
+                                      {hasUnitLocation ? `الموقع محدَّد (${Number(unit.crusherLat).toFixed(5)}, ${Number(unit.crusherLng).toFixed(5)})` : 'لم يُحدَّد الموقع بعد'}
+                                      {i === 0 && <span className="text-[10px] text-[#061B40]/50"> — هذا الموقع هو نفسه موقع النشاط</span>}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveMapPointId(pointId)}
+                                      className={`text-xs font-bold px-3 py-1 rounded-full border transition-colors shrink-0 ${
+                                        activeMapPointId === pointId
+                                          ? 'bg-orange-500 text-white border-orange-500'
+                                          : 'bg-white text-orange-600 border-orange-300 hover:bg-orange-50'
+                                      }`}
+                                    >
+                                      {activeMapPointId === pointId ? 'نشِط على الخريطة أعلاه' : 'حدّد موقعها على الخريطة'}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                              {/* طلب صريح من المستخدم — تنبيه فوري (Hard Block عند الحفظ، راجع
+                                  index.tsx/handleDustSubmit) عند مخالفة فئة المشروع أو مسافة
+                                  المستقبل الحساس، فور تحديد الموقع على الخريطة. */}
+                              {(() => {
+                                const precheck = crusherPrecheckResults[`${item.id}:${unit.id}`];
+                                if (!precheck || precheck.status !== 'blocked') return null;
+                                return (
+                                  <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-1">
+                                    <p className="text-[11px] font-black text-red-700 flex items-center gap-1.5">
+                                      <AlertTriangle className="w-3.5 h-3.5" /> هذا الموقع غير مسموح لتشغيل الكسارة
+                                    </p>
+                                    {precheck.reasonsAr.map((reason, ri) => (
+                                      <p key={ri} className="text-[12px] text-red-800 pr-4">⚠ {reason}</p>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+                              <p className="text-[11px] text-[#061B40]/50">تُحسب مسافة الكسارة عن أقرب مستقبل حساس (مدرسة/مستشفى/سكني) تلقائياً من هذا الموقع.</p>
+                              <div>
+                                <label className={labelClass}>مسافة الكسارة من أقرب مستقبل حساس (م) — احتياطي يدوي إن تعذّر التحديد على الخريطة</label>
+                                <input type="number" placeholder="اتركه فارغًا" value={unit.crusherDistanceToReceptorM} onChange={(e) => updateCrusherUnit(item.id, i, 'crusherDistanceToReceptorM', e.target.value)} className={getInputClass(false)} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* محطة الرصد التي ستؤخذ منها قراءات هذا النشاط تحديداً —
+                          ترتبط تلقائياً بأقرب محطة نشطة لموقع النشاط حسب
+                          الإحداثيات (لا اختيار يدوي، طلب صريح من المستخدم) —
+                          الحساب الملزم الفعلي يتم على السيرفر عند الحفظ
+                          (resolveNearestActiveDeviceId في app/api/dust-profiles/
+                          route.ts)، وهذا العرض توضيحي فقط لنفس النتيجة
+                          المتوقعة (item.deviceId يُحسَب محلياً بنفس الخوارزمية
+                          عند تحديد الموقع، راجع findNearestActiveDeviceId في
+                          index.tsx). لا محطة نشطة قريبة → النشاط يعتمد على
+                          API الطقس (Open-Meteo) بدل الجهاز تلقائياً. */}
+                      {projectDevices.length > 0 && (
+                        <div>
+                          <label className={labelClass}>محطة الرصد (مصدر القراءات)</label>
+                          {(() => {
+                            const linkedDevice = projectDevices.find((d) => d.id === item.deviceId);
+                            const distanceLabel =
+                              linkedDevice &&
+                              typeof item.lat === 'number' &&
+                              typeof item.lng === 'number' &&
+                              typeof linkedDevice.lat === 'number' &&
+                              typeof linkedDevice.lng === 'number'
+                                ? ` — ${Math.round(haversineDistanceM({ lat: item.lat, lng: item.lng }, { lat: linkedDevice.lat, lng: linkedDevice.lng }))} م`
+                                : '';
+                            return (
+                              <p className={`${getInputClass(false)} !bg-slate-50 text-slate-600`}>
+                                {linkedDevice
+                                  ? `${linkedDevice.name}${distanceLabel} (أقرب محطة نشطة — ترتبط تلقائياً)`
+                                  : 'لا توجد محطة نشطة قريبة — سيعتمد النشاط على API الطقس (Open-Meteo)'}
+                              </p>
+                            );
+                          })()}
+                        </div>
+                      )}
+
+                      {/* isEnclosedOperation يبقى مدخلاً حقيقياً (لا تنبيهاً
+                          نصياً) لأنه يتحكم مباشرة في بوابة إيقاف إلزامي مرتبطة
+                          ببيانات الرياح الحية (GATE-WIND-ABOVE-25-004،
+                          DEMO-WIND-STOP-001، وقواعد الكسارة/قطع الأحجار) — هذا
+                          سؤال بنيوي عن طبيعة العملية نفسها، وليس تفصيل ضبط
+                          يمكن تعميمه كتنبيه عام. */}
+                      {showEnclosedOption && (
+                        <div className="flex items-center gap-2">
+                          <input
+                            id={`enclosed-${item.id}`}
+                            type="checkbox"
+                            checked={item.fields.isEnclosedOperation}
+                            onChange={(e) => updateRegulatoryActivityField(item.id, 'isEnclosedOperation', e.target.checked)}
+                            className="w-4 h-4 accent-orange-500"
+                          />
+                          <label htmlFor={`enclosed-${item.id}`} className="text-sm text-[#061B40]">
+                            عملية مغلقة (محكمة الإغلاق)
+                          </label>
+                        </div>
+                      )}
+
+                      {item.fields.regulatoryActivity === 'DEMOLITION' && (
+                        <div>
+                          <label className={labelClass}>مساحة الهدم النشطة (م²)</label>
+                          <input type="number" placeholder="اتركه فارغًا" value={item.fields.demolitionActiveAreaM2} onChange={(e) => updateRegulatoryActivityField(item.id, 'demolitionActiveAreaM2', e.target.value)} className={getInputClass(false)} />
+                          <p className="text-[11px] text-[#061B40]/50 mt-1">الحد التنظيمي: 100 م² للمرة الواحدة.</p>
+                        </div>
+                      )}
+                    </div>
+                </div>
+            );
+          })()}
+        </div>
+
+        {SHOW_CONTROL_MEASURES_SECTION && (
+        <div className="space-y-3 border-t border-[#061B40]/10 pt-4">
+          <h3 className={sectionTitleClass}>إجراءات التحكم المتوفرة</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {DUST_CONTROL_CHECKBOXES.filter((item) => COMPLIANCE_RELEVANT_CONTROL_KEYS.has(item.key)).map((item) => (
+              <label key={item.key} className="flex items-center gap-2 text-sm text-[#061B40] bg-[#F4F7FB]/50 rounded-lg border border-[#061B40]/10 p-2 cursor-pointer hover:bg-gray-50">
+                <input type="checkbox" checked={dustForm[item.key] as boolean} onChange={(e) => updateDustField(item.key, e.target.checked)} className="w-4 h-4 accent-orange-500" />
+                {item.label}
+              </label>
+            ))}
+          </div>
+        </div>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <button
+            type="submit"
+            disabled={dustLoading || precheckPending || !regulatoryActivity}
+            className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-bold py-3.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors shadow-sm"
+          >
+            <Wind className="w-5 h-5" />
+            {dustLoading
+              ? 'جاري التقييم...'
+              : precheckPending
+                ? 'جارٍ التحقق من الموقع...'
+                : 'حفظ وتقييم النشاط'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

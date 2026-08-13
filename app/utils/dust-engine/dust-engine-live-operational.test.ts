@@ -1,0 +1,154 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { evaluateLiveOperationalDecision } from './engine';
+import type { DustEngineInput } from './types';
+
+// =====================================================================
+// evaluateLiveOperationalDecision — القسم 9 من "دليل الإصلاح الجذري لمنظومة
+// مرقاب": القرار الحي يجب ألا يعتمد على Open-Meteo أو ينتظره إطلاقاً، حتى
+// لنشاط مرتبط بجهاز. اختبار القبول الحاسم المطلوب صراحة (القسم 9.2):
+// Mock على global.fetch يرمي فور استدعائه، ويجب أن ينجح الاستدعاء ويثبت
+// أن عدد مكالمات fetch يساوي صفراً — لا فقط "مهلة قصيرة" كما كان الحال في
+// evaluateDustVisibilityWindow (LIVE_WEATHER_TIMEOUT_MS).
+// =====================================================================
+
+function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
+  return {
+    activityType: 'GENERAL_OUTDOOR_WORK',
+    latitude: 24.7,
+    longitude: 46.7,
+    site: {
+      hasEarthworks: false,
+      internalDirtRoads: false,
+      heavyEquipmentMovement: false,
+      looseMaterials: false,
+      largeExposedArea: false,
+      drySurface: false,
+      surfaceWet: false,
+      wateringAvailable: false,
+      stockpilesCovered: false,
+      speedLimitApplied: false,
+      wheelWashAvailable: false,
+      dustScreensAvailable: false,
+      fieldMonitoringAvailable: false,
+      receptorType: 'NONE_NEARBY',
+      receptorDistance: 'OVER_500M',
+      receptorIsDownwind: false,
+      visibleDustPlumeReported: false,
+      openConcretePour: false,
+    },
+    onsiteVisibilityM: null,
+    onsitePm10: null,
+    onsitePm25: null,
+    hasDeviceLink: false,
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('evaluateLiveOperationalDecision — صفر مكالمات fetch إطلاقاً', () => {
+  it('fetch يرمي خطأً فور استدعائه — النشاط بجهاز حي ينجح رغم ذلك، وfetch لا يُستدعى مطلقاً', () => {
+    const fetchMock = vi.fn(() => {
+      throw new Error('fetch يجب ألا يُستدعى إطلاقاً من هذه الدالة');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = evaluateLiveOperationalDecision(
+      input({
+        hasDeviceLink: true,
+        devicePm10: 260,
+        deviceWindSpeedKmh: 18,
+        deviceVisibilityM: 5000,
+        deviceLastReadingAt: new Date().toISOString(),
+      })
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.mergedReading.pm10).toBe(260);
+    expect(result.decisionLabelAr).not.toContain('بانتظار تقييم');
+  });
+
+  it('hasDeviceLink=false → "بانتظار تقييم" محايدة، صفر fetch', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = evaluateLiveOperationalDecision(input({ hasDeviceLink: false }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.decisionLabelAr).toContain('بانتظار تقييم');
+    expect(result.mandatoryStop).toBe(false);
+    expect(result.mergedReading.deviceLastReadingAt).toBeUndefined();
+  });
+
+  it('يقرأ قراءة الجهاز مباشرة بصرف النظر عن قِدمها (لا فحص حداثة داخل هذه الدالة)', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const oldReadingAt = new Date(Date.now() - 3 * 3600000).toISOString();
+    const result = evaluateLiveOperationalDecision(
+      input({
+        hasDeviceLink: true,
+        devicePm10: 345,
+        deviceLastReadingAt: oldReadingAt,
+      })
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.mergedReading.pm10).toBe(345);
+    expect(result.mergedReading.deviceLastReadingAt).toBe(oldReadingAt);
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "PM10 بقيمة 500 وعمر أكبر من
+  // أربع دقائق ما زال قادراً على إنتاج إيقاف"): mandatoryStop=true من PM10
+  // لحظي فقط (بلا خطر فيزيائي آخر) يشترط الآن قراءة PM10 طازجة تحديداً
+  // (devicePm10LastReadingAt عمرها ≤4 دقائق)، لا مجرد devicePm10LastReadingAt
+  // غائبة تماماً. راجع الاختبار التالي مباشرة لحالة القراءة القديمة/الغائبة.
+  it('PM10>340 من الجهاز لنشاط مولّد للغبار مع قراءة PM10 طازجة → mandatoryStop=true (نفس بوابات DVI الفيزيائية العادية)', () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const result = evaluateLiveOperationalDecision(
+      input({
+        activityType: 'EXCAVATION',
+        hasDeviceLink: true,
+        devicePm10: 500,
+        deviceLastReadingAt: new Date().toISOString(),
+        devicePm10LastReadingAt: new Date().toISOString(),
+      })
+    );
+    expect(result.mandatoryStop).toBe(true);
+    expect(result.stopBasis).toBe('PM10');
+  });
+
+  it('PM10>340 من الجهاز لنشاط مولّد للغبار لكن devicePm10LastReadingAt غائبة (لا إثبات حداثة) → mandatoryStop=false احترازياً، لا إيقاف قطعي بلا دليل حداثة', () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const result = evaluateLiveOperationalDecision(
+      input({
+        activityType: 'EXCAVATION',
+        hasDeviceLink: true,
+        devicePm10: 500,
+        deviceLastReadingAt: new Date().toISOString(),
+      })
+    );
+    expect(result.mandatoryStop).toBe(false);
+    expect(result.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
+    expect(result.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE');
+  });
+
+  it('PM10>340 من الجهاز وdevicePm10LastReadingAt عمرها 3 ساعات (قديمة فعلياً) → mandatoryStop=false احترازياً', () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const threeHoursAgo = new Date(Date.now() - 3 * 3600000).toISOString();
+    const result = evaluateLiveOperationalDecision(
+      input({
+        activityType: 'EXCAVATION',
+        hasDeviceLink: true,
+        devicePm10: 500,
+        deviceLastReadingAt: new Date().toISOString(),
+        devicePm10LastReadingAt: threeHoursAgo,
+      })
+    );
+    expect(result.mandatoryStop).toBe(false);
+    expect(result.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE');
+  });
+});

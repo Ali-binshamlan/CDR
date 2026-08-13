@@ -1,0 +1,274 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
+// العمال"): أول ملف اختبار لـtelemetry-worker/route.ts (لم يكن موجوداً
+// قبل هذا التصحيح). يغطي مسار claim_telemetry_queue/renew_telemetry_queue_
+// lease/writeDeviceReading/complete_telemetry_queue_row_and_enqueue_job/
+// fail_telemetry_queue_row — راجع تعليق route.ts الكامل: renew قبل كل صف،
+// fail_telemetry_queue_row يشترط الآن worker_id ويُرجع boolean، وفشل
+// complete بعد نجاح الكتابة الفعلية لا يستدعي fail بعد الآن.
+//
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "يتم ACK للقراءة قبل ضمان
+// إنشاء مهمة تقييم"): complete_telemetry_queue_row_and_enqueue_job (RPC
+// ذرّية واحدة، migration 202608120007) تحل محل الاستدعاءين المنفصلين
+// السابقين (complete_telemetry_queue_row ثم insert لاحق منفصل على
+// project_evaluation_jobs) — تُعيد {row_completed, job_enqueued} صفاً واحداً.
+let claimedRows: Array<Record<string, unknown>> = [];
+const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+let renewResult: { data: boolean | null; error: { message: string } | null } = { data: true, error: null };
+let completeAndEnqueueResult: {
+  data: Array<{ row_completed: boolean; job_enqueued: boolean }> | null;
+  error: { message: string } | null;
+} = { data: [{ row_completed: true, job_enqueued: true }], error: null };
+let failResult: { data: boolean | null; error: { message: string } | null } = { data: true, error: null };
+
+vi.mock('@/app/lib/supabaseAdmin', () => ({
+  supabaseAdmin: {
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ fn, args });
+      if (fn === 'claim_telemetry_queue') return { data: claimedRows, error: null };
+      if (fn === 'renew_telemetry_queue_lease') return renewResult;
+      if (fn === 'complete_telemetry_queue_row_and_enqueue_job') return completeAndEnqueueResult;
+      if (fn === 'fail_telemetry_queue_row') return failResult;
+      return { data: null, error: null };
+    },
+  },
+}));
+
+vi.mock('@/app/lib/timingSafe', () => ({
+  timingSafeStringEqual: (a: string, b: string) => a === b,
+}));
+
+const writeDeviceReadingMock = vi.fn();
+vi.mock('@/app/lib/deviceReadingWriter', () => ({
+  writeDeviceReading: (...args: unknown[]) => writeDeviceReadingMock(...args),
+}));
+
+const SECRET = 'test-telemetry-worker-secret';
+
+function makeRequest(): Request {
+  return new Request('http://localhost/api/cron/telemetry-worker', {
+    headers: { authorization: `Bearer ${SECRET}` },
+  });
+}
+
+function baseRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'row-1',
+    idempotency_key: 'thingsboard:conn-1:evt-1',
+    project_id: 'project-1',
+    device_id: 'device-1',
+    payload: { observedAtIso: '2026-01-01T00:00:00.000Z', pm10: 340 },
+    ...overrides,
+  };
+}
+
+describe('GET /api/cron/telemetry-worker', () => {
+  beforeEach(() => {
+    process.env.TELEMETRY_WORKER_CRON_SECRET = SECRET;
+    claimedRows = [];
+    rpcCalls.length = 0;
+    renewResult = { data: true, error: null };
+    completeAndEnqueueResult = { data: [{ row_completed: true, job_enqueued: true }], error: null };
+    failResult = { data: true, error: null };
+    writeDeviceReadingMock.mockReset();
+    writeDeviceReadingMock.mockResolvedValue({ success: true });
+  });
+
+  it('يرفض بلا سر مُعرَّف بالخادم', async () => {
+    delete process.env.TELEMETRY_WORKER_CRON_SECRET;
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(503);
+  });
+
+  it('يرفض ترويسة Authorization غير مطابقة', async () => {
+    const { GET } = await import('./route');
+    const res = await GET(new Request('http://localhost', { headers: { authorization: 'Bearer wrong' } }));
+    expect(res.status).toBe(401);
+  });
+
+  it('كتابة ناجحة → complete_telemetry_queue_row_and_enqueue_job يُستدعى، النتيجة ok=true', async () => {
+    claimedRows = [baseRow()];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.results[0]).toEqual({ rowId: 'row-1', projectId: 'project-1', ok: true });
+    expect(rpcCalls.some((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job')).toBe(true);
+  });
+
+  it('writeDeviceReading يرجع success=false → fail_telemetry_queue_row يُستدعى بـp_worker_id', async () => {
+    writeDeviceReadingMock.mockResolvedValue({ success: false, error: 'قيمة غير صالحة' });
+    claimedRows = [baseRow()];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.ok).toBe(false);
+    const failCall = rpcCalls.find((c) => c.fn === 'fail_telemetry_queue_row');
+    expect(failCall).toBeDefined();
+    expect(failCall!.args.p_worker_id).toBe(body.workerId);
+    expect(failCall!.args.p_row_id).toBe('row-1');
+    expect(rpcCalls.some((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job')).toBe(false);
+  });
+
+  it('writeDeviceReading يرمي استثناء → يُعامَل كفشل، fail_telemetry_queue_row يُستدعى', async () => {
+    writeDeviceReadingMock.mockRejectedValue(new Error('انقطاع شبكة'));
+    claimedRows = [baseRow()];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.ok).toBe(false);
+    expect(body.results[0].error).toContain('انقطاع شبكة');
+    expect(rpcCalls.some((c) => c.fn === 'fail_telemetry_queue_row')).toBe(true);
+  });
+
+  it('نجاح → مشروع الصف يدخل evaluationJobsEnqueued عبر complete_telemetry_queue_row_and_enqueue_job (Evaluation Coalescing)', async () => {
+    claimedRows = [baseRow()];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.evaluationJobsEnqueued).toBe(1);
+    const call = rpcCalls.find((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job');
+    expect(call!.args.p_project_id).toBe('project-1');
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "التقييم
+  // بحسب وقت المعالجة قد يفوّت مخالفة كاملة"): مهمة التقييم يجب أن تُبنى
+  // لكل (مشروع، دقيقة رصد فعلية) لا دقيقة معالجة الدفعة، مع evaluation_at
+  // يحمل نهاية دقيقة الرصد تلك تحديداً.
+  describe('evaluation_at ودقيقة الرصد لا دقيقة المعالجة (اختبار قبول صريح)', () => {
+    it('مهمة واحدة → p_dedupe_key وp_evaluation_at مبنيان من observedAtIso القراءة، لا Date.now() وقت تشغيل العامل', async () => {
+      const observedAtIso = '2026-01-01T12:03:30.000Z'; // منتصف الدقيقة 12:03
+      claimedRows = [baseRow({ payload: { observedAtIso, pm10: 340 } })];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const call = rpcCalls.find((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job');
+      expect(call).toBeDefined();
+      const observedMinuteBucket = Math.floor(new Date(observedAtIso).getTime() / 60_000);
+      expect(call!.args.p_dedupe_key).toBe(`ingest:${observedMinuteBucket}`);
+      // p_evaluation_at = نهاية دقيقة 12:03 بالضبط (12:03:59.999)، لا وقت
+      // معالجة الدفعة الفعلي (Date.now() قد يكون بعد ذلك بدقائق).
+      expect(call!.args.p_evaluation_at).toBe('2026-01-01T12:03:59.999Z');
+    });
+
+    it('دفعة تحوي قراءات من دقيقتَي رصد مختلفتين لنفس المشروع (سيناريو التقرير: 350←355←360 عند 12:03، ثم 100 عند 12:05) → استدعاءان منفصلان بمفتاحَي دقيقة مختلفين', async () => {
+      claimedRows = [
+        baseRow({ id: 'row-1', payload: { observedAtIso: '2026-01-01T12:03:00.000Z', pm10: 350 } }),
+        baseRow({ id: 'row-2', payload: { observedAtIso: '2026-01-01T12:03:30.000Z', pm10: 355 } }),
+        baseRow({ id: 'row-3', payload: { observedAtIso: '2026-01-01T12:03:45.000Z', pm10: 360 } }),
+        baseRow({ id: 'row-4', payload: { observedAtIso: '2026-01-01T12:05:10.000Z', pm10: 100 } }),
+      ];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      const calls = rpcCalls.filter((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job');
+      expect(calls).toHaveLength(4);
+      const dedupeKeys = [...new Set(calls.map((c) => c.args.p_dedupe_key))].sort();
+      const minute03 = Math.floor(new Date('2026-01-01T12:03:00.000Z').getTime() / 60_000);
+      const minute05 = Math.floor(new Date('2026-01-01T12:05:00.000Z').getTime() / 60_000);
+      expect(dedupeKeys).toEqual([`ingest:${minute03}`, `ingest:${minute05}`].sort());
+      // مهمة دقيقة 12:03 تحمل evaluation_at نهاية تلك الدقيقة — إعادة
+      // التقييم عندها لاحقاً تُعيد بناء الحالة وقت الذروة (350-355-360)،
+      // لا وقت القراءة الآمنة (100) اللاحقة في دقيقة أخرى تماماً.
+      const minute03Call = calls.find((c) => c.args.p_dedupe_key === `ingest:${minute03}`);
+      expect(minute03Call!.args.p_evaluation_at).toBe('2026-01-01T12:03:59.999Z');
+      expect(body.evaluationJobsEnqueued).toBe(1); // مشروع واحد "أُدرِجت له مهمة" (بصرف النظر عن عددها)
+    });
+
+    it('دفعة بمشروعين مختلفين، كل منهما بدقيقة رصد واحدة فقط → استدعاء واحد لكل مشروع', async () => {
+      claimedRows = [
+        baseRow({ id: 'row-1', project_id: 'project-A', payload: { observedAtIso: '2026-01-01T12:03:00.000Z', pm10: 340 } }),
+        baseRow({ id: 'row-2', project_id: 'project-B', payload: { observedAtIso: '2026-01-01T12:03:00.000Z', pm10: 340 } }),
+      ];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      const calls = rpcCalls.filter((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job');
+      expect(calls).toHaveLength(2);
+      expect(body.evaluationJobsEnqueued).toBe(2);
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "ملكية
+  // Lease غير آمنة في العمال").
+  describe('renew_telemetry_queue_lease قبل كل صف (اختبار قبول صريح)', () => {
+    it('renew ناجح → يُستدعى بـp_worker_id/p_lease_seconds قبل writeDeviceReading', async () => {
+      claimedRows = [baseRow()];
+      const { GET } = await import('./route');
+      await GET(makeRequest());
+
+      const renewCall = rpcCalls.find((c) => c.fn === 'renew_telemetry_queue_lease');
+      expect(renewCall).toBeDefined();
+      expect(renewCall!.args.p_row_id).toBe('row-1');
+      expect(renewCall!.args.p_lease_seconds).toBe(60);
+      expect(writeDeviceReadingMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('renew يرجع false (عامل آخر استرجع الصف) → لا استدعاء writeDeviceReading إطلاقاً، لا complete/fail', async () => {
+      renewResult = { data: false, error: null };
+      claimedRows = [baseRow()];
+      const { GET } = await import('./route');
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.results[0].ok).toBe(false);
+      expect(writeDeviceReadingMock).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.fn === 'complete_telemetry_queue_row_and_enqueue_job')).toBe(false);
+      expect(rpcCalls.some((c) => c.fn === 'fail_telemetry_queue_row')).toBe(false);
+    });
+  });
+
+  // اختبار قبول صريح: row_completed=false بعد كتابة ناجحة فعلياً يجب ألا
+  // يستدعي fail (القراءة كُتبت بالفعل في device_readings_history — استدعاء
+  // fail كان سيُعيد صفاً بات مسؤولية عامل آخر إلى RETRY زوراً رغم نجاح
+  // الكتابة).
+  it('complete_telemetry_queue_row_and_enqueue_job يرجع row_completed=false (بعد كتابة ناجحة فعلياً) → فشل في النتيجة، لكن fail_telemetry_queue_row لا يُستدعى إطلاقاً', async () => {
+    completeAndEnqueueResult = { data: [{ row_completed: false, job_enqueued: false }], error: null };
+    claimedRows = [baseRow()];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.results[0].ok).toBe(false);
+    expect(rpcCalls.some((c) => c.fn === 'fail_telemetry_queue_row')).toBe(false);
+    expect(body.evaluationJobsEnqueued).toBe(0);
+  });
+
+  // اختبار قبول صريح (طلب المستخدم بالحرف — "يتم ACK للقراءة قبل ضمان إنشاء
+  // مهمة تقييم"): خطأ RPC حقيقي (غير تعارض 23505 المتوقَّع — مثال: فشل شبكة/
+  // قيد آخر أثناء إدراج project_evaluation_jobs داخل نفس المعاملة) يجب أن
+  // يُبلَّغ كفشل صريح — لا "نجاح صامت" يترك القراءة PROCESSED بلا مهمة تقييم
+  // مقابلة. الـRPC نفسها (SQL) تضمن Rollback الصف أيضاً في هذه الحالة —
+  // هذا الاختبار يتحقق من جانب route.ts فقط (لا يستدعي fail، يُبلِغ الفشل
+  // بدقة).
+  it('complete_telemetry_queue_row_and_enqueue_job يرجع خطأ RPC حقيقي (لا تعارض 23505) → فشل صريح في النتيجة، لا "نجاح" زائف', async () => {
+    completeAndEnqueueResult = { data: null, error: { message: 'connection pool exhausted' } };
+    claimedRows = [baseRow()];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    expect(body.results[0].ok).toBe(false);
+    expect(body.results[0].error).toContain('connection pool exhausted');
+    expect(body.evaluationJobsEnqueued).toBe(0);
+    expect(rpcCalls.some((c) => c.fn === 'fail_telemetry_queue_row')).toBe(false);
+  });
+
+  it('لا صفوف مُطالَب بها → ok=true بلا أي استدعاء آخر', async () => {
+    claimedRows = [];
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.claimed).toBe(0);
+  });
+});

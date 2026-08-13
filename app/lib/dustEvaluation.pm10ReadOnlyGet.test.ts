@@ -1,0 +1,204 @@
+import { describe, it, expect, vi } from 'vitest';
+import { computeDustComplianceResults, NEUTRAL_DVI_FALLBACK } from './dustEvaluation';
+import type { DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+// =====================================================================
+// اختبار قبول (مراجعة كود خارجي — "المسار القديم للتنبيهات ينافس Outbox
+// ويصنع قراءات PM10 وهمية"): computeDustComplianceResults كان يُدرِج قراءة
+// onsite_pm10 في pm10_readings_history كأثر جانبي في كل دورة evaluateProject
+// حية (device ingest/provider-pull/scheduler، لا فقط ضغطة مستخدم POST
+// صريحة) — يحوّل قياساً يدوياً واحداً حقيقياً إلى سلسلة تبدو مستمرة زوراً.
+// الإصلاح: فرع 'onsite' حُذف بالكامل من هذه الدالة. القياس اليدوي الآن
+// يدخل حصراً عبر POST /api/pm10-readings/manual (راجع اختباره المستقل).
+// الآن لا يوجد أي مسار — بأي قيمة لـpersistPm10Reading أو pm10Source — يكتب
+// في pm10_readings_history من داخل هذه الدالة على الإطلاق. فرع 'weather'
+// (توقّع Open-Meteo → weather_forecasts، evidence_eligible=false) غير
+// مرتبط بهذا الخلل ويبقى بسلوكه الأصلي بلا تغيير.
+// =====================================================================
+
+const baseRow = {
+  id: 'profile-1',
+  activity_group_id: 'group-1',
+  activity_type: 'GENERAL_OUTDOOR_WORK',
+  regulatory_activity: 'OTHER',
+  has_earthworks: false,
+  internal_dirt_roads: false,
+  heavy_equipment_movement: false,
+  loose_materials: false,
+  large_exposed_area: false,
+  dry_surface: false,
+  surface_wet: false,
+  watering_available: true,
+  stockpiles_covered: true,
+  speed_limit_applied: true,
+  wheel_wash_available: true,
+  dust_screens_available: true,
+  field_monitoring_available: true,
+  receptor_type: 'NONE_NEARBY',
+  receptor_distance: 'OVER_500M',
+  receptor_is_downwind: false,
+  visible_dust_plume_reported: false,
+  open_concrete_pour: false,
+  device_id: null,
+};
+
+const project = { id: 'project-1', latitude: 24.7136, longitude: 46.6753 };
+
+function dustResult(pm10Source: 'onsite' | 'weather' = 'onsite'): {
+  activityId: string;
+  activityGroupId: string;
+  windowEval: { worst: DviHourlyEvaluation };
+} {
+  const worst: DviHourlyEvaluation = {
+    ...NEUTRAL_DVI_FALLBACK,
+    score: 90,
+    decisionCategory: 'ALLOW',
+    mandatoryStop: false,
+    shortReason: '',
+    confidenceScore: 1,
+    effectiveWindKmh: 10,
+    caveatsAr: [],
+    time: new Date().toISOString(),
+    rawWeatherSample: {
+      visibilityM: null,
+      weatherCode: null,
+      weatherSymbol: 'CLEAR',
+      windSpeedKmh: 10,
+      windGustKmh: null,
+      windDirectionDeg: null,
+      relativeHumidityPercent: null,
+      temperatureC: null,
+      rainfallLast24hMm: null,
+      pm10: 310,
+      pm25: null,
+      dustConcentration: null,
+      dataSource: 'none',
+      isForecastStale: false,
+    },
+    mergedReading: {
+      windSpeedKmh: 10,
+      windGustKmh: null,
+      windDirectionDeg: null,
+      pm10: 310, // فوق عتبة الاحتراز — يكفي ليُدرَج لو الكتابة مفعّلة
+      pm25: null,
+      relativeHumidityPercent: null,
+      temperatureC: null,
+      visibilityM: null,
+      deviceLastReadingAt: null,
+      devicePm10LastReadingAt: null,
+      sources: {
+        windSpeedKmh: 'device',
+        windGustKmh: 'none',
+        windDirectionDeg: 'none',
+        pm10: pm10Source === 'onsite' ? 'onsite' : 'weather',
+        pm25: 'none',
+        visibilityM: 'none',
+        relativeHumidityPercent: 'none',
+        temperatureC: 'none',
+      },
+    },
+  };
+  return {
+    activityId: 'profile-1',
+    activityGroupId: 'group-1',
+    windowEval: { worst },
+  };
+}
+
+// عميل Supabase مموّه — يسجّل كل استدعاء .insert() (الجدول + المحتوى)،
+// ويرجع سلسلة عمليات فارغة كافية لكل الاستعلامات التي تنفّذها الدالة
+// (current_dust_compliance_decisions select، pm10_readings_history/
+// weather_forecasts select/insert).
+interface MockSupabase {
+  from: ReturnType<typeof vi.fn>;
+  _inserts: { table: string; payload: Record<string, unknown> }[];
+  readonly _insertedTables: string[];
+}
+
+// عميل مموَّه بشكل جزئي (chain/insert فقط) — يُستخدم في اختبارات هذا الملف
+// حصراً عبر توقيع computeDustComplianceResults الذي يقبل SupabaseClient
+// حقيقياً. بناء SupabaseClient كامل هنا غير عملي (عشرات الخصائص الداخلية
+// غير ذات صلة بما تختبره هذه الحالات) — cast صريح عند نقطة الإرجاع بدل
+// نثر `as any`/`as SupabaseClient` في كل موقع استدعاء داخل هذا الملف.
+function mockSupabase(): SupabaseClient & MockSupabase {
+  const inserts: { table: string; payload: Record<string, unknown> }[] = [];
+  const chain: Record<string, unknown> = {
+    select: () => chain,
+    eq: () => chain,
+    in: () => chain,
+    gte: () => chain,
+    order: () => chain,
+    limit: () => chain,
+    maybeSingle: async () => ({ data: null }),
+    then: undefined,
+  };
+  // استعلامات select المتسلسلة تنتهي بـ await مباشر على chain (بلا
+  // .maybeSingle) في بعض المسارات — نجعل chain نفسه thenable يرجع { data: [] }.
+  chain.then = (resolve: (v: { data: unknown[] }) => void) => resolve({ data: [] });
+
+  const mock = {
+    from: vi.fn((table: string) => ({
+      ...chain,
+      insert: vi.fn((payload: Record<string, unknown>) => {
+        inserts.push({ table, payload });
+        return { then: (resolve: (v: { data: null }) => void) => resolve({ data: null }) };
+      }),
+    })),
+    _inserts: inserts,
+    get _insertedTables() {
+      return inserts.map((i) => i.table);
+    },
+  };
+  return mock as unknown as SupabaseClient & MockSupabase;
+}
+
+describe('computeDustComplianceResults — لا يكتب في pm10_readings_history مهما كانت الحالة', () => {
+  it('بلا تمرير persistPm10Reading (مسار GET)، لا يُستدعى insert على pm10_readings_history', async () => {
+    const supabase = mockSupabase();
+    await computeDustComplianceResults([baseRow], project, [dustResult()], [], supabase);
+    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
+  });
+
+  it('بتمرير persistPm10Reading=false صراحة، لا كتابة أيضاً', async () => {
+    const supabase = mockSupabase();
+    await computeDustComplianceResults([baseRow], project, [dustResult()], [], supabase, false);
+    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
+  });
+
+  it('بتمرير persistPm10Reading=true ومصدر onsite (المسار الذي كان يكتب سابقاً)، لا كتابة إطلاقاً بعد الإصلاح', async () => {
+    const supabase = mockSupabase();
+    await computeDustComplianceResults([baseRow], project, [dustResult('onsite')], [], supabase, true);
+    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
+  });
+
+  it('اختبار القبول الصريح: استدعاء evaluateProject-like (persistPm10Reading=true) عشر مرات متتالية لا يزيد عدد صفوف pm10_readings_history إطلاقاً', async () => {
+    const supabase = mockSupabase();
+    for (let i = 0; i < 10; i++) {
+      await computeDustComplianceResults([baseRow], project, [dustResult('onsite')], [], supabase, true);
+    }
+    expect(supabase._inserts.filter((ins) => ins.table === 'pm10_readings_history')).toHaveLength(0);
+  });
+});
+
+describe('computeDustComplianceResults — توقّع Open-Meteo (weather_forecasts) يبقى بلا تغيير', () => {
+  it('توقّع open-meteo (weather) يُدرَج في weather_forecasts بـ evidence_eligible=false، لا في pm10_readings_history إطلاقاً', async () => {
+    const supabase = mockSupabase();
+    await computeDustComplianceResults([baseRow], project, [dustResult('weather')], [], supabase, true);
+    const forecastInsert = supabase._inserts.find((i) => i.table === 'weather_forecasts');
+    expect(forecastInsert).toBeDefined();
+    expect(forecastInsert?.payload).toMatchObject({
+      provider: 'open-meteo',
+      pm10_ug_m3: 310,
+      evidence_eligible: false,
+    });
+    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
+  });
+
+  it('توقّع weather لا يُدرَج في weather_forecasts أصلاً على مسار GET (persistPm10Reading=false)', async () => {
+    const supabase = mockSupabase();
+    await computeDustComplianceResults([baseRow], project, [dustResult('weather')], [], supabase);
+    expect(supabase._insertedTables).not.toContain('weather_forecasts');
+    expect(supabase._insertedTables).not.toContain('pm10_readings_history');
+  });
+});
