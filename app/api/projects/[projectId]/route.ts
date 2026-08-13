@@ -731,11 +731,9 @@ export async function PATCH(
   // تحقق الملكية — يقبل السوبر أدمن كذلك (راجع verifyProjectOwnership في
   // apiAuth.ts)، فنحتاج صف المشروع نفسه (name/user_id) لتحديد لاحقاً هل
   // الفاعل هو المالك المباشر أم أدمن يعدّل مشروع غيره (لتسجيل admin_audit_log).
-  // dmp_approval_status الحالي مطلوب أيضاً لفحص "هل تغيّرت هذه القيمة فعلياً؟"
-  // أدناه (راجع تعليق ذلك الفحص للسبب الكامل).
   const { data: project } = await supabaseAdmin
     .from('projects')
-    .select('id, name, user_id, dmp_approval_status')
+    .select('id, name, user_id')
     .eq('id', projectId)
     .maybeSingle();
   if (!project) return NextResponse.json({ error: 'المشروع غير موجود' }, { status: 404 });
@@ -755,41 +753,15 @@ export async function PATCH(
   }
   const updates: Record<string, unknown> = { ...parsed.data };
 
-  // خطأ أمني مكتشَف ومُصلَح (مراجعة كود مدير — "DMP يمكن تعيينها APPROVED
-  // من حقول يكتبها المستخدم، بلا وثيقة أو hash موافقة"): كان dmp_approval_status
-  // مقبولاً من هذا الـPATCH بأي قيمة enum بما فيها 'APPROVED'، بلا أي تحقق
-  // من هوية الفاعل — مالك المشروع نفسه يقدر يعتمد خطة إدارة الغبار (DMP)
-  // الخاصة به من قائمة منسدلة في صفحة الإعدادات، رغم أن اعتماد DMP فعلياً
-  // قرار تنظيمي يتطلب مراجعة/وثيقة من جهة مختصة، لا تصريحاً ذاتياً. بما أن
-  // النظام لا يملك بعد آلية توثيق مستندات (رفع ملف/hash موافقة)، الحل
-  // المؤقت الآمن: تعيين APPROVED يتطلب صلاحية super_admin تحديداً (نفس
-  // صلاحية admin_audit_log/requireSuperAdmin في apiAuth.ts) — مالك المشروع
-  // العادي يبقى يقدر يرى الحقل ويطلب اعتماده، لكن لا يعتمده لنفسه مباشرة.
-  //
-  // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — "ساعات العمل ما تنحفظ"، السبب
-  // الفعلي: هذا الفحص كان يمنع أي حفظ إطلاقاً): settings/page.tsx يرسل
-  // النموذج بأكمله (...projectForm) في كل حفظ، بصرف النظر عن أي حقل غيّره
-  // المستخدم فعلياً — فمشروع اعتُمدت DMP له مسبقاً (dmp_approval_status
-  // فعلياً APPROVED بالفعل بقاعدة البيانات) كان يُعيد إرسال نفس القيمة
-  // القائمة أصلاً مع كل حفظ، فيصطدم بهذا القيد ويُرفَض الطلب بالكامل (403)
-  // حتى لو المستخدم لم يلمس حقل DMP إطلاقاً (مثلاً عدّل ساعات العمل فقط).
-  // الإصلاح: القيد يُطبَّق فقط عند *تغيّر* القيمة فعلياً (من غير APPROVED
-  // إلى APPROVED) — إعادة إرسال نفس APPROVED القائمة أصلاً (project.
-  // dmp_approval_status === 'APPROVED' من قبل) لا تُعتبَر "تعييناً" جديداً
-  // يستحق هذا القيد.
-  if (updates.dmp_approval_status === 'APPROVED' && project.dmp_approval_status !== 'APPROVED') {
-    const { data: authz } = await supabaseAdmin
-      .from('user_authorizations')
-      .select('is_super_admin')
-      .eq('user_id', auth.userId)
-      .maybeSingle();
-    if (!authz?.is_super_admin) {
-      return NextResponse.json(
-        { error: 'اعتماد خطة إدارة الغبار (DMP) يتطلب مراجعة إدارية — لا يمكن للمالك اعتمادها ذاتياً' },
-        { status: 403 }
-      );
-    }
-  }
+  // قرار تراجَع عنه صراحة (طلب مستخدم — "يستطيع مالك المشروع تمرير DMP
+  // كـAPPROVED أثناء الإنشاء، رغم أن التعديل اللاحق يقصر الاعتماد على صلاحية
+  // is_super_admin؛ لا يوجد فعلياً في هذا النظام مفهوم دور 'مشرف' منفصل عن
+  // المالك، فهذا التمييز غير مبرَّر"): كان هذا المسار يمنع مالك المشروع من
+  // تغيير dmp_approval_status إلى 'APPROVED' إلا لو كان super_admin، بينما
+  // مسار الإنشاء (POST /api/projects) يقبل نفس القيمة من نفس المستخدم بلا
+  // أي تحقق إطلاقاً — تناقض مباشر بين مساري الإنشاء والتعديل لنفس الحقل.
+  // الآن دمج السلوك: PATCH يقبل dmp_approval_status بنفس حرية POST، بلا أي
+  // فحص صلاحية إضافي — يتطابق المساران تماماً.
 
   // ورديات العمل (project_shifts) جدول منفصل — لا تُمرَّر ضمن update على
   // جدول projects (راجع supabase-project-shifts-migration.sql). shifts
