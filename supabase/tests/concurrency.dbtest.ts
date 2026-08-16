@@ -539,12 +539,15 @@ describe('Outbox — نية تنبيه واحدة فقط لكل قرار (unique
     expect(decisionRow!.compliance_evaluation_id).toBe(complianceRow!.id);
   });
 
-  // نفس الميزة — الحالة الأدق: dvi/compliance لم يتغيّرا هذه الدورة
-  // (shouldSkipPersist في dustEvaluation.ts تخطّت إدراج صف جديد)، فلا
-  // v_dvi_evaluation_id/v_compliance_evaluation_id محليين — يجب أن تسقط
-  // الدالة لقراءة current_dust_decisions/current_dust_compliance_decisions.
-  // latest_evaluation_id (الصف الموجود مسبقاً فعلياً) بدل ترك العمودين null.
-  it('final_decisions.dvi_evaluation_id/compliance_evaluation_id يسقطان لـlatest_evaluation_id الحالي عند p_dvi_result/p_compliance_result=null (لم يتغيّرا هذه الدورة)', async () => {
+  // الحالة الأدق: p_dvi_result/p_compliance_result=null *و* p_dvi_raw_result/
+  // p_compliance_raw_result=null أيضاً (لا قراءة طازجة متوفرة إطلاقاً هذه
+  // الدورة لهذا النشاط — لا مجرد shouldSkipPersist، بل غياب البيانات ذاتها) —
+  // يجب أن تسقط الدالة لقراءة current_dust_decisions/current_dust_compliance_
+  // decisions.latest_evaluation_id (الصف الموجود مسبقاً فعلياً) بدل ترك
+  // العمودين null. منذ migration 202608160002 هذا المسار محجوز فقط لغياب
+  // البيانات الفعلي — راجع الاختبار التالي للحالة الشائعة (بيانات طازجة
+  // متوفرة لكن shouldSkipPersist تخطّت current_dust_decisions فقط).
+  it('final_decisions.dvi_evaluation_id/compliance_evaluation_id يسقطان لـlatest_evaluation_id الحالي عند غياب أي قراءة طازجة هذه الدورة', async () => {
     const projectId = await createTestProject();
     const groupId = `group-${randomUUID()}`;
     const activityId = await createTestActivity(projectId, groupId);
@@ -611,6 +614,108 @@ describe('Outbox — نية تنبيه واحدة فقط لكل قرار (unique
 
     expect(decisionRow!.dvi_evaluation_id).toBe(dviRow!.id);
     expect(decisionRow!.compliance_evaluation_id).toBe(complianceRow!.id);
+  });
+
+  // خطأ إعادة إنتاج مكتشَف ومُصلَح (مراجعة كود خبير — "روابط DVI والامتثال
+  // قد تشير إلى تقييم سابق عندما لا تتغير فئة القرار خلال خمس دقائق، رغم
+  // تغير القراءة والتفاصيل الفعلية"، migration 202608160002): الحالة
+  // الشائعة الفعلية — shouldSkipPersist في dustEvaluation.ts تخطّت تحديث
+  // current_dust_decisions (p_dvi_result/p_compliance_result=null) لأن
+  // فئة القرار لم تتغيّر، لكن قراءة طازجة فعلاً متوفرة هذه الدورة
+  // (p_dvi_raw_result/p_compliance_raw_result). يجب أن يُدرَج صف dust_
+  // evaluations/dust_compliance_evaluations طازج ويُربَط به final_decisions
+  // — لا الصف القديم من الدورة الأولى، رغم تطابق فئة القرار (ALLOW) في
+  // كلتا الدورتين.
+  it('final_decisions.dvi_evaluation_id/compliance_evaluation_id تُربَطان بصف طازج (لا القديم) حتى لو تخطّى shouldSkipPersist تحديث current_dust_decisions', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    // دورة أولى: تُدرج dust_evaluations/dust_compliance_evaluations أولية.
+    await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: baseDviResult(),
+      p_dvi_triggered_by: 'user_refresh',
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: { decisionCategory: 'ALLOW', triggeredRules: [], shortReasonAr: 'test', rulebookVersion: 'test' },
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: activityId,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: null,
+      p_final_evaluated_at: null,
+    });
+
+    const { data: staleDviRow } = await admin
+      .from('dust_evaluations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+    const { data: staleComplianceRow } = await admin
+      .from('dust_compliance_evaluations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .single();
+
+    // دورة ثانية: نفس محاكاة TS الفعلية — p_dvi_result/p_compliance_result
+    // null (shouldSkipPersist تخطّى CAS، فئة القرار لم تتغيّر)، لكن
+    // p_dvi_raw_result/p_compliance_raw_result يحملان قراءة طازجة مختلفة
+    // رقمياً (score/shortReason مختلفان) رغم نفس decisionCategory.
+    const freshDvi = { decisionCategory: 'ALLOW', triggeredRules: [], shortReason: 'fresh-reading', score: 42 };
+    const freshCompliance = { decisionCategory: 'ALLOW', triggeredRules: [], shortReasonAr: 'fresh-reading', rulebookVersion: 'test', score: 42 };
+    const { error } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: null,
+      p_compliance_rulebook_version: null,
+      p_compliance_triggered_by: null,
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecision('ALLOW'),
+      p_final_evaluated_at: new Date().toISOString(),
+      p_dvi_raw_result: freshDvi,
+      p_compliance_raw_result: freshCompliance,
+    });
+    expect(error).toBeNull();
+
+    const { data: decisionRow } = await admin
+      .from('final_decisions')
+      .select('dvi_evaluation_id, compliance_evaluation_id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    // لا يجوز أن يشير للصف القديم من الدورة الأولى.
+    expect(decisionRow!.dvi_evaluation_id).not.toBe(staleDviRow!.id);
+    expect(decisionRow!.compliance_evaluation_id).not.toBe(staleComplianceRow!.id);
+
+    const { data: freshDviRow } = await admin
+      .from('dust_evaluations')
+      .select('id, result')
+      .eq('id', decisionRow!.dvi_evaluation_id)
+      .single();
+    const { data: freshComplianceRow } = await admin
+      .from('dust_compliance_evaluations')
+      .select('id, result')
+      .eq('id', decisionRow!.compliance_evaluation_id)
+      .single();
+
+    expect((freshDviRow!.result as Record<string, unknown>).shortReason).toBe('fresh-reading');
+    expect((freshComplianceRow!.result as Record<string, unknown>).shortReasonAr).toBe('fresh-reading');
   });
 });
 

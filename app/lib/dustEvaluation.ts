@@ -2613,6 +2613,19 @@ export async function persistActivityDecisionsAtomic(
           // بلا معنى إن لم يُكتب final_decisions أصلاً هذه الدورة — نفس شرط
           // finalDecisionPayload المستخدَم لبقية حقول final_decisions أعلاه.
           p_rule_parameter_version_snapshot: finalDecisionPayload ? (ruleParameterVersionSnapshot ?? null) : null,
+
+          // خطأ إعادة إنتاج مكتشَف ومُصلَح (migration 202608160002 — "روابط
+          // DVI والامتثال قد تشير إلى تقييم سابق عندما لا تتغير فئة القرار
+          // خلال خمس دقائق"): بخلاف p_dvi_result/p_compliance_result أعلاه
+          // (قد يكونا null إن تخطّى shouldSkipPersist تحديث current_dust_
+          // decisions/current_dust_compliance_decisions)، القيمتان أدناه
+          // تُمرَّران دائماً — نفس worst/complianceEntry.result الطازجين
+          // المُستخدَمين فعلياً لبناء finalDecisionPayload أعلاه بالضبط —
+          // ليضمن RPC إدراج صف dust_evaluations/dust_compliance_evaluations
+          // طازج كلما final_decisions تُكتَب فعلياً هذه الدورة (v_skip_final
+          // داخل RPC)، بصرف النظر عن تقييد shouldSkipPersist المنفصل.
+          p_dvi_raw_result: worst ?? null,
+          p_compliance_raw_result: complianceEntry?.result ?? null,
         });
 
         if (error || !data?.[0]) {
