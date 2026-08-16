@@ -439,6 +439,19 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     // يبقى regulatoryFinding=COMPLIANT بينما operationalDecision=
     // HOLD_FOR_VERIFICATION في نفس النتيجة (تناقض مباشر بين حقلين).
     regulatoryFinding = 'NOT_DETERMINABLE';
+  } else if (compliance?.hasConfirmedRegulatoryViolation === true) {
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
+    // تأكيد PM10 (2-30 دقيقة) لا تنعكس في regulatoryFinding"): PM10-VIOLATION-
+    // STOP-006 (مخالفة مؤكَّدة موثَّقة، ALLOW_WITH_CONTROLS عمداً — الإيقاف
+    // الفعلي يبقى مشروطاً حصراً باكتمال 30 دقيقة، راجع pm10ThresholdRule)
+    // لا تصل complianceStopAffected/confirmedAffectedStop أعلاه إطلاقاً (فئتها
+    // ليست STOP_AFFECTED_ACTIVITY) — فكان النشاط يظهر COMPLIANT رغم مخالفة
+    // مؤكَّدة فعلياً، فقط لأنها لم تبلغ درجة الإيقاف بعد. الفصل الصحيح: هناك
+    // مخالفة (regulatoryFinding) حتى لو لم يتحقق شرط الإيقاف (operationalDecision)
+    // بعد — حقلان مستقلان، لا يجوز خلطهما. operationalDecision/mandatoryStop
+    // أعلاه غير متأثرين بهذا الفرع إطلاقاً (يبقيان كما حسبهما candidates.reduce
+    // تماماً)؛ فقط regulatoryFinding يتغيّر هنا.
+    regulatoryFinding = 'NON_COMPLIANT';
   } else {
     // compliance غائب أصلاً (مثال: PLANNING بلا سياق امتثال كامل) يُعامَل
     // كـCOMPLIANT بفشل آمن — لا يجوز الإبلاغ عن مخالفة بلا محرك امتثال

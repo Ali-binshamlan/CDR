@@ -387,6 +387,21 @@ export interface DustComplianceResult {
   // MANDATORY_STOP بمجرد التقييم التالي.
   pendingConfirmation: boolean;
 
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
+  // تأكيد PM10 (2-30 دقيقة) لا تنعكس في regulatoryFinding"): PM10-VIOLATION-
+  // STOP-006 (مخالفة مؤكَّدة موثَّقة، بلا إيقاف فوري — راجع pm10ThresholdRule
+  // في rulebook.ts) تصدر بشدة ALLOW_WITH_CONTROLS عمداً (لا STOP_AFFECTED_
+  // ACTIVITY)، لأن الإيقاف الفعلي يبقى مشروطاً حصراً باكتمال 30 دقيقة. لكن
+  // decisionCategory النهائي (أعلى شدة بين كل القواعد) قد يبقى ALLOW_WITH_
+  // CONTROLS بالكامل إن لم توجد أي مشكلة أخرى — فلا يعكس وحده وجود مخالفة
+  // PM10 مؤكَّدة فعلياً. هذا الحقل مستقل تماماً عن decisionCategory/
+  // mandatoryStop (لا يتأثر بأيهما ولا يؤثر عليهما): true فقط إن كانت
+  // PM10-VIOLATION-STOP-006 ضمن triggeredRules فعلياً، بصرف النظر عن كونها
+  // القاعدة الفائزة بأعلى شدة أم لا. final-decision-engine يقرأه ليضبط
+  // regulatoryFinding='NON_COMPLIANT' حتى لو operationalDecision لم يصل
+  // درجة إيقاف — فصل operationalDecision عن regulatoryFinding، كما يجب.
+  hasConfirmedRegulatoryViolation: boolean;
+
   // كود القاعدة الفعلية التي بنت القرار النهائي (decidingRule.code في
   // engine.ts) — مثال: 'GATE-WIND-ABOVE-25-004' أو 'MRQ-PM10-BLACK-PENDING-104'.
   // يُخزَّن في current_dust_compliance_decisions.deciding_rule_code ويُقرأ لاحقاً

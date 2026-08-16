@@ -123,6 +123,10 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
     mandatoryStop: false,
     canOverride: true,
     pendingConfirmation: false,
+    // PLANNING (توقّع طقس، لا قراءة حية) — لا rulebook.ts تُشغَّل هنا
+    // إطلاقاً (راجع تعليق evaluateDustCompliance للفرع المبكر)، فلا مخالفة
+    // مؤكَّدة ممكنة أصلاً.
+    hasConfirmedRegulatoryViolation: false,
     resumeHoldApplied: false,
     decidingRuleCode: null,
     decidingRuleMessageAr: null,
@@ -791,6 +795,17 @@ export function evaluateDustCompliance(
   const decidingRule = confirmedHit ?? topHits[0];
   const pendingConfirmation = topHits.length > 0 && topHits.every((hit) => isPendingRuleHit(hit));
 
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
+  // تأكيد PM10 لا تنعكس في regulatoryFinding"): PM10-VIOLATION-STOP-006
+  // (مخالفة مؤكَّدة موثَّقة، ALLOW_WITH_CONTROLS عمداً — لا إيقاف فوري) قد
+  // لا تكون القاعدة الفائزة بأعلى شدة إن وُجدت قاعدة أخف لا علاقة لها بها،
+  // لكنها قد تكون *أشد ما فُعِّل فعلياً* حين لا توجد أي مشكلة أخرى — عندها
+  // decisionCategory النهائي يصبح ALLOW_WITH_CONTROLS بالكامل، فلا ينعكس
+  // وجود المخالفة في أي حقل. مستقل تماماً عن topHits/decisionCategory —
+  // يفحص كل ruleHits (لا فقط الفائزة بأعلى شدة)، لأن هذا حقل "هل حدثت
+  // مخالفة تنظيمية مؤكَّدة إطلاقاً هذه الدورة"، لا "ما القرار الفائز".
+  const hasConfirmedRegulatoryViolation = ruleHits.some((hit) => hit.code === 'PM10-VIOLATION-STOP-006');
+
   // canOverride مشتقة الآن من overridable الفعلي لقاعدة(قواعد) القرار
   // الحاسمة (topHits)، لا من فئة decisionCategory العامة كما كانت سابقاً —
   // راجع تعليق overridable في types.ts للسبب الكامل. أي قاعدة غير قابلة
@@ -899,6 +914,7 @@ export function evaluateDustCompliance(
     mandatoryStop,
     canOverride,
     pendingConfirmation,
+    hasConfirmedRegulatoryViolation,
     resumeHoldApplied,
     decidingRuleCode: decidingRule?.code ?? null,
     decidingRuleMessageAr: decidingRule?.messageAr ?? null,

@@ -87,6 +87,7 @@ function baseCompliance(overrides: Partial<DustComplianceResult> = {}): DustComp
     canOverride: true,
     shortReasonAr: 'لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي',
     pendingConfirmation: false,
+    hasConfirmedRegulatoryViolation: false,
     triggeredRules: [],
     requiredActions: [],
     restartConditions: [],
@@ -285,6 +286,33 @@ describe('decideFinal — STOP_DUST_GENERATING_ACTIVITIES/STOP_VISIBILITY_DEPEND
     expect(r.level).toBe('BLACK');
     expect(r.pendingConfirmation).toBe(false);
     expect(r.regulatoryFinding).toBe('NON_COMPLIANT');
+  });
+
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
+  // تأكيد PM10 (2-30 دقيقة) لا تنعكس في regulatoryFinding"): مخالفة PM10
+  // مؤكَّدة (>340 لدقيقتين فأكثر، لم تكتمل 30 دقيقة الإيقاف بعد) تصل
+  // decisionCategory=ALLOW_WITH_CONTROLS من محرك الامتثال (عمداً — لا إيقاف
+  // فوري). قبل هذا الإصلاح: complianceStopAffected يفحص decisionCategory===
+  // 'STOP_AFFECTED_ACTIVITY' فقط، فلا يلتقط هذه الحالة إطلاقاً — كان
+  // regulatoryFinding يسقط للـelse الأخير (COMPLIANT) رغم مخالفة موثَّقة
+  // فعلياً. hasConfirmedRegulatoryViolation (compliance.ts) مستقل تماماً عن
+  // decisionCategory — يلتقط PM10-VIOLATION-STOP-006 بصرف النظر عن كونها
+  // القاعدة الفائزة بأعلى شدة أم لا.
+  it('مخالفة PM10 مؤكَّدة (ALLOW_WITH_CONTROLS، لم تكتمل 30 دقيقة الإيقاف) → regulatoryFinding=NON_COMPLIANT رغم عدم وجود إيقاف تشغيلي', () => {
+    const compliance = baseCompliance({
+      decisionCategory: 'ALLOW_WITH_CONTROLS',
+      decisionLabelAr: 'مسموح مع ضوابط تحكم إضافية',
+      shortReasonAr: 'مخالفة تنظيمية مؤكدة ومسجَّلة: تركيز PM10 (345 ميكروجرام/م³) تجاوز حد المخالفة (340 ميكروجرام/م³) لدقيقتين متتاليتين فأكثر',
+      hasConfirmedRegulatoryViolation: true,
+      pendingConfirmation: false,
+    });
+    const r = decideFinal(input({ dvi: baseDvi({ decisionCategory: 'ALLOW', mandatoryStop: false }), compliance }));
+    expect(r.regulatoryFinding).toBe('NON_COMPLIANT');
+    // operationalDecision/mandatoryStop غير متأثرين — لا إيقاف تشغيلي بحد
+    // ذاته، فقط تسجيل المخالفة التنظيمية.
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.operationalDecision).not.toBe('MANDATORY_STOP');
+    expect(r.operationalDecision).not.toBe('PROTECTIVE_STOP');
   });
 
   it('امتثال يحجب لكنه معلَّق فقط (pendingConfirmation=true) → PROTECTIVE_STOP لا MANDATORY_STOP، regulatoryFinding=PENDING_CONFIRMATION', () => {

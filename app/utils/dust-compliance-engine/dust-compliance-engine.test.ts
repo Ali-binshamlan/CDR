@@ -599,6 +599,9 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     // الحالة المعلَّقة يجب أن تُعلَّم صراحة حتى لا تظهر الواجهة "إيقاف
     // إلزامي نظامي" القطعية على قرار مؤقت قابل للتحول تلقائياً.
     expect(r.pendingConfirmation).toBe(true);
+    // لا مخالفة مؤكَّدة بعد (لم تصل PM10-VIOLATION-STOP-006 إطلاقاً) — لا
+    // يجوز أن يُبلَّغ عن مخالفة تنظيمية قبل اكتمال دليل الدقيقتين.
+    expect(r.hasConfirmedRegulatoryViolation).toBe(false);
   });
 
   // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي MANDATORY_STOP
@@ -612,6 +615,12 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
     expect(r.pendingConfirmation).toBe(false);
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
+    // تأكيد PM10 لا تنعكس في regulatoryFinding"): هذا الحقل هو ما يسمح
+    // لـfinal-decision-engine بضبط regulatoryFinding=NON_COMPLIANT هنا رغم
+    // أن decisionCategory=ALLOW_WITH_CONTROLS (لا STOP_AFFECTED_ACTIVITY) —
+    // مخالفة مؤكَّدة فعلياً، حتى لو لم تصل درجة الإيقاف بعد.
+    expect(r.hasConfirmedRegulatoryViolation).toBe(true);
   });
 
   it('PM10=345 استمر لدقيقة واحدة فقط (أقل من دقيقتين) → يبقى معلَّقاً، لا مخالفة مؤكدة بعد', () => {

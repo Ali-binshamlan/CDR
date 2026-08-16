@@ -76,6 +76,7 @@ function baseCompliance(
     canOverride: true,
     shortReasonAr: '',
     pendingConfirmation: false,
+    hasConfirmedRegulatoryViolation: false,
     decidingRuleCode: null,
     decidingRuleMessageAr: null,
     evaluatedAt: new Date().toISOString(),
