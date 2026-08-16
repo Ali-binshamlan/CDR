@@ -326,10 +326,17 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
       : pendingAffectedStop
         ? compliance!.shortReasonAr
         : compliance?.shortReasonAr || '',
+    // خطأ صياغة مكتشَف ومُصلَح (طلب صريح من المستخدم — رأى "إيقاف مؤقت
+    // (معلَّق)" على الشاشة رغم mandatory_stop=false فعلياً/AEI يبقى RESTRICT
+    // أحمر لا CLOSED أسود؛ لا إيقاف تشغيلي حقيقي في هذه المرحلة إطلاقاً —
+    // فقط نافذة تأكيد دقيقتين قبل تسجيل مخالفة توثيقية بلا إيقاف، تماماً
+    // كما يوضّح النص التوضيحي الموجود أصلاً بجانبها في الواجهة). كلمة
+    // "إيقاف" في هذه اللافتة كانت تُوهِم بإيقاف فعلي قبل أي تأكيد — لا يجوز
+    // أن تحمل هذه الحالة تحديداً كلمة "إيقاف" إطلاقاً.
     labelAr: confirmedAffectedStop
       ? 'إيقاف إلزامي نظامي'
       : pendingAffectedStop
-        ? 'إيقاف مؤقت (معلَّق) — بانتظار التأكيد'
+        ? 'تحذير مبدئي — تحت المراقبة (بانتظار تأكيد الاستمرار)'
         : compliance?.decisionLabelAr || '',
     level: complianceLevel,
   };

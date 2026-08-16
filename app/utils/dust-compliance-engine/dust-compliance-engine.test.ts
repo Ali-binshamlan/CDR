@@ -366,6 +366,30 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
       expect(r.pendingConfirmation).toBe(true);
     });
 
+    // خطأ صياغة مكتشَف ومُصلَح (طلب صريح من المستخدم — رأى "إيقاف أعمال
+    // الغبار: ..." على الشاشة رغم عدم وجود إيقاف تشغيلي فعلي في هذه
+    // المرحلة المعلَّقة تحديداً): ctx.dviShortReason (نص dust-engine الخام،
+    // يبدأ دائماً بـ"إيقاف..." في الإنتاج الفعلي عبر adapters.ts) كان يفوز
+    // دائماً بسبب || قبل النص المعلَّق الدقيق — فيظهر "إيقاف" مضلِّلاً رغم
+    // pendingConfirmation=true. الاختبار السابق لا يضبط dviShortReason (يبقى
+    // undefined افتراضياً)، فلا يكشف هذا الخطأ تحديداً — هذا الاختبار يحاكي
+    // البيانات الحقيقية (dviShortReason مملوءة، كما تصل فعلياً من dust-engine
+    // دائماً) ليثبت أن النص المعلَّق يفوز الآن، لا نص dust-engine الخام.
+    it('dviShortReason مملوءة (كما يصل فعلياً من dust-engine) + معلَّق → رسالة GATE-DVI-002 لا تحمل كلمة "إيقاف" إطلاقاً', () => {
+      const r = evaluateDustCompliance(
+        context({
+          dviMandatoryStop: true,
+          dviMandatoryStopIsPm10Only: true,
+          pm10UgM3: 396.5,
+          dviShortReason: 'إيقاف أعمال الغبار: مؤشر جودة الهواء حرج (PM10 = 396.5) أو نشاط الرياح عالي مع أعمال حفر وتربة.',
+        })
+      );
+      const gateHit = r.triggeredRules.find((h) => h.code === 'GATE-DVI-002');
+      expect(gateHit).toBeDefined();
+      expect(gateHit?.messageAr).not.toContain('إيقاف');
+      expect(gateHit?.messageAr).toContain('معلَّق');
+    });
+
     // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي MANDATORY_STOP
     // الفوري عند تأكيد مخالفة 340 الموثَّق سابقاً هنا): تأكيد مخالفة 340
     // (pm10ConfirmedViolation340=true) لم يعد ينتج إيقافاً فورياً من هذه
