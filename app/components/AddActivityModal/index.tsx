@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useHasMounted } from '@/app/lib/useHasMounted';
 import { useRouter } from 'next/navigation';
 import { apiClient } from '@/app/lib/apiClient';
+import type { AxiosError } from 'axios';
 import { toast } from 'react-hot-toast';
 import { X, Plus, CheckCircle2 } from 'lucide-react';
 
@@ -979,45 +980,19 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     const unitsError = validateRegulatoryUnits(item.fields, { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits });
     if (unitsError) { toast.error(unitsError); return; }
 
-    // طلب صريح من المستخدم (تطبيق تقرير المراجعة الثاني) — منع الحفظ ما لم
-    // تكن آخر نتيجة فحص لهذه الوحدة تحديداً (بمعرّف ثابت unit.id، لا رقم
-    // فهرس قابل للانزياح) = 'allowed' فعلاً، وتطابق إحداثيات الوحدة
-    // الحالية بالضبط. أي حالة أخرى (checking/error/blocked/غياب تام
-    // للنتيجة، أو نتيجة قديمة لموقع مختلف) تمنع الحفظ — الحارس الخادمي في
-    // route.ts يبقى الحكم النهائي دائماً، لكن هذا يمنع تسرّع المستخدم قبل
-    // وصول نتيجة الفحص الفعلية للموقع الحالي.
-    if (item.fields.regulatoryActivity === 'CRUSHER') {
-      for (let u = 0; u < item.crusherUnits.length; u++) {
-        const unit = item.crusherUnits[u];
-        const result = crusherPrecheckResults[`${item.id}:${unit.id}`];
-        if (
-          !result ||
-          result.status !== 'allowed' ||
-          result.lat !== Number(unit.crusherLat) ||
-          result.lng !== Number(unit.crusherLng)
-        ) {
-          toast.error(`الكسارة ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
-          return;
-        }
-      }
-    }
-
-    // نفس مبدأ الكسارة أعلاه بالضبط، لمحطة الخلط (BATCHING-DISTANCE-200).
-    if (item.fields.regulatoryActivity === 'BATCHING_PLANT') {
-      for (let u = 0; u < item.batchingUnits.length; u++) {
-        const unit = item.batchingUnits[u];
-        const result = batchingPrecheckResults[`${item.id}:${unit.id}`];
-        if (
-          !result ||
-          result.status !== 'allowed' ||
-          result.lat !== Number(unit.batchingLat) ||
-          result.lng !== Number(unit.batchingLng)
-        ) {
-          toast.error(`محطة الخلط ${u + 1}: ${result?.reasonsAr[0] ?? 'لا يمكن الحفظ حتى ينجح فحص الموقع الحالي.'}`);
-          return;
-        }
-      }
-    }
+    // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — الزر كان يمنع الحفظ حتى في
+    // حالة "تعذّر التحقق تقنياً" [شبكة/Overpass/خادم، status: 'error']، لا
+    // فقط "تحقّقنا فعلياً ووجدنا مستقبِلاً حساساً" [status: 'blocked'] —
+    // الرسالتان تصلان بنفس الصياغة المطمئنة الخاطئة أحياناً. طلب المستخدم
+    // الصريح: السماح بالحفظ في الحالتين معاً، حتى لو وُجد مستقبِل حقيقي
+    // قريب فعلاً. هذا آمن تماماً لأن الحارس الخادمي غير القابل للتجاوز في
+    // route.ts (validateDustUnitPlacement) يبقى الحكم النهائي بصرف النظر
+    // عمّا تفعله الواجهة — راجع تعليقه: "المصدر الوحيد للحقيقة الفعلي، لا
+    // يعتمد على أي نتيجة واجهة مخزَّنة". فحص crusher-precheck/batching-
+    // precheck أعلاه (DustStep.tsx، البانر الأحمر) يبقى تحذيراً استشارياً
+    // ظاهراً للمستخدم قبل الحفظ، لكنه لم يعد يمنع الضغط على "حفظ" — لو رفض
+    // الخادم فعلياً (422 PLACEMENT_BLOCKED)، رسالة الخطأ الخادمية الحقيقية
+    // تظهر عبر catch أدناه بدل منع محلي مبكر قد يكون خاطئاً تقنياً.
 
     setDustLoading(true);
     toast.loading('جاري التقييم...', { id: 'dvi-calc' });
@@ -1048,8 +1023,16 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
 
       try {
         await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status, dailyHours);
-      } catch {
-        throw new Error('مشكلة أثناء الحفظ.');
+      } catch (submitError) {
+        // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — السماح بالحفظ حتى لو
+        // رفض الفحص المحلي/الخادمي الموقع): بعد إزالة المنع المحلي المبكر
+        // أعلاه، رفض الخادم الحقيقي (422 PLACEMENT_BLOCKED بسببه الفعلي عبر
+        // reasonsAr، أو 503 PLACEMENT_NOT_VERIFIED عند تعذّر التحقق تقنياً)
+        // أصبح المصدر الوحيد لإعلام المستخدم — رسالة عامة "مشكلة أثناء
+        // الحفظ" كانت تُخفي السبب الحقيقي القادم من الخادم بلا داعٍ.
+        const err = submitError as AxiosError<{ error?: string; reasonsAr?: string[]; detail?: string }>;
+        const serverReason = err?.response?.data?.reasonsAr?.[0] || err?.response?.data?.detail;
+        throw new Error(serverReason || 'مشكلة أثناء الحفظ.');
       }
       toast.success('تم التقييم والحفظ بنجاح.', { id: 'dvi-calc' });
       finishIndicator('dust');
