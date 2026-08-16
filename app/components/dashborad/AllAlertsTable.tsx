@@ -39,12 +39,24 @@ interface AdminAlertRow {
   regulatoryActivity: string | null;
 }
 
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "رابط المشروع في جدول
+// تنبيهات المراقب يقوده إلى صفحة لا يملك صلاحيتها"): اسم المشروع كان
+// يُعرَض دائماً كرابط إلى /dashboard/Projects/[id] — صفحة مالك المشروع
+// حصراً (verifyProjectOwnership، لا فرع لـaccount_role='viewer' إطلاقاً).
+// الرابط يعمل لصفحة الأدمن فقط لأن verifyProjectOwnership تحتوي استثناءً
+// صريحاً لـis_super_admin يعامله كمالك أي مشروع — لا استثناء مماثل
+// للمراقب، فيصطدم دائماً بـ403 "لا تملك هذا المشروع". لا صفحة تفاصيل
+// مشروع مخصصة للمراقب موجودة في الكود لتوجيهه إليها بدلاً — القرار الصريح
+// من المستخدم: لا نريد وصول المراقب لتفاصيل المشروع إطلاقاً، فقط إزالة
+// الرابط (اسم المشروع نص عادي غير قابل للنقر) عند عرض هذا الجدول للمراقب.
+//
 // جدول قراءة فقط لكل التنبيهات عبر كل المشاريع — مستخدَم من صفحتي الأدمن
 // والمراقب معاً (كلتاهما تستهلك /api/admin/alerts المُوسَّع، راجع
-// app/api/admin/alerts/route.ts). لا props ولا أزرار إجراء — الشكل مطابق
-// تماماً للطرفين، الاختلاف الوحيد بينهما هو منطق التحقق من الصلاحية نفسه
-// (is_super_admin مقابل account_role='viewer')، المتروك لكل صفحة wrapper.
-export default function AllAlertsTable() {
+// app/api/admin/alerts/route.ts). لا أزرار إجراء — الشكل مطابق تماماً
+// للطرفين إلا لرابط المشروع (projectLinksEnabled)، والاختلاف الآخر بينهما
+// هو منطق التحقق من الصلاحية نفسه (is_super_admin مقابل account_role=
+// 'viewer')، المتروك لكل صفحة wrapper.
+export default function AllAlertsTable({ projectLinksEnabled = true }: { projectLinksEnabled?: boolean }) {
   const [alerts, setAlerts] = useState<AdminAlertRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
@@ -145,9 +157,13 @@ export default function AllAlertsTable() {
                     <tr key={a.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="py-3 px-5 text-slate-400">{idx + 1}</td>
                       <td className="py-3 px-5">
-                        <Link href={`/dashboard/Projects/${a.project_id}`} className="font-bold text-[#0176FB] hover:underline">
-                          {a.projectName || '—'}
-                        </Link>
+                        {projectLinksEnabled ? (
+                          <Link href={`/dashboard/Projects/${a.project_id}`} className="font-bold text-[#0176FB] hover:underline">
+                            {a.projectName || '—'}
+                          </Link>
+                        ) : (
+                          <span className="font-bold text-slate-700">{a.projectName || '—'}</span>
+                        )}
                       </td>
                       <td className="py-3 px-5 text-slate-600">{a.ownerUsername || a.ownerCompany || '—'}</td>
                       <td className="py-3 px-5 text-slate-600" dir="ltr">{a.ownerPhone || '—'}</td>

@@ -42,5 +42,8 @@ export default function ViewerAlertsPage() {
     );
   }
 
-  return <AllAlertsTable />;
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "رابط المشروع في جدول
+  // تنبيهات المراقب يقوده إلى صفحة لا يملك صلاحيتها"): لا صفحة تفاصيل
+  // مشروع للمراقب، ولا نريد بناء واحدة — راجع تعليق AllAlertsTable الكامل.
+  return <AllAlertsTable projectLinksEnabled={false} />;
 }
