@@ -116,7 +116,22 @@ function deriveEvidenceQuality(compliance: DustComplianceResult | null, mode: Fi
   const referenceReadingAt = devicePm10LastReadingAt !== undefined ? devicePm10LastReadingAt : deviceLastReadingAt;
   if (referenceReadingAt === null) return 'STALE'; // محطة متصلة، لا قراءة PM10 قط
   const ageMinutes = (nowMs - new Date(referenceReadingAt).getTime()) / 60000;
-  if (ageMinutes > DEVICE_READING_FRESHNESS_MINUTES) return 'STALE';
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "القراءة المستقبلية: محرك
+  // الامتثال يصفها FUTURE، لكن محرك القرار النهائي قد يمنحها OK بسبب عدم
+  // رفض العمر السالب"): dust-compliance-engine/adapters.ts يتحقق فعلياً من
+  // عمر سالب (pm10EvidenceState='FUTURE') لكن هذا التصنيف مقصور على PM10
+  // فقط ولا يصل أبداً لهذه الدالة (buildFinalDecisionInput يقرأ الطابع
+  // الزمني الخام من compliance.evidence مباشرة، لا حقل pm10EvidenceState).
+  // بلا هذا الفحص، referenceReadingAt المستقبلي (خلل ساعة جهاز) ينتج
+  // ageMinutes سالبة، وأي رقم سالب يحقق `> DEVICE_READING_FRESHNESS_MINUTES`
+  // بقيمة false تلقائياً، فيتخطى شرط STALE ويصل OK — أعلى ثقة ممكنة لقراءة
+  // فاسدة زمنياً. الحراسة هنا (لا في dust-compliance-engine) لأن هذه الدالة
+  // تعتمد على deviceLastReadingAt العام (كل قراءات الجهاز)، لا PM10 فقط —
+  // FUTURE في محرك الامتثال يغطي نطاقاً أضيق. STALE (لا UNAVAILABLE) لأن
+  // الجهاز مرتبط فعلاً وأرسل قراءة حقيقية، فقط بتوقيت غير موثوق — نفس
+  // معاملة قراءة قديمة جداً (كلاهما "أدلة غير كافية" بنفس الوزن تماماً، راجع
+  // evidenceUnavailable في final-decision-engine/engine.ts).
+  if (ageMinutes < 0 || ageMinutes > DEVICE_READING_FRESHNESS_MINUTES) return 'STALE';
 
   if (compliance.confidenceScore !== undefined && compliance.confidenceScore < CONFIDENCE_MIN_FOR_ALLOW) return 'PARTIAL';
 

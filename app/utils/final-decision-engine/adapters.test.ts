@@ -159,6 +159,39 @@ describe('buildFinalDecisionInput/deriveEvidenceQuality — لا قرار حي �
     expect(finalInput.evidenceQuality).toBe('STALE');
   });
 
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "القراءة المستقبلية: محرك
+  // الامتثال يصفها FUTURE، لكن محرك القرار النهائي قد يمنحها OK بسبب عدم
+  // رفض العمر السالب"): dust-compliance-engine/adapters.ts يتحقق من عمر
+  // سالب لتصنيف PM10 تحديداً (pm10EvidenceState='FUTURE')، لكن هذا التصنيف
+  // معزول تماماً ولا يصل لـderiveEvidenceQuality هنا — الأخيرة كانت تعيد
+  // اشتقاق العمر بشكل مستقل من نفس الطابع الزمني الخام بلا أي حراسة، فرقم
+  // سالب (قراءة بتوقيت مستقبلي، خلل ساعة جهاز) يحقق `ageMinutes >
+  // DEVICE_READING_FRESHNESS_MINUTES` بقيمة false تلقائياً، متجاوزاً شرط
+  // STALE بالكامل وواصلاً حتى OK — أعلى ثقة ممكنة لقراءة فاسدة زمنياً.
+  it('جهاز مرتبط بقراءة بتوقيت مستقبلي (خلل ساعة الجهاز — عمر سالب) → evidenceQuality=STALE، لا OK', () => {
+    const futureTime = new Date(Date.now() + 10 * 60000).toISOString(); // بعد 10 دقائق من الآن
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, deviceLastReadingAt: futureTime },
+    });
+    const finalInput = buildFinalDecisionInput('snap-1', baseDvi(), compliance, null, 'LIVE_OPERATIONAL');
+    expect(finalInput.evidenceQuality).toBe('STALE');
+    expect(finalInput.evidenceQuality).not.toBe('OK');
+  });
+
+  it('قراءة PM10 بتوقيت مستقبلي بالنسبة لـevaluatedAt نفسه (لا Date.now())، بينما deviceLastReadingAt حديثة → evidenceQuality=STALE (referenceReadingAt يفضّل devicePm10LastReadingAt)', () => {
+    const evaluatedAt = new Date('2026-01-01T12:00:00.000Z').toISOString();
+    const futurePm10Reading = new Date('2026-01-01T12:05:00.000Z').toISOString(); // بعد evaluatedAt بـ5 دقائق
+    const compliance = baseCompliance({
+      evidence: {
+        ...baseCompliance().evidence,
+        deviceLastReadingAt: evaluatedAt,
+        devicePm10LastReadingAt: futurePm10Reading,
+      },
+    });
+    const finalInput = buildFinalDecisionInput('snap-1', baseDvi(), compliance, null, 'LIVE_OPERATIONAL', evaluatedAt);
+    expect(finalInput.evidenceQuality).toBe('STALE');
+  });
+
   it('mandatoryStop فيزيائي حقيقي (DVI) يفوز حتى بلا جهاز مرتبط — خطر فيزيائي لا ينتظر قراءة جهاز', () => {
     const compliance = baseCompliance(); // بلا جهاز مرتبط
     const finalInput = buildFinalDecisionInput(
