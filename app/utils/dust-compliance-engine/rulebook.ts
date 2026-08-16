@@ -14,7 +14,7 @@ import type {
   DustRuleHit,
   DustWindBand,
 } from './types';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 import { getRuleParameters } from './ruleParameters';
 
 export const RULEBOOK_VERSION = ACTIVE_RULE_BUNDLE.id;
@@ -307,11 +307,13 @@ export function windGustSafetyRule(
 // التنظيمي (الجولة الثانية: الإيقاف يشترط استمرار التجاوز فوق 340 نفسه
 // حصراً، لا نطاق التحذير [250,340]). يبقى مستخدَماً هنا للعرض النصي فقط
 // بالرسالة (عدد الدقائق بالجملة) — قرار "معلَّقة 30 دقيقة" نفسه يُقرأ جاهزاً
-// من pm10Suspended250For30Min، لا يُشتق من هذا الثابت. للاختبار اليدوي
-// السريع، عطّل السطر الأول وفعّل الثاني، ثم أعده كما هو قبل أي استخدام
-// حقيقي — يؤثر فقط على النص المعروض هنا.
-const PM10_SUSPENSION_MINUTES = 30;
-// const PM10_SUSPENSION_MINUTES = 3; // ← اختبار سريع فقط
+// من pm10Suspended250For30Min، لا يُشتق من هذا الثابت.
+//
+// خطأ توثيقي مكتشَف ومُصلَح (مراجعة كود خارجي — "حزمة القواعد نفسها ما
+// زالت تحمل السياسة القديمة"): كان رقماً مستقلاً مكتوباً يدوياً هنا، بمعزل
+// عن ACTIVE_RULE_BUNDLE.pm10.regulatory.activityStopDurationMsInclusive —
+// القيمة الفعلية (30 دقيقة) لم تتغيّر، فقط أصبحت تُقرأ من الحزمة النشطة.
+const PM10_SUSPENSION_MINUTES = ACTIVE_RULE_BUNDLE.pm10.regulatory.activityStopDurationMsInclusive / 60_000;
 
 // حدود PM10 التنظيمية العامة — "الاستخراج التنظيمي من المرفق" القسم 6.
 // منفصلة تماماً عن بوابات DVI الفيزيائية (DVI-PM10-ACTION-003 وDVI-DUST-

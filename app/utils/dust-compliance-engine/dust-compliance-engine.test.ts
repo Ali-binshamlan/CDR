@@ -2585,10 +2585,14 @@ describe('محرك امتثال الغبار — الثقة ومنع القرا�
 });
 
 describe('محرك امتثال الغبار — عدم كسر بنية النتيجة', () => {
+  // خطأ توثيقي مكتشَف ومُصلَح (مراجعة كود خارجي — "حزمة القواعد نفسها ما
+  // زالت تحمل السياسة القديمة"): ACTIVE_RULE_BUNDLE أصبحت 2026.3 (تصحيح
+  // ربط حقول regulatory بالكود الحي — لا تغيير في القوانين نفسها، راجع
+  // تعليق RIYADH_DUST_2026_3 في riyadh-dust-2026.2.ts).
   it('rulebookVersion وengineType ثابتان في كل نتيجة', () => {
     const r = evaluateDustCompliance(context());
     expect(r.engineType).toBe('RIYADH_DUST_COMPLIANCE');
-    expect(r.rulebookVersion).toBe('RCRC-NCEC-RIYADH-DUST-2026.2');
+    expect(r.rulebookVersion).toBe('RCRC-NCEC-RIYADH-DUST-2026.3');
   });
 
   // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "ليش التايمر ينعاد إذا سويت تحديث

@@ -10,7 +10,7 @@ import type { ValueType, NameType } from 'recharts/types/component/DefaultToolti
 import { ArrowRight, Gauge, RefreshCw } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 import { supabase } from '@/app/lib/supabase';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 
 // نفس حدود PM10 التشغيلية في حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE) —
 // تُقرأ من الحزمة مباشرة (لا تُكرَّر كأرقام هنا) فقط لرسم خطوط مرجعية على

@@ -12,7 +12,7 @@ import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
 import { evaluateDustCompliance, buildComplianceContext, isRegulatoryWindGateActive, BATCHING_PM10_FILTER_MIN_PERCENT } from '@/app/utils/dust-compliance-engine';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust-2026.2';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 import { LIVE_FIELD_FRESHNESS_MS, DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
 import type { ReceptorWithinRadius } from '@/app/utils/dust-compliance-engine/geo';
@@ -564,9 +564,16 @@ export interface Pm10SustainedStatus {
   evidenceReadingIds: string[];
 }
 
-const PM10_SUSTAINED_VIOLATION_THRESHOLD = 340;
-const PM10_VIOLATION_CONFIRM_MINUTES = 2;
-const PM10_SUSPENSION_MINUTES = 30;
+// خطأ توثيقي مكتشَف ومُصلَح (مراجعة كود خارجي — "حزمة القواعد نفسها ما
+// زالت تحمل السياسة القديمة"): هذه الثوابت الثلاثة كانت أرقاماً مستقلة
+// مكتوبة يدوياً هنا، بمعزل تام عن ACTIVE_RULE_BUNDLE.pm10.regulatory رغم
+// وجود حقول مطابقة لها هناك (كانت 2026.2 تعرّفها لكن لا يقرأها أي كود حي
+// إطلاقاً) — القيم الفعلية لم تتغيّر (340/2 دقيقة/30 دقيقة تبقى كما هي
+// بالضبط)، فقط أصبحت تُقرأ من الحزمة النشطة بدل تكرارها هنا، فلا يعود
+// ممكناً أن تنحرف الحزمة (التوثيق الرسمي) عن الكود الفعلي مرة أخرى.
+const PM10_SUSTAINED_VIOLATION_THRESHOLD = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
+const PM10_VIOLATION_CONFIRM_MINUTES = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationDurationMsInclusive / 60_000;
+const PM10_SUSPENSION_MINUTES = ACTIVE_RULE_BUNDLE.pm10.regulatory.activityStopDurationMsInclusive / 60_000;
 // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "استمرارية الدليل نفسها غير
 // صحيحة؛ يمكن لعينتين متباعدتين أكثر من المسموح إثبات مخالفة"): كان هذا
 // الثابت رقماً مستقلاً (4 دقائق) مبنياً على افتراض دورة إرسال الجهاز (كل
