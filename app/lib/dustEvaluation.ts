@@ -2407,9 +2407,18 @@ export async function persistFinalDecisions(
 // النشاط لحالتها قبل الاستدعاء (لا "DVI محفوظ بلا FinalceDecision مقابل").
 export interface ActivityDecisionPersistResult {
   activityId: string;
+  // جديد (202608160004 — المشكلة 4: "React ما زالت تحسب DVI/AEI وتعرض
+  // الحفظ كتقييم رسمي"): يسمح للمستدعي (POST /evaluate) بمطابقة القرار
+  // الرسمي بنشاط محدد عبر activity_group_id، لا فقط activityId (صف
+  // project_dust_profiles) — الواجهة تحتاج التحقق من نشاطها تحديداً.
+  activityGroupId: string;
   dviPersisted: boolean;
   compliancePersisted: boolean;
   finalDecisionPersisted: boolean;
+  // معرّف صف final_decisions المُدرَج فعلياً هذه الدورة — موجود فقط إذا
+  // finalDecisionPersisted=true، وإلا null (لم يُصدَر قرار جديد هذه الدورة،
+  // أو تخطّته shouldSkipPersist/v_skip_final).
+  finalDecisionId: string | null;
   failed: boolean;
   // true فقط إذا كان الفشل تعارض CAS قابل لإعادة المحاولة (كود 40001 —
   // current_dust_decisions/current_dust_compliance_decisions تغيّرا منذ
@@ -2500,7 +2509,7 @@ export async function persistActivityDecisionsAtomic(
 
   const results = await Promise.all(
     (dustResults || []).map(async (r): Promise<ActivityDecisionPersistResult> => {
-      const base = { activityId: r.activityId, dviPersisted: false, compliancePersisted: false, finalDecisionPersisted: false, failed: false, conflict: false };
+      const base = { activityId: r.activityId, activityGroupId: r.activityGroupId, dviPersisted: false, compliancePersisted: false, finalDecisionPersisted: false, finalDecisionId: null, failed: false, conflict: false };
       try {
         // ------------------------------------------------------------
         // 1) DVI — نفس منطق shouldSkipPersist في persistDustEvaluations
@@ -2648,9 +2657,11 @@ export async function persistActivityDecisionsAtomic(
         const row = data[0];
         return {
           activityId: r.activityId,
+          activityGroupId: r.activityGroupId,
           dviPersisted: Boolean(row.dvi_persisted),
           compliancePersisted: Boolean(row.compliance_persisted),
           finalDecisionPersisted: Boolean(row.final_decision_persisted),
+          finalDecisionId: row.final_decision_id ?? null,
           failed: false,
           conflict: false,
         };

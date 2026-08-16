@@ -30,6 +30,16 @@ export interface EvaluateProjectResult {
   // جديد؛ لا تستحق نفس درجة الخطورة أو نفس معالجة الفشل الحقيقي في route.ts.
   conflictActivityIds?: string[];
   error?: string;
+  // جديد (202608160004 — المشكلة 4: "React ما زالت تحسب DVI/AEI وتعرض
+  // الحفظ كتقييم رسمي"): خريطة activity_group_id → final_decisions.id
+  // لكل نشاط صدر له قرار رسمي فعلياً هذه الدورة تحديداً (لا فقط عدد إجمالي
+  // persisted على مستوى المشروع كله) — تسمح للمستدعي (POST /evaluate)
+  // بالتحقق من صدور القرار الرسمي لنشاط محدد بدقة، لا نشاط آخر بالمصادفة.
+  // فقط الأنشطة التي persistActivityDecisionsAtomic أصدرت لها finalDecisionId
+  // فعلياً تظهر هنا (finalDecisionPersisted=true) — نشاط لم يتغيّر قراره
+  // (shouldSkipPersist/v_skip_final) لا يظهر، حتى لو كان قراره المخزَّن
+  // سابقاً لا يزال صالحاً.
+  finalDecisionIdsByActivityGroup?: Record<string, string>;
 }
 
 // خطأ مكتشَف ومُصلَح (القسم 10.3 من "دليل الإصلاح الجذري لمنظومة مرقاب" —
@@ -194,6 +204,17 @@ export async function evaluateProject(
     }
     const { evaluationRunId, dustResults, persistResults } = criticalSection;
 
+    // جديد (202608160004): يُبنى مرة واحدة هنا، يُرفَق على مساري الإرجاع
+    // معاً (فشل جزئي أدناه، ونجاح كامل لاحقاً) — نشاط واحد قد ينجح بينما
+    // آخر يفشل في نفس الدورة (فشل جزئي)، فلا يجوز حصر هذه الخريطة على
+    // مسار النجاح الكامل فقط.
+    const finalDecisionIdsByActivityGroup: Record<string, string> = {};
+    for (const r of persistResults) {
+      if (r.finalDecisionPersisted && r.finalDecisionId) {
+        finalDecisionIdsByActivityGroup[r.activityGroupId] = r.finalDecisionId;
+      }
+    }
+
     const allFailedActivityIds = persistResults.filter((r) => r.failed).map((r) => r.activityId);
 
     // خطأ تشغيلي مكتشَف — مراجعة كود خبير خارجي: "التنبيهات لا تُنشأ مباشرة
@@ -239,6 +260,7 @@ export async function evaluateProject(
           nonConflictFailedActivityIds.length > 0
             ? 'فشل حفظ سلسلة القرار كاملة لبعض الأنشطة'
             : 'تعارض CAS لبعض الأنشطة — أعد المحاولة',
+        finalDecisionIdsByActivityGroup,
       };
     }
 
@@ -256,7 +278,7 @@ export async function evaluateProject(
       activitiesEvaluated: dustResults.length,
       activitiesFailed: 0,
     });
-    return { success: true, persisted: dustResults.length };
+    return { success: true, persisted: dustResults.length, finalDecisionIdsByActivityGroup };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, persisted: 0, error: message };

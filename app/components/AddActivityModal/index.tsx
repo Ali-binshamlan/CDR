@@ -8,10 +8,12 @@ import type { AxiosError } from 'axios';
 import { toast } from 'react-hot-toast';
 import { X, Plus, CheckCircle2 } from 'lucide-react';
 
-import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
-import type { DustEngineInput, ActivityCategory } from '@/app/utils/dust-engine/types';
-
-import { evaluateAei } from '@/app/utils/aei-engine';
+// خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي،
+// المشكلة 4 P1: "React ما زالت تحسب DVI وAEI وتعرض الحفظ كتقييم رسمي"):
+// evaluateDustVisibilityWindow/evaluateAei كانا يُستوردان ويُشغَّلان هنا في
+// المتصفح أثناء الحفظ — أُزيلا بالكامل من مسار إنشاء النشاط (راجع تعليق
+// handleDustSubmit الكامل). React يجمع المدخلات الخام ويرسلها فقط.
+import type { ActivityCategory } from '@/app/utils/dust-engine/types';
 
 import { ActivityTypeStep } from './ActivityTypeStep';
 import { DustStep } from './DustStep';
@@ -657,8 +659,6 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     item: RegulatoryActivityItem,
     dailyStartTime: string,
     durationHours: number,
-    aeiScore: number,
-    aeiStatus: string,
     dailyHours: number
   ) => {
    const regulatoryFields = item.fields;
@@ -674,7 +674,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     // duration_hours الإجمالية (تبقى كما هي لأغراض إحصائية).
     daily_duration_hours: dailyHours,
     shift_id: item.shiftId,
-    has_earthworks: dustForm.hasEarthworks, internal_dirt_roads: dustForm.internalDirtRoads, heavy_equipment_movement: dustForm.heavyEquipmentMovement, loose_materials: dustForm.looseMaterials, large_exposed_area: dustForm.largeExposedArea, dry_surface: dustForm.drySurface, surface_wet: dustForm.surfaceWet, watering_available: dustForm.wateringAvailable, stockpiles_covered: dustForm.stockpilesCovered, speed_limit_applied: dustForm.speedLimitApplied, wheel_wash_available: dustForm.wheelWashAvailable, dust_screens_available: dustForm.dustScreensAvailable, field_monitoring_available: dustForm.fieldMonitoringAvailable, receptor_type: dustForm.receptorType, receptor_distance: dustForm.receptorDistance, receptor_is_downwind: dustForm.receptorIsDownwind, visible_dust_plume_reported: dustForm.visibleDustPlumeReported, open_concrete_pour: dustForm.openConcretePour, onsite_visibility_m: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsite_pm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsite_pm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25), aei_score: aeiScore, aei_status: aeiStatus,
+    has_earthworks: dustForm.hasEarthworks, internal_dirt_roads: dustForm.internalDirtRoads, heavy_equipment_movement: dustForm.heavyEquipmentMovement, loose_materials: dustForm.looseMaterials, large_exposed_area: dustForm.largeExposedArea, dry_surface: dustForm.drySurface, surface_wet: dustForm.surfaceWet, watering_available: dustForm.wateringAvailable, stockpiles_covered: dustForm.stockpilesCovered, speed_limit_applied: dustForm.speedLimitApplied, wheel_wash_available: dustForm.wheelWashAvailable, dust_screens_available: dustForm.dustScreensAvailable, field_monitoring_available: dustForm.fieldMonitoringAvailable, receptor_type: dustForm.receptorType, receptor_distance: dustForm.receptorDistance, receptor_is_downwind: dustForm.receptorIsDownwind, visible_dust_plume_reported: dustForm.visibleDustPlumeReported, open_concrete_pour: dustForm.openConcretePour, onsite_visibility_m: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsite_pm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsite_pm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
     // حقول محرك الامتثال التنظيمي (Riyadh Dust Compliance) — لا تؤثر على
     // حساب DVI أعلاه.
     regulatory_activity: regulatoryFields.regulatoryActivity,
@@ -829,17 +829,25 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // فتصبح كل وحدة نشاطاً مستقلاً تماماً بقراره الخاص، لا تعارض تزامن ممكن
   // بين وحدات مختلفة إطلاقاً (نشاط بوحدة واحدة فقط، الحالة الغالبة، لا يتأثر
   // بتاتاً — لا يزال يحمل نفس activity_group_id الأصلي).
+  // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي،
+  // المشكلة 4: "React ما زالت تحسب DVI وAEI وتعرض الحفظ كتقييم رسمي"):
+  // كانت تستقبل aeiScore/aeiStatus محسوبَين محلياً في المتصفح وترسلهما ضمن
+  // insert — الخادم (FORBIDDEN_DUST_PROFILE_FIELDS في dust-profiles/route.ts)
+  // يحذفهما دائماً (لا يثق بحساب عميلي)، فكانا بلا أي أثر فعلي سوى الإيهام.
+  // أُزيلا من التوقيع بالكامل — React يجمع المدخلات الخام ويرسلها فقط، لا
+  // يحسب أي قرار أو تصنيف. تُعيد الآن قائمة activity_group_id الفعلية
+  // لكل صف أُرسِل (وحدة واحدة أو أكثر) ليتحقق المستدعي لاحقاً من صدور
+  // قرار رسمي (final_decisions) لكل واحد منها تحديداً بعد استدعاء /evaluate.
   const submitRegulatoryEntry = async (
     item: RegulatoryActivityItem,
     dailyStartTime: string,
     durationHours: number,
-    aeiScore: number,
-    aeiStatus: string,
     dailyHours: number
-  ) => {
+  ): Promise<string[]> => {
     const fields = item.fields;
     const units = { batchingUnits: item.batchingUnits, idleSurfaceUnits: item.idleSurfaceUnits, crusherUnits: item.crusherUnits };
-    const baseInsert = buildDustBaseInsert(item, dailyStartTime, durationHours, aeiScore, aeiStatus, dailyHours);
+    const baseInsert = buildDustBaseInsert(item, dailyStartTime, durationHours, dailyHours);
+    const postedActivityGroupIds: string[] = [];
     // معرّف فرعي فريد لكل وحدة عند تعدد الوحدات — وحدة وحيدة (unitIndex=0
     // وطول القائمة=1) تحتفظ بـactivity_group_id الأصلي حرفياً، بلا أي تغيير
     // في سلوك الحالة الشائعة (نشاط بوحدة واحدة).
@@ -850,10 +858,11 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
       const totalUnits = units.batchingUnits.length;
       for (let i = 0; i < totalUnits; i++) {
         const unit = units.batchingUnits[i];
+        const groupId = unitGroupId(i, totalUnits);
         await apiClient.post('/dust-profiles', {
           insert: {
             ...baseInsert,
-            activity_group_id: unitGroupId(i, totalUnits),
+            activity_group_id: groupId,
             batching_lat: unit.batchingLat === '' ? null : Number(unit.batchingLat),
             batching_lng: unit.batchingLng === '' ? null : Number(unit.batchingLng),
             silos_sealed: unit.silosSealed,
@@ -863,29 +872,33 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
             dust_suppression_system_operational: unit.dustSuppressionSystemOperational,
           },
         });
+        if (groupId) postedActivityGroupIds.push(groupId);
       }
     } else if (fields.regulatoryActivity === 'IDLE_SURFACE') {
       const totalUnits = units.idleSurfaceUnits.length;
       for (let i = 0; i < totalUnits; i++) {
         const unit = units.idleSurfaceUnits[i];
+        const groupId = unitGroupId(i, totalUnits);
         await apiClient.post('/dust-profiles', {
           insert: {
             ...baseInsert,
-            activity_group_id: unitGroupId(i, totalUnits),
+            activity_group_id: groupId,
             idle_days: unit.idleDays === '' ? null : Number(unit.idleDays),
             idle_surface_stabilized: unit.idleSurfaceStabilized,
             idle_surface_cover_intact: unit.idleSurfaceCoverIntact,
           },
         });
+        if (groupId) postedActivityGroupIds.push(groupId);
       }
     } else if (fields.regulatoryActivity === 'CRUSHER') {
       const totalUnits = units.crusherUnits.length;
       for (let i = 0; i < totalUnits; i++) {
         const unit = units.crusherUnits[i];
+        const groupId = unitGroupId(i, totalUnits);
         await apiClient.post('/dust-profiles', {
           insert: {
             ...baseInsert,
-            activity_group_id: unitGroupId(i, totalUnits),
+            activity_group_id: groupId,
             crusher_lat: unit.crusherLat === '' ? null : Number(unit.crusherLat),
             crusher_lng: unit.crusherLng === '' ? null : Number(unit.crusherLng),
             crusher_distance_to_receptor_m: unit.crusherDistanceToReceptorM === '' ? null : Number(unit.crusherDistanceToReceptorM),
@@ -898,10 +911,13 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
             critical_schedule_applies: unit.criticalScheduleApplies,
           },
         });
+        if (groupId) postedActivityGroupIds.push(groupId);
       }
     } else {
       await apiClient.post('/dust-profiles', { insert: baseInsert });
+      postedActivityGroupIds.push(baseInsert.activity_group_id as string);
     }
+    return postedActivityGroupIds;
   };
 
   // موقع وتوقيت النشاط التنظيمي (RegulatoryActivityItem) — يُتحقَّق منهما
@@ -995,34 +1011,28 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     // تظهر عبر catch أدناه بدل منع محلي مبكر قد يكون خاطئاً تقنياً.
 
     setDustLoading(true);
-    toast.loading('جاري التقييم...', { id: 'dvi-calc' });
+    toast.loading('جارٍ الحفظ...', { id: 'dvi-calc' });
 
     try {
-      // تقييم DVI الحي يعتمد على توقّع طقس ساعي متاح لأيام قليلة قادمة فقط
-      // — لنشاط يمتد لأسابيع/أشهر، يُقيَّم اليوم الأول فقط (بساعاته
-      // اليومية) كممثل، والمدة الإجمالية المحفوظة (duration_hours) تبقى
-      // إجمالي كل الأيام كما هي.
+      // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود
+      // خارجي، المشكلة 4 P1: "React ما زالت تحسب DVI وAEI وتعرض الحفظ
+      // كتقييم رسمي"): كان يُستدعى evaluateDustVisibilityWindow/evaluateAei
+      // هنا في المتصفح، ونتيجتهما (aei.score/aei.status) تُرسَل ضمن insert
+      // — الخادم (FORBIDDEN_DUST_PROFILE_FIELDS في dust-profiles/route.ts)
+      // يحذفهما دائماً فوراً (لا يثق بحساب عميلي)، فكان أثرهما الوحيد
+      // إيهام المستخدم بـ"تم التقييم" رغم عدم صدور final_decisions رسمي
+      // بعد بالضرورة في نفس اللحظة — القاعدة المعمارية الصريحة: "React
+      // يجمع المدخلات ويرسلها ويعرض النتيجة. React لا يحسب القرار ولا
+      // امتثال PM10 ولا تصنيف المشروع." الآن: بيانات خام فقط تُرسَل، ثم
+      // يُستدعى مسار التقييم الخادمي الموجود أصلاً (POST /evaluate) بعد
+      // نجاح الحفظ، وتُعرَض إحدى رسالتين فقط بحسب وجود finalDecisionId
+      // حقيقي مخزَّن فعلاً لهذا النشاط تحديداً (لا افتراض من نجاح استدعاء
+      // evaluate وحده) — لا بطاقة قرار من ناتج عميل مؤقت في أي مكان هنا.
       const dailyHours = (toMin(daily.end) - toMin(daily.start)) / 60;
-      const engineInput: DustEngineInput = {
-        activityType: dustForm.activityType, latitude: item.lat as number, longitude: item.lng as number,
-        site: { hasEarthworks: dustForm.hasEarthworks, internalDirtRoads: dustForm.internalDirtRoads, heavyEquipmentMovement: dustForm.heavyEquipmentMovement, looseMaterials: dustForm.looseMaterials, largeExposedArea: dustForm.largeExposedArea, drySurface: dustForm.drySurface, surfaceWet: dustForm.surfaceWet, wateringAvailable: dustForm.wateringAvailable, stockpilesCovered: dustForm.stockpilesCovered, speedLimitApplied: dustForm.speedLimitApplied, wheelWashAvailable: dustForm.wheelWashAvailable, dustScreensAvailable: dustForm.dustScreensAvailable, fieldMonitoringAvailable: dustForm.fieldMonitoringAvailable, receptorType: dustForm.receptorType, receptorDistance: dustForm.receptorDistance, receptorIsDownwind: dustForm.receptorIsDownwind, visibleDustPlumeReported: dustForm.visibleDustPlumeReported, openConcretePour: dustForm.openConcretePour },
-        onsiteVisibilityM: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsitePm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsitePm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
-        // معاينة ما قبل الحفظ لا تجلب قراءة الجهاز فعلياً (لا نداء شبكة
-        // إضافي هنا) — hasDeviceLink يعكس اقتراح أقرب محطة المحسوب محلياً
-        // (findNearestActiveDeviceId)، فتظهر المعاينة بيانات فارغة بأمانة
-        // (بدل قراءة API خاطئة) حين يُتوقَّع ربط بمحطة، تماماً كما ستظهر
-        // البطاقة الفعلية بعد الحفظ (السيرفر يحسب الربط الملزم بنفس
-        // الخوارزمية — راجع resolveNearestActiveDeviceId في dust-profiles/route.ts).
-        hasDeviceLink: !!item.deviceId,
-      };
 
-      const windowStartIso = new Date(`${item.startDate}T${daily.start}:00`).toISOString();
-      const windowEval = await evaluateDustVisibilityWindow(engineInput, windowStartIso, dailyHours);
-      const result = windowEval.worst;
-      const aei = evaluateAei(result, dustForm.activityType);
-
+      let postedActivityGroupIds: string[];
       try {
-        await submitRegulatoryEntry(item, daily.start, durationHours, aei.score, aei.status, dailyHours);
+        postedActivityGroupIds = await submitRegulatoryEntry(item, daily.start, durationHours, dailyHours);
       } catch (submitError) {
         // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — السماح بالحفظ حتى لو
         // رفض الفحص المحلي/الخادمي الموقع): بعد إزالة المنع المحلي المبكر
@@ -1034,7 +1044,29 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
         const serverReason = err?.response?.data?.reasonsAr?.[0] || err?.response?.data?.detail;
         throw new Error(serverReason || 'مشكلة أثناء الحفظ.');
       }
-      toast.success('تم التقييم والحفظ بنجاح.', { id: 'dvi-calc' });
+
+      // النشاط الخام محفوظ فعلياً في هذه اللحظة — أي فشل بعد هذه النقطة
+      // (بما فيه فشل استدعاء evaluate نفسه) لا يجوز أن يُظهر خطأً للمستخدم
+      // يوهمه بأن الحفظ فشل؛ الحفظ نجح، فقط التقييم الرسمي قد يتأخر.
+      toast.loading('تم حفظ النشاط، والتقييم الرسمي قيد التنفيذ...', { id: 'dvi-calc' });
+
+      let finalDecisionIdsByActivityGroup: Record<string, string> = {};
+      try {
+        const { data } = await apiClient.post(`/projects/${project.id}/evaluate`);
+        finalDecisionIdsByActivityGroup = data?.finalDecisionIdsByActivityGroup ?? {};
+      } catch {
+        // فشل استدعاء evaluate (شبكة/تعارض CAS مؤقت/إلخ) لا يُسقط نجاح
+        // الحفظ نفسه — دورة scheduler-tick الدورية (كل ~دقيقتين) ستُصدر
+        // القرار الرسمي لاحقاً حتى لو فشل هذا الاستدعاء الفوري تحديداً.
+      }
+
+      const allDecided = postedActivityGroupIds.every((id) => !!finalDecisionIdsByActivityGroup[id]);
+      toast.success(
+        allDecided
+          ? 'تم حفظ النشاط وصدرت نتيجة القرار الرسمي.'
+          : 'تم حفظ النشاط، والتقييم الرسمي قيد التنفيذ.',
+        { id: 'dvi-calc' }
+      );
       finishIndicator('dust');
     } catch (error) { toast.error(error instanceof Error ? error.message : 'حدث خطأ', { id: 'dvi-calc' }); } finally { setDustLoading(false); }
   };

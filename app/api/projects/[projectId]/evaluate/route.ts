@@ -71,7 +71,14 @@ export async function POST(
       return NextResponse.json({ error: safeErrorResponse(new Error(result.error), 'project evaluate/persist failed') }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, persisted: result.persisted });
+    // finalDecisionIdsByActivityGroup (202608160004): يسمح للعميل بالتحقق
+    // من صدور قرار رسمي حقيقي لنشاط محدد بعد الحفظ، بدل الافتراض من مجرد
+    // نجاح هذا الاستدعاء — راجع المشكلة 4 (AddActivityModal/index.tsx).
+    return NextResponse.json({
+      success: true,
+      persisted: result.persisted,
+      finalDecisionIdsByActivityGroup: result.finalDecisionIdsByActivityGroup ?? {},
+    });
   } catch (error) {
     return NextResponse.json({ error: safeErrorResponse(error, 'project evaluate/persist failed') }, { status: 500 });
   }

@@ -149,3 +149,90 @@ describe('persistActivityDecisionsAtomic — p_dvi_raw_result/p_compliance_raw_r
     expect(capturedArgs!.p_compliance_raw_result).toBeNull();
   });
 });
+
+// خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي،
+// المشكلة 4 P1: "React ما زالت تحسب DVI وAEI وتعرض الحفظ كتقييم رسمي"):
+// AddActivityModal/index.tsx كان يعرض "تم التقييم والحفظ بنجاح" فوراً بلا
+// أي تحقق من صدور قرار رسمي حقيقي — الإصلاح يتطلب معرفة activityGroupId/
+// finalDecisionId الفعليين لكل نشاط على حدة من نتيجة persistActivityDecisionsAtomic
+// (migration 202608160004 — persist_activity_decision_atomic ترجع الآن
+// final_decision_id ضمن returns table)، لا فقط عدد إجمالي على مستوى
+// المشروع. هذا القسم يثبت أن الجانب TS يلتقط هذين الحقلين بشكل صحيح.
+describe('persistActivityDecisionsAtomic — activityGroupId/finalDecisionId في النتيجة المُعادة', () => {
+  it('final_decision_id من RPC يصل صحيحاً في نتيجة النشاط، مع activityGroupId الصحيح', async () => {
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+      }),
+      rpc: async (name: string) => {
+        if (name === 'persist_activity_decision_atomic') {
+          return {
+            data: [{
+              dvi_persisted: true,
+              compliance_persisted: true,
+              final_decision_persisted: true,
+              final_decision_id: 'decision-uuid-123',
+            }],
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      },
+    } as unknown as SupabaseClient;
+
+    const dustResults = [minimalDustResult({ activityGroupId: 'group-a-u1', activityId: 'activity-1' })];
+    const complianceResults = [minimalComplianceResult({ activityGroupId: 'group-a-u1', activityId: 'activity-1' })];
+
+    const results = await persistActivityDecisionsAtomic(mockSupabase, 'project-1', dustResults, complianceResults, 'user_refresh', 'user_refresh');
+
+    expect(results).toHaveLength(1);
+    expect(results[0].activityGroupId).toBe('group-a-u1');
+    expect(results[0].finalDecisionPersisted).toBe(true);
+    expect(results[0].finalDecisionId).toBe('decision-uuid-123');
+  });
+
+  it('final_decision_persisted=false (تخطّي shouldSkipPersist/v_skip_final) → finalDecisionId يبقى null، لا يُختلَق', async () => {
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+      }),
+      rpc: async (name: string) => {
+        if (name === 'persist_activity_decision_atomic') {
+          return {
+            data: [{ dvi_persisted: false, compliance_persisted: false, final_decision_persisted: false, final_decision_id: null }],
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      },
+    } as unknown as SupabaseClient;
+
+    const dustResults = [minimalDustResult()];
+    const results = await persistActivityDecisionsAtomic(mockSupabase, 'project-1', dustResults, [], 'user_refresh', 'user_refresh');
+
+    expect(results[0].finalDecisionPersisted).toBe(false);
+    expect(results[0].finalDecisionId).toBeNull();
+  });
+
+  it('فشل RPC (CAS conflict) → activityGroupId يبقى موجوداً في نتيجة الفشل (لمطابقة النشاط)، finalDecisionId=null', async () => {
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+      }),
+      rpc: async (name: string) => {
+        if (name === 'persist_activity_decision_atomic') {
+          return { data: null, error: { code: '40001', message: 'CAS conflict' } };
+        }
+        return { data: null, error: null };
+      },
+    } as unknown as SupabaseClient;
+
+    const dustResults = [minimalDustResult({ activityGroupId: 'group-b', activityId: 'activity-2' })];
+    const results = await persistActivityDecisionsAtomic(mockSupabase, 'project-1', dustResults, [], 'user_refresh', 'user_refresh');
+
+    expect(results[0].activityGroupId).toBe('group-b');
+    expect(results[0].failed).toBe(true);
+    expect(results[0].conflict).toBe(true);
+    expect(results[0].finalDecisionId).toBeNull();
+  });
+});
