@@ -37,6 +37,44 @@ alter table public.evidence_hash_ledger
 comment on column public.evidence_hash_ledger.coverage_started_at is
   'يُملأ فقط على صف __genesis__ (source_table)، بقيمة created_at ذلك الصف نفسه — نقطة بداية تغطية سلسلة التجزئة صراحة. أي دليل تاريخي (final_decisions/pm10_readings_history/إلخ) بتاريخ أقدم منها غير مُغطّى بهذه السلسلة إطلاقاً (وُجد قبل تركيب append_evidence_hash_link، migration 202608110008) — قرار مستخدم صريح بعدم backfill حتمي بأثر رجعي (راجع تعليق هذا الملف الكامل للمبرر). null لكل الصفوف الأخرى (غير __genesis__) عمداً — لا تكرار لنفس القيمة على كل صف.';
 
+-- خطأ حرج مكتشَف ومُصلَح (P0 — "مسار إنشاء قاعدة فارغة ما زال يفشل"):
+-- forbid_evidence_mutation() بصيغتها النشطة في هذه اللحظة الزمنية (من
+-- 202607290004، آخر تعريف قبل هذا الملف) تحتوي فقط استثناء dust_profile_id
+-- — لا تعرف عمود coverage_started_at إطلاقاً (لا يزال غير موجود حتى السطر
+-- أعلاه). UPDATE أدناه على evidence_hash_ledger كان يصطدم بالـtrigger
+-- المُركَّب في 202608110007 (نفس الدالة) فيُرفَض بخطأ "append-only" —
+-- الاستثناء المطلوب لم يكن يصل فعلياً إلا في 202608120015، أي بعد نقطة
+-- الفشل هذه بأربع migrations؛ أي بيئة تُبنى من الصفر (supabase db reset)
+-- كانت تتوقف هنا حتماً. الإصلاح: إعادة تعريف الدالة هنا مباشرة (نفس نمط
+-- نقل استثناء dust_profile_id بأثر رجعي إلى 202607290004) — بعد إضافة
+-- العمود، قبل الـUPDATE الذي يحتاجه. 202608120015 يبقى كما هو (يعيد نفس
+-- التعريف النهائي بلا تغيير فعلي، غير ضار — راجع تعليقه للسياق التاريخي).
+create or replace function public.forbid_evidence_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if TG_OP = 'UPDATE' and TG_TABLE_NAME in ('dust_evaluations', 'dust_compliance_evaluations') then
+    if NEW.dust_profile_id is null
+       and OLD.dust_profile_id is distinct from NEW.dust_profile_id
+       and to_jsonb(NEW) - 'dust_profile_id' = to_jsonb(OLD) - 'dust_profile_id'
+    then
+      return NEW;
+    end if;
+  end if;
+
+  if TG_OP = 'UPDATE' and TG_TABLE_NAME = 'evidence_hash_ledger' then
+    if OLD.coverage_started_at is distinct from NEW.coverage_started_at
+       and to_jsonb(NEW) - 'coverage_started_at' = to_jsonb(OLD) - 'coverage_started_at'
+    then
+      return NEW;
+    end if;
+  end if;
+
+  raise exception 'audit/evidence rows are append-only — % on % is not permitted', TG_OP, TG_TABLE_NAME;
+end;
+$$;
+
 update public.evidence_hash_ledger
 set coverage_started_at = created_at
 where source_table = '__genesis__'
