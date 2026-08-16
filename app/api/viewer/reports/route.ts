@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireViewer } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { toReportDecisionRow } from '@/app/lib/finalDecisionStatus';
+import { toReportDecisionRow, dedupeToLatestPerActivity } from '@/app/lib/finalDecisionStatus';
 
 // نسخة غير مقيّدة من app/api/dashboard/reports/route.ts — نفس الشكل تماماً
 // ({projects, decisions, alerts}, نفس fromDate/toDate)، لكن بلا فلترة
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
   const [decisionsRes, alertsRes] = await Promise.all([
     supabaseAdmin
       .from('final_decisions')
-      .select('id, project_id, operational_decision, mandatory_stop')
+      .select('id, project_id, activity_group_id, operational_decision, mandatory_stop, created_at')
       .in('project_id', projectIds)
       .gte('created_at', new Date(fromDate).toISOString())
       .lte('created_at', endOfDay.toISOString()),
@@ -52,9 +52,14 @@ export async function GET(request: NextRequest) {
   if (decisionsRes.error) return NextResponse.json({ error: safeErrorResponse(decisionsRes.error, 'viewer/reports decisions fetch failed') }, { status: 500 });
   if (alertsRes.error) return NextResponse.json({ error: safeErrorResponse(alertsRes.error, 'viewer/reports alerts fetch failed') }, { status: 500 });
 
+  // راجع نفس التعليق في app/api/dashboard/reports/route.ts —
+  // dedupeToLatestPerActivity تمنع تضخّم عدد "الأنشطة" بتكرار تقييم النشاط
+  // الواحد نفسه دورياً.
+  const latestPerActivity = dedupeToLatestPerActivity(decisionsRes.data || []);
+
   return NextResponse.json({
     projects: dbProjects || [],
-    decisions: (decisionsRes.data || []).map(toReportDecisionRow),
+    decisions: latestPerActivity.map(toReportDecisionRow),
     alerts: alertsRes.data || [],
   });
 }

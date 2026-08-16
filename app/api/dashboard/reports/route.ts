@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { toReportDecisionRow } from '@/app/lib/finalDecisionStatus';
+import { toReportDecisionRow, dedupeToLatestPerActivity } from '@/app/lib/finalDecisionStatus';
 
 // يستبدل fetchReportData المباشر في dashboard/reports/page.tsx
 export async function GET(request: NextRequest) {
@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
   const [decisionsRes, alertsRes] = await Promise.all([
     supabaseAdmin
       .from('final_decisions')
-      .select('id, project_id, operational_decision, mandatory_stop')
+      .select('id, project_id, activity_group_id, operational_decision, mandatory_stop, created_at')
       .in('project_id', projectIds)
       .gte('created_at', new Date(fromDate).toISOString())
       .lte('created_at', endOfDay.toISOString()),
@@ -55,9 +55,15 @@ export async function GET(request: NextRequest) {
   if (decisionsRes.error) return NextResponse.json({ error: safeErrorResponse(decisionsRes.error, 'dashboard/reports decisions fetch failed') }, { status: 500 });
   if (alertsRes.error) return NextResponse.json({ error: safeErrorResponse(alertsRes.error, 'dashboard/reports alerts fetch failed') }, { status: 500 });
 
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "التقارير تعد كل صف في
+  // final_decisions نشاطاً جديداً... المطلوب العد حسب النشاط الفريد أو آخر
+  // قرار لكل activity_group_id"): final_decisions append-only، صف جديد كل
+  // دورة تقييم — راجع تعليق dedupeToLatestPerActivity الكامل.
+  const latestPerActivity = dedupeToLatestPerActivity(decisionsRes.data || []);
+
   return NextResponse.json({
     projects: dbProjects || [],
-    decisions: (decisionsRes.data || []).map(toReportDecisionRow),
+    decisions: latestPerActivity.map(toReportDecisionRow),
     alerts: alertsRes.data || [],
   });
 }
