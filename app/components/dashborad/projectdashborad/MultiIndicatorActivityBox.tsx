@@ -264,8 +264,16 @@ export default function MultiIndicatorActivityBox({
 
   const handleDelete = async () => {
     if (decisionTargets.length === 0) return;
+    // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "عبارة «حذف النشاط
+    // نهائياً» غير صحيحة؛ النظام يؤرشفه ويحفظ أدلته"): DELETE /api/activities
+    // لا يحذف project_dust_profiles فعلياً — يؤرشفه فقط (archived_at/
+    // archived_by)، وكل أدلته (dust_evaluations، dust_compliance_evaluations،
+    // final_decisions) تبقى محفوظة تماماً لأغراض التدقيق (راجع تعليق
+    // route.ts الكامل). النص السابق ("حذف نهائياً... لن يظهر في أي تقارير
+    // أو سجلات قادمة") كان يصف حذفاً فعلياً غير موجود — نفس نمط الصياغة
+    // الدقيقة المستخدَم أصلاً في صفحة إعدادات المشروع (أرشفة المشروع).
     const confirmed = window.confirm(
-      'سيتم حذف هذا النشاط وكل مؤشراته نهائياً من النظام، ولن يظهر بعدها في أي تقارير أو سجلات قادمة. هل أنت متأكد؟'
+      'سيتم أرشفة هذا النشاط — سيختفي من قائمة الأنشطة الجارية، لكن كل أدلته وتقييماته وقراراته المرتبطة تبقى محفوظة لأغراض التدقيق. هل أنت متأكد؟'
     );
     if (!confirmed) return;
 
@@ -290,8 +298,8 @@ export default function MultiIndicatorActivityBox({
       // ثانية بالصفحة تعتمد على نفس البيانات المحذوفة تتحدث بدون Reload كامل
       router.refresh();
     } catch (error) {
-      console.error('خطأ أثناء حذف النشاط:', error);
-      alert('حدث خطأ أثناء حذف النشاط. راجع صلاحيات قاعدة البيانات (RLS) على جداول الأنشطة إن استمرت المشكلة.');
+      console.error('خطأ أثناء أرشفة النشاط:', error);
+      alert('حدث خطأ أثناء أرشفة النشاط. راجع صلاحيات قاعدة البيانات (RLS) على جداول الأنشطة إن استمرت المشكلة.');
     } finally {
       setIsDeleting(false);
     }
@@ -300,7 +308,7 @@ export default function MultiIndicatorActivityBox({
   if (isDeleted) {
     return (
       <div className="bg-slate-50 rounded-2xl border border-dashed border-slate-300 p-5 mb-6 text-center">
-        <p className="text-[13px] font-bold text-slate-500">تم حذف هذا النشاط.</p>
+        <p className="text-[13px] font-bold text-slate-500">تمت أرشفة هذا النشاط.</p>
       </div>
     );
   }
