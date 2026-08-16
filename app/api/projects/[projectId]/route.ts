@@ -118,9 +118,34 @@ interface RecentActivityItem {
   windowStartIso?: string;
   windowEndIso?: string;
   durationMinutes?: number;
+  // كل معرّفات activity_group_id الحقيقية المدموجة ضمن هذه البطاقة (راجع
+  // stripUnitSuffix أدناه) — تسمح للعميل بمطابقة dustResults الخاصة بكل
+  // وحدة فعلية دون الاعتماد على مطابقة نصية جزئية قابلة للالتباس.
+  unitGroupIds: string[];
 }
 
-function buildRecentActivities(
+// خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — تتبُّع لسؤال ربط الجهاز:
+// "الآن كل جهاز له قراءاته الخاصة، كيف أعطيهم قرار واحد؟"): وحدات النشاط
+// الواحد المتعدد (كسارتان/محطتا خلط) تُقسَّم إلى activity_group_id مستقلة
+// بصيغة `${base}-u${n}` (راجع unitGroupId في AddActivityModal/index.tsx) —
+// كل وحدة تُقيَّم بجهازها وقراءاتها المستقلة تماماً كما يجب (لا تغيير هنا).
+// لكن buildRecentActivities كانت تُنشئ بطاقة منفصلة لكل وحدة بلا أي تجميع،
+// فيرى المستخدم بطاقتين بنفس العنوان (مثال: "الكسارة" مرتين) بلا أي إشارة
+// إلى أنهما نفس النشاط التنظيمي الواحد، ولا "حالة موحّدة" تلخّص الأسوأ بينهما.
+// stripUnitSuffix تعيد المعرّف الأساس بإزالة لاحقة -uN فقط (نمط ثابت مطابق
+// تماماً لما ينتجه unitGroupId، لا أي نمط -u آخر قد يظهر عرضاً ضمن معرّف
+// حر أنشأه المستخدم) — تُستخدَم كمفتاح تجميع البطاقات بدل activity_group_id
+// الخام، فتُدمَج كل وحدات النشاط الواحد في بطاقة واحدة، مع بقاء كل وحدة
+// بقرارها التفصيلي الخاص ضمن summaries/decisionTargets (لا دمج بيانات، فقط
+// دمج عرض) — أسوأ حالة (riskWeight=4) بين أي وحدة تكفي لإظهار "إيقاف
+// إلزامي" على البطاقة الموحّدة (نفس منطق mandatoryStop الحالي دون تعديل).
+// exported للاختبار المباشر فقط (route.test.ts) — لا مستهلك إنتاجي آخر خارج هذا الملف.
+export function stripUnitSuffix(activityGroupId: string): string {
+  return activityGroupId.replace(/-u\d+$/, '');
+}
+
+// exported للاختبار المباشر فقط (route.test.ts) — لا مستهلك إنتاجي آخر خارج هذا الملف.
+export function buildRecentActivities(
   projectId: string,
   dustRows: DustActivityRow[],
   dustByGroup: Map<string, DustResultItem>,
@@ -141,6 +166,9 @@ function buildRecentActivities(
     windowStartIso?: string;
     windowEndIso?: string;
     durationMinutes?: number;
+    // معرّفات activity_group_id الحقيقية (غير المُقصَّرة) لكل وحدة دُمجت في
+    // هذه المجموعة — راجع تعليق stripUnitSuffix أعلاه.
+    unitGroupIds: string[];
   };
   type IndicatorSummaryLike = {
     kind: 'dust';
@@ -163,10 +191,17 @@ function buildRecentActivities(
     // حتى لا تختلط أنشطة غير مرتبطة ببعضها تحت نفس البطاقة
     const groupId: string = row.activity_group_id || `${kind}-${row.id}`;
 
-    let acc = groups.get(groupId);
+    // مفتاح تجميع البطاقة = المعرّف الأساس (بلا لاحقة -uN) — يدمج كل وحدات
+    // نشاط واحد متعدد في بطاقة واحدة (راجع تعليق stripUnitSuffix). كل
+    // استخدام آخر لـ groupId أدناه (بحث engineResult/storedDecision) يبقى
+    // بالمعرّف الحقيقي غير المُقصَّر عمداً، فكل وحدة تُقيَّم بقراراتها
+    // المستقلة تماماً كما هي — هذا تجميع عرض فقط، لا دمج بيانات.
+    const cardKey = stripUnitSuffix(groupId);
+
+    let acc = groups.get(cardKey);
     if (!acc) {
       acc = {
-        activityGroupId: groupId,
+        activityGroupId: cardKey,
         activityTitle: activityTitleFromRow(row),
         regulatoryTitles: [],
         kinds: [],
@@ -176,9 +211,12 @@ function buildRecentActivities(
         windowStartIso,
         windowEndIso,
         durationMinutes,
+        unitGroupIds: [],
       };
-      groups.set(groupId, acc);
+      groups.set(cardKey, acc);
     }
+
+    if (!acc.unitGroupIds.includes(groupId)) acc.unitGroupIds.push(groupId);
 
     if (!acc.kinds.includes(kind)) acc.kinds.push(kind);
 
@@ -287,6 +325,7 @@ function buildRecentActivities(
         windowStartIso: acc.windowStartIso,
         windowEndIso: acc.windowEndIso,
         durationMinutes: acc.durationMinutes,
+        unitGroupIds: acc.unitGroupIds,
       };
     });
 }

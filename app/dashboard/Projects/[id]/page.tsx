@@ -39,6 +39,12 @@ interface RecentActivityItem {
   windowStartIso?: string;
   windowEndIso?: string;
   durationMinutes?: number;
+  // معرّفات activity_group_id الحقيقية لكل وحدة دُمجت ضمن هذه البطاقة
+  // (نشاط متعدد الوحدات: كسارتان/محطتا خلط) — راجع stripUnitSuffix في
+  // route.ts. activityGroupId أعلاه أصبح المعرّف الأساس المُقصَّر (مفتاح
+  // العرض فقط)، فلا يجوز مطابقته مباشرة ضد dustResults[].activityGroupId
+  // (المعرّف الحقيقي غير المُقصَّر) — استخدم unitGroupIds.includes(...) بدلاً.
+  unitGroupIds: string[];
 }
 
 // عنصر مصفوفة dustResults المُعادة من GET — يطابق dustResultsGrouped في
@@ -392,7 +398,7 @@ export default function ProjectDetailsPage({
                       لذلك نُخفي لوحة القرار وشريط التوقيت داخل كل بطاقة فرعية. */}
                   {(() => {
                     const dust = dustResults.filter(
-                      (r) => r.activityGroupId === activity.activityGroupId
+                      (r) => activity.unitGroupIds.includes(r.activityGroupId)
                     );
 
                     if (dust.length === 0) {
