@@ -740,17 +740,30 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.pendingConfirmation).toBe(true);
   });
 
-  it('PM10=260 (≥250) استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012)، ليس معلَّقاً (تعليق مؤكَّد لا احترازي)', () => {
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — "الإيقاف الفعلي
+  // فقط عند استمرار التجاوز فوق 340 لمدة 30 دقيقة"): قراءة حالية داخل
+  // [250,340] (260) لم تعد تُفعِّل RCRC-PM10-30M-SUSPENSION-012 حتى لو
+  // وصل pm10SustainedMinutesAbove250=30 (سيناريو غير واقعي الآن أصلاً —
+  // computeSustainedPm10Status لن ينتج هذه القيمة لقراءة حالية ≤340) —
+  // pm10ThresholdRule نفسها تشترط الآن pm10UgM3 > 340 صراحة لتفعيل القاعدة.
+  it('PM10=260 (داخل [250,340]) حتى مع pm10SustainedMinutesAbove250=30 → لا تعليق (القراءة الحالية لا تتجاوز 340)، تحذير عادي فقط', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 260, pm10SustainedMinutesAbove250: 30 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+  });
+
+  it('PM10=345 (>340) استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012)، ليس معلَّقاً (تعليق مؤكَّد لا احترازي)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10ConfirmedViolation340: true, pm10SustainedMinutesAbove250: 30 }));
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
     expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(true);
     expect(r.pendingConfirmation).toBe(false);
   });
 
-  it('PM10=260 (≥250) استمر 20 دقيقة فقط (أقل من 30) → لا تعليق، تحذير عادي فقط', () => {
-    const r = evaluateDustCompliance(context({ pm10UgM3: 260, pm10SustainedMinutesAbove250: 20 }));
+  it('PM10=345 (>340) استمر 20 دقيقة فقط (أقل من 30) → لا تعليق، مخالفة مؤكَّدة موثَّقة فقط', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10ConfirmedViolation340: true, pm10SustainedMinutesAbove250: 20 }));
     expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(false);
-    expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
   });
 
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد إلى 3 مستويات فقط، لا
@@ -783,8 +796,17 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  it('PM10=250 استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012) — القيمة الحدّية بالضبط يجب أن تُفعِّل التعليق', () => {
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم): القيمة الحدّية 250
+  // (حد التحذير الأدنى بالضبط) لم تعد تُفعِّل التعليق حتى مع 30 دقيقة —
+  // يلزم تجاوز 340 فعلياً، لا مجرد بلوغ 250.
+  it('PM10=250 (الحد الأدنى لنطاق التحذير بالضبط) استمر 30 دقيقة متواصلة → لا تعليق (القراءة الحالية لا تتجاوز 340)', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 250, pm10SustainedMinutesAbove250: 30 }));
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(false);
+  });
+
+  it('PM10=341 (تجاوز فعلي أدنى فوق 340 بالضبط) استمر 30 دقيقة متواصلة → تعليق النشاط (RCRC-PM10-30M-SUSPENSION-012)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 341, pm10ConfirmedViolation340: true, pm10SustainedMinutesAbove250: 30 }));
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
     expect(r.triggeredRules.some((h) => h.code === 'RCRC-PM10-30M-SUSPENSION-012')).toBe(true);
   });
@@ -1007,10 +1029,15 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
   });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=260 مستمرة 30 دقيقة → تعليق النشاط كأي نشاط آخر (لا إعفاء)', () => {
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم): تعليق الـ30 دقيقة
+  // أصبح مقصوراً على استمرار فعلي فوق 340 — قراءة 260 (داخل [250,340])
+  // حتى مع pm10Suspended250For30Min=true لا تُفعِّل RCRC-PM10-30M-SUSPENSION-012
+  // بعد الآن (pm10ThresholdRule تشترط pm10UgM3>340 صراحة).
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=345 (>340) مستمرة 30 دقيقة → تعليق النشاط كأي نشاط آخر (لا إعفاء)', () => {
     const r = evaluateDustCompliance(
       context({
-        pm10UgM3: 260,
+        pm10UgM3: 345,
+        pm10ConfirmedViolation340: true,
         pm10SustainedMinutesAbove250: 30,
         pm10Suspended250For30Min: true,
         activity: exemptBatchingActivity(),
