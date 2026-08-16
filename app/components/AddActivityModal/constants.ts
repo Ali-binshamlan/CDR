@@ -55,6 +55,15 @@ export const BATCHING_UNIT_DEFAULTS = {
   id: '' as string,
   batchingLat: '' as string | number,
   batchingLng: '' as string | number,
+  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لو كانت وحدة في الشرق
+  // وأخرى في الغرب، هل كل وحدة سترتبط بجهازها؟"): كان موقع الجهاز يُحسَب
+  // فقط لموقع النشاط العام (item.deviceId، يتبع الوحدة الأولى حصراً)، فكل
+  // وحدات محطة الخلط الأخرى كانت تُعرَض (وقبل إصلاح route.ts، تُحفَظ فعلياً)
+  // مرتبطة بجهاز الوحدة الأولى بصرف النظر عن موقعها الحقيقي الخاص. deviceId
+  // هنا للعرض التوضيحي فقط (نفس مبدأ item.deviceId في index.tsx) — الحساب
+  // الملزم الفعلي عند الحفظ يتم خادمياً في route.ts من batching_lat/lng
+  // الفعليين لهذه الوحدة تحديداً، لا من هذا الحقل.
+  deviceId: null as string | null,
   silosSealed: true as boolean | null,
   pm10FilterEfficiencyPercent: '' as string | number,
   leakDetected: false as boolean | null,
@@ -71,6 +80,8 @@ export const CRUSHER_UNIT_DEFAULTS = {
   id: '' as string,
   crusherLat: '' as string | number,
   crusherLng: '' as string | number,
+  // راجع تعليق deviceId في BATCHING_UNIT_DEFAULTS أعلاه — نفس المبدأ بالضبط.
+  deviceId: null as string | null,
   crusherDistanceToReceptorM: '' as string | number,
   crusherUnitsFullyCovered: true as boolean | null,
   loadingPointsHaveSpraySystems: true as boolean | null,

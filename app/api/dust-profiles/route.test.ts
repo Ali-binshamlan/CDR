@@ -235,6 +235,86 @@ describe('POST /api/dust-profiles', () => {
     expect(lastDustProfileInsert?.device_id).toBe('device-near');
   });
 
+  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لو كانت وحدة في الشرق
+  // وأخرى في الغرب، هل كل وحدة سترتبط بجهازها؟"): كان device_id يُحسَب دائماً
+  // من activity_lat/activity_lng — الحقل المشترك على مستوى النشاط كله الذي
+  // يتبع موقع الوحدة الأولى فقط في الواجهة (AddActivityModal/index.tsx). لنشاط
+  // متعدد الوحدات (كسارتان/محطتا خلط متباعدتان جغرافياً)، كل صف وحدة كان
+  // يُربَط بنفس جهاز الوحدة الأولى بصرف النظر عن موقعه الفعلي الخاص —
+  // اختبارات هذه المجموعة تثبت أن crusher_lat/crusher_lng وbatching_lat/
+  // batching_lng (إحداثيات الوحدة الفعلية) تُفضَّل الآن على activity_lat/lng
+  // المشترك عند حل الجهاز، لا فقط عند التحقق من صحة الموقع (placement).
+  describe('حل device_id للوحدات متعددة المواقع (كسارة/محطة خلط) — يعتمد على إحداثيات الوحدة الفعلية لا موقع النشاط المشترك', () => {
+    it('كسارة: crusher_lat/lng (شرق) تختلف عن activity_lat/lng (غرب، موقع الوحدة الأولى) → device_id يُحسَب من crusher_lat/lng', async () => {
+      tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
+      tableResults.project_devices = {
+        data: [
+          { id: 'device-east', lat: 24.71, lng: 46.70, is_active: true },
+          { id: 'device-west', lat: 24.71, lng: 46.50, is_active: true },
+        ],
+        error: null,
+      };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(
+          baseInsert({
+            // موقع النشاط المشترك (يتبع الوحدة الأولى في الواجهة) — غرب،
+            // قريب من device-west.
+            activity_lat: 24.71,
+            activity_lng: 46.50,
+            // هذه الوحدة تحديداً (كسارة ثانية مثلاً) في الشرق فعلياً —
+            // قريبة من device-east.
+            crusher_lat: 24.71,
+            crusher_lng: 46.70,
+          })
+        ) as never
+      );
+      expect(res.status).toBe(200);
+      // يجب أن يُختار device-east (الأقرب لموقع الوحدة الفعلي)، لا
+      // device-west (الأقرب لموقع النشاط المشترك/الوحدة الأولى).
+      expect(lastDustProfileInsert?.device_id).toBe('device-east');
+    });
+
+    it('محطة خلط: batching_lat/lng (شرق) تختلف عن activity_lat/lng (غرب) → device_id يُحسَب من batching_lat/lng', async () => {
+      tableResults.project_devices = {
+        data: [
+          { id: 'device-east', lat: 24.71, lng: 46.70, is_active: true },
+          { id: 'device-west', lat: 24.71, lng: 46.50, is_active: true },
+        ],
+        error: null,
+      };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(
+          baseInsert({
+            regulatory_activity: 'BATCHING_PLANT',
+            activity_type: 'CONCRETE_POURING',
+            activity_lat: 24.71,
+            activity_lng: 46.50,
+            batching_lat: 24.71,
+            batching_lng: 46.70,
+          })
+        ) as never
+      );
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert?.device_id).toBe('device-east');
+    });
+
+    it('كسارة بلا crusher_lat/lng (غير مُرسَلة) → يرجع للـfallback activity_lat/lng كما كان دائماً', async () => {
+      tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
+      tableResults.project_devices = {
+        data: [{ id: 'device-near', lat: 24.7, lng: 46.6, is_active: true }],
+        error: null,
+      };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
+      );
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert?.device_id).toBe('device-near');
+    });
+  });
+
   // طلب صريح من المستخدم — ثغرة مكتشفة: crusher-precheck/batching-precheck
   // بالواجهة تحققان تجربة مستخدم فقط (debounce 600ms + زمن شبكة)، وHard
   // Block هناك يقرأ فقط آخر نتيجة *وصلت فعلاً* — الضغط على حفظ بسرعة كافية

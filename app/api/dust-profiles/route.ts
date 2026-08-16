@@ -287,22 +287,28 @@ export async function POST(request: NextRequest) {
   // قابلاً للتجاوز فعلياً بمجرد السرعة، لا فقط بتعطيل الجافاسكريبت. نفس
   // منطق crusher-precheck/batching-precheck بالضبط يُعاد تطبيقه هنا —
   // المصدر الوحيد للحقيقة الفعلي، لا يعتمد على أي نتيجة واجهة مخزَّنة.
-  if (insert.regulatory_activity === 'CRUSHER' || insert.regulatory_activity === 'BATCHING_PLANT') {
-    const lat = typeof insert.activity_lat === 'number' ? insert.activity_lat : null;
-    const lng = typeof insert.activity_lng === 'number' ? insert.activity_lng : null;
-    // إحداثيات الوحدة الفعلية (crusher_lat/batching_lat) تُفضَّل عند توفرها
-    // — نفس أولوية computeUnitReceptors (dustEvaluation.ts)؛ activity_lat/lng
-    // يبقيان fallback (الحقل المشترك لكل الأنشطة) إن غابت الإحداثيات
-    // المتخصصة (مثال: أول إدراج قبل تحديد موقع الوحدة على الخريطة).
-    const unitLat =
-      insert.regulatory_activity === 'CRUSHER'
-        ? (typeof insert.crusher_lat === 'number' ? insert.crusher_lat : lat)
-        : (typeof insert.batching_lat === 'number' ? insert.batching_lat : lat);
-    const unitLng =
-      insert.regulatory_activity === 'CRUSHER'
-        ? (typeof insert.crusher_lng === 'number' ? insert.crusher_lng : lng)
-        : (typeof insert.batching_lng === 'number' ? insert.batching_lng : lng);
+  // إحداثيات الوحدة الفعلية (crusher_lat/batching_lat) تُفضَّل عند توفرها —
+  // نفس أولوية computeUnitReceptors (dustEvaluation.ts)؛ activity_lat/lng
+  // يبقيان fallback (الحقل المشترك على مستوى النشاط كله، لا الوحدة) إن
+  // غابت الإحداثيات المتخصصة (مثال: أول إدراج قبل تحديد موقع الوحدة على
+  // الخريطة). خارج نطاق if التحقق أدناه عمداً — تُستخدَم أيضاً لحل الجهاز
+  // (resolveNearestActiveDeviceId) تحت، لا فقط للتحقق من الموقع.
+  const activityLat = typeof insert.activity_lat === 'number' ? insert.activity_lat : null;
+  const activityLng = typeof insert.activity_lng === 'number' ? insert.activity_lng : null;
+  const unitLat =
+    insert.regulatory_activity === 'CRUSHER'
+      ? (typeof insert.crusher_lat === 'number' ? insert.crusher_lat : activityLat)
+      : insert.regulatory_activity === 'BATCHING_PLANT'
+        ? (typeof insert.batching_lat === 'number' ? insert.batching_lat : activityLat)
+        : activityLat;
+  const unitLng =
+    insert.regulatory_activity === 'CRUSHER'
+      ? (typeof insert.crusher_lng === 'number' ? insert.crusher_lng : activityLng)
+      : insert.regulatory_activity === 'BATCHING_PLANT'
+        ? (typeof insert.batching_lng === 'number' ? insert.batching_lng : activityLng)
+        : activityLng;
 
+  if (insert.regulatory_activity === 'CRUSHER' || insert.regulatory_activity === 'BATCHING_PLANT') {
     if (typeof unitLat === 'number' && typeof unitLng === 'number') {
       const placement = await validateDustUnitPlacement({
         projectId: insert.project_id as string,
@@ -328,12 +334,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // الربط بمحطة الرصد تلقائي بالكامل (أقرب جهاز نشط لموقع النشاط) — لا
-  // اختيار من العميل (device_id محذوف أعلاه من FORBIDDEN_DUST_PROFILE_FIELDS).
+  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لو كانت وحدة في الشرق
+  // وأخرى في الغرب، هل كل وحدة سترتبط بجهازها؟"): كان هذا الاستدعاء يحل
+  // أقرب جهاز من activity_lat/activity_lng دائماً — الحقل المشترك على
+  // مستوى النشاط كله الذي يتبع موقع الوحدة الأولى فقط (راجع
+  // syncItemLocationFromUnit في AddActivityModal/index.tsx). لنشاط متعدد
+  // الوحدات (كسارتان/خلاطتان متباعدتان جغرافياً)، كل صف وحدة كان يُربَط
+  // بنفس جهاز الوحدة الأولى بصرف النظر عن موقعه الفعلي الخاص — تقييم DVI
+  // لوحدة غربية كان يستخدم قراءات جهاز شرقي بصمت تام، بلا أي تحذير. الآن
+  // يُستخدَم unitLat/unitLng (الإحداثيات الخاصة بهذه الوحدة تحديداً،
+  // محسوبة أعلاه بنفس أولوية التحقق من الموقع) بدل activity_lat/lng
+  // المشترك — كل وحدة تُربَط بأقرب جهاز فعلي لموقعها الحقيقي هي، لا موقع
+  // وحدة أخرى.
   insert.device_id = await resolveNearestActiveDeviceId(
     insert.project_id as string,
-    insert.activity_lat as number | null | undefined,
-    insert.activity_lng as number | null | undefined
+    unitLat,
+    unitLng
   );
 
   // لا كتابة على activity_groups أو project_dust_profiles قبل هذه النقطة —

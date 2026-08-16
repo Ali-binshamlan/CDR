@@ -573,6 +573,34 @@ export function DustStep({
                                   </div>
                                 );
                               })()}
+                              {/* خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لو كانت وحدة
+                                  في الشرق وأخرى في الغرب، هل كل وحدة سترتبط بجهازها؟"): كانت
+                                  محطة الرصد تُعرَض مرة واحدة فقط على مستوى النشاط كله (تتبع موقع
+                                  الوحدة الأولى)، فوحدات أخرى متباعدة جغرافياً كانت تُعرَض (وقبل
+                                  إصلاح route.ts، تُحفَظ فعلياً) مرتبطة بجهاز الوحدة الأولى بصرف
+                                  النظر عن موقعها الحقيقي. الآن كل وحدة تعرض جهازها الخاص المحسوب
+                                  من موقعها هي تحديداً (unit.deviceId، راجع updateBatchingUnit في
+                                  index.tsx) — نفس مبدأ العرض التوضيحي أعلى النشاط، لكن لكل وحدة. */}
+                              {projectDevices.length > 0 && (() => {
+                                const linkedDevice = projectDevices.find((d) => d.id === unit.deviceId);
+                                const unitLat = typeof unit.batchingLat === 'number' ? unit.batchingLat : null;
+                                const unitLng = typeof unit.batchingLng === 'number' ? unit.batchingLng : null;
+                                const distanceLabel =
+                                  linkedDevice &&
+                                  unitLat !== null &&
+                                  unitLng !== null &&
+                                  typeof linkedDevice.lat === 'number' &&
+                                  typeof linkedDevice.lng === 'number'
+                                    ? ` — ${Math.round(haversineDistanceM({ lat: unitLat, lng: unitLng }, { lat: linkedDevice.lat, lng: linkedDevice.lng }))} م`
+                                    : '';
+                                return (
+                                  <p className={`${getInputClass(false)} !bg-slate-50 text-slate-600 text-xs`}>
+                                    {linkedDevice
+                                      ? `محطة الرصد: ${linkedDevice.name}${distanceLabel} (أقرب محطة نشطة لهذه الوحدة)`
+                                      : 'محطة الرصد: لا توجد محطة نشطة قريبة — ستعتمد هذه الوحدة على API الطقس (Open-Meteo)'}
+                                  </p>
+                                );
+                              })()}
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
                                   <label className={labelClass}>هل الصوامع محكمة الإغلاق؟ <span className="text-red-500">*</span></label>
@@ -715,6 +743,28 @@ export function DustStep({
                                 <label className={labelClass}>مسافة الكسارة من أقرب مستقبل حساس (م) — احتياطي يدوي إن تعذّر التحديد على الخريطة</label>
                                 <input type="number" placeholder="اتركه فارغًا" value={unit.crusherDistanceToReceptorM} onChange={(e) => updateCrusherUnit(item.id, i, 'crusherDistanceToReceptorM', e.target.value)} className={getInputClass(false)} />
                               </div>
+                              {/* راجع تعليق نفس الكتلة في حلقة batchingUnits أعلاه — نفس المبدأ
+                                  بالضبط لوحدات الكسارة. */}
+                              {projectDevices.length > 0 && (() => {
+                                const linkedDevice = projectDevices.find((d) => d.id === unit.deviceId);
+                                const unitLat = typeof unit.crusherLat === 'number' ? unit.crusherLat : null;
+                                const unitLng = typeof unit.crusherLng === 'number' ? unit.crusherLng : null;
+                                const distanceLabel =
+                                  linkedDevice &&
+                                  unitLat !== null &&
+                                  unitLng !== null &&
+                                  typeof linkedDevice.lat === 'number' &&
+                                  typeof linkedDevice.lng === 'number'
+                                    ? ` — ${Math.round(haversineDistanceM({ lat: unitLat, lng: unitLng }, { lat: linkedDevice.lat, lng: linkedDevice.lng }))} م`
+                                    : '';
+                                return (
+                                  <p className={`${getInputClass(false)} !bg-slate-50 text-slate-600 text-xs`}>
+                                    {linkedDevice
+                                      ? `محطة الرصد: ${linkedDevice.name}${distanceLabel} (أقرب محطة نشطة لهذه الوحدة)`
+                                      : 'محطة الرصد: لا توجد محطة نشطة قريبة — ستعتمد هذه الوحدة على API الطقس (Open-Meteo)'}
+                                  </p>
+                                );
+                              })()}
                             </div>
                           ))}
                         </div>
@@ -729,8 +779,17 @@ export function DustStep({
                           المتوقعة (item.deviceId يُحسَب محلياً بنفس الخوارزمية
                           عند تحديد الموقع، راجع findNearestActiveDeviceId في
                           index.tsx). لا محطة نشطة قريبة → النشاط يعتمد على
-                          API الطقس (Open-Meteo) بدل الجهاز تلقائياً. */}
-                      {projectDevices.length > 0 && (
+                          API الطقس (Open-Meteo) بدل الجهاز تلقائياً.
+                          خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم): هذا العرض
+                          المشترك على مستوى النشاط كان مضلِّلاً للأنشطة متعددة
+                          الوحدات (BATCHING_PLANT/CRUSHER) — كل وحدة تعرض
+                          جهازها الخاص الآن ضمن حلقتها أعلاه، فهذا العرض
+                          المشترك يبقى فقط للأنشطة أحادية الموقع (لا BATCHING_
+                          PLANT/CRUSHER، حيث item.lat/lng هو الموقع الفعلي
+                          الوحيد أصلاً). */}
+                      {projectDevices.length > 0 &&
+                        item.fields.regulatoryActivity !== 'BATCHING_PLANT' &&
+                        item.fields.regulatoryActivity !== 'CRUSHER' && (
                         <div>
                           <label className={labelClass}>محطة الرصد (مصدر القراءات)</label>
                           {(() => {

@@ -277,10 +277,23 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     let updatedUnitId = '';
     setRegulatoryActivity((prev) => {
       if (!prev || prev.id !== itemId) return prev;
-      const batchingUnits = prev.batchingUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
+      let batchingUnits = prev.batchingUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
       updatedLat = batchingUnits[index].batchingLat;
       updatedLng = batchingUnits[index].batchingLng;
       updatedUnitId = batchingUnits[index].id;
+      // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — كل وحدة يجب أن تُعرض
+      // مرتبطة بأقرب جهاز لموقعها الخاص، لا موقع الوحدة الأولى فقط، راجع
+      // تعليق deviceId في constants.ts). يُعاد حساب هذه الوحدة تحديداً عند
+      // تغيير موقعها، بصرف النظر عن الفهرس (لا يقتصر على index===0 كما في
+      // syncLoc أدناه، الذي يبقى فقط للحقل المشترك item.lat/lng/deviceId).
+      if (
+        (field === 'batchingLat' || field === 'batchingLng') &&
+        typeof updatedLat === 'number' &&
+        typeof updatedLng === 'number'
+      ) {
+        const unitDeviceId = findNearestActiveDeviceId(updatedLat, updatedLng);
+        batchingUnits = batchingUnits.map((u, i) => (i === index ? { ...u, deviceId: unitDeviceId } : u));
+      }
       const syncLoc =
         index === 0 && (field === 'batchingLat' || field === 'batchingLng')
           ? syncItemLocationFromUnit(
@@ -356,10 +369,19 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     let updatedUnitId = '';
     setRegulatoryActivity((prev) => {
       if (!prev || prev.id !== itemId) return prev;
-      const crusherUnits = prev.crusherUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
+      let crusherUnits = prev.crusherUnits.map((u, i) => (i === index ? { ...u, [field]: value } : u));
       updatedLat = crusherUnits[index].crusherLat;
       updatedLng = crusherUnits[index].crusherLng;
       updatedUnitId = crusherUnits[index].id;
+      // راجع تعليق updateBatchingUnit أعلاه — نفس المبدأ بالضبط لوحدات الكسارة.
+      if (
+        (field === 'crusherLat' || field === 'crusherLng') &&
+        typeof updatedLat === 'number' &&
+        typeof updatedLng === 'number'
+      ) {
+        const unitDeviceId = findNearestActiveDeviceId(updatedLat, updatedLng);
+        crusherUnits = crusherUnits.map((u, i) => (i === index ? { ...u, deviceId: unitDeviceId } : u));
+      }
       const syncLoc =
         index === 0 && (field === 'crusherLat' || field === 'crusherLng')
           ? syncItemLocationFromUnit(
