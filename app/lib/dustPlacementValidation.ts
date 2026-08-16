@@ -7,6 +7,7 @@ import {
   nearestReceptorDistancesM,
   refreshRuleParameters,
   getRuleParameters,
+  withRuleParametersLock,
 } from '@/app/utils/dust-compliance-engine';
 import { buildOsmProximityWarning } from '@/app/utils/geo/overpassReceptors';
 import type { DustRiskClass } from '@/app/utils/dust-compliance-engine/types';
@@ -69,11 +70,34 @@ export async function validateDustUnitPlacement({
     return { verified: false, error: safeErrorResponse(projectResult.error, 'project fetch failed') };
   }
 
-  await refreshRuleParameters(supabaseAdmin);
-
-  const sensitiveReceptors = (receptorsResult.data || []).map(buildSensitiveReceptor);
-  const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(lat, lng, sensitiveReceptors);
-  const { CRUSHER_GENERAL_RECEPTOR_DISTANCE_M, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M } = getRuleParameters();
+  // خطأ تزامن مكتشَف ومُصلَح (مراجعة كود خبير ثانية — "القفل الجديد تحسن
+  // جيد، لكن مسار فحص الموقع يستطيع تحديث الحالة العامة خارج القفل"):
+  // refreshRuleParameters/getRuleParameters يقرآن ويكتبان current/
+  // currentVersionIds المشتركتين على مستوى الـprocess (ruleParameters.ts)
+  // — evaluateProject تُغلِّف نفس التسلسل بـwithRuleParametersLock تحديداً
+  // لمنع دورة متزامنة من استبدال current تحت أقدام دورة قيد التنفيذ (راجع
+  // تعليق ruleParameters.ts أعلى withRuleParametersLock للسبب الكامل).
+  // هذا المسار (يُستدعى من نقطة الحفظ الفعلية وrusher/batching-precheck
+  // الحيّين، قد يتزامن مع دورة evaluateProject مقفَلة على نفس الـinstance)
+  // كان يستدعي refreshRuleParameters مباشرة بلا أي قفل — يستطيع استبدال
+  // current بينما دورة evaluateProject مقفَلة لا تزال بين استدعائها
+  // الخاص لـrefreshRuleParameters واستهلاكها الفعلي للقيم، فتحصل تلك
+  // الدورة على قيم لا تطابق rule_parameter_version_snapshot التي التقطتها
+  // فعلياً. تغليف نفس القسم بـwithRuleParametersLock هنا يُدخِله في نفس
+  // طابور runQueue، فلا يعود ممكناً أن يتشابك مع أي دورة evaluateProject.
+  const { nearestAnyM, nearestResidentialM, CRUSHER_GENERAL_RECEPTOR_DISTANCE_M, CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M } =
+    await withRuleParametersLock(async () => {
+      await refreshRuleParameters(supabaseAdmin);
+      const sensitiveReceptors = (receptorsResult.data || []).map(buildSensitiveReceptor);
+      const distances = nearestReceptorDistancesM(lat, lng, sensitiveReceptors);
+      const params = getRuleParameters();
+      return {
+        nearestAnyM: distances.nearestAnyM,
+        nearestResidentialM: distances.nearestResidentialM,
+        CRUSHER_GENERAL_RECEPTOR_DISTANCE_M: params.CRUSHER_GENERAL_RECEPTOR_DISTANCE_M,
+        CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M: params.CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M,
+      };
+    });
 
   const reasons: string[] = [];
   let riskClass: DustRiskClass | undefined;

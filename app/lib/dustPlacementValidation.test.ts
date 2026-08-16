@@ -21,11 +21,20 @@ vi.mock('@/app/lib/supabaseAdmin', () => ({
   },
 }));
 
+let refreshDelayMs = 0;
+const refreshOrder: string[] = [];
 vi.mock('@/app/utils/dust-compliance-engine', async () => {
   const actual = await vi.importActual('@/app/utils/dust-compliance-engine');
   return {
     ...actual,
-    refreshRuleParameters: vi.fn(async () => undefined),
+    // مؤخَّرة اختيارياً (refreshDelayMs) لمحاكاة زمن استعلام DB حقيقي بين
+    // refresh والاستهلاك — ضرورية لاختبار withRuleParametersLock أدناه
+    // (بلا تأخير، لا فرصة عملية ليتشابك استدعاءان في نفس event loop tick).
+    refreshRuleParameters: vi.fn(async () => {
+      refreshOrder.push('refresh:start');
+      if (refreshDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, refreshDelayMs));
+      refreshOrder.push('refresh:end');
+    }),
   };
 });
 
@@ -39,6 +48,8 @@ describe('validateDustUnitPlacement', () => {
     for (const key of Object.keys(tableResults)) delete tableResults[key];
     tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
     mockOsmWarning = null;
+    refreshDelayMs = 0;
+    refreshOrder.length = 0;
   });
 
   it('كسارة في مشروع فئة ثالثة بلا مستقبلات → verified:true, blocked:false', async () => {
@@ -126,5 +137,47 @@ describe('validateDustUnitPlacement', () => {
       activityType: 'CRUSHER',
     });
     expect(result.verified).toBe(false);
+  });
+
+  // خطأ تزامن مكتشَف ومُصلَح (مراجعة كود خبير ثانية — "القفل الجديد تحسن
+  // جيد، لكن مسار فحص الموقع يستطيع تحديث الحالة العامة خارج القفل"):
+  // validateDustUnitPlacement كانت تستدعي refreshRuleParameters مباشرة بلا
+  // withRuleParametersLock — يمكن أن تتشابك مع دورة evaluateProject مقفَلة
+  // أخرى على نفس current/currentVersionIds العالميتين. الإصلاح يُدخِل قسم
+  // refresh+قراءة القيم في withRuleParametersLock — هذا الاختبار يثبت أن
+  // استدعاءً خارجياً لـwithRuleParametersLock الآن يحجز الدور فعلياً، فلا
+  // يبدأ refresh الخاص بـvalidateDustUnitPlacement إلا بعد تحرّر القفل.
+  it('withRuleParametersLock من مستدعٍ خارجي يحجز الدور — validateDustUnitPlacement تنتظر تحرّره، لا تتشابك معه', async () => {
+    const { withRuleParametersLock } = await import('@/app/utils/dust-compliance-engine');
+    const { validateDustUnitPlacement } = await import('./dustPlacementValidation');
+
+    refreshDelayMs = 20;
+    const executionOrder: string[] = [];
+
+    const externalLock = withRuleParametersLock(async () => {
+      executionOrder.push('external:start');
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      executionOrder.push('external:end');
+      return 'external-result';
+    });
+
+    const placement = validateDustUnitPlacement({
+      projectId: 'p1',
+      lat: 24.7,
+      lng: 46.6,
+      activityType: 'CRUSHER',
+    }).then((result) => {
+      executionOrder.push('placement:done');
+      return result;
+    });
+
+    await Promise.all([externalLock, placement]);
+
+    // external:end يجب أن يظهر قبل أي أثر لـplacement (refresh لم يبدأ
+    // إلا بعد تحرّر القفل الخارجي بالكامل) — لا تشابك.
+    expect(executionOrder[0]).toBe('external:start');
+    expect(executionOrder[1]).toBe('external:end');
+    expect(executionOrder[2]).toBe('placement:done');
+    expect(refreshOrder).toEqual(['refresh:start', 'refresh:end']);
   });
 });
