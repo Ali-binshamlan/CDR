@@ -31,7 +31,13 @@ import {
 // أنواع البيانات والقواميس
 // ============================================================
 type AlertTiming = 'BEFORE' | 'DURING';
-type AlertState = 'NEW' | 'REVIEWED' | 'ACTION_TAKEN' | 'CLOSED';
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "حالات REVIEWED وACTION_TAKEN
+// تظهر في الواجهة، لكن مسار تغييرها حُذف؛ لا يوجد مسؤول أو وقت أو إجراء أو
+// مرفق"): كانتا موجودتين هنا زخرفياً فقط — لا مسار كتابة حي أنتج قط صفاً
+// بإحداهما (مسار PATCH الوحيد الذي كان يكتبهما حُذف في 401af05 لأنه لم يكن
+// مربوطاً بأي زر إطلاقاً، كود ميت منذ إضافته). قرار صريح من المستخدم بعدم
+// إعادة بناء الميزة — إزالتهما نهائياً بدل تركهما فلاتر لا تُطابق شيئاً أبداً.
+type AlertState = 'NEW' | 'CLOSED';
 // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
 // والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
 // مستقل جديد — إيقاف احترازي معلَّق (لم يُؤكَّد بعد)، لا يُعامَل كـSAFETY_BREACH.
@@ -45,15 +51,11 @@ type Severity = 'CRITICAL' | 'WARNING' | 'INFO';
 const timingLabel: Record<AlertTiming, string> = { BEFORE: 'قبل التنفيذ', DURING: 'أثناء التنفيذ' };
 const stateLabel: Record<AlertState, string> = {
   NEW: 'جديد',
-  REVIEWED: 'قيد المراجعة',
-  ACTION_TAKEN: 'تم الإجراء',
   CLOSED: 'مغلق',
 };
 
 const alertStateMeta: Record<AlertState, { text: string; bg: string; border: string }> = {
   NEW: { text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200' },
-  REVIEWED: { text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200' },
-  ACTION_TAKEN: { text: 'text-blue-700', bg: 'bg-blue-50', border: 'border-blue-200' },
   CLOSED: { text: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-200' },
 };
 
@@ -394,7 +396,7 @@ export default function AlertsPage() {
 
               <div className="flex flex-wrap gap-2 items-center">
                 <span className="text-xs font-black text-slate-500 ml-1">الحالة:</span>
-                {(['الكل', 'NEW', 'REVIEWED', 'ACTION_TAKEN', 'CLOSED'] as const).map((s) => (
+                {(['الكل', 'NEW', 'CLOSED'] as const).map((s) => (
                   <button
                     key={s}
                     onClick={() => setAlertStateFilterVal(s as AlertState | 'الكل')}

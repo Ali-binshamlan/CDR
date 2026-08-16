@@ -8,10 +8,12 @@ import { translateActivityType } from '@/app/lib/activityLabels';
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { Loader2, CloudRain, MapPin } from 'lucide-react';
 
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "حالات REVIEWED وACTION_TAKEN
+// تظهر في الواجهة، لكن مسار تغييرها حُذف؛ لا يوجد مسؤول أو وقت أو إجراء أو
+// مرفق"): كانتا زخرفيتين فقط — لا مسار كتابة حي أنتج قط صفاً بإحداهما.
+// إزالة نهائية بقرار صريح من المستخدم، لا إعادة بناء.
 const STATE_LABEL_AR: Record<string, string> = {
   NEW: 'جديد',
-  REVIEWED: 'قيد المراجعة',
-  ACTION_TAKEN: 'تم الإجراء',
   CLOSED: 'مغلق',
 };
 
