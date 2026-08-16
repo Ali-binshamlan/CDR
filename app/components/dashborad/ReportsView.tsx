@@ -17,6 +17,28 @@ import {
   Printer
 } from 'lucide-react';
 
+// خطأ أمني مكتشَف ومُصلَح (طلب صريح من المستخدم — "تصدير التقرير يضع اسم
+// المشروع داخل document.write دون تعقيم HTML"): اسم المشروع نص حر يختاره
+// مالك المشروع بنفسه بلا أي تحقق من محتواه على مستوى الإنشاء (POST
+// /api/projects لا يطبّق أي schema على name إطلاقاً) أو التعديل (PATCH
+// يحدّ الطول لـ200 حرفاً فقط، لا يمنع وسوم HTML) — كان يصل خاماً إلى
+// handleExportPdf أدناه ويُدمَج مباشرة داخل قالب HTML واحد يُمرَّر بأكمله
+// لـdocument.write، بلا أي تعقيم. مالك مشروع خبيث (أو حساب مُخترَق) قادر
+// على وضع <script>/<img onerror=...> كاسم مشروعه، يُنفَّذ فعلياً في نافذة
+// التصدير عند أي مستخدم آخر (مالك مشروع مختلف يُصدِّر تقريراً يشمل كل
+// المشاريع، أو المراقب/الأدمن عبر /viewer/reports) يفتح ذلك التقرير —
+// XSS مخزَّن. escapeHtml تُطبَّق على كل قيمة نصية حرة (اسم مشروع) قبل
+// دمجها في القالب؛ القيم الرقمية/المحسوبة والنصوص الثابتة (labels) لا
+// تحتاج تعقيماً لأنها لا يمكن أن تحمل HTML أصلاً.
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ============================================================
 // الواجهات وأنواع البيانات
 // ============================================================
@@ -225,13 +247,13 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     if (!printWindow) return;
 
     const generatedAt = new Date().toLocaleString('ar-SA', { calendar: 'gregory', dateStyle: 'long', timeStyle: 'short' });
-    const projectFilterLabel = projectFilter === 'ALL' ? 'جميع المشاريع' : (projectsMap.get(projectFilter) || projectFilter);
+    const projectFilterLabel = escapeHtml(projectFilter === 'ALL' ? 'جميع المشاريع' : (projectsMap.get(projectFilter) || projectFilter));
 
     const rowsHtml = projectStats.length === 0
       ? `<tr><td colspan="6" style="text-align:center;padding:24px;color:#94a3b8;">لا توجد بيانات للفترة المحددة</td></tr>`
       : projectStats.map((s) => `
         <tr>
-          <td>${s.projectName}</td>
+          <td>${escapeHtml(s.projectName)}</td>
           <td style="text-align:center;">${s.total}</td>
           <td style="text-align:center;color:#059669;">${s.safe}</td>
           <td style="text-align:center;color:#dc2626;">${s.stopped}</td>
@@ -272,7 +294,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     خلال الفترة المحددة، تم تقييم <strong>${metrics.totalActivities}</strong> نشاطاً ميدانياً.
     نجح النظام في تأمين <strong>${metrics.safeActivities}</strong> نشاطاً لاستمرارية العمل،
     بينما تطلب الأمر التدخل وإيقاف/تأجيل <strong>${metrics.stoppedActivities}</strong> نشاطاً لضمان الامتثال والسلامة.
-    ${metrics.mostAffectedProject && projectFilter === 'ALL' ? `المشروع الأكثر تضرراً هو <strong>${metrics.mostAffectedProject}</strong>. ` : ''}
+    ${metrics.mostAffectedProject && projectFilter === 'ALL' ? `المشروع الأكثر تضرراً هو <strong>${escapeHtml(metrics.mostAffectedProject)}</strong>. ` : ''}
     العامل ذو التأثير الأكبر على تعطل الأعمال كان <strong>${metrics.dominantWeatherFactor}</strong>.
   </div>
   <div class="kpis">
