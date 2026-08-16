@@ -350,22 +350,28 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
   // القواعد معاً، فيطغى MANDATORY_STOP من GATE-DVI-002 على STOP_AFFECTED_
   // ACTIVITY "المعلَّق" الصحيح من pm10ThresholdRule.
   describe('GATE-DVI-002 — PM10 لحظي فقط يشترط نفس دليل الاستمرار من pm10ThresholdRule', () => {
-    it('dviMandatoryStop سببه PM10 فقط + لا دليل استمرار (pm10ConfirmedViolation340 غائب) → STOP_AFFECTED_ACTIVITY معلَّق، لا MANDATORY_STOP', () => {
+    it('dviMandatoryStop سببه PM10 فقط + لا دليل استمرار إطلاقاً (لا pm10ConfirmedViolation340 ولا pm10Suspended250For30Min) → STOP_AFFECTED_ACTIVITY معلَّق (لم يثبت بعد استمرار >دقيقتين)، لا MANDATORY_STOP', () => {
       const r = evaluateDustCompliance(
         context({
           dviMandatoryStop: true,
           dviMandatoryStopIsPm10Only: true,
           pm10UgM3: 350,
-          // لا pm10ConfirmedViolation340 صراحة — يُعامَل كـfalse (فشل آمن).
+          // لا pm10ConfirmedViolation340 ولا pm10Suspended250For30Min صراحة —
+          // كلاهما يُعامَل كـfalse (فشل آمن)، فتبقى الحالة "معلَّقة" بانتظار
+          // تأكيد الدقيقتين، تماماً كما كانت دائماً.
         })
       );
       expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
       expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
       expect(r.pendingConfirmation).toBe(true);
-      expect(r.canOverride).toBe(false); // معلَّق يبقى غير قابل للتجاوز، فقط ليس "قطعياً"
     });
 
-    it('dviMandatoryStop سببه PM10 فقط + دليل استمرار مؤكَّد (pm10ConfirmedViolation340=true) → MANDATORY_STOP فعلي', () => {
+    // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي MANDATORY_STOP
+    // الفوري عند تأكيد مخالفة 340 الموثَّق سابقاً هنا): تأكيد مخالفة 340
+    // (pm10ConfirmedViolation340=true) لم يعد ينتج إيقافاً فورياً من هذه
+    // البوابة — يبقى ALLOW_WITH_CONTROLS (توثيق/تنبيه فقط) طالما لم يكتمل
+    // بعد استمرار 30 دقيقة الموحَّد (pm10Suspended250For30Min).
+    it('dviMandatoryStop سببه PM10 فقط + مخالفة 340 مؤكَّدة لكن بلا اكتمال 30 دقيقة → ALLOW_WITH_CONTROLS (توثيق فقط، بلا إيقاف)', () => {
       const r = evaluateDustCompliance(
         context({
           dviMandatoryStop: true,
@@ -373,10 +379,27 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
           pm10UgM3: 350,
           pm10ConfirmedViolation340: true,
           pm10SustainedMinutesAbove340: 5,
+          // لا pm10Suspended250For30Min — الاستمرار الموحَّد لم يكتمل بعد.
         })
       );
-      expect(r.decisionCategory).toBe('MANDATORY_STOP');
-      expect(r.pendingConfirmation).toBe(false);
+      expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+      expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+    });
+
+    it('dviMandatoryStop سببه PM10 فقط + استمرار 30 دقيقة موحَّد مكتمل (pm10Suspended250For30Min=true) → STOP_AFFECTED_ACTIVITY فعلي (الإيقاف الوحيد)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          dviMandatoryStop: true,
+          dviMandatoryStopIsPm10Only: true,
+          pm10UgM3: 350,
+          pm10ConfirmedViolation340: true,
+          pm10SustainedMinutesAbove340: 5,
+          pm10Suspended250For30Min: true,
+          pm10SustainedMinutesAbove250: 30,
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
     });
 
     it('dviMandatoryStopIsPm10Only=false (خطر فيزيائي آخر مساهم، لا PM10 وحده) → إيقاف فوري كالسابق بلا اشتراط استمرار', () => {
@@ -554,10 +577,14 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.pendingConfirmation).toBe(true);
   });
 
-  it('PM10=345 (≥340) استمر لأكثر من دقيقتين → مخالفة تنظيمية مؤكدة (MANDATORY_STOP، غير قابل للتجاوز)، ليست معلَّقة', () => {
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي MANDATORY_STOP
+  // الفوري عند تأكيد مخالفة 340 الموثَّق سابقاً هنا): مخالفة مؤكَّدة (>دقيقتين)
+  // تُسجَّل الآن وتُوثَّق (ALLOW_WITH_CONTROLS)، لكن لا تُوقف النشاط بحد ذاتها
+  // — الإيقاف الفعلي الوحيد مرتبط باستمرار 30 دقيقة الموحَّد (راجع اختبارات
+  // pm10Suspended250For30Min أدناه).
+  it('PM10=345 (≥340) استمر لأكثر من دقيقتين → مخالفة تنظيمية مؤكدة وموثَّقة (ALLOW_WITH_CONTROLS)، بلا إيقاف فوري', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10SustainedMinutesAbove340: 3 }));
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
-    expect(r.canOverride).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
     expect(r.pendingConfirmation).toBe(false);
@@ -579,7 +606,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     { pm10: 340, minutes: 60, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تحذير/تحكم معزَّز فقط، لا معلَّق ولا مؤكَّد' },
     { pm10: 340.01, minutes: 1.99, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → معلَّق فقط' },
     { pm10: 340.01, minutes: 2, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط (لم يتجاوز) → معلَّق فقط، ليس مؤكَّداً بعد' },
-    { pm10: 340.01, minutes: 2.01, decision: 'MANDATORY_STOP', label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → مخالفة مؤكدة' },
+    { pm10: 340.01, minutes: 2.01, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → مخالفة مؤكدة وموثَّقة، بلا إيقاف فوري' },
   ] as const)('$label', ({ pm10, minutes, decision }) => {
     const r = evaluateDustCompliance(context({ pm10UgM3: pm10, pm10SustainedMinutesAbove340: minutes }));
     expect(r.decisionCategory).toBe(decision);
@@ -606,7 +633,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
   });
 
-  it('sustainedMinutesAbove340 أقل من دقيقتين لكن pm10ConfirmedViolation340=true صراحةً → مخالفة مؤكدة (القرار يثق بالحقل الجاهز لا بالرقم)', () => {
+  it('sustainedMinutesAbove340 أقل من دقيقتين لكن pm10ConfirmedViolation340=true صراحةً → مخالفة مؤكدة موثَّقة (القرار يثق بالحقل الجاهز لا بالرقم)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 345,
@@ -614,7 +641,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
         pm10ConfirmedViolation340: true, // لكن الدليل الجاهز يؤكد الاستمرار الفعلي
       })
     );
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.pendingConfirmation).toBe(false);
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
   });
@@ -948,12 +975,12 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
       measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 1000 },
     });
 
-  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=1500 مستمرة >دقيقتين → مخالفة تنظيمية مؤكدة كأي نشاط آخر (لا إعفاء PM10)', () => {
+  it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=1500 مستمرة >دقيقتين → مخالفة تنظيمية مؤكدة موثَّقة كأي نشاط آخر (لا إعفاء PM10، بلا إيقاف فوري)', () => {
     const r = evaluateDustCompliance(
       context({ pm10UgM3: 1500, pm10SustainedMinutesAbove340: 5, pm10ConfirmedViolation340: true, activity: exemptBatchingActivity() })
     );
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
   });
 
   it('محطة خلط مغلقة بكفاءة فلتر ≥99% + PM10=260 مستمرة 30 دقيقة → تعليق النشاط كأي نشاط آخر (لا إعفاء)', () => {
@@ -990,7 +1017,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 
-  it('محطة خلط مكشوفة (isEnclosedOperation=false) بصوامع مغلقة + فلتر ≥99% + PM10=1500 مستمرة → مخالفة مؤكَّدة (الإغلاق الهيكلي/الفلتر لا يعفيان من PM10)', () => {
+  it('محطة خلط مكشوفة (isEnclosedOperation=false) بصوامع مغلقة + فلتر ≥99% + PM10=1500 مستمرة → مخالفة مؤكَّدة موثَّقة ضمن القواعد المفعَّلة (الإغلاق الهيكلي/الفلتر لا يعفيان من PM10)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 1500,
@@ -1003,7 +1030,12 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
         }),
       })
     );
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    // بلا إحداثيات مسافة مُدخلة صراحة هنا (خلافاً لـexemptBatchingActivity)،
+    // FIELD_VERIFICATION_REQUIRED (أولوية أعلى من ALLOW_WITH_CONTROLS) تفوز
+    // بالقرار النهائي — لكن PM10-VIOLATION-STOP-006 المؤكَّدة تبقى مفعَّلة
+    // ومسجَّلة ضمن القواعد، تماماً كما لا تُعفى محطة الخلط من PM10 إطلاقاً.
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
   });
 
   // خطأ مكتشَف ومُصلَح: كان enhancedSuppressionRule (GATE-WIND-15-25-ENHANCED-005)
@@ -1075,7 +1107,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 
-  it('نشاط هدم مغلق (غير BATCHING_PLANT) بلا كفاءة فلتر + PM10=1500 مستمرة → مخالفة مؤكَّدة كأي نشاط (لا إعفاء PM10 لأي نشاط الآن)', () => {
+  it('نشاط هدم مغلق (غير BATCHING_PLANT) بلا كفاءة فلتر + PM10=1500 مستمرة → مخالفة مؤكَّدة موثَّقة كأي نشاط (لا إعفاء PM10 لأي نشاط الآن، بلا إيقاف فوري)', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 1500,
@@ -1088,7 +1120,8 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
         }),
       })
     );
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
   });
 });
 

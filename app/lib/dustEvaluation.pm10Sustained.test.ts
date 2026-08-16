@@ -238,12 +238,6 @@ describe('computeSustainedPm10Status', () => {
     expect(r.isSuspended250For30Min).toBe(false);
   });
 
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد PM10 إلى 3 مستويات
-  // منفصلة تماماً): سلسلة استمرار 250 (above250Streak) كانت تمتد بلا حد
-  // أعلى — قراءة >340 وسط النافذة كانت تُحسَب ضمن نفس "الاستمرار فوق 250"،
-  // فتخلط مستوى التحذير [250,340] بمستوى المخالفة (>340). الآن: أي قراءة
-  // >340 تقطع سلسلة استمرار 250 فوراً وتُخرِجها من النافذة كلياً — عداد
-  // دقائق الاستمرار في التحذير لا يتراكم عبر قفزة فوق 340.
   // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "الموصل
   // Snapshot-only لا يصلح لإثبات الاستمرارية"): قراءة isSnapshotOnly=true
   // (وصلت عبر fetchLatestReading الاحتياطي، لا fetchReadingsSince) لا يجوز
@@ -316,29 +310,35 @@ describe('computeSustainedPm10Status', () => {
     });
   });
 
-  describe('سلسلة استمرار 250 تنقطع عند أي قراءة >340 (مستويان منفصلان تماماً)', () => {
-    it('قراءة واحدة >340 في منتصف سلسلة 250 → تقطع الاستمرار، لا تعليق 30 دقيقة رغم امتداد النافذة الزمنية بالكامل', () => {
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي القرار السابق
+  // الموثَّق سابقاً هنا بقطع سلسلة 250 عند أي قراءة >340): تصعيد الخطورة
+  // (تجاوز 340) لا يجوز أن يُلغي منطقياً مدة التجاوز المتراكمة في [250,340]
+  // — استمرار ≥250 أصبح موحَّداً عبر كلا النطاقين معاً. عداد تأكيد مخالفة
+  // 340 (above340Streak/isConfirmedViolation340) يبقى مستقلاً تماماً بمدته
+  // الخاصة (دقيقتان) لتوثيق مخالفة تنظيمية منفصلة، لا لإيقاف فوري (راجع
+  // pm10ThresholdRule في rulebook.ts).
+  describe('سلسلة استمرار 250 موحَّدة عبر [250,340] و>340 معاً (لا قطع عند التصعيد)', () => {
+    it('قراءة واحدة >340 في منتصف سلسلة 250 → لا تقطع الاستمرار، النافذة الزمنية الكاملة (30 دقيقة) تُحسَب معاً وتُفعِّل التعليق', () => {
       const readings = readingsBackFromNow(NOW, [
         ...Array.from({ length: 15 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 255, source: 'device' as const })),
-        { minutesAgo: 15, pm10: 350, source: 'device' as const }, // تقطع السلسلة
+        { minutesAgo: 15, pm10: 350, source: 'device' as const }, // لا تقطع السلسلة بعد الآن — تُسهم فيها
         ...Array.from({ length: 15 }, (_, i) => ({ minutesAgo: 14 - i, pm10: 255, source: 'device' as const })),
       ]);
       const r = computeSustainedPm10Status(readings, NOW);
-      expect(r.isSuspended250For30Min).toBe(false);
-      // الاستمرار المُحتسَب يبدأ فقط من بعد قراءة الـ350 (آخر 15 دقيقة)، لا
-      // يمتد رجوعاً عبرها إلى أول قراءة قبل 30 دقيقة.
-      expect(r.sustainedMinutesAbove250).toBeLessThan(15);
+      expect(r.isSuspended250For30Min).toBe(true);
+      // الاستمرار يمتد من أقدم قراءة (قبل 30 دقيقة) وحتى أحدث قراءة، شاملاً
+      // قراءة الـ350 في المنتصف — تراكم موحَّد بلا أي قطع.
+      expect(r.sustainedMinutesAbove250).toBeGreaterThanOrEqual(29);
     });
 
-    it('القراءة الحالية نفسها >340 → above250Streak صفر تماماً (القراءة الحالية خارج نطاق [250,340])', () => {
+    it('القراءة الحالية نفسها >340 مع سلسلة 250 سابقة متصلة → above250Streak يشمل القراءة الحالية أيضاً (لا صفر)', () => {
       const readings = readingsBackFromNow(NOW, [
-        { minutesAgo: 30, pm10: 255, source: 'device' as const },
-        { minutesAgo: 15, pm10: 255, source: 'device' as const },
-        { minutesAgo: 0, pm10: 350, source: 'device' as const }, // القراءة الحالية تتجاوز 340
+        ...Array.from({ length: 30 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 255, source: 'device' as const })),
+        { minutesAgo: 0, pm10: 350, source: 'device' as const }, // القراءة الحالية تتجاوز 340 — تبقى ضمن الاستمرار الموحَّد
       ]);
       const r = computeSustainedPm10Status(readings, NOW);
-      expect(r.sustainedMinutesAbove250).toBe(0);
-      expect(r.isSuspended250For30Min).toBe(false);
+      expect(r.sustainedMinutesAbove250).toBeGreaterThanOrEqual(29);
+      expect(r.isSuspended250For30Min).toBe(true);
     });
 
     it('سلسلة 250 كاملة داخل النطاق [250,340] بلا أي قراءة تتجاوز 340 → تُحسَب كاملة كالمعتاد (لا تغيير سلوك)', () => {
@@ -348,6 +348,53 @@ describe('computeSustainedPm10Status', () => {
       );
       const r = computeSustainedPm10Status(readings, NOW);
       expect(r.isSuspended250For30Min).toBe(true);
+    });
+
+    // طلب صريح من المستخدم — "الحل هو ... اختبار السلسلة المختلطة": سيناريو
+    // كامل يثبت أن تأكيد مخالفة 340 (بعد دقيقتين مستمرتين) وتعليق الـ30
+    // دقيقة (بعد اكتمال النافذة كاملة) يعملان معاً بشكل مستقل ومتوازٍ، لا
+    // متسلسل — تجاوز 340 لا يُلغي عداد الـ30 دقيقة، ولا يُسرِّعه.
+    it('سلسلة مختلطة كاملة: [250,340] ثم >340 لأكثر من دقيقتين (مخالفة مؤكَّدة) ثم عودة لـ[250,340] — عداد الـ30 دقيقة يتراكم طوال الوقت بلا انقطاع، وتأكيد 340 مستقل تماماً', () => {
+      // فواصل دقيقة واحدة بين كل قراءتين (أقل من حد تسامح الفجوة 90 ثانية)
+      // لضمان عدم قطع السلسلة بفجوة زمنية عادية — نختبر تحديداً أثر تجاوز
+      // 340 على السلسلة، لا أثر فجوات التوقيت.
+      const readings = readingsBackFromNow(NOW, [
+        // 20 دقيقة أولى ضمن [250,340]
+        ...Array.from({ length: 21 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 260, source: 'device' as const })),
+        // 5 دقائق تتجاوز 340 (أكثر من دقيقتين — تُنتج isConfirmedViolation340)
+        { minutesAgo: 9, pm10: 350, source: 'device' as const },
+        { minutesAgo: 8, pm10: 355, source: 'device' as const },
+        { minutesAgo: 7, pm10: 345, source: 'device' as const },
+        { minutesAgo: 6, pm10: 350, source: 'device' as const },
+        { minutesAgo: 5, pm10: 342, source: 'device' as const },
+        // تعود لـ[250,340] حتى الآن
+        { minutesAgo: 4, pm10: 260, source: 'device' as const },
+        { minutesAgo: 3, pm10: 260, source: 'device' as const },
+        { minutesAgo: 2, pm10: 260, source: 'device' as const },
+        { minutesAgo: 1, pm10: 260, source: 'device' as const },
+        { minutesAgo: 0, pm10: 255, source: 'device' as const },
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      // القراءة الحالية (255) ضمن [250,340] — above340Streak صفر (القراءة
+      // الحالية لا تتجاوز 340)، لكن above250Streak يمتد عبر كامل السلسلة.
+      expect(r.isConfirmedViolation340).toBe(false); // القراءة الحالية لم تعد >340
+      expect(r.isSuspended250For30Min).toBe(true); // 30 دقيقة موحَّدة اكتملت
+      expect(r.sustainedMinutesAbove250).toBeGreaterThanOrEqual(29);
+    });
+
+    it('نفس السلسلة المختلطة، لكن مقاسة أثناء لحظة التجاوز نفسها (>340 كقراءة حالية) → isConfirmedViolation340=true بالتوازي مع isSuspended250For30Min=true (لا حصرية متبادلة)', () => {
+      const readings = readingsBackFromNow(NOW, [
+        ...Array.from({ length: 26 }, (_, i) => ({ minutesAgo: 30 - i, pm10: 260, source: 'device' as const })),
+        { minutesAgo: 4, pm10: 350, source: 'device' as const },
+        { minutesAgo: 3, pm10: 355, source: 'device' as const },
+        { minutesAgo: 2, pm10: 345, source: 'device' as const },
+        { minutesAgo: 1, pm10: 350, source: 'device' as const },
+        { minutesAgo: 0, pm10: 342, source: 'device' as const }, // القراءة الحالية >340، أكثر من دقيقتين مستمرة
+      ]);
+      const r = computeSustainedPm10Status(readings, NOW);
+      expect(r.isConfirmedViolation340).toBe(true);
+      expect(r.isSuspended250For30Min).toBe(true);
+      expect(r.sustainedMinutesAbove250).toBeGreaterThanOrEqual(29);
     });
   });
 

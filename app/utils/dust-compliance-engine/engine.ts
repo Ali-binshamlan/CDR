@@ -394,31 +394,56 @@ export function evaluateDustCompliance(
     // "المعلَّق" الصحيح من pm10ThresholdRule، فتتحول قراءة لحظية واحدة إلى
     // إيقاف إلزامي قطعي غير قابل للتجاوز دون أي دليل استمرار.
     //
-    // الإصلاح: عندما يكون سبب dviMandatoryStop الوحيد هو PM10 (لا خطر
-    // فيزيائي فوري آخر كرؤية حرجة/رياح شديدة مساهم بنفس اللحظة —
-    // dviMandatoryStopIsPm10Only)، تُطبَّق نفس عتبة الاستمرار هنا بالضبط:
-    // مؤكَّدة (MANDATORY_STOP) فقط إن أثبت computeSustainedPm10Status
-    // استمراراً فعلياً >دقيقتين من مصدر جهاز حقيقي (pm10ConfirmedViolation340)،
-    // وإلا STOP_AFFECTED_ACTIVITY "معلَّق" فقط — طابق تماماً منطق
-    // pm10ThresholdRule بدل التناقض معه. خطر الرؤية الحرجة/الرياح الشديدة
-    // (dviMandatoryStopIsPm10Only=false) يبقى إيقافاً فورياً صحيحاً كما كان
-    // — هذا خطر فيزيائي فعلي لا يحتاج "استمراراً" ليُصدَّق (لا يمكن انتظار
-    // دقيقتين بينما الرؤية معدومة والرياح شديدة).
-    const isPm10OnlyPending = ctx.dviMandatoryStopIsPm10Only === true && ctx.pm10ConfirmedViolation340 !== true;
+    // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي التمييز
+    // "مؤكَّدة=MANDATORY_STOP فوري" الموثَّق سابقاً هنا، اتساقاً مع نفس
+    // التعديل في pm10ThresholdRule أدناه): عندما يكون سبب dviMandatoryStop
+    // الوحيد هو PM10 (لا خطر فيزيائي فوري آخر كرؤية حرجة/رياح شديدة مساهم
+    // بنفس اللحظة — dviMandatoryStopIsPm10Only)، هذه البوابة لم تعد تُصدر
+    // MANDATORY_STOP إطلاقاً. ثلاث حالات فعلية الآن (لا حالتان):
+    //   1) لم يثبت الاستمرار >دقيقتين بعد (pm10ConfirmedViolation340 غير
+    //      true) → "معلَّقة" STOP_AFFECTED_ACTIVITY مؤقت، تماماً كما كانت
+    //      دائماً (لم يتغيّر — نفس معاملة MRQ-PM10-BLACK-PENDING-104).
+    //   2) ثبت الاستمرار >دقيقتين (مؤكَّدة) لكن لم يكتمل بعد استمرار 30
+    //      دقيقة الموحَّد (pm10Suspended250For30Min) → ALLOW_WITH_CONTROLS:
+    //      توثيق/تنبيه بلا إيقاف، تماماً مثل pm10ThresholdRule.
+    //   3) اكتمل استمرار 30 دقيقة الموحَّد → STOP_AFFECTED_ACTIVITY فعلي،
+    //      الإيقاف الوحيد الحقيقي.
+    // خطر الرؤية الحرجة/الرياح الشديدة (dviMandatoryStopIsPm10Only=false)
+    // يبقى إيقافاً فورياً صحيحاً كما كان — خطر فيزيائي فعلي لا علاقة له
+    // بـPM10 ولا يحتاج "استمراراً" ليُصدَّق.
+    const isPm10Only = ctx.dviMandatoryStopIsPm10Only === true;
+    const pm10OnlyPending = isPm10Only && ctx.pm10ConfirmedViolation340 !== true;
+    const pm10OnlySuspended = isPm10Only && ctx.pm10Suspended250For30Min === true;
+    const pm10OnlySeverity: DustComplianceDecisionCategory = pm10OnlyPending
+      ? 'STOP_AFFECTED_ACTIVITY'
+      : pm10OnlySuspended
+        ? 'STOP_AFFECTED_ACTIVITY'
+        : 'ALLOW_WITH_CONTROLS';
     ruleHits.push(
       {
         code: 'GATE-DVI-002',
-        severity: isPm10OnlyPending ? 'STOP_AFFECTED_ACTIVITY' : 'MANDATORY_STOP',
+        severity: isPm10Only ? pm10OnlySeverity : 'MANDATORY_STOP',
         messageAr:
           ctx.dviShortReason ||
-          (isPm10OnlyPending
-            ? 'تعليق مؤقت (معلَّق): تجاوز فوري في تركيز الغبار — بانتظار استمرار القراءة أكثر من دقيقتين لتصنيفها مخالفة تنظيمية مؤكدة'
+          (isPm10Only
+            ? (pm10OnlyPending
+                ? 'تعليق مؤقت (معلَّق): تجاوز فوري في تركيز الغبار — بانتظار استمرار القراءة أكثر من دقيقتين لتصنيفها مخالفة تنظيمية مؤكدة'
+                : pm10OnlySuspended
+                  ? `تعليق النشاط: تجاوز تركيز الغبار استمر عند ${PM10_WARNING_UG_M3} ميكروجرام/م³ أو أكثر لمدة 30 دقيقة متواصلة`
+                  : 'تجاوز فوري مسجَّل في تركيز الغبار — النشاط مستمر تحت الضوابط المعزَّزة، الإيقاف الفعلي مرتبط فقط باستمرار التجاوز 30 دقيقة متواصلة')
             : 'إيقاف إلزامي تنظيمي: تجاوز خطر فوري في تركيز الغبار أو انعدام الرؤية بموقع النشاط'),
         // الإجراء هنا مختلف جوهرياً عن بقية القواعد: لا يوجد ما "يُصلحه"
         // المقاول في الموقع — الظرف الجوي نفسه هو المانع، فالإجراء انتظار
         // تحسّن الحالة وإخلاء العمالة، لا استكمال ضابط تحكم ناقص.
-        actionAr: 'أخلِ منطقة العمل وانتظر تحسّن حالة الجو (الرؤية وتركيز الغبار) — لا يمكن استئناف العمل بإجراء تنظيمي',
-        overridable: isPm10OnlyPending,
+        actionAr: isPm10Only
+          ? 'فعّل التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ، تقييد حركة النقل) وراقب استمرار التجاوز'
+          : 'أخلِ منطقة العمل وانتظر تحسّن حالة الجو (الرؤية وتركيز الغبار) — لا يمكن استئناف العمل بإجراء تنظيمي',
+        // overridable=false لكل حالات STOP_AFFECTED_ACTIVITY (معلَّق أو
+        // موقوف فعلياً بـ30 دقيقة)، نفس افتراض ruleHit() الموحَّد في
+        // rulebook.ts (severity !== MANDATORY_STOP/STOP_AFFECTED_ACTIVITY).
+        // ALLOW_WITH_CONTROLS (مؤكَّدة موثَّقة بلا اكتمال 30 دقيقة) تبقى
+        // قابلة للتجاوز — النشاط مستمر أصلاً في هذه الحالة.
+        overridable: isPm10Only && pm10OnlySeverity === 'ALLOW_WITH_CONTROLS',
       }
     );
   }
@@ -742,7 +767,10 @@ export function evaluateDustCompliance(
   //
   // isPendingRuleHit: نفس تعريف "معلَّق" المستخدم سابقاً حرفياً — إما
   // MRQ-PM10-BLACK-PENDING-104 تحديداً، أو GATE-DVI-002 حين يكون سببها
-  // الوحيد PM10 لحظي لم يثبت استمراره بعد (راجع isPm10OnlyPending أعلاه).
+  // الوحيد PM10 لحظي لم يثبت استمراره >دقيقتين بعد (راجع pm10OnlyPending
+  // أعلاه). لا يشمل GATE-DVI-002 حين يكون STOP_AFFECTED_ACTIVITY بسبب
+  // اكتمال استمرار 30 دقيقة الموحَّد (pm10OnlySuspended) — تلك حالة مؤكَّدة
+  // نهائياً، لا تتحول تلقائياً لأي قرار آخر بمجرد مرور وقت إضافي.
   const isPendingRuleHit = (hit: DustRuleHit): boolean =>
     hit.code === 'MRQ-PM10-BLACK-PENDING-104' ||
     (hit.code === 'GATE-DVI-002' && ctx.dviMandatoryStopIsPm10Only === true && ctx.pm10ConfirmedViolation340 !== true);

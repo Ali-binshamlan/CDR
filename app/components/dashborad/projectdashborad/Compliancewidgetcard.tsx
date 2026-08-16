@@ -567,28 +567,28 @@ export default function ComplianceWidgetCard({
   const alreadyStopped = aei
     ? aei.closedByGate
     : worst?.decisionCategory === 'STOP_AFFECTED_ACTIVITY' || worst?.decisionCategory === 'MANDATORY_STOP';
-  // طلب صريح من المستخدم: بعد أن يتجاوز التعليق (pendingConfirmation) مهلة
-  // التأكيد (أكثر من دقيقتين متتاليتين ≥340)، يُعرَض تنبيه صريح "تم تسجيل
-  // مخالفة" بدل اختفاء البانر الأحمر بصمت لصالح نص القرار العادي فقط —
-  // PM10-VIOLATION-STOP-006 (راجع rulebook.ts) هو الكود الوحيد الذي يفوز به
-  // decidingRuleCode تحديداً بعد اكتمال isConfirmedViolation340، فيميّز هذه
-  // الحالة بدقة عن أي إيقاف إلزامي آخر مصدره قاعدة مختلفة (رياح/رؤية...).
+  // بعد أن يتجاوز التعليق (pendingConfirmation) مهلة التأكيد (أكثر من
+  // دقيقتين متتاليتين ≥340)، يُعرَض تنبيه صريح "تم تسجيل مخالفة" بدل اختفاء
+  // البانر الأحمر بصمت لصالح نص القرار العادي فقط — PM10-VIOLATION-STOP-006
+  // (راجع rulebook.ts) هو الكود الوحيد الذي يفوز به decidingRuleCode
+  // تحديداً بعد اكتمال isConfirmedViolation340، فيميّز هذه الحالة بدقة عن
+  // أي قرار آخر مصدره قاعدة مختلفة (رياح/رؤية...).
   const isConfirmedViolationNow = !isEnded && worst?.decidingRuleCode === 'PM10-VIOLATION-STOP-006';
-  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "تناقض": عدّاد "تعليق 250" كان يظهر
-  // حتى عندما تكون القراءة أصلاً معلَّقة بانتظار تأكيد حد المخالفة الأشد
-  // (340، worst.pendingConfirmation=true عبر MRQ-PM10-BLACK-PENDING-104) —
-  // alreadyStopped وحدها لا تلتقط هذه الحالة (لم يتأكَّد الإيقاف الإلزامي
-  // بعد، فقط معلَّق). النتيجة: عدّادان متزامنان لعتبتين مختلفتين (250 و340)
-  // لنفس القراءة، فيظن المستخدم أن العتبة الحرجة القادمة هي 250 (أضعف) بينما
-  // القراءة أصلاً تجاوزت 340 (الأشد) وتنتظر تأكيدها الخاص. الإصلاح: استبعاد
-  // عدّاد 250 أيضاً أثناء pendingConfirmation نشطة — عدّاد 340 الأشد يبقى
-  // وحده الظاهر حينها (نفس مبدأ useCountdownRemainingSeconds الأول أعلاه).
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي الاستبعاد
+  // المتبادل الموثَّق سابقاً هنا بين عدّادي 250/340): كان تجاوز 340 يقطع
+  // استمرارية عداد الـ30 دقيقة فعلياً في الخادم (dustEvaluation.ts)، فإخفاء
+  // عدّاد 250 أثناء pendingConfirmation كان منطقياً حينها (لم يكن هناك شيء
+  // حقيقي يتراكم بالخلفية ليُعرَض). الآن عداد الـ30 دقيقة موحَّد ويتراكم
+  // بالتوازي مع أي قراءة ≥250 (سواء [250,340] أو >340) — فتجاوز 340
+  // وانتظار تأكيده لا يُلغي تراكم عداد الـ30 دقيقة، بل يستمر بالخلفية
+  // فعلياً. لذا العدّادان الآن مستقلان تماماً ويظهران معاً عمداً: عدّاد
+  // الدقيقتين (تسجيل مخالفة) وعدّاد الـ30 دقيقة (الإيقاف الفعلي الوحيد) —
+  // لا استبعاد متبادل بينهما بعد الآن.
   const showSuspensionCountdown =
     !isEnded &&
     !isAwaitingVerification &&
     !!worst &&
     !alreadyStopped &&
-    worst.pendingConfirmation !== true &&
     worst.evidence.pm10UgM3 !== null &&
     worst.evidence.pm10UgM3 >= 250 &&
     sustained250 !== undefined &&
@@ -740,23 +740,23 @@ export default function ComplianceWidgetCard({
             <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-red-600 shrink-0" />
               <span className="text-[11px] font-bold text-red-700">
-                جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين سيُسجَّل مخالفة تنظيمية مؤكَّدة (إيقاف إلزامي)، وإلا ستعود الحالة آمنة تلقائياً
+                جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين ستُسجَّل مخالفة تنظيمية مؤكَّدة (توثيق فقط، بلا إيقاف)، وإلا ستعود الحالة آمنة تلقائياً
               </span>
             </div>
           )}
-          {!worst?.pendingConfirmation && isConfirmedViolationNow && (
+          {isConfirmedViolationNow && (
             <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/5 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-slate-800 shrink-0" />
               <span className="text-[11px] font-bold text-slate-800">
-                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين
+                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (250 ميكروجرام/م³ فأكثر) لمدة 30 دقيقة متواصلة
               </span>
             </div>
           )}
-          {!worst?.pendingConfirmation && showSuspensionCountdown && (
+          {showSuspensionCountdown && (
             <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-amber-600 shrink-0" />
               <span className="text-[11px] font-bold text-amber-700">
-                جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز
+                جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
               </span>
             </div>
           )}
@@ -981,23 +981,23 @@ export default function ComplianceWidgetCard({
                 <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
                   <Timer className="w-5 h-5 text-red-600 shrink-0" />
                   <span className="text-[13px] font-bold text-red-700">
-                    جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين سيُسجَّل مخالفة تنظيمية مؤكَّدة (إيقاف إلزامي)، وإلا ستعود الحالة آمنة تلقائياً
+                    جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين ستُسجَّل مخالفة تنظيمية مؤكَّدة (توثيق فقط، بلا إيقاف)، وإلا ستعود الحالة آمنة تلقائياً
                   </span>
                 </div>
               )}
-              {!worst?.pendingConfirmation && isConfirmedViolationNow && (
+              {isConfirmedViolationNow && (
                 <div className="flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/5 px-4 py-3">
                   <Timer className="w-5 h-5 text-slate-800 shrink-0" />
                   <span className="text-[13px] font-bold text-slate-800">
-                    تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين
+                    تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (250 ميكروجرام/م³ فأكثر) لمدة 30 دقيقة متواصلة
                   </span>
                 </div>
               )}
-              {!worst?.pendingConfirmation && showSuspensionCountdown && (
+              {showSuspensionCountdown && (
                 <div className="flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
                   <Timer className="w-5 h-5 text-amber-600 shrink-0" />
                   <span className="text-[13px] font-bold text-amber-700">
-                    جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز
+                    جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
                   </span>
                 </div>
               )}
