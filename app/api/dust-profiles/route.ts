@@ -363,6 +363,17 @@ export async function POST(request: NextRequest) {
     p_activity_group_id: activityGroupId,
     p_insert: insert,
   });
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'dust-profiles atomic insert failed') }, { status: 500 });
+  if (error) {
+    // خطأ مكتشَف ومُصلَح (migration 202608160001): activity_group_id مُعاد
+    // استخدامه لصف موجود فعلاً في نفس المشروع — كل استدعاء لهذا المسار
+    // يُنشئ وحدة جديدة دائماً (لا مسار تعديل/idempotency يُعيد استخدام معرّف
+    // قائم شرعياً)، فالتصادم يعني إما تجاوزاً لصيغة -uN المتوقَّعة من
+    // AddActivityModal (استدعاء API مباشر)، أو محاولة إعادة إرسال غير
+    // مقصودة — 409 (لا 500) لأنه خطأ طلب لا خطأ خادم.
+    if (error.code === '23505') {
+      return NextResponse.json({ error: 'ACTIVITY_GROUP_ID_ALREADY_USED', detail: 'معرّف النشاط مستخدَم مسبقاً في هذا المشروع' }, { status: 409 });
+    }
+    return NextResponse.json({ error: safeErrorResponse(error, 'dust-profiles atomic insert failed') }, { status: 500 });
+  }
   return NextResponse.json({ success: true, data: insertedRow });
 }

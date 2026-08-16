@@ -13,7 +13,7 @@ let lastRpcCall: { name: string; args: Record<string, unknown> } | null = null;
 // خطأ RPC اختياري — لاختبار مسار الفشل الخادمي (مثال: قيد قاعدة بيانات)
 // بمعزل عن أي تحقق سابق ناجح، يثبت أن lastDustProfileInsert لا يُحفَظ محلياً
 // إلا بعد أن "تنجح" RPC فعلياً في هذا المموّه (لا قبلها).
-let mockRpcError: { message: string } | null = null;
+let mockRpcError: { message: string; code?: string } | null = null;
 
 function makeChain(tableName: string) {
   const result = tableResults[tableName] ?? { data: null, error: null };
@@ -453,6 +453,31 @@ describe('POST /api/dust-profiles', () => {
         makeRequest(baseInsert({ regulatory_activity: 'EARTHWORKS', activity_type: 'GRADING' })) as never
       );
       expect(res.status).toBe(500);
+    });
+
+    // خطأ حرج مكتشَف ومُصلَح (migration 202608160001): activity_group_id
+    // كان يُقبَل من العميل بلا أي تحقق تنسيق أو تصادم — استدعاء API مباشر
+    // (لا AddActivityModal) يرسل معرّفاً مستخدَماً مسبقاً في نفس المشروع
+    // (بلا لاحقة -uN، أو نفس اللاحقة مكرَّرة) كان يُعيد فتح سباق CAS الذي
+    // صُمِّمت آلية -uN أصلاً لإغلاقه. insert_dust_profile_atomic ترفض الآن
+    // هذا التصادم بكود 23505 — الخادم يترجمه لـ409 صريح (خطأ طلب لا خطأ
+    // خادم)، لا 500 عام يوهم بخطأ داخلي.
+    it('activity_group_id مستخدَم مسبقاً في نفس المشروع (تصادم/تجاوز صيغة -uN) → 409 صريح', async () => {
+      tableResults.projects = { data: { work_hours_start: null, work_hours_end: null }, error: null };
+      mockRpcError = { message: 'duplicate key value violates unique constraint', code: '23505' };
+      const { POST } = await import('./route');
+      const res = await POST(
+        makeRequest(
+          baseInsert({
+            regulatory_activity: 'EARTHWORKS',
+            activity_type: 'GRADING',
+            activity_group_id: 'reused-group-id',
+          })
+        ) as never
+      );
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('ACTIVITY_GROUP_ID_ALREADY_USED');
     });
   });
 });
