@@ -299,7 +299,16 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
     expect(decision.operationalDecision).toBe('MANDATORY_STOP');
   });
 
-  it('dvi.mandatoryStop=true بسبب PM10 لحظي فقط + evidenceQuality=OK (قراءة حديثة) → يبقى MANDATORY_STOP كالمعتاد (لا تغيير هنا)', () => {
+  // إصلاح P0 لاحق (راجع engine.ts — dviMandatoryCandidate وdviMandatoryStopIsPm10Only):
+  // كانت هذه الحالة تفترض أن قراءة PM10 اللحظية الحديثة وحدها كافية لإصدار
+  // MANDATORY_STOP عبر DVI. لكن الإيقاف الرسمي الخاص بـPM10 يجب أن يأتي حصراً
+  // من محرك الامتثال (RiyadhDustComplianceEngine) بعد تجاوز فعلي مؤكَّد
+  // لمدة 30 دقيقة، لا من DVI (الذي لا يعرف شيئاً عن آلة حالة الاستمرارية
+  // 2/30 دقيقة — راجع dust-engine/engine.ts). stopBasis='PM10' يبقى دوماً
+  // PENDING (بلا انتهاء صلاحية زمني)، فهو غير موثوق لوحده بصرف النظر عن
+  // حداثة القراءة (evidenceQuality). compliance هنا ALLOW نظيف (لا استمرارية
+  // مؤكَّدة) → لا MANDATORY_STOP.
+  it('dvi.mandatoryStop=true بسبب PM10 لحظي فقط + evidenceQuality=OK (قراءة حديثة)، بلا استمرارية مؤكَّدة من الامتثال → لا MANDATORY_STOP (الإيقاف الرسمي لـPM10 يأتي من محرك الامتثال فقط)', () => {
     const dvi = baseDvi({
       mandatoryStop: true,
       overridable: false,
@@ -314,8 +323,8 @@ describe('decideFinal — dvi.mandatoryStop المبني على PM10 لحظي ل
     const finalInput = buildFinalDecisionInput('snap-1', dvi, compliance, null, 'LIVE_OPERATIONAL');
     expect(finalInput.evidenceQuality).toBe('OK');
     const decision = decideFinal(finalInput);
-    expect(decision.mandatoryStop).toBe(true);
-    expect(decision.operationalDecision).toBe('MANDATORY_STOP');
+    expect(decision.mandatoryStop).toBe(false);
+    expect(decision.operationalDecision).not.toBe('MANDATORY_STOP');
   });
 });
 

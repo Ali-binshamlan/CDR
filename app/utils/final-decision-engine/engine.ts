@@ -155,17 +155,20 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // كرؤية حرجة/عاصفة مساهم بنفس اللحظة)؟ يُقرأ الآن من dvi.stopBasis/
   // confirmationState (حقول Typed، القسم 4.4 من "دليل الإصلاح الجذري") بدل
   // مطابقة نص كود قاعدة (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY) يدوياً.
+  //
+  // خطأ معماري حرج مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "FinalDecisionEngine
+  // قد يعيد إيقاف النشاط عند الدقيقتين"): كان يُستخدَم سابقاً هنا فقط لبناء
+  // dviPm10StopIsUnreliable (استبعاد جزئي: بيانات قديمة فقط) — الإصلاح
+  // الآن يستبعد dviMandatoryStopIsPm10Only بالكامل من dviMandatoryCandidate
+  // أدناه (راجع تعليقه الكامل)، فـdviPm10StopIsUnreliable أصبحت زائدة
+  // منطقياً (أي حالة كانت تحققها كانت أصلاً subset من dviMandatoryStopIsPm10Only)
+  // وحُذفت — لا تغيير سلوكي على dviStopIsPm10StaleOnly (متغيّر منفصل تماماً،
+  // يبني dviCandidate العادي، لا يتأثر بهذا الحذف).
   const dviMandatoryStopIsPm10Only = dvi.stopBasis === 'PM10' && dvi.confirmationState === 'PENDING';
 
-  // dviPm10StopIsUnreliable: PM10 لحظي فقط + قراءة قديمة/غير متوفرة — إيقاف
-  // مبني على بيانات لا يُعتمَد عليها أصلاً. خطر فيزيائي حقيقي (رؤية حرجة/
-  // رياح شديدة، dviMandatoryStopIsPm10Only=false) يبقى يفوز فوراً دائماً —
-  // لا يعتمد على قراءة PM10 التي قد تكون قديمة.
-  const dviPm10StopIsUnreliable = dviMandatoryStopIsPm10Only && evidenceUnavailable;
-
   // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "إيقاف مبني على PM10 قديم يتغلب
-  // على HOLD"): dviMandatoryStopIsPm10Only/dviPm10StopIsUnreliable أعلاه
-  // تُقرآن من dvi.stopBasis/confirmationState — لكن deriveStopBasisAndConfirmation
+  // على HOLD"): dviMandatoryStopIsPm10Only أعلاه
+  // تُقرأ من dvi.stopBasis/confirmationState — لكن deriveStopBasisAndConfirmation
   // (dust-engine/engine.ts) تُرجع دائماً stopBasis='NONE'/confirmationState=
   // 'NOT_APPLICABLE' متى كان mandatoryStop=false، وهي بالضبط الحالة التي
   // يمنعها pm10OnlyConfirmable هناك (PM10 لحظي فقط + قراءة قديمة/غير طازجة):
@@ -341,14 +344,36 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     level: complianceLevel,
   };
 
-  // dvi.mandatoryStop (خطر فيزيائي فوري — رؤية حرجة/عاصفة، أو PM10 لحظي مع
-  // الشرط الفرعي المزدوج) أرضية مطلقة — يُستثنى فقط في حالتين: (1)
-  // pendingAffectedStop=true (محرك الامتثال قرر صراحة أن السبب معلَّق)، أو
-  // (2) PM10 لحظي فقط + evidenceUnavailable (بيانات قديمة/غير متوفرة).
+  // خطأ معماري حرج مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "FinalDecisionEngine
+  // قد يعيد إيقاف النشاط عند الدقيقتين"): dvi.mandatoryStop لمشغِّل PM10
+  // وحده (dust-engine/engine.ts: pm10OnlyConfirmable) محكوم فقط بحداثة
+  // القراءة (pm10ReadingIsFreshEnoughForImmediateStop، ≤4 دقائق تقريباً) —
+  // لا معرفة إطلاقاً بمنطق استمرار الدقيقتين/30 دقيقة الذي يعيش حصراً في
+  // computeSustainedPm10Status (dustEvaluation.ts)/محرك الامتثال. فيبقى
+  // dvi.mandatoryStop=true بلا انتهاء صلاحية طالما القراءة تتجدد فوق 340 —
+  // في الدقيقة 3 (بعد تأكيد الدقيقتين، قبل اكتمال 30 دقيقة)، محرك الامتثال
+  // يتحوّل بحق لـALLOW_WITH_CONTROLS (توثيق مخالفة بلا إيقاف — راجع
+  // pm10ThresholdRule)، فـpendingAffectedStop يصبح false (الامتثال لم يعد
+  // "محظوراً" أصلاً، لا لأنه "تأكَّد وسُمح باستمراره") — الحارسان
+  // pendingAffectedStop (الحارس الوحيد سابقاً) لا يغطي هذه النافذة
+  // (2-30 دقيقة) بالتحديد، فكان dviMandatoryCandidate يفوز بـMANDATORY_STOP
+  // مباشرة رغم أن محرك الامتثال (المصدر الرسمي الوحيد لقرار PM10 حسب
+  // المعمارية) يقول صراحة "استمر تحت الضوابط، لا إيقاف بعد".
+  //
+  // الإصلاح: dviMandatoryStopIsPm10Only (سبب PM10 وحده، بلا خطر فيزيائي
+  // مستقل مساهم — stopBasis='PM10' حصراً، لا 'MIXED') تُستبعَد بالكامل من
+  // هذا المرشح الآن، لا فقط في نافذتي (0-2 دقيقة)/(بيانات قديمة). الإيقاف
+  // الرسمي لـPM10 يأتي حصراً من complianceCandidate (RCRC-PM10-30M-
+  // SUSPENSION-012 بعد 30 دقيقة فعلية — confirmedAffectedStop يفوز هناك
+  // بشكل صحيح تماماً، فلا فقدان لأي إيقاف حقيقي مستحق). خطر فيزيائي حقيقي
+  // مستقل (رؤية حرجة/رياح شديدة، بما فيه MIXED مع PM10 معاً) لا يتأثر
+  // إطلاقاً — dviMandatoryStopIsPm10Only أصلاً false لتلك الحالات (تشترط
+  // stopBasis==='PM10' حصراً)، فيبقى DVI قادراً على الإيقاف المستقل الفوري
+  // كما يجب — نفس فصل DVI عن محرك الامتثال الذي تنص عليه المعمارية.
   const dviMandatoryCandidate: DecisionCandidate = {
     source: 'DVI',
     decision:
-      dvi.mandatoryStop === true && !pendingAffectedStop && !dviPm10StopIsUnreliable ? 'MANDATORY_STOP' : 'ALLOW',
+      dvi.mandatoryStop === true && !pendingAffectedStop && !dviMandatoryStopIsPm10Only ? 'MANDATORY_STOP' : 'ALLOW',
     // dvi.shortReason هو السبب الفعلي (رؤية حرجة/رياح شديدة+مواد سائبة) —
     // نفس النص المعروض قديماً عند mandatoryStop=true من DVI وحده بلا مساهمة
     // امتثال. غير مستهلَكة عملياً عند decision='ALLOW' (هذا المرشح لا يفوز

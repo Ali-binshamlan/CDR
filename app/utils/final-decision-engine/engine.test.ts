@@ -584,6 +584,105 @@ describe('decideFinal — إيقاف DVI مبني على PM10 لحظي قديم 
   });
 });
 
+// خطأ معماري حرج مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "FinalDecisionEngine
+// قد يعيد إيقاف النشاط عند الدقيقتين"): dvi.mandatoryStop لمشغِّل PM10 وحده
+// محكوم بحداثة القراءة فقط (لا معرفة بمنطق استمرار الدقيقتين/30 دقيقة) —
+// يبقى true بلا انتهاء صلاحية طالما القراءة تتجدد فوق 340. في نافذة
+// (2-30 دقيقة) — بعد تأكيد الدقيقتين (محرك الامتثال يتحوّل لـALLOW_WITH_
+// CONTROLS بحق، pendingAffectedStop يصبح false)، قبل اكتمال 30 دقيقة —
+// كان dviMandatoryCandidate يفوز بـMANDATORY_STOP مباشرة، متجاوزاً قرار
+// محرك الامتثال الصريح "استمر تحت الضوابط، لا إيقاف بعد". الإصلاح:
+// dviMandatoryStopIsPm10Only (سبب PM10 وحده) تُستبعَد بالكامل من هذا
+// المرشح، لا فقط في نافذتي (0-2 دقيقة)/(بيانات قديمة).
+describe('decideFinal — الإيقاف الرسمي لـPM10 وحده يأتي حصراً من محرك الامتثال، لا DVI', () => {
+  it('PM10=350 مستمرة 3 دقائق (بعد تأكيد الدقيقتين، قبل اكتمال 30 دقيقة)، بلا خطر فيزيائي آخر → لا MANDATORY_STOP رغم dvi.mandatoryStop=true', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'STOP_DUST_GENERATING_ACTIVITIES',
+      mandatoryStop: true,
+      overridable: false,
+      stopBasis: 'PM10',
+      confirmationState: 'PENDING',
+      triggeredRules: ['DVI-DUST-ACTIVITY-STOP-004', 'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY'],
+      shortReason: 'تركيز PM10 = 350',
+    });
+    // محرك الامتثال بعد تأكيد الدقيقتين (سطر pm10ThresholdRule في rulebook.ts):
+    // ALLOW_WITH_CONTROLS — مخالفة موثَّقة، لا إيقاف — pendingConfirmation=false
+    // (لم يعد "معلَّقاً"، لأنه لم يعد "محظوراً" أصلاً).
+    const compliance = baseCompliance({
+      decisionCategory: 'ALLOW_WITH_CONTROLS',
+      decisionLabelAr: 'مسموح مع ضوابط تحكم إضافية',
+      shortReasonAr: 'مخالفة تنظيمية مؤكدة ومسجَّلة: تركيز PM10 (350 ميكروجرام/م³) تجاوز حد المخالفة لدقيقتين متتاليتين فأكثر',
+      pendingConfirmation: false,
+      hasConfirmedRegulatoryViolation: true,
+      canOverride: true,
+    });
+    const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'OK', mode: 'LIVE_OPERATIONAL' }));
+
+    // القرار الفعلي يطابق ما يقوله محرك الامتثال — لا إيقاف، مخالفة موثَّقة فقط.
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.operationalDecision).not.toBe('MANDATORY_STOP');
+    expect(r.regulatoryFinding).toBe('NON_COMPLIANT');
+  });
+
+  it('نفس السيناريو، لكن مع رؤية حرجة مستقلة حقيقية (stopBasis=MIXED) → MANDATORY_STOP يبقى صحيحاً (لا يتأثر بالإصلاح)', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES',
+      mandatoryStop: true,
+      overridable: false,
+      stopBasis: 'MIXED',
+      confirmationState: 'CONFIRMED',
+      visibilityKm: 0.3,
+      mandatoryVisibilityStop: true,
+      triggeredRules: [
+        'DVI-VISIBILITY-MANDATORY-STOP-001',
+        'DVI-DUST-ACTIVITY-STOP-004',
+        'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY',
+      ],
+      shortReason: 'رؤية حرجة أقل من 500م',
+    });
+    const compliance = baseCompliance({
+      decisionCategory: 'ALLOW_WITH_CONTROLS',
+      pendingConfirmation: false,
+      hasConfirmedRegulatoryViolation: true,
+    });
+    const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'OK', mode: 'LIVE_OPERATIONAL' }));
+
+    // خطر فيزيائي مستقل حقيقي (رؤية حرجة) — dviMandatoryStopIsPm10Only=false
+    // (stopBasis='MIXED' لا 'PM10')، فلا يتأثر بالاستبعاد الجديد إطلاقاً.
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.operationalDecision).toBe('MANDATORY_STOP');
+  });
+
+  it('استمرار فوق 340 لمدة 30 دقيقة فعلياً (compliance يؤكِّد الإيقاف) → MANDATORY_STOP يصل من complianceCandidate، لا dviMandatoryCandidate', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'STOP_DUST_GENERATING_ACTIVITIES',
+      mandatoryStop: true,
+      overridable: false,
+      stopBasis: 'PM10',
+      confirmationState: 'PENDING',
+      triggeredRules: ['DVI-DUST-ACTIVITY-STOP-004', 'DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY'],
+      shortReason: 'تركيز PM10 = 350',
+    });
+    // بعد اكتمال 30 دقيقة: RCRC-PM10-30M-SUSPENSION-012 يُصدِر STOP_AFFECTED_
+    // ACTIVITY غير معلَّق — confirmedAffectedStop=true في complianceCandidate.
+    const compliance = baseCompliance({
+      decisionCategory: 'STOP_AFFECTED_ACTIVITY',
+      decisionLabelAr: 'إيقاف النشاط المتأثر',
+      shortReasonAr: 'تعليق النشاط: تركيز PM10 استمر فوق 340 ميكروجرام/م³ لمدة 30 دقيقة متواصلة',
+      pendingConfirmation: false,
+      hasConfirmedRegulatoryViolation: true,
+      canOverride: false,
+    });
+    const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'OK', mode: 'LIVE_OPERATIONAL' }));
+
+    // الإيقاف لا يزال يحدث — لكن من complianceCandidate (المصدر الرسمي)،
+    // لا dviMandatoryCandidate — لا فقدان لأي إيقاف مستحق فعلياً.
+    expect(r.mandatoryStop).toBe(true);
+    expect(r.operationalDecision).toBe('MANDATORY_STOP');
+    expect(r.regulatoryFinding).toBe('NON_COMPLIANT');
+  });
+});
+
 describe('decideFinal — reasonCodes وsnapshotId وruleBundleVersion', () => {
   it('reasonCodes يجمع رموز DVI والامتثال معاً', () => {
     const compliance = baseCompliance({
