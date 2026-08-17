@@ -30,10 +30,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ projects: [], activities: [] });
   }
 
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "اذا سويت نشاط و حذفته لا
+  // زال يظهر في الجدوله"): الاستعلام كان يفلتر المشاريع المؤرشفة فقط
+  // (أعلاه)، لكن لا يفلتر أنشطة الغبار المؤرشفة فردياً (DELETE /api/activities
+  // يُنفِّذ archived_at على project_dust_profiles نفسها — راجع تعليقها
+  // الكامل هناك) — نشاط محذوف ضمن مشروع لا يزال نشطاً كان يبقى ظاهراً في
+  // جدول الأسبوع لأن archived_at لم يُفحَص هنا إطلاقاً.
   const { data: activities, error } = await supabaseAdmin
     .from('project_dust_profiles')
     .select('id, project_id, activity_type, regulatory_activity, planned_date, planned_time, duration_hours')
     .in('project_id', projectIds)
+    .is('archived_at', null)
     .gte('planned_date', from)
     .lte('planned_date', to)
     .order('planned_date', { ascending: true })
