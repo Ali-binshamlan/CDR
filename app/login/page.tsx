@@ -191,7 +191,17 @@ const onSubmit = async (data: LoginFormData) => {
                   disabled={isSubmitting}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-[#0165FB] to-[#0337a7] text-white font-bold shadow-xl shadow-[#EEE2D4]/20 hover:shadow-[#DAD3CC]/30 flex items-center justify-center gap-2 transition-all disabled:opacity-70"
+                  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — بلاغ مباشر
+                  // بلقطتي شاشة من متصفحين مختلفين: "الزر موجود و لكن بدون
+                  // الوان"، "كلمه الغبار بدون الالوان"): متصفح لا يدعم
+                  // الخصائص التي يعتمد عليها Tailwind v4 داخلياً لتدرجات
+                  // الألوان (bg-gradient-to-r/from/to) يُسقِط التدرج بصمت،
+                  // ويبقى الزر بلا أي خلفية مرئية (لا يوجد لون احتياطي).
+                  // bg-[#0165FB] هنا لون خلفية صلب عادي (CSS قياسي مدعوم
+                  // في كل المتصفحات) يُطبَّق أولاً، يُستبدَل بالتدرج تلقائياً
+                  // في أي متصفح يدعمه فعلياً — فشل التدرج الآن يعني زراً
+                  // أزرق صلباً بدل زر بلا لون إطلاقاً.
+                  className="w-full py-4 rounded-2xl bg-[#0165FB] bg-gradient-to-r from-[#0165FB] to-[#0337a7] text-white font-bold shadow-xl shadow-[#EEE2D4]/20 hover:shadow-[#DAD3CC]/30 flex items-center justify-center gap-2 transition-all disabled:opacity-70"
                 >
                   {isSubmitting ? (
                     <>

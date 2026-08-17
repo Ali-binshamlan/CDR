@@ -10,7 +10,7 @@ import { decisionMeta, alertKindToDecision, dviLevelToDecision } from '@/app/lib
 import { displayActivityLabel } from '@/app/lib/activityLabels';
 import {
   Loader2, Map as MapIcon, FolderKanban, Activity, Bell,
-  ArrowLeft, MapPin, Clock,
+  ArrowLeft, MapPin, Clock, Plus,
 } from 'lucide-react';
 
 const ProjectsMap = dynamic(() => import('./ProjectsMap'), {
@@ -175,9 +175,17 @@ export default function IntegratedDashboard() {
   return (
     <div className="min-h-full bg-[#F4F7FB] p-6 lg:p-8 font-sans" dir="rtl">
       <div className="max-w-[1440px] mx-auto space-y-6">
-        <div>
-          <h1 className="text-3xl font-black text-[#061B40] mb-1">لوحة التحكم</h1>
-          <p className="text-slate-500 text-sm font-medium">نظرة شاملة على مشاريعك وأنشطة اليوم والتنبيهات النشطة</p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-black text-[#061B40] mb-1">لوحة التحكم</h1>
+            <p className="text-slate-500 text-sm font-medium">نظرة شاملة على مشاريعك وأنشطة اليوم والتنبيهات النشطة</p>
+          </div>
+          <Link
+            href="/dashboard/Projects/create"
+            className="w-full sm:w-auto bg-[#3995FF] hover:bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors shrink-0"
+          >
+            <Plus className="w-4 h-4" strokeWidth={3} /> إضافة مشروع
+          </Link>
         </div>
 
         {/* بطاقات إحصائية */}
