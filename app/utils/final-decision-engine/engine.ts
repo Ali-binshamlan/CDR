@@ -559,7 +559,23 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     shortReasonAr,
     decisionLabelAr,
     level,
-    pendingConfirmation: pendingAffectedStop,
+    // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خبير خارجي،
+    // الملاحظة #10: "أ. قبل 120 ثانية: MONITOR/ALLOW_WITH_CONTROLS +
+    // pendingConfirmation=true"): كان هذا الحقل = pendingAffectedStop، الذي
+    // يشترط complianceBlocks (decisionCategory=MANDATORY_STOP/STOP_AFFECTED_
+    // ACTIVITY) قبل أن يعكس compliance.pendingConfirmation إطلاقاً. بعد
+    // إصلاحي الملاحظتين #7/#8، أصبحت النافذة قبل 120 ثانية ALLOW_WITH_CONTROLS
+    // (لا STOP_AFFECTED_ACTIVITY) — فبقي FinalDecision.pendingConfirmation
+    // النهائي عالقاً على false لتلك النافذة تحديداً، رغم أن compliance.
+    // pendingConfirmation=true فعلياً (الواجهة تتجنّب هذا العطل عملياً بقراءة
+    // compliance.pendingConfirmation مباشرة، لا هذا الحقل — راجع
+    // Compliancewidgetcard.tsx — لكن FinalDecision نفسه، الكائن الرسمي
+    // الموحَّد، كان يحمل قيمة غير دقيقة). الإصلاح: قراءة compliance.
+    // pendingConfirmation مباشرة هنا، بصرف النظر عن الفئة — سطر معزول تماماً
+    // لا يمسّ pendingAffectedStop نفسه (يبقى كما هو، يحكم complianceLevel/
+    // complianceCandidate/regulatoryFinding/استبعاد dviMandatoryCandidate
+    // في الملاحظتين #7/#8 دون أي تغيير).
+    pendingConfirmation: compliance?.pendingConfirmation === true,
     reasonCodes: Object.freeze(reasonCodes),
     evidenceQuality,
     ruleBundleVersion: input.ruleBundleVersion,

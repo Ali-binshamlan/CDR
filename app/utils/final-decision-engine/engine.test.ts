@@ -689,6 +689,42 @@ describe('decideFinal — الإيقاف الرسمي لـPM10 وحده يأتي
     expect(r.operationalDecision).toBe('MANDATORY_STOP');
     expect(r.regulatoryFinding).toBe('NON_COMPLIANT');
   });
+
+  // تغطية مباشرة صريحة للنوافذ الزمنية الثلاث مجتمعة (طلب صريح من المستخدم
+  // — مراجعة كود خبير خارجي، الملاحظة #10: "أ. قبل 120 ثانية: MONITOR/
+  // ALLOW_WITH_CONTROLS + pendingConfirmation=true. ب. 120ث-30د: regulatory
+  // Finding=NON_COMPLIANT لكن التشغيلي MONITOR/ALLOW_WITH_CONTROLS، لا
+  // PROTECTIVE_STOP/MANDATORY_STOP/STOP_AFFECTED_ACTIVITY. ج. عند 30:00:
+  // STOP_AFFECTED_ACTIVITY أو المكافئ المعتمد للإيقاف غير القابل للتجاوز").
+  // الاختبارات أعلاه في هذا describe تغطي (ب) و(ج) بالفعل — هذا الاختبار
+  // يضيف (أ) تحديداً بالشكل الحقيقي الذي ينتجه rulebook.ts فعلياً الآن
+  // (ALLOW_WITH_CONTROLS من MRQ-PM10-BLACK-PENDING-104، لا STOP_AFFECTED_
+  // ACTIVITY الاصطناعية المُستخدَمة في اختبارات دفاعية أخرى بهذا الملف).
+  it('نافذة (أ) — قبل 120 ثانية (PM10>340، لم يتأكّد بعد): compliance=ALLOW_WITH_CONTROLS من MRQ-PM10-BLACK-PENDING-104 فعلياً → operationalDecision=MONITOR، pendingConfirmation=true، لا أي فئة إيقاف', () => {
+    const dvi = baseDvi({
+      decisionCategory: 'ALLOW_WITH_MONITORING',
+      mandatoryStop: false,
+      stopBasis: 'NONE',
+      confirmationState: 'NOT_APPLICABLE',
+      triggeredRules: ['DVI-PM10-ACTION-003'],
+      shortReason: 'تركيز PM10 = 345',
+    });
+    const compliance = baseCompliance({
+      decisionCategory: 'ALLOW_WITH_CONTROLS',
+      decisionLabelAr: 'مسموح مع ضوابط تحكم إضافية',
+      shortReasonAr: 'تنبيه: تركيز PM10 (345 ميكروجرام/م³) تجاوز حد المخالفة (340 ميكروجرام/م³) — بانتظار اكتمال دقيقتين استمرار لتصنيفها مخالفة تنظيمية مؤكدة',
+      pendingConfirmation: true,
+      hasConfirmedRegulatoryViolation: false,
+      canOverride: true,
+    });
+    const r = decideFinal(input({ dvi, compliance, evidenceQuality: 'OK', mode: 'LIVE_OPERATIONAL' }));
+
+    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.pendingConfirmation).toBe(true);
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.operationalDecision).not.toBe('PROTECTIVE_STOP');
+    expect(r.operationalDecision).not.toBe('MANDATORY_STOP');
+  });
 });
 
 describe('decideFinal — reasonCodes وsnapshotId وruleBundleVersion', () => {
