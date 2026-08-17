@@ -313,10 +313,21 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
       ];
 
   // تحديد العنصر النشط بناءً على المسار الحالي (route) بدل state داخلي
+  //
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — بلاغ مباشر: "العنصر الاول
+  // يبقى ازرق حتى بعد التنقل لعنصر اخر"): الاستثناء أدناه كان مقصوراً على
+  // '/dashboard' فقط (رابط "لوحة التحكم" لقائمة المستخدم العادي) — لا
+  // يغطي "لوحة الإدارة" (/dashboard/admin) و"لوحة التحكم" لجهة المراقبة
+  // (/dashboard/viewer)، وكلاهما لهما نفس المشكلة بالضبط: مسارهما بادئة
+  // حرفية لكل صفحاتهما الفرعية (/dashboard/admin/users يبدأ بـ
+  // /dashboard/admin/)، فكان startsWith(href + '/') يُبقي العنصر الأول
+  // نشطاً دائماً بصرف النظر عن الصفحة الفرعية الفعلية المفتوحة. الآن أي
+  // رابط "جذر" من الثلاثة (/dashboard، /dashboard/admin، /dashboard/viewer)
+  // يتطلب تطابقاً تاماً، لا مجرد بادئة.
+  const ROOT_HREFS = new Set(['/dashboard', '/dashboard/admin', '/dashboard/viewer']);
   const isItemActive = (href: string) => {
-    if (href === '/dashboard') {
-      // الرئيسية تكون نشطة فقط عند التطابق التام، لتجنب تفعيلها مع كل المسارات الفرعية
-      return pathname === '/dashboard';
+    if (ROOT_HREFS.has(href)) {
+      return pathname === href;
     }
     return pathname === href || pathname?.startsWith(href + '/');
   };
