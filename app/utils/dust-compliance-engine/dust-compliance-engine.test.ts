@@ -588,12 +588,18 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'PM10-WARNING-008')).toBe(true);
   });
 
-  it('PM10=345 (≥340) بلا بيانات استمرار (undefined) → معلَّق فقط (MRQ-PM10-BLACK-PENDING-104)، لا مخالفة مؤكدة', () => {
+  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — الملاحظة #7:
+  // "قبل 120 ثانية: PENDING_CONFIRMATION + ENHANCED_CONTROLS + MONITOR،
+  // وليس STOP_AFFECTED_ACTIVITY"): MRQ-PM10-BLACK-PENDING-104 لم تعد
+  // STOP_AFFECTED_ACTIVITY — أصبحت ALLOW_WITH_CONTROLS (نفس مستوى
+  // PM10-WARNING-008)، مع بقاء pendingConfirmation=true (الحقل المستقل
+  // الذي يعكس "لم يُثبَت الاستمرار بعد" بصرف النظر عن severity القاعدة).
+  it('PM10=345 (≥340) بلا بيانات استمرار (undefined) → معلَّق فقط (MRQ-PM10-BLACK-PENDING-104)، تنبيه توعوي لا تقييد', () => {
     // RCRC-PM10-340-VIOLATION-011 يتطلب استمراراً فعلياً لأكثر من دقيقتين —
     // قراءة واحدة بلا أي دليل استمرار (sustainedMinutesAbove340 غائب) لا
     // يجوز أن تصبح إيقافاً إلزامياً غير قابل للتجاوز مباشرة (فشل آمن).
     const r = evaluateDustCompliance(context({ pm10UgM3: 345 }));
-    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
     // الحالة المعلَّقة يجب أن تُعلَّم صراحة حتى لا تظهر الواجهة "إيقاف
@@ -623,9 +629,9 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.hasConfirmedRegulatoryViolation).toBe(true);
   });
 
-  it('PM10=345 استمر لدقيقة واحدة فقط (أقل من دقيقتين) → يبقى معلَّقاً، لا مخالفة مؤكدة بعد', () => {
+  it('PM10=345 استمر لدقيقة واحدة فقط (أقل من دقيقتين) → يبقى معلَّقاً (تنبيه توعوي)، لا مخالفة مؤكدة بعد', () => {
     const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10SustainedMinutesAbove340: 1 }));
-    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
     expect(r.pendingConfirmation).toBe(true);
   });
@@ -635,14 +641,31 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
   // أو 2:00.000) ضمن "مخالفة"، رغم أن النص التنظيمي "تجاوز 340" و"أكثر من
   // دقيقتين" يعني `>` صراحة لا `>=`. الاختبارات التالية تثبّت السلوك الصحيح
   // عند الحدود الأربعة بالضبط.
+  // قرار تنظيمي مُعاد النظر فيه (الملاحظة #7): الحالتان المعلَّقتان (أقل من
+  // دقيقتين استمرار) أصبحتا ALLOW_WITH_CONTROLS بدل STOP_AFFECTED_ACTIVITY —
+  // كل النطاق قبل التأكيد النهائي (340 بالضبط، معلَّق، ومؤكَّد) يتقارب الآن
+  // على نفس الفئة ALLOW_WITH_CONTROLS، والفارق الفعلي بينها يظهر فقط عبر
+  // pendingConfirmation/triggeredRules (راجع الاختبارات المخصصة أدناه).
   it.each([
     { pm10: 340, minutes: 60, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10=340 بالضبط (لم يتجاوز) بصرف النظر عن مدة الاستمرار → تحذير/تحكم معزَّز فقط، لا معلَّق ولا مؤكَّد' },
-    { pm10: 340.01, minutes: 1.99, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → معلَّق فقط' },
-    { pm10: 340.01, minutes: 2, decision: 'STOP_AFFECTED_ACTIVITY', label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط (لم يتجاوز) → معلَّق فقط، ليس مؤكَّداً بعد' },
+    { pm10: 340.01, minutes: 1.99, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → معلَّق (تنبيه توعوي)' },
+    { pm10: 340.01, minutes: 2, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط (لم يتجاوز) → معلَّق (تنبيه توعوي)، ليس مؤكَّداً بعد' },
     { pm10: 340.01, minutes: 2.01, decision: 'ALLOW_WITH_CONTROLS', label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → مخالفة مؤكدة وموثَّقة، بلا إيقاف فوري' },
   ] as const)('$label', ({ pm10, minutes, decision }) => {
     const r = evaluateDustCompliance(context({ pm10UgM3: pm10, pm10SustainedMinutesAbove340: minutes }));
     expect(r.decisionCategory).toBe(decision);
+  });
+
+  // نفس نقاط الحدّ الأربع أعلاه، لكن بفحص pendingConfirmation صراحةً —
+  // هذا هو الحقل الذي يميّز فعلياً "معلَّق" عن "مؤكَّد" الآن بعد أن أصبحت
+  // كلتاهما ALLOW_WITH_CONTROLS.
+  it.each([
+    { pm10: 340.01, minutes: 1.99, pending: true, label: 'PM10 تجاوز 340 لكن الاستمرار أقل من دقيقتين → pendingConfirmation=true' },
+    { pm10: 340.01, minutes: 2, pending: true, label: 'PM10 تجاوز 340 والاستمرار 2 دقيقة بالضبط → pendingConfirmation=true (اكتمال الدقيقتين كافٍ للتأكيد فعلياً — راجع isConfirmedViolation340)' },
+    { pm10: 340.01, minutes: 2.01, pending: false, label: 'PM10 تجاوز 340 والاستمرار تجاوز دقيقتين فعلياً → pendingConfirmation=false (مؤكَّدة)' },
+  ] as const)('$label', ({ pm10, minutes, pending }) => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: pm10, pm10SustainedMinutesAbove340: minutes }));
+    expect(r.pendingConfirmation).toBe(pending);
   });
 
   // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — ملاحظة #2): كانت pm10ThresholdRule
@@ -661,7 +684,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
         pm10ConfirmedViolation340: false, // لكن الدليل الفعلي (مصدر/حداثة) غير كافٍ
       })
     );
-    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.pendingConfirmation).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(false);
   });
@@ -702,17 +725,16 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.requiredActions.some((a) => a.includes('احترازياً'))).toBe(false);
   });
 
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة PM10 معلَّقة قد
-  // تتغلب على توقف مؤكَّد"): بخلاف الاختبار أعلاه (DEMO-WIND-STOP-001 أشد
-  // من STOP_AFFECTED_ACTIVITY فيفوز بالأولوية العددية وحدها)، هذا السيناريو
-  // يبني تعادلاً حقيقياً بنفس الشدة: BATCHING-LEAK-003 (STOP_AFFECTED_ACTIVITY
-  // مؤكَّد، يُدفَع عبر applyActivityRules بعد pm10ThresholdRule ترتيبياً في
-  // ruleHits) وMRQ-PM10-BLACK-PENDING-104 (STOP_AFFECTED_ACTIVITY معلَّق،
-  // يُدفَع قبله) — كلاهما نفس الشدة بالضبط. decidingRule = ruleHits.find(...)
-  // القديمة كانت تختار قاعدة PM10 المعلَّقة لمجرد سبقها ترتيبياً، فيظهر
-  // البانر "معلَّق — بانتظار التأكيد" رغم تسرب فعلي مؤكَّد من صومعة الإسمنت
-  // لا علاقة له باستمرار PM10 إطلاقاً.
-  it('تعادل حقيقي بنفس الشدة (STOP_AFFECTED_ACTIVITY): تسرب صومعة مؤكَّد + PM10 معلَّق بالتوازي → القاعدة المؤكَّدة تفوز، لا معلَّق', () => {
+  // خطأ مكتشَف ومُصلَح تاريخياً (مراجعة كود خبير خارجي — "قاعدة PM10 معلَّقة
+  // قد تتغلب على توقف مؤكَّد")، لا يزال صالحاً كاختبار قبول رغم أن السيناريو
+  // لم يعد "تعادلاً حقيقياً" بالمعنى الحرفي بعد إعادة النظر في severity
+  // MRQ-PM10-BLACK-PENDING-104 (أصبحت ALLOW_WITH_CONTROLS، لا STOP_AFFECTED_
+  // ACTIVITY — راجع الملاحظة #7 أعلى الملف): BATCHING-LEAK-003 (STOP_AFFECTED_
+  // ACTIVITY مؤكَّد) يفوز الآن بالأولوية العددية البسيطة على PM10 المعلَّقة
+  // (ALLOW_WITH_CONTROLS، أخف)، لا عبر تفضيل "المؤكَّد بين متعادلين". النتيجة
+  // النهائية (تسرب يفوز، لا PM10 معلَّق، لا ظهوره في القوائم المعروضة) تبقى
+  // نفسها ومهمة الاختبار عليها.
+  it('تسرب صومعة مؤكَّد (STOP_AFFECTED_ACTIVITY) + PM10 معلَّق بالتوازي (ALLOW_WITH_CONTROLS) → القاعدة المؤكَّدة الأشد تفوز، لا معلَّق', () => {
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 345,
@@ -734,7 +756,12 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
   });
 
-  it('نفس تعادل الشدة، لكن كلتا القاعدتين معلَّقتان معاً → pendingConfirmation يبقى true (لا قاعدة مؤكَّدة بينهما لتفضيلها)', () => {
+  // بعد إعادة النظر في severity MRQ-PM10-BLACK-PENDING-104 (أصبحت
+  // ALLOW_WITH_CONTROLS)، لم تعد هذه القاعدة تدخل topHits عند STOP_AFFECTED_
+  // ACTIVITY إطلاقاً — GATE-DVI-002 وحدها هي topHit هنا الآن (لا تعادل بين
+  // قاعدتين، لكن نفس النتيجة: قاعدة واحدة معلَّقة تكفي لجعل pendingConfirmation
+  // كاملاً true، تماماً كما كانت الدلالة الأصلية لهذا الاختبار).
+  it('GATE-DVI-002 (PM10 لحظي وحده) هي القاعدة الوحيدة بأعلى شدة ومعلَّقة → pendingConfirmation يبقى true', () => {
     // GATE-DVI-002 بseverity=STOP_AFFECTED_ACTIVITY تُعامَل كمعلَّقة أيضاً
     // حين تكون PM10 لحظياً وحده سبب dviMandatoryStop — راجع isPendingRuleHit.
     const r = evaluateDustCompliance(
@@ -2819,14 +2846,28 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       return buildComplianceContext({}, {}, dviHourly, [], null, null, evaluatedAtMs);
     }
 
-    it('عمر 4:00.000 بالضبط → FRESH، pm10UgM3=500 يدخل القرار، ينتج STOP', () => {
+    // قرار تنظيمي مُعاد النظر فيه (الملاحظة #7): MRQ-PM10-BLACK-PENDING-104
+    // أصبحت ALLOW_WITH_CONTROLS بدل STOP_AFFECTED_ACTIVITY — لم تعد تتفوق
+    // تلقائياً على أي قرار آخر بصرف النظر عن محتواه (كانت STOP_AFFECTED_
+    // ACTIVITY تفوز دائماً تقريباً حتى لو صعَّدت missingCriticalInputs
+    // القرار إلى FIELD_VERIFICATION_REQUIRED، لأن STOP_AFFECTED_ACTIVITY
+    // أعلى في DECISION_PRIORITY أصلاً). buildComplianceContext({}, {}, ...)
+    // يمرر project/row فارغين تماماً — بلا project/windSpeedKmh صريحين هنا،
+    // ينقص siteAreaM2/dailyTruckMovements/dmpApprovalStatus فتُصعَّد
+    // missingCriticalInputs القرار لـFIELD_VERIFICATION_REQUIRED (أعلى الآن
+    // من ALLOW_WITH_CONTROLS)، فتختفي MRQ-PM10-BLACK-PENDING-104 من
+    // triggeredRules رغم أنها لا تزال مُفعَّلة داخلياً — هذا الاختبار يفحص
+    // حد الحداثة الزمنية لـPM10 تحديداً، لا تفاعله مع نقص بيانات المشروع، لذا
+    // نمرر project/windSpeedKmh كاملين وصريحين لعزل السلوك المقصود فحصه.
+    it('عمر 4:00.000 بالضبط → FRESH، pm10UgM3=500 يدخل القرار، ينتج تنبيه توعوي معلَّق', () => {
       const ctx = contextWithPm10Age(4 * 60_000);
       expect(ctx.pm10EvidenceState).toBe('FRESH');
       expect(ctx.pm10UgM3).toBe(500);
       expect(ctx.pm10RawUgM3).toBe(500);
 
-      const r = evaluateDustCompliance(context(ctx));
+      const r = evaluateDustCompliance(context({ ...ctx, project: projectProfile(), windSpeedKmh: 10 }));
       expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
+      expect(r.pendingConfirmation).toBe(true);
     });
 
     it('عمر 4:00.001 (مليثانية واحدة أكثر) → STALE، pm10UgM3=null، لا إيقاف/تعليق PM10', () => {
