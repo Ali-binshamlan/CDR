@@ -188,6 +188,17 @@ describe('computeSustainedPm10Status', () => {
     expect(r.isPendingViolation340).toBe(false);
   });
 
+  it('استمرار فعلي أقل بقليل من دقيقتين (119.999 ثانية، أقصر بمللي ثانية واحدة فقط) فوق 340 → لا تزال معلَّقة، ليست مؤكَّدة بعد', () => {
+    const readings = [
+      { pm10UgM3: 350, recordedAt: new Date(NOW - 119_999).toISOString(), source: 'device' as const },
+      { pm10UgM3: 348, recordedAt: new Date(NOW - 60_000).toISOString(), source: 'device' as const },
+      { pm10UgM3: 345, recordedAt: new Date(NOW).toISOString(), source: 'device' as const },
+    ];
+    const r = computeSustainedPm10Status(readings, NOW);
+    expect(r.isConfirmedViolation340).toBe(false);
+    expect(r.isPendingViolation340).toBe(true);
+  });
+
   it('استمرار فعلي أكثر بقليل من دقيقتين (2 دقيقة و1 ثانية) فوق 340 → مؤكَّدة الآن', () => {
     const readings = [
       { pm10UgM3: 350, recordedAt: new Date(NOW - 121_000).toISOString(), source: 'device' as const },
@@ -258,6 +269,21 @@ describe('computeSustainedPm10Status', () => {
     );
     const r = computeSustainedPm10Status(readings, NOW);
     expect(r.isSuspended250For30Min).toBe(true);
+  });
+
+  it('استمرار فوق 340 لمدة 29:59 دقيقة (أقصر بثانية واحدة فقط من 30 دقيقة) → لا تعليق بعد، شرط الـ30 دقيقة غير مكتمل', () => {
+    const readings = [
+      { pm10UgM3: 350, recordedAt: new Date(NOW - 1_799_000).toISOString(), source: 'device' as const }, // 29:59 قبل الآن
+      ...Array.from({ length: 29 }, (_, i) => ({
+        pm10UgM3: 350,
+        recordedAt: new Date(NOW - (29 - i) * 60_000).toISOString(),
+        source: 'device' as const,
+      })),
+      { pm10UgM3: 350, recordedAt: new Date(NOW).toISOString(), source: 'device' as const },
+    ];
+    const r = computeSustainedPm10Status(readings, NOW);
+    expect(r.isConfirmedViolation340).toBe(true);
+    expect(r.isSuspended250For30Min).toBe(false);
   });
 
   it('استمرار فوق 340 لمدة 25 دقيقة فقط (أقل من 30، قراءات كل دقيقتين) → لا تعليق بعد', () => {
