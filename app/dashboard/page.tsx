@@ -10,6 +10,16 @@ import { Loader2 } from 'lucide-react';
 // بمشاريع مستخدم عادي — تُحوَّل فوراً لنسختها غير المقيَّدة على
 // /dashboard/viewer (نفس مبدأ إعادة توجيه غير-الأدمن بعيداً عن
 // /dashboard/admin، بالاتجاه المعاكس).
+//
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — بلاغ مباشر بلقطتي شاشة:
+// "اول ما تسجل دخول تطلع كذا [لوحة تحكم فارغة بلا معنى للأدمن] ثم اذا
+// ضغطت على لوحه التحكم تطلع كذا [لوحة الإدارة الفعلية]"): تسجيل الدخول
+// يُحوِّل الجميع دائماً إلى /dashboard بصرف النظر عن الدور (login/page.tsx)
+// — Sidebar.tsx (commit سابق: فصل قائمة super_admin بالكامل) لم يعد يعرض
+// أي رابط لـ/dashboard الأصلي لحساب الأدمن أصلاً، فيبقى هذا المسار وجهة
+// ميتة له (كل الأرقام صفر، خريطة مشاريع فارغة لا صلة لها بحساب إداري بحت)
+// حتى يضغط يدوياً على "لوحة الإدارة". نفس فحص is_super_admin المستخدَم
+// فعلياً في admin/page.tsx (سطر check أعلاه هناك) يُطبَّق هنا بنفس الأسلوب.
 export default function DashboardHomePage() {
   const router = useRouter();
   const [shouldRender, setShouldRender] = useState<boolean | undefined>(undefined);
@@ -19,6 +29,10 @@ export default function DashboardHomePage() {
       const { data: profileResp } = await apiClient.get('/profile');
       if (profileResp?.data?.account_role === 'viewer') {
         router.replace('/dashboard/viewer');
+        return;
+      }
+      if (profileResp?.data?.is_super_admin) {
+        router.replace('/dashboard/admin');
         return;
       }
       setShouldRender(true);
