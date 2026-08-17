@@ -1828,7 +1828,10 @@ describe('محرك امتثال الغبار — الكسارة', () => {
 });
 
 describe('محرك امتثال الغبار — اكتشاف مستقبل حساس تلقائياً لموقع الأكوام (A5)', () => {
-  it('مسافة الأكوام المحسوبة تلقائياً تفوز على تصريح المستخدم اليدوي البعيد', () => {
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا
+  // تدخل ضمن قرارات الإيقاف"، فجوة فاتت commit 6f328f8): القاعدة تبقى
+  // مفعَّلة كتنبيه توعوي (triggeredRules)، بلا أي تأثير على decisionCategory.
+  it('مسافة الأكوام المحسوبة تلقائياً تفوز على تصريح المستخدم اليدوي البعيد → تنبيه فقط، لا إيقاف', () => {
     const r = evaluateDustCompliance(
       context({
         activity: activityProfile({
@@ -1844,7 +1847,8 @@ describe('محرك امتثال الغبار — اكتشاف مستقبل حس�
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'STOCKPILE-DISTANCE-002')).toBe(true);
-    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
   });
 
   it('بلا إحداثيات أكوام — يُعتمَد الحقل اليدوي فقط كاحتياطي', () => {

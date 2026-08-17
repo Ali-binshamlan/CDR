@@ -910,15 +910,27 @@ function stockpileRules(
   // sensitive_receptors (عند توفرها) لها الأولوية على الحقل اليدوي — لا
   // يجوز أن يعتمد قرار المطابقة على تصريح المستخدم وحده بأن لا مستقبل
   // حساس قريب، لأنه قد يخطئ أو يتجاهل وجود منشأة فعلياً.
+  //
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قاعدة مخزون 200م ما زالت تصدر
+  // STOP_AFFECTED_ACTIVITY، بخلاف قرار المستخدم الأخير أن قواعد 200م/500م
+  // تنبيه فقط"): فجوة فاتت commit 6f328f8 ("إزالة قرارات الإيقاف/المنع
+  // المبنية على مسافة المستقبِلات الحساسة") — تلك المعالجة شملت 7 قواعد
+  // (CRUSHER-*/BATCHING-*/MRQ-RECEPTOR-DOWNWIND-120) لكن فاتها
+  // STOCKPILE-DISTANCE-002 تحديداً، رغم نفس السبب المنطقي بالضبط (تناقض
+  // نافذة AEI التي تدمج OSM+يدوي مقابل هذا الحقل الذي يقرأ الجدول اليدوي/
+  // المحسوب تلقائياً فقط — راجع رسالة 6f328f8 الكاملة). نفس المعالجة الآن:
+  // ALLOW_WITH_CONTROLS بدل STOP_AFFECTED_ACTIVITY — القاعدة نفسها تبقى
+  // مفعَّلة كتنبيه توعوي (لا تزال تُسجَّل ضمن triggeredRules)، فقط أثرها على
+  // decisionCategory أُلغي.
   const distance = activity.measurements.stockpileDistanceToNearestReceptorAutoM ?? activity.measurements.stockpileBatchingDistanceToReceptorM;
   const stockpileSensitiveReceptorDistanceM = STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M();
   if (distance !== null && distance !== undefined && distance < stockpileSensitiveReceptorDistanceM) {
     hits.push(
       ruleHit(
         'STOCKPILE-DISTANCE-002',
-        'STOP_AFFECTED_ACTIVITY',
-        `مسافة الأكوام/محطة الخلط من المستقبِل الحساس (${activity.measurements.stockpileDistanceToNearestReceptorAutoM !== null && activity.measurements.stockpileDistanceToNearestReceptorAutoM !== undefined ? 'محسوبة تلقائياً: ' : ''}${distance} م) أقل من ${stockpileSensitiveReceptorDistanceM} م`,
-        `انقل الأكوام/محطة الخلط إلى مسافة لا تقل عن ${stockpileSensitiveReceptorDistanceM} م عن أقرب مستقبل حساس`
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه: مسافة الأكوام/محطة الخلط من المستقبِل الحساس (${activity.measurements.stockpileDistanceToNearestReceptorAutoM !== null && activity.measurements.stockpileDistanceToNearestReceptorAutoM !== undefined ? 'محسوبة تلقائياً: ' : ''}${distance} م) أقل من ${stockpileSensitiveReceptorDistanceM} م — تنبيه توعوي فقط، لا يوقف النشاط`,
+        `يُفضَّل نقل الأكوام/محطة الخلط إلى مسافة لا تقل عن ${stockpileSensitiveReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`
       )
     );
   }
