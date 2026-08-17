@@ -101,12 +101,16 @@ describe('evaluateLiveOperationalDecision — صفر مكالمات fetch إطل
     expect(result.mergedReading.deviceLastReadingAt).toBe(oldReadingAt);
   });
 
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "PM10 بقيمة 500 وعمر أكبر من
-  // أربع دقائق ما زال قادراً على إنتاج إيقاف"): mandatoryStop=true من PM10
-  // لحظي فقط (بلا خطر فيزيائي آخر) يشترط الآن قراءة PM10 طازجة تحديداً
-  // (devicePm10LastReadingAt عمرها ≤4 دقائق)، لا مجرد devicePm10LastReadingAt
-  // غائبة تماماً. راجع الاختبار التالي مباشرة لحالة القراءة القديمة/الغائبة.
-  it('PM10>340 من الجهاز لنشاط مولّد للغبار مع قراءة PM10 طازجة → mandatoryStop=true (نفس بوابات DVI الفيزيائية العادية)', () => {
+  // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — الملاحظة #9: "DVI لا
+  // يجوز أن يقوم عبر مسار جانبي بعمل PM10>340 → STOP إذا كانت قاعدة المشروع
+  // نفسها تقول STOP بعد 30 دقيقة"): DVI لم يعد يملك أي عتبة PM10 مستقلة
+  // تُنتج mandatoryStop/STOP_DUST_GENERATING_ACTIVITIES — القرار التنظيمي
+  // لـPM10 يأتي حصراً من محرك الامتثال (pm10ThresholdRule/GATE-DVI-002 في
+  // dust-compliance-engine). الاختبارات الثلاثة القديمة هنا (طازجة/غائبة/
+  // قديمة) كانت تختبر بالضبط آلية الحداثة التي أُزيلت — استُبدلت باختبار
+  // واحد يثبت أن PM10 مرتفع وحده (بلا خطر فيزيائي حقيقي آخر) لا يُنتج أي
+  // إيقاف من DVI إطلاقاً، بصرف النظر عن حداثة القراءة.
+  it('PM10>340 من الجهاز وحده (بلا رؤية حرجة/رياح شديدة مساهمة)، بصرف النظر عن حداثة القراءة → لا mandatoryStop، لا STOP_DUST_GENERATING_ACTIVITIES (القرار التنظيمي لـPM10 يأتي حصراً من محرك الامتثال)', () => {
     vi.stubGlobal('fetch', vi.fn());
     const result = evaluateLiveOperationalDecision(
       input({
@@ -117,38 +121,9 @@ describe('evaluateLiveOperationalDecision — صفر مكالمات fetch إطل
         devicePm10LastReadingAt: new Date().toISOString(),
       })
     );
-    expect(result.mandatoryStop).toBe(true);
-    expect(result.stopBasis).toBe('PM10');
-  });
-
-  it('PM10>340 من الجهاز لنشاط مولّد للغبار لكن devicePm10LastReadingAt غائبة (لا إثبات حداثة) → mandatoryStop=false احترازياً، لا إيقاف قطعي بلا دليل حداثة', () => {
-    vi.stubGlobal('fetch', vi.fn());
-    const result = evaluateLiveOperationalDecision(
-      input({
-        activityType: 'EXCAVATION',
-        hasDeviceLink: true,
-        devicePm10: 500,
-        deviceLastReadingAt: new Date().toISOString(),
-      })
-    );
     expect(result.mandatoryStop).toBe(false);
-    expect(result.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
-    expect(result.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE');
-  });
-
-  it('PM10>340 من الجهاز وdevicePm10LastReadingAt عمرها 3 ساعات (قديمة فعلياً) → mandatoryStop=false احترازياً', () => {
-    vi.stubGlobal('fetch', vi.fn());
-    const threeHoursAgo = new Date(Date.now() - 3 * 3600000).toISOString();
-    const result = evaluateLiveOperationalDecision(
-      input({
-        activityType: 'EXCAVATION',
-        hasDeviceLink: true,
-        devicePm10: 500,
-        deviceLastReadingAt: new Date().toISOString(),
-        devicePm10LastReadingAt: threeHoursAgo,
-      })
-    );
-    expect(result.mandatoryStop).toBe(false);
-    expect(result.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE');
+    expect(result.decisionCategory).not.toBe('STOP_DUST_GENERATING_ACTIVITIES');
+    expect(result.stopBasis).toBe('NONE');
+    expect(result.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
   });
 });

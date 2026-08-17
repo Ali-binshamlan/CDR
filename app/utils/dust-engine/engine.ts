@@ -196,21 +196,7 @@ function applyMandatoryGates(
   receptorImpact: number,
   score: number,
   weatherSymbol: DustWeatherSample['weatherSymbol'],
-  baseDecision: DviDecisionCategory,
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "PM10 بقيمة 500 وعمر أكبر من
-  // أربع دقائق ما زال قادراً على إنتاج إيقاف"): كانت pm10RuleTriggered أدناه
-  // تستهلك pm10 اللحظي بلا أي فحص عمر/حداثة — فقراءة قديمة جداً (ساعات، طالما
-  // devicePm10 لا يزال غير null من صف الجهاز نفسه) تُفعِّل mandatoryStop=true
-  // فوراً، ويُستهلَك هذا الحقل الخام مباشرة في مواضع لا تمر عبر آلية استمرار
-  // PM10 الصحيحة في dustEvaluation.ts (مثال: dviLevelToDecision في نقطة
-  // الخريطة الحية بـGlobalDashboard/IntegratedDashboard). false هنا (قراءة
-  // قديمة/غير متوفرة) لا يُسقِط بوابة PM10 كلياً — فقط يمنعها من فرض
-  // mandatoryStop=true القطعي، ويُبقيها عند RESTRICT_SEVERE احترازياً (نفس
-  // شدة رؤية<1كم) بانتظار قراءة طازجة تؤكد الخطر فعلياً. لا تأثير على
-  // combinedVisibilityWindTriggered (خطر فيزيائي فوري لا علاقة له بحداثة
-  // PM10). true دائماً بلا جهاز مرتبط (input.hasDeviceLink=false، القراءة من
-  // تقدير طقس لا "قراءة" فردية لها عمر بالمعنى نفسه).
-  pm10ReadingIsFreshEnoughForImmediateStop: boolean
+  baseDecision: DviDecisionCategory
 ): GateOutcome {
   const rules: string[] = [];
   const actions: string[] = [];
@@ -253,58 +239,38 @@ function applyMandatoryGates(
     if (decision === 'ALLOW') decision = 'ALLOW_WITH_MONITORING';
   }
 
-  // حد الإيقاف 340 (بدل 500 سابقاً) ليطابق حد المخالفة التنظيمي في
-  // "الاستخراج التنظيمي من المرفق" (PM10-VIOLATION-STOP-006 بمحرك
-  // الامتثال) — DVI الفيزيائي لا يجوز أن "يسمح" حتى نقطة يوقفها الامتثال
-  // التنظيمي فعلياً، وإلا يظهر تناقض بين المحركين.
+  // خطأ معماري حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خبير
+  // خارجي، الملاحظة #9: "DVI أيضاً ما زال يحتاج تحصيناً... الوثيقة
+  // المعمارية تفصل بوضوح بين DVI=تقييم الخطر وRiyadh Dust Compliance
+  // Engine=تطبيق قاعدة PM10 التنظيمية... لا يجوز أن يقوم DVI عبر مسار
+  // جانبي بعمل PM10>340 → STOP إذا كانت قاعدة المشروع نفسها تقول STOP بعد
+  // 30 دقيقة"): كان DVI يحمل نسخته المستقلة الخاصة من عتبة PM10>340
+  // (pm10RuleTriggered) تُنتج STOP_DUST_GENERATING_ACTIVITIES/mandatoryStop
+  // بمعزل تام عن آلة حالة الاستمرارية 2/30 دقيقة التي تعيش حصراً في محرك
+  // الامتثال (pm10ThresholdRule بـrulebook.ts). هذا لم يكن خطأ منطقي مباشر
+  // (dviMandatoryStopIsPm10Only/dviStopIsPm10StaleOnly في
+  // final-decision-engine/engine.ts كانتا تُصفِّيان الأثر النهائي بنجاح،
+  // بعد إصلاحين سابقين لهذا الملف نفسه في نفس الجلسة) — لكنه سلطة قرار
+  // مكرَّرة معمارياً: أي مستهلك جديد يقرأ dvi.decisionCategory/mandatoryStop
+  // مباشرة (بلا المرور عبر التصفية المزدوجة تلك) يقع في نفس الفخ الذي وقع
+  // فيه dviCandidate وGATE-DVI-002 قبل إصلاحهما. الإصلاح الجذري: يُزال هذا
+  // الفرع بالكامل من DVI — القرار التنظيمي لـPM10 يأتي الآن من مصدر واحد
+  // فقط (محرك الامتثال)، لا نسختين مستقلتين يجب مزامنتهما يدوياً باستمرار.
   //
-  // فرعان منفصلان لهما طبيعة مختلفة تماماً (راجع ملاحظة مراجعة خارجية):
-  // - pm10RuleTriggered (PM10>340 لحظياً): ليس خطراً فيزيائياً فورياً بحد
-  //   ذاته (لا يشبه انعدام الرؤية) — هو نفس عتبة المخالفة التنظيمية
-  //   (PM10-VIOLATION-STOP-006) التي يشترط محرك الامتثال لها استمراراً
-  //   فعلياً >دقيقتين قبل تأكيدها (pm10ThresholdRule). قراءة واحدة هنا لا
-  //   يجوز أن تتحول لـMANDATORY_STOP تنظيمي قطعي دون ذلك الدليل.
-  // - combinedVisibilityWindTriggered (رؤية<1كم + حفريات + رياح>40): خطر
-  //   فيزيائي فوري حقيقي (رؤية حرجة + رياح شديدة معاً في موقع حفر) لا
-  //   علاقة له بعتبة PM10 التنظيمية إطلاقاً — يبقى إيقافاً فورياً صحيحاً.
-  // رمز القاعدة (DVI-DUST-ACTIVITY-STOP-004) يبقى واحداً للعرض، لكن
-  // triggeredByPm10Only أدناه يميّز الفرعين لمحرك الامتثال (راجع
-  // dviMandatoryStopReasonCodes في dust-compliance-engine/adapters.ts).
+  // DVI يبقى "يرى" خطر PM10 عبر particulateRisk (PR أدناه، مقياس مستمر لا
+  // عتبة ثنائية) — اللون/الدرجة يعكسان ارتفاع PM10 كما هي، فقط لا قرار
+  // إيقاف/إلزام مستقل مبني على عتبة 340 تحديداً.
   //
-  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كان `>=` — النص التنظيمي يقول
-  // "تجاوز 340" (exceeds)، أي `>` صراحة لا `>=` (نفس العتبة بالضبط
-  // المستخدمة في pm10ThresholdRule بـrulebook.ts، والتي تحمل نفس الملاحظة
-  // حرفياً: "340.000 بالضبط يجب أن تبقى تحذير/تنبيه استباقي لا مخالفة").
-  // بقاء `>=` هنا كان يعني أن قراءة 340.000 بالضبط تُفعِّل DVI-DUST-
-  // ACTIVITY-STOP-004 (خطر فيزيائي) بينما محرك الامتثال في نفس اللحظة يرفض
-  // اعتبارها حتى "تنبيه مخالفة" بعد — تناقض مباشر بين المحركين على نفس
-  // القيمة بالضبط.
-  const pm10RuleTriggered = pm10 !== null && pm10 > 340;
+  // combinedVisibilityWindTriggered (رؤية<1كم + حفريات + رياح>40) يبقى
+  // كما هو — خطر فيزيائي فوري حقيقي (رؤية حرجة + رياح شديدة معاً في موقع
+  // حفر) لا علاقة له بعتبة PM10 التنظيمية إطلاقاً، ضمن اختصاص DVI الأصيل.
   const combinedVisibilityWindTriggered =
     visibilityKm !== null && visibilityKm < VISIBILITY_RESTRICT_SEVERE_KM && input.site.hasEarthworks && (effectiveWindKmh ?? 0) > 40;
-  const rule4Triggered = pm10RuleTriggered || combinedVisibilityWindTriggered;
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — راجع تعليق
-  // pm10ReadingIsFreshEnoughForImmediateStop الكامل أعلى الدالة): PM10 لحظي
-  // فقط (بلا خطر فيزيائي فوري آخر مساهم) لا يفرض mandatoryStop=true القطعي
-  // إلا إن كانت القراءة نفسها طازجة. قراءة قديمة تبقى STOP_DUST_GENERATING_
-  // ACTIVITIES احترازياً (يمنع الاستمرار) لكن بدرجة mandatoryStop=false — نفس
-  // شدة RESTRICT_SEVERE منطقياً (رؤية<1كم)، لا خطر مؤكَّد فوري.
-  const pm10OnlyTriggered = pm10RuleTriggered && !combinedVisibilityWindTriggered;
-  const pm10OnlyConfirmable = pm10OnlyTriggered && pm10ReadingIsFreshEnoughForImmediateStop;
-  if (rule4Triggered && isDustActivity) {
+  if (combinedVisibilityWindTriggered && isDustActivity) {
     rules.push('DVI-DUST-ACTIVITY-STOP-004');
-    if (pm10OnlyTriggered) {
-      // وسم فرعي مخصَّص لمحرك الامتثال — يميّز "PM10 لحظي فقط" (يحتاج دليل
-      // استمرار) عن الرمز العام أعلاه، بلا تغيير أي مستهلك حالي لـ
-      // DVI-DUST-ACTIVITY-STOP-004 نفسه.
-      rules.push('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
-      if (!pm10OnlyConfirmable) {
-        rules.push('DVI-DUST-ACTIVITY-STOP-004-PM10-STALE');
-      }
-    }
     actions.push('إيقاف مؤقت للأعمال المثيرة للغبار (حفر/ردم/دمك/تسوية/نقل تربة) حتى تحسن الظروف');
     decision = 'STOP_DUST_GENERATING_ACTIVITIES';
-    mandatoryStop = pm10OnlyTriggered ? pm10OnlyConfirmable : true;
+    mandatoryStop = true;
   }
 
   if (effectiveWindKmh !== null && effectiveWindKmh >= 30 && input.site.looseMaterials) {
@@ -749,21 +715,6 @@ export function computeDviResult(
   const baseDecision = baseDecisionFromLevel(level, input.activityType);
   const dustForecastRisk = DFR;
 
-  // راجع تعليق pm10ReadingIsFreshEnoughForImmediateStop الكامل في
-  // applyMandatoryGates. بلا جهاز مرتبط (hasDeviceLink=false)، pm10 قادم من
-  // تقدير طقس لا من "قراءة" فردية لها عمر بنفس المعنى — يُعامَل كطازج دائماً
-  // (فشل آمن نحو السلوك السابق، بلا كسر لمسارات التخطيط/التوقّع). نفس عتبة
-  // 4 دقائق المستخدمة في FIELD_FRESHNESS_MS أعلاه (ومطابقة
-  // PM10_LAST_READING_FRESHNESS_MINUTES في dustEvaluation.ts — قيمة مكرَّرة
-  // عمداً بين الطبقتين، نفس اتفاقية DEVICE_READING_FRESHNESS_MINUTES القائمة
-  // أصلاً في المشروع).
-  const pm10ReadingAgeMs =
-    input.hasDeviceLink && merged.devicePm10LastReadingAt
-      ? Date.now() - new Date(merged.devicePm10LastReadingAt).getTime()
-      : null;
-  const pm10ReadingIsFreshEnoughForImmediateStop =
-    !input.hasDeviceLink || (pm10ReadingAgeMs !== null && pm10ReadingAgeMs >= 0 && pm10ReadingAgeMs <= FIELD_FRESHNESS_MS);
-
   const gates = applyMandatoryGates(
     input,
     visibilityKm,
@@ -773,8 +724,7 @@ export function computeDviResult(
     mult.receptorImpact,
     score,
     weather.weatherSymbol,
-    baseDecision,
-    pm10ReadingIsFreshEnoughForImmediateStop
+    baseDecision
   );
 
   const siteDataProvided = hasMeaningfulSiteData(input.site);
@@ -795,7 +745,7 @@ export function computeDviResult(
     gates.decision === 'MANDATORY_STOP'
       ? `إيقاف إلزامي: انخفاض حرج في الرؤية الأفقية الميدانية لمستويات دون الأمان (${visibilityKm?.toFixed(2)} كم).`
       : gates.decision === 'STOP_DUST_GENERATING_ACTIVITIES'
-      ? `إيقاف أعمال الغبار: مؤشر جودة الهواء حرج (PM10 = ${pm10}) أو نشاط الرياح عالي مع أعمال حفر وتربة.`
+      ? `إيقاف أعمال الغبار: رؤية أفقية حرجة (${visibilityKm?.toFixed(2)} كم) مع نشاط رياح عالٍ وأعمال حفر وتربة مكشوفة.`
       : gates.decision === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES'
       ? `إيقاف مؤقت: طبيعة هذا النشاط تعتمد كلياً على جودة الرؤية العالية، والظروف الحالية غير ملائمة.`
       : gates.decision === 'RESTRICT_SEVERE'

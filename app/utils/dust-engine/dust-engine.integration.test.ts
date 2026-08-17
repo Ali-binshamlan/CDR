@@ -96,29 +96,22 @@ describe('DVI تكامل — بوابات الرؤية الحرجة', () => {
 });
 
 describe('DVI تكامل — بوابات الغبار والجسيمات', () => {
-  it('PM10 ≥ 500 مع نشاط مثير للغبار (حفر) → إيقاف الأنشطة المثيرة للغبار', () => {
+  // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — الملاحظة #9: "DVI لا
+  // يجوز أن يقوم عبر مسار جانبي بعمل PM10>340 → STOP إذا كانت قاعدة المشروع
+  // نفسها تقول STOP بعد 30 دقيقة"): PM10 مرتفع وحده (بلا خطر فيزيائي حقيقي
+  // آخر كرؤية حرجة/رياح شديدة) لم يعد يُنتج STOP_DUST_GENERATING_ACTIVITIES/
+  // mandatoryStop من DVI إطلاقاً — القرار التنظيمي لـPM10 يأتي حصراً من محرك
+  // الامتثال (pm10ThresholdRule/GATE-DVI-002). DVI يبقى يعكس ارتفاع PM10 عبر
+  // particulateRisk المستمر (اللون/الدرجة)، فقط بلا قرار إيقاف مستقل مبني
+  // على عتبة 340 بذاتها.
+  it('PM10 ≥ 500 مع نشاط مثير للغبار (حفر)، بلا خطر فيزيائي آخر → لا إيقاف من DVI (القرار التنظيمي لـPM10 يأتي حصراً من محرك الامتثال)', () => {
     const r = computeDviResult(
       input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
       weather({ pm10: 550 })
     );
-    expect(r.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
-    expect(r.mandatoryStop).toBe(true);
-    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
-  });
-
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "التوقف الإلزامي يمكن أن
-  // يكون قابلاً للتجاوز"): decisionCategory='STOP_DUST_GENERATING_ACTIVITIES'
-  // (بخلاف 'MANDATORY_STOP') كان يصل بـoverridable=true رغم mandatoryStop=
-  // true — تناقض منطقي يُخفي بانر "توصية إلزامية" في الواجهة (Dustwidget
-  // card.tsx) رغم أن النشاط موقوف فعلياً. أي مسار يضبط mandatoryStop=true
-  // يجب أن يصل بـoverridable=false دائماً، بصرف النظر عن decisionCategory.
-  it('PM10 ≥ 500 مع نشاط مثير للغبار → overridable=false (لا يجوز تجاوز إيقاف مثبَّت mandatoryStop=true)', () => {
-    const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
-      weather({ pm10: 550 })
-    );
-    expect(r.mandatoryStop).toBe(true);
-    expect(r.overridable).toBe(false);
+    expect(r.decisionCategory).not.toBe('STOP_DUST_GENERATING_ACTIVITIES');
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
   });
 
   it('رياح ≥55 كم/س + مواد سائبة مكشوفة لنشاط مولّد للغبار → إيقاف إلزامي وoverridable=false', () => {
@@ -132,37 +125,21 @@ describe('DVI تكامل — بوابات الغبار والجسيمات', () =
     expect(r.overridable).toBe(false);
   });
 
-  // راجع dust-compliance-engine/engine.ts (GATE-DVI-002) وملاحظة مراجعة
-  // خارجية: "DVI يصدر إيقافاً تنظيمياً فور قراءة واحدة". هذا الوسم الفرعي
-  // يميّز "PM10 لحظي هو السبب الوحيد" (يحتاج دليل استمرار >دقيقتين قبل أي
-  // إيقاف إلزامي تنظيمي قطعي) عن "خطر فيزيائي فوري حقيقي آخر مساهم" (رؤية
-  // حرجة + رياح شديدة معاً، يبقى إيقافاً فورياً صحيحاً بلا اشتراط استمرار).
-  it('PM10>340 وحده (بلا رؤية حرجة/رياح شديدة مساهمة) → DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY أيضاً', () => {
+  // خطأ معماري مكتشَف ومُصلَح (الملاحظة #9، راجع dust-compliance-engine/
+  // engine.ts GATE-DVI-002 وpm10ThresholdRule لموقع القرار التنظيمي الفعلي
+  // لـPM10 الآن): DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY/PM10-STALE حُذفتا
+  // بالكامل — لم يعد لـPM10 وحده (بأي قيمة، بأي عمر قراءة) أي مسار لتفعيل
+  // DVI-DUST-ACTIVITY-STOP-004 إطلاقاً.
+  it('PM10>340 وحده (بلا رؤية حرجة/رياح شديدة مساهمة)، أياً كانت القيمة → DVI-DUST-ACTIVITY-STOP-004 لا يُفعَّل إطلاقاً', () => {
     const r = computeDviResult(
       input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
       weather({ pm10: 350, visibilityM: 10000, windSpeedKmh: 10, windGustKmh: 15 })
-    );
-    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
-    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
-  });
-
-  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير — "حد PM10 ما زال خاطئاً"): كان
-  // pm10RuleTriggered يستخدم `>=` بدل `>` — النص التنظيمي يقول "تجاوز 340"
-  // (exceeds) صراحة، نفس عتبة pm10ThresholdRule بمحرك الامتثال (rulebook.ts:
-  // `pm10UgM3 > PM10_VIOLATION_STOP_UG_M3`). قراءة 340.000 بالضبط يجب ألا
-  // تُفعِّل هذه القاعدة الفيزيائية إطلاقاً — وإلا يتناقض محرك DVI مع محرك
-  // الامتثال على نفس القيمة بالضبط (DVI يوقف فوراً، الامتثال يعتبرها "تنبيه
-  // استباقي" فقط).
-  it('PM10=340 بالضبط (لا تجاوز فعلي) → DVI-DUST-ACTIVITY-STOP-004 لا يُفعَّل إطلاقاً', () => {
-    const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
-      weather({ pm10: 340, visibilityM: 10000, windSpeedKmh: 10, windGustKmh: 15 })
     );
     expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
     expect(r.mandatoryStop).toBe(false);
   });
 
-  it('رؤية<1كم + حفريات + رياح>40 (بلا PM10 مرتفع) → DVI-DUST-ACTIVITY-STOP-004 بلا وسم PM10-ONLY', () => {
+  it('رؤية<1كم + حفريات + رياح>40 (بلا PM10 مرتفع) → DVI-DUST-ACTIVITY-STOP-004 يُفعَّل (خطر فيزيائي مستقل تماماً عن PM10)', () => {
     const r = computeDviResult(
       input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
       weather({ pm10: 20, visibilityM: 800, windSpeedKmh: 45, windGustKmh: 45 })
@@ -171,13 +148,13 @@ describe('DVI تكامل — بوابات الغبار والجسيمات', () =
     expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
   });
 
-  it('PM10>340 معاً مع رؤية حرجة+رياح شديدة (كلا الشرطين) → بلا وسم PM10-ONLY (خطر فيزيائي حقيقي مساهم أيضاً)', () => {
+  it('رؤية حرجة+رياح شديدة+حفريات (خطر فيزيائي حقيقي مستقل)، مع PM10>340 مساهماً بالتوازي → يبقى إيقافاً فورياً صحيحاً (لا يتأثر بإلغاء عتبة PM10 المستقلة)', () => {
     const r = computeDviResult(
       input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
       weather({ pm10: 350, visibilityM: 800, windSpeedKmh: 45, windGustKmh: 45 })
     );
     expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
-    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
+    expect(r.mandatoryStop).toBe(true);
   });
 
   // طلب صريح من المستخدم: نص RESTRICT العام ("تقييد العمل: وجود فجوة في
@@ -316,7 +293,11 @@ describe('DVI تكامل — caveatsAr (ملاحظات تحذيرية لا تُ�
       expect(r.channels.particulateRisk).toBe(baseline.channels.particulateRisk);
     });
 
-    it('نفس السيناريو عند PM10 يتجاوز 340 (إيقاف إلزامي) → الحرارة/الرطوبة المرتفعتان لا تُلغيان ولا تخفّفان الإيقاف', () => {
+    // قرار معماري مُعاد النظر فيه (الملاحظة #9): PM10=1500 وحده لم يعد يُنتج
+    // mandatoryStop من DVI (القرار التنظيمي لـPM10 يأتي حصراً من محرك
+    // الامتثال الآن) — جوهر هذا الاختبار (تحذيرات الحرارة/الرطوبة لا تُغيّر
+    // القرار الأساسي) يبقى صالحاً بصرف النظر عن قيمة mandatoryStop نفسها.
+    it('نفس السيناريو عند PM10 يتجاوز 340 (لا إيقاف من DVI وحده) → الحرارة/الرطوبة المرتفعتان لا تُلغيان ولا تخفّفان القرار الأساسي', () => {
       const highPm10 = 1500;
       const baseline = computeDviResult(
         input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
@@ -329,7 +310,7 @@ describe('DVI تكامل — caveatsAr (ملاحظات تحذيرية لا تُ�
       expect(r.caveatsAr).toHaveLength(2);
       expect(r.decisionCategory).toBe(baseline.decisionCategory);
       expect(r.mandatoryStop).toBe(baseline.mandatoryStop);
-      expect(r.mandatoryStop).toBe(true);
+      expect(r.mandatoryStop).toBe(false);
     });
   });
 });
