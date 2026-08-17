@@ -9,7 +9,7 @@ import { apiClient } from '@/app/lib/apiClient';
 import {
   Home, FolderKanban, Bell,
   FileText, ChevronLeft, ChevronRight, Menu, X,
-  LogOut, ShieldCheck, CalendarDays, Settings
+  LogOut, ShieldCheck, CalendarDays, Settings, Users, Scale, Wifi
 } from 'lucide-react';
 
 // ==========================================
@@ -281,14 +281,28 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
     };
   }, []);
 
-  // جهة المراقبة (viewer) قائمة منفصلة كلياً — 3 عناصر فقط بروابط /dashboard/
-  // viewer/**، بلا "المشاريع" ولا "الإدارة" إطلاقاً. المستخدم العادي/الأدمن
-  // يشتركان بنفس القائمة الأساسية، مع "الإدارة" الإضافية للأدمن فقط.
+  // طلب صريح من المستخدم — "افصل حساب الادمن في سايدر بار منفصل بحيث يظهر
+  // له فقط ماهو موجود من /admin": حساب super_admin كان يشارك القائمة
+  // الأساسية الكاملة (لوحة تحكم/مشاريع/تنبيهات/جدول/إعدادات) مع رابط
+  // "الإدارة" مُضافاً في آخرها — الآن قائمة منفصلة كلياً، نفس مبدأ عزل
+  // جهة المراقبة (viewer) تماماً: تعرض فقط صفحات /dashboard/admin/**
+  // الموجودة فعلياً (نفس الخمس صفحات الفرعية المُدرجة في admin/page.tsx —
+  // المشاريع/المستخدمون/التنبيهات/قواعد الامتثال/منصات مصادر البيانات)،
+  // بلا أي عنصر من قائمة المستخدم العادي.
   const menuItems: MenuItem[] = accountRole === 'viewer'
     ? [
         { id: 'home', name: 'لوحة التحكم', href: '/dashboard/viewer', icon: Home },
         { id: 'alerts', name: 'التنبيهات', href: '/dashboard/viewer/alerts', icon: Bell, badge: alertsCount, badgeFetchFailed: alertsCountFetchFailed },
         { id: 'reports', name: 'التقارير', href: '/dashboard/viewer/reports', icon: FileText },
+      ]
+    : accountRole === 'super_admin'
+    ? [
+        { id: 'admin-home', name: 'لوحة الإدارة', href: '/dashboard/admin', icon: ShieldCheck },
+        { id: 'admin-projects', name: 'المشاريع', href: '/dashboard/admin/projects', icon: FolderKanban },
+        { id: 'admin-users', name: 'المستخدمون', href: '/dashboard/admin/users', icon: Users },
+        { id: 'admin-alerts', name: 'التنبيهات', href: '/dashboard/admin/alerts', icon: Bell },
+        { id: 'admin-rules', name: 'قواعد الامتثال', href: '/dashboard/admin/rules', icon: Scale },
+        { id: 'admin-providers', name: 'منصات مصادر البيانات', href: '/dashboard/admin/provider-instances', icon: Wifi },
       ]
     : [
         { id: 'home', name: 'لوحة التحكم', href: '/dashboard', icon: Home },
@@ -296,9 +310,6 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
         { id: 'alerts', name: 'التنبيهات', href: '/dashboard/alerts', icon: Bell, badge: alertsCount, badgeFetchFailed: alertsCountFetchFailed },
         { id: 'schedule', name: 'جدول الأسبوع', href: '/dashboard/schedule', icon: CalendarDays },
         { id: 'settings', name: 'الإعدادات', href: '/dashboard/settings', icon: Settings },
-        // "الإدارة" عنصر واحد فقط لسوبر أدمن — نفس نمط "المشاريع" (عنصر
-        // رئيسي واحد رغم وجود صفحات فرعية كثيرة تحته)
-        ...(accountRole === 'super_admin' ? [{ id: 'admin', name: 'الإدارة', href: '/dashboard/admin', icon: ShieldCheck }] : []),
       ];
 
   // تحديد العنصر النشط بناءً على المسار الحالي (route) بدل state داخلي
