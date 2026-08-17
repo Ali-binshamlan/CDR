@@ -553,7 +553,7 @@ export default function ComplianceWidgetCard({
     onCountdownElapsed
   );
 
-  // عدّاد "متبقٍ حتى تعليق النشاط" — يظهر عندما تكون القراءة ≥250 مستمرة
+  // عدّاد "متبقٍ حتى تعليق النشاط" — يظهر عندما تكون القراءة > 340 مستمرة
   // (استمرار فعلي مسجَّل) لكن لم تصل بعد 30 دقيقة، والقرار الحالي ليس
   // إيقافاً/تعليقاً مؤكَّداً أصلاً (لا فائدة من عدّاد لحالة موقوفة بالفعل).
   //
@@ -574,23 +574,20 @@ export default function ComplianceWidgetCard({
   // تحديداً بعد اكتمال isConfirmedViolation340، فيميّز هذه الحالة بدقة عن
   // أي قرار آخر مصدره قاعدة مختلفة (رياح/رؤية...).
   const isConfirmedViolationNow = !isEnded && worst?.decidingRuleCode === 'PM10-VIOLATION-STOP-006';
-  // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي الاستبعاد
-  // المتبادل الموثَّق سابقاً هنا بين عدّادي 250/340): كان تجاوز 340 يقطع
-  // استمرارية عداد الـ30 دقيقة فعلياً في الخادم (dustEvaluation.ts)، فإخفاء
-  // عدّاد 250 أثناء pendingConfirmation كان منطقياً حينها (لم يكن هناك شيء
-  // حقيقي يتراكم بالخلفية ليُعرَض). الآن عداد الـ30 دقيقة موحَّد ويتراكم
-  // بالتوازي مع أي قراءة ≥250 (سواء [250,340] أو >340) — فتجاوز 340
-  // وانتظار تأكيده لا يُلغي تراكم عداد الـ30 دقيقة، بل يستمر بالخلفية
-  // فعلياً. لذا العدّادان الآن مستقلان تماماً ويظهران معاً عمداً: عدّاد
-  // الدقيقتين (تسجيل مخالفة) وعدّاد الـ30 دقيقة (الإيقاف الفعلي الوحيد) —
-  // لا استبعاد متبادل بينهما بعد الآن.
+  // إصلاح مطابق لتعديل قوانين PM10 في dustEvaluation.ts (2-30 دقيقة): عدّاد
+  // الـ30 دقيقة لم يعد موحَّداً — يتراكم من زمن التجاوز الفعلي فوق 340 حصراً
+  // (above340Streak في computeSustainedPm10Status)، لا من أي قراءة ≥250. لذا
+  // sustained250 هنا (رغم اسمه القديم) يحمل الآن نفس قيمة sustained340 حرفياً
+  // (راجع sustainedMinutesAbove250 في dustEvaluation.ts)، وشرط الظهور يجب أن
+  // يطابق ذلك: > 340 فقط، لا ≥250 — إبقاء ≥250 هنا كان يعرض عدّاد "متبقٍ حتى
+  // التعليق" حتى ضمن نطاق [250,340] الذي لم يعد يُحتسَب أصلاً ضمن الـ30 دقيقة.
   const showSuspensionCountdown =
     !isEnded &&
     !isAwaitingVerification &&
     !!worst &&
     !alreadyStopped &&
     worst.evidence.pm10UgM3 !== null &&
-    worst.evidence.pm10UgM3 >= 250 &&
+    worst.evidence.pm10UgM3 > 340 &&
     sustained250 !== undefined &&
     sustained250 < PM10_SUSPENSION_MINUTES;
   // نفس مبدأ الاستدعاء أعلاه — القيمة المُرجَعة غير مُستخدَمة للعرض هنا.
@@ -748,7 +745,7 @@ export default function ComplianceWidgetCard({
             <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/5 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-slate-800 shrink-0" />
               <span className="text-[11px] font-bold text-slate-800">
-                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (250 ميكروجرام/م³ فأكثر) لمدة 30 دقيقة متواصلة
+                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (أكثر من 340 ميكروجرام/م³) لمدة 30 دقيقة متواصلة
               </span>
             </div>
           )}
@@ -756,7 +753,7 @@ export default function ComplianceWidgetCard({
             <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 mb-4">
               <Timer className="w-4 h-4 text-amber-600 shrink-0" />
               <span className="text-[11px] font-bold text-amber-700">
-                جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
+                جارٍ مراقبة استمرار التجاوز (أكثر من 340 ميكروجرام/م³) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
               </span>
             </div>
           )}
@@ -989,7 +986,7 @@ export default function ComplianceWidgetCard({
                 <div className="flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/5 px-4 py-3">
                   <Timer className="w-5 h-5 text-slate-800 shrink-0" />
                   <span className="text-[13px] font-bold text-slate-800">
-                    تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (250 ميكروجرام/م³ فأكثر) لمدة 30 دقيقة متواصلة
+                    تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (أكثر من 340 ميكروجرام/م³) لمدة 30 دقيقة متواصلة
                   </span>
                 </div>
               )}
@@ -997,7 +994,7 @@ export default function ComplianceWidgetCard({
                 <div className="flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
                   <Timer className="w-5 h-5 text-amber-600 shrink-0" />
                   <span className="text-[13px] font-bold text-amber-700">
-                    جارٍ مراقبة استمرار التجاوز (250 ميكروجرام/م³ فأكثر) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
+                    جارٍ مراقبة استمرار التجاوز (أكثر من 340 ميكروجرام/م³) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
                   </span>
                 </div>
               )}
