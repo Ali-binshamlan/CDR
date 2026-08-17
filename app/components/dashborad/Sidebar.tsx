@@ -289,7 +289,19 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
   // الموجودة فعلياً (نفس الخمس صفحات الفرعية المُدرجة في admin/page.tsx —
   // المشاريع/المستخدمون/التنبيهات/قواعد الامتثال/منصات مصادر البيانات)،
   // بلا أي عنصر من قائمة المستخدم العادي.
-  const menuItems: MenuItem[] = accountRole === 'viewer'
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — بلاغ مباشر: "ليش يظهر
+  // سايدبار حق المستخدم العادي ثم يختفي و يظهر الاخر"): accountRole يبدأ
+  // undefined دائماً (لم يُجلَب بعد من dashboard/layout.tsx، جلب غير
+  // متزامن) — كانت سلسلة الشروط تسقط صامتة لفرع "else" الأخير (قائمة
+  // المستخدم العادي) طالما accountRole !== 'viewer' && !== 'super_admin'،
+  // بما في ذلك حالة undefined نفسها. فكل مستخدم (حتى أدمن/مشاهد) كان يرى
+  // قائمة المستخدم العادي فعلياً للحظة قبل أن accountRole يصل ويُصحِّح
+  // القائمة — و"يختفي ثم يظهر الآخر" هو بالضبط هذا الانتقال المرئي. الآن
+  // undefined فرع مستقل صريح (قائمة فارغة، لا افتراض لأي دور) بدل السقوط
+  // الضمني لقائمة المستخدم العادي.
+  const menuItems: MenuItem[] = accountRole === undefined
+    ? []
+    : accountRole === 'viewer'
     ? [
         { id: 'home', name: 'لوحة التحكم', href: '/dashboard/viewer', icon: Home },
         { id: 'alerts', name: 'التنبيهات', href: '/dashboard/viewer/alerts', icon: Bell, badge: alertsCount, badgeFetchFailed: alertsCountFetchFailed },
