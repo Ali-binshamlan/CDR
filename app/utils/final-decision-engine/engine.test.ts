@@ -724,6 +724,12 @@ describe('decideFinal — الإيقاف الرسمي لـPM10 وحده يأتي
     expect(r.mandatoryStop).toBe(false);
     expect(r.operationalDecision).not.toBe('PROTECTIVE_STOP');
     expect(r.operationalDecision).not.toBe('MANDATORY_STOP');
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "PM10 قبل 120 ثانية يظهر
+    // تنظيمياً COMPLIANT"): regulatoryFinding لم يكن يُفحَص هنا إطلاقاً رغم
+    // أن compliance.pendingConfirmation=true — كان يسقط لـCOMPLIANT (تناقض
+    // مباشر مع r.pendingConfirmation=true في نفس الكائن). راجع تعليق الإصلاح
+    // الكامل في engine.ts (الفرع الجديد قبل evidenceUnavailable).
+    expect(r.regulatoryFinding).toBe('PENDING_CONFIRMATION');
   });
 });
 

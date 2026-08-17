@@ -257,15 +257,24 @@ function evaluatePm10Scenario(pm10UgM3: number, ageSeconds: number) {
 }
 
 describe('End-to-End — السياسة الزمنية الثلاثية لـPM10 عبر السلسلة الحقيقية كاملةً (الملاحظة #12)', () => {
-  it('PM10=350 لمدة 119 ثانية → لم تكتمل بعد مخالفة مؤكَّدة (لا 120 ثانية) → لا STOP بأي فئة', () => {
+  it('PM10=350 لمدة 119 ثانية → لم تكتمل بعد مخالفة مؤكَّدة (لا 120 ثانية) → لا STOP بأي فئة، وregulatoryFinding=PENDING_CONFIRMATION لا COMPLIANT', () => {
     const { sustained, compliance, final } = evaluatePm10Scenario(350, 119);
 
     expect(sustained.isConfirmedViolation340).toBe(false);
     expect(compliance.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
     expect(compliance.decisionCategory).not.toBe('MANDATORY_STOP');
+    expect(compliance.pendingConfirmation).toBe(true);
     expect(final.operationalDecision).not.toBe('MANDATORY_STOP');
     expect(final.operationalDecision).not.toBe('PROTECTIVE_STOP');
     expect(final.mandatoryStop).toBe(false);
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "PM10 قبل 120 ثانية يظهر
+    // تنظيمياً COMPLIANT"): compliance.pendingConfirmation=true هنا، لكن
+    // regulatoryFinding كان يسقط لـCOMPLIANT مباشرة (pendingAffectedStop
+    // يشترط complianceBlocks الذي لم يعد يتحقق بعد إصلاحَي الملاحظتين #7/#8،
+    // وhasConfirmedRegulatoryViolation يبقى false لنافذة (أ) تحديداً) — تناقض
+    // مباشر مع FinalDecision.pendingConfirmation=true في نفس الكائن.
+    expect(final.regulatoryFinding).toBe('PENDING_CONFIRMATION');
+    expect(final.pendingConfirmation).toBe(true);
   });
 
   it('PM10=350 لمدة 120 ثانية → مخالفة تنظيمية مؤكَّدة (regulatoryFinding=NON_COMPLIANT) لكن بلا إيقاف تشغيلي', () => {

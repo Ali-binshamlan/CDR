@@ -484,6 +484,24 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     regulatoryFinding = 'NON_COMPLIANT';
   } else if (pendingAffectedStop) {
     regulatoryFinding = 'PENDING_CONFIRMATION';
+  } else if (compliance?.pendingConfirmation === true) {
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "PM10 قبل 120 ثانية
+    // يظهر تنظيمياً COMPLIANT"): pendingAffectedStop أعلاه يشترط complianceBlocks
+    // (decisionCategory=MANDATORY_STOP/STOP_AFFECTED_ACTIVITY تحديداً) قبل أن
+    // يعكس compliance.pendingConfirmation. بعد إصلاحَي الملاحظتين #7/#8 (هذه
+    // الجلسة)، أصبحت نافذة PM10 المعلَّقة (<120 ثانية) ALLOW_WITH_CONTROLS —
+    // لا تصل complianceBlocks إطلاقاً، فـpendingAffectedStop=false، وhasConfirmed
+    // RegulatoryViolation أيضاً false لتلك النافذة تحديداً (تُشتق حصراً من
+    // PM10-VIOLATION-STOP-006، وهي قاعدة نافذة (ب) المؤكَّدة 120ث-30د، لا
+    // MRQ-PM10-BLACK-PENDING-104 نافذة (أ)) — فكان regulatoryFinding يسقط
+    // مباشرة إلى COMPLIANT رغم أن الحالة "بانتظار تأكيد" فعلياً، بينما
+    // FinalDecision.pendingConfirmation (الحقل الآخر، أُصلح في الملاحظة #10)
+    // يبقى true في نفس الكائن — تناقض مباشر بين حقلين رسميين. الإصلاح: فرع
+    // مستقل يقرأ compliance.pendingConfirmation مباشرة بصرف النظر عن الفئة،
+    // بعد confirmedAffectedStop/pendingAffectedStop (الإيقاف الفعلي الأشد يبقى
+    // يفوز دائماً) وقبل evidenceUnavailable/FIELD_VERIFICATION_REQUIRED (نقص
+    // بيانات حرج يبقى يفوز على حالة PM10 المعلَّقة — طلب صريح من المستخدم).
+    regulatoryFinding = 'PENDING_CONFIRMATION';
   } else if (evidenceUnavailable || compliance?.decisionCategory === 'FIELD_VERIFICATION_REQUIRED') {
     // FIELD_VERIFICATION_REQUIRED (نقص بيانات مشروع/موقع حرجة يمنع الحكم —
     // راجع complianceCandidate أعلاه) نفس دلالة evidenceUnavailable تماماً:
