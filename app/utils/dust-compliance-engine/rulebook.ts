@@ -545,20 +545,17 @@ function crusherRules(
   // (جدول sensitive_receptors يدوي بحت، لا يشمل مستقبلات OSM المكتشفة تلقائياً
   // المعروضة توعوياً في نفس الشاشة — راجع app/api/projects/[projectId]/route.ts).
   // هذا التناقض (المستخدم يرى مستقبِلاً حقيقياً قريباً بينما القرار يقول "لا
-  // توجد بيانات") كان السبب المباشر لإعادة النظر. الأربع قواعد أدناه أصبحت
-  // جميعها ALLOW_WITH_CONTROLS (تحذير/تنبيه توعوي فقط، لا إيقاف ولا تقييد
-  // فعلي) — بلا حذف القواعد نفسها، فالمعلومة تبقى ظاهرة للمستخدم كتنبيه.
-  if (autoAny === Infinity && activity.sensitiveReceptorsDataAvailable === false) {
-    hits.push(
-      ruleHit(
-        'CRUSHER-RECEPTORS-DATA-MISSING',
-        'ALLOW_WITH_CONTROLS',
-        'تنبيه: تعذر التحقق من مسافة الكسارة عن أقرب مستقبل حساس — لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد (لا يوجد مسح مكتمل يثبت غياب مستقبلات قريبة). تنبيه توعوي فقط، لا يوقف النشاط',
-        'يُفضَّل إدخال بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام، أو إثبات مسافة الكسارة يدوياً للتحقق التلقائي'
-      )
-    );
-  }
-
+  // توجد بيانات") كان السبب المباشر لإعادة النظر. المسافتان العامة/السكنية
+  // واتجاه الريح أدناه أصبحت ALLOW_WITH_CONTROLS (تحذير/تنبيه توعوي فقط).
+  //
+  // CRUSHER-RECEPTORS-DATA-MISSING حُذفت بالكامل (لا مجرد تخفيف severity —
+  // طلب صريح لاحق من المستخدم: "لا اريد ان يظهر تعذر"): حتى كتنبيه
+  // ALLOW_WITH_CONTROLS، رسالة "تعذّر التحقق... لا توجد بيانات" تبقى مربكة
+  // بذاتها لأنها لا تعرف شيئاً عن مستقبلات OSM المكتشفة والمعروضة توعوياً في
+  // نفس الشاشة (computeUnitReceptors في route.ts) — غياب الجدول اليدوي وحده
+  // لا يعني فعلياً "لا بيانات متاحة"، فعرض هذه الرسالة أصلاً مضلِّل بصرف
+  // النظر عن severity. القواعد الأخرى (المسافة الفعلية إن حُسبت auto/يدوياً)
+  // تبقى، فهي معلومة حقيقية عن مسافة معروفة فعلاً، لا عن غياب بيانات.
   const crusherGeneralReceptorDistanceM = CRUSHER_GENERAL_RECEPTOR_DISTANCE_M();
   const crusherSensitiveReceptorDistanceM = CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M();
 
@@ -672,34 +669,21 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
   //
   // null (لا Infinity) يعني تحديداً "لم تُدخَل إحداثيات محطة الخلط على
   // الخريطة بعد" (راجع nearestReceptorDistancesM في geo.ts: lat/lng غائبين
-  // → null؛ إحداثيات موجودة بلا أي مستقبِل حساس مسجَّل قريب → Infinity) —
-  // لا يوجد حقل مسافة يدوي احتياطي لمحطة الخلط (بخلاف الكسارة
-  // crusherDistanceToReceptorM)، فـFIELD_VERIFICATION_REQUIRED هنا يمنع
-  // فقط قرار ALLOW نظيف بلا أي إثبات موقع، بدل تمرير القاعدة بصمت.
+  // → null؛ إحداثيات موجودة بلا أي مستقبِل حساس مسجَّل قريب → Infinity).
   const batchingDistance = activity.measurements.batchingDistanceToNearestReceptorAutoM;
   // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا
   // تدخل ضمن قرارات الإيقاف"، نفس القرار المطبَّق على قواعد الكسارة أعلاه):
-  // الثلاث قواعد أدناه أصبحت ALLOW_WITH_CONTROLS (تنبيه توعوي فقط) بدل
-  // FIELD_VERIFICATION_REQUIRED/MANDATORY_STOP.
-  if (batchingDistance === null) {
-    hits.push(
-      ruleHit(
-        'BATCHING-DISTANCE-MISSING',
-        'ALLOW_WITH_CONTROLS',
-        'تنبيه: تعذر إثبات مسافة محطة الخلط عن أقرب مستقبل حساس (لا إحداثيات مُدخلة لموقع المحطة). تنبيه توعوي فقط، لا يوقف النشاط',
-        'يُفضَّل تحديد موقع محطة الخلط على الخريطة للتحقق التلقائي من مسافتها عن أقرب مستقبِل حساس'
-      )
-    );
-  } else if (batchingDistance === Infinity && activity.sensitiveReceptorsDataAvailable === false) {
-    hits.push(
-      ruleHit(
-        'BATCHING-RECEPTORS-DATA-MISSING',
-        'ALLOW_WITH_CONTROLS',
-        'تنبيه: تعذر التحقق من مسافة محطة الخلط عن أقرب مستقبل حساس — لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد. تنبيه توعوي فقط، لا يوقف النشاط',
-        'يُفضَّل إدخال بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام للتحقق التلقائي من المسافة'
-      )
-    );
-  } else if (batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M()) {
+  // BATCHING-DISTANCE-200 أدناه أصبحت ALLOW_WITH_CONTROLS (تنبيه توعوي فقط)
+  // بدل MANDATORY_STOP.
+  //
+  // BATCHING-DISTANCE-MISSING وBATCHING-RECEPTORS-DATA-MISSING حُذفتا
+  // بالكامل (طلب صريح لاحق من المستخدم: "لا اريد ان يظهر تعذر") — نفس
+  // منطق CRUSHER-RECEPTORS-DATA-MISSING أعلاه: رسالة "تعذّر..." تبقى مربكة
+  // بذاتها حتى كتنبيه، لأنها لا تعرف شيئاً عن مستقبلات OSM المكتشفة توعوياً
+  // في نفس الشاشة. لا يوجد إيقاف أو تنبيه إطلاقاً الآن لغياب إحداثيات محطة
+  // الخلط أو غياب بيانات المستقبلات — فقط BATCHING-DISTANCE-200 يبقى
+  // مفعَّلاً حين تُحسَب مسافة فعلية أقل من الحد.
+  if (batchingDistance !== null && batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M()) {
     const crusherGeneralReceptorDistanceM = CRUSHER_GENERAL_RECEPTOR_DISTANCE_M();
     hits.push(
       ruleHit(

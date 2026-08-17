@@ -1024,9 +1024,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
       isEnclosedOperation: false,
       controls: { ...activityProfile().controls, silosSealed: true, pm10FilterEfficiencyPercent: 99.5 },
       // مسافة آمنة صراحةً (BATCHING-DISTANCE-200 غير موضوع اختبار هذه
-      // الحالات — تختبر فقط سلوك قواعد PM10) — بلا هذا، الافتراضي null
-      // (لا إحداثيات مُدخلة) يُفعِّل BATCHING-DISTANCE-MISSING/
-      // FIELD_VERIFICATION_REQUIRED ويُخفي قرار PM10 الفعلي محل الاختبار.
+      // الحالات — تختبر فقط سلوك قواعد PM10).
       measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: 1000 },
     });
 
@@ -1090,13 +1088,15 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
         }),
       })
     );
-    // بلا إحداثيات مسافة مُدخلة صراحة هنا (خلافاً لـexemptBatchingActivity)،
-    // BATCHING-DISTANCE-MISSING تُفعَّل أيضاً — لكنها أصبحت ALLOW_WITH_CONTROLS
-    // (قرار مُعاد النظر فيه: المستقبلات الحساسة لا تدخل ضمن قرارات الإيقاف/
-    // التحقق الميداني، راجع rulebook.ts)، فلم تعد تتفوق على PM10. النتيجة
-    // النهائية ALLOW_WITH_CONTROLS، وPM10-VIOLATION-STOP-006 المؤكَّدة تبقى
-    // مفعَّلة ومسجَّلة ضمن القواعد، تماماً كما لا تُعفى محطة الخلط من PM10 إطلاقاً.
+    // بلا إحداثيات مسافة مُدخلة صراحة هنا (خلافاً لـexemptBatchingActivity)
+    // — لا تأثير على القرار: BATCHING-DISTANCE-MISSING حُذفت بالكامل من
+    // rulebook.ts (قرار مُعاد النظر فيه: المستقبلات الحساسة لا تدخل ضمن
+    // قرارات الإيقاف/التحقق الميداني، ولا حتى كتنبيه "تعذّر"). النتيجة
+    // النهائية ALLOW_WITH_CONTROLS مصدرها PM10-VIOLATION-STOP-006 وحدها،
+    // وتبقى مفعَّلة ومسجَّلة ضمن القواعد، تماماً كما لا تُعفى محطة الخلط من
+    // PM10 إطلاقاً.
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(false);
     expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
   });
 
@@ -2098,18 +2098,16 @@ describe('محرك امتثال الغبار — MRQ-RECEPTOR-DOWNWIND-120 (تص
   });
 });
 
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "المستقبلات الحساسة: القائمة
-// الفارغة قد تعني أن بيانات المستقبلات لم تُدخل أصلاً؛ يجب التفريق بين 'لا
-// توجد مستقبلات بعد مسح مكتمل' و'لم يتم إدخال بيانات المستقبلات' — الحالة
-// الثانية يجب أن تنتج FIELD_VERIFICATION_REQUIRED"): sensitiveReceptorsDataAvailable
-// (adapters.ts، مشتق من طول مصفوفة sensitive_receptors العالمية) يميّز
-// الآن الحالتين، بدل السماح لـInfinity وحدها بإخفاء نقص البيانات.
-describe('محرك امتثال الغبار — تمييز "لا مستقبلات في النظام كله" عن "لا مستقبل قريب فعلياً"', () => {
-  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
-  // ضمن قرارات الإيقاف/التحقق الميداني"): القاعدة تبقى مُفعَّلة (تنبيه توعوي
-  // يوثِّق نقص البيانات) لكن لم تعد تفرض FIELD_VERIFICATION_REQUIRED — راجع
-  // rulebook.ts (ALLOW_WITH_CONTROLS بدل FIELD_VERIFICATION_REQUIRED).
-  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً (sensitiveReceptorsDataAvailable=false) → تنبيه توعوي فقط، لا تحقق ميداني إلزامي', () => {
+// قرار مُعاد النظر فيه بالكامل (طلب صريح من المستخدم — "المستقبلات الحساسة
+// لا تدخل ضمن قرارات الإيقاف" ثم لاحقاً "لا اريد ان يظهر تعذر"):
+// CRUSHER-RECEPTORS-DATA-MISSING/BATCHING-RECEPTORS-DATA-MISSING حُذفتا
+// بالكامل من rulebook.ts — لم تعودا تُفعَّلان إطلاقاً بصرف النظر عن
+// sensitiveReceptorsDataAvailable. القسم السابق هنا (كان بعنوان "تمييز لا
+// مستقبلات في النظام كله عن لا مستقبل قريب فعلياً") لم يعد له معنى بعد حذف
+// القاعدة التي بنى عليها هذا التمييز — استُبدل باختبارات قبول تثبت أن
+// الحذف فعلي ولا رجعة فيه.
+describe('محرك امتثال الغبار — لا رسالة "تعذّر التحقق من مسافة المستقبِل" إطلاقاً (القاعدة محذوفة)', () => {
+  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً (sensitiveReceptorsDataAvailable=false) → لا CRUSHER-RECEPTORS-DATA-MISSING إطلاقاً، ALLOW نظيف', () => {
     const r = evaluateDustCompliance(
       context({
         project: projectProfile({ hasOnsiteCrusher: true }), // CATEGORY_III_HIGH — يعزل CRUSHER-CATEGORY-001
@@ -2124,29 +2122,11 @@ describe('محرك امتثال الغبار — تمييز "لا مستقبلا
         }),
       })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(true);
-    expect(r.decisionCategory).not.toBe('FIELD_VERIFICATION_REQUIRED');
-  });
-
-  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors يحتوي بيانات حقيقية لكن Infinity لهذا الموقع تحديداً (sensitiveReceptorsDataAvailable=true) → لا FIELD_VERIFICATION_REQUIRED، Infinity تبقى آمنة كما كانت', () => {
-    const r = evaluateDustCompliance(
-      context({
-        project: projectProfile({ hasOnsiteCrusher: true }),
-        activity: activityProfile({
-          regulatoryActivity: 'CRUSHER',
-          sensitiveReceptorsDataAvailable: true,
-          measurements: {
-            ...activityProfile().measurements,
-            crusherDistanceToNearestReceptorAutoM: Infinity,
-            crusherDistanceToResidentialReceptorAutoM: Infinity,
-          },
-        }),
-      })
-    );
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
   });
 
-  it('محطة خلط بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً → تنبيه توعوي فقط، لا تحقق ميداني إلزامي', () => {
+  it('محطة خلط بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً → لا BATCHING-RECEPTORS-DATA-MISSING ولا BATCHING-DISTANCE-MISSING إطلاقاً، ALLOW نظيف', () => {
     const r = evaluateDustCompliance(
       context({
         activity: activityProfile({
@@ -2159,11 +2139,12 @@ describe('محرك امتثال الغبار — تمييز "لا مستقبلا
         }),
       })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-RECEPTORS-DATA-MISSING')).toBe(true);
-    expect(r.decisionCategory).not.toBe('FIELD_VERIFICATION_REQUIRED');
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-RECEPTORS-DATA-MISSING')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
   });
 
-  it('كسارة بلا إحداثيات مُدخلة أصلاً (null، لا Infinity) + جدول فارغ → لا يُخلَط بين البابين، تبقى بوابة "لا إحداثيات" اليدوية وحدها إن وُجدت', () => {
+  it('كسارة بلا إحداثيات مُدخلة أصلاً (null، لا Infinity) + جدول فارغ → لا CRUSHER-RECEPTORS-DATA-MISSING', () => {
     const r = evaluateDustCompliance(
       context({
         project: projectProfile({ hasOnsiteCrusher: true }),
@@ -2179,6 +2160,19 @@ describe('محرك امتثال الغبار — تمييز "لا مستقبلا
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(false);
+  });
+
+  it('محطة خلط بلا إحداثيات مُدخلة أصلاً (null) → لا BATCHING-DISTANCE-MISSING، ALLOW نظيف', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          measurements: { ...activityProfile().measurements, batchingDistanceToNearestReceptorAutoM: null },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(false);
+    expect(r.decisionCategory).toBe('ALLOW');
   });
 });
 
@@ -2329,9 +2323,10 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
   // 200م من مدرسة/مستشفى/مسجد/منطقة سكنية — الإحداثيات والمسافة المحسوبة
   // تلقائياً كانتا تُجمَعان (adapters.ts/geo.ts) لكن لا قاعدة كانت تستهلكهما.
   // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
-  // ضمن قرارات الإيقاف"): BATCHING-DISTANCE-200/BATCHING-DISTANCE-MISSING
-  // أصبحتا ALLOW_WITH_CONTROLS (تنبيه توعوي فقط) بدل MANDATORY_STOP/
-  // FIELD_VERIFICATION_REQUIRED — راجع rulebook.ts.
+  // ضمن قرارات الإيقاف" ثم لاحقاً "لا اريد ان يظهر تعذر"): BATCHING-DISTANCE-200
+  // أصبحت ALLOW_WITH_CONTROLS (تنبيه توعوي فقط) بدل MANDATORY_STOP.
+  // BATCHING-DISTANCE-MISSING حُذفت بالكامل — لا تُفعَّل إطلاقاً بعد الآن،
+  // حتى لو غابت إحداثيات محطة الخلط كلياً. راجع rulebook.ts.
   describe('BATCHING-DISTANCE-200 — الحد الأدنى 200م عن أقرب مستقبِل حساس', () => {
     it('مسافة 199.999م (أقل من 200 بالضبط) → تنبيه توعوي فقط، لا إيقاف', () => {
       const r = evaluateDustCompliance(
@@ -2371,7 +2366,7 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
       expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(false);
     });
 
-    it('لا إحداثيات مُدخلة لمحطة الخلط (null، لا Infinity) → تنبيه توعوي فقط، لا تحقق ميداني إلزامي', () => {
+    it('لا إحداثيات مُدخلة لمحطة الخلط (null، لا Infinity) → لا BATCHING-DISTANCE-MISSING إطلاقاً، ALLOW نظيف', () => {
       const r = evaluateDustCompliance(
         context({
           activity: activityProfile({
@@ -2380,8 +2375,8 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
           }),
         })
       );
-      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(true);
-      expect(r.decisionCategory).not.toBe('FIELD_VERIFICATION_REQUIRED');
+      expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(false);
+      expect(r.decisionCategory).toBe('ALLOW');
     });
 
     it('إحداثيات مُدخلة لكن لا مستقبِلات حساسة مسجَّلة قريباً (Infinity) → لا مخالفة، ولا تحقق ميداني (موقع مُثبَت فعلياً وآمن)', () => {
