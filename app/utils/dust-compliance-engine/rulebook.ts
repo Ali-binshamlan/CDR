@@ -714,25 +714,46 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
 
 // 9.6 قطع الأحجار — wetCuttingActive/hepaExtractionActive/cuttingResiduesCleaned
 // لم تعد تُدخَل عبر الواجهة (تحوّلت لتنبيه نصي عام) — حُذف تأثيرها من
-// القرار هنا. القاعدة الباقية فعلياً هي بوابة الرياح (STONECUT-WIND-STOP-003)
-// المعتمدة على isEnclosedOperation (سؤال بنيوي حقيقي ما زال مدخلاً) وبيانات
-// الرياح الحية، لا تصريح المستخدم عن طريقة القطع.
+// القرار هنا. القاعدة الباقية فعلياً هي بوابة الرياح، المعتمدة على
+// isEnclosedOperation (سؤال بنيوي حقيقي ما زال مدخلاً) وبيانات الرياح
+// الحية، لا تصريح المستخدم عن طريقة القطع.
+//
+// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قطع الأحجار الخارجي لا يتبع
+// تسلسل الملحق أ"): كانت STONECUT-WIND-STOP-003 تُطلِق MANDATORY_STOP فوراً
+// عند FROM_15_TO_25 (15-25 كم/س) — نفس شدة تجاوز 25 تماماً. تسلسل الملحق أ
+// الحاكم لكل الأنشطة (باستثناء الهدم، الذي له استثناء موثَّق صراحة يوقف عند
+// 15 كم/س، ولا علاقة له بهذا الإصلاح — DEMO-WIND-STOP-001 منفصل تماماً
+// بثابته الخاص WIND_GATE_ENHANCED_MIN_KMH ورمز قاعدة مختلف) هو: 15-25 كم/س
+// تثبيط معزَّز (ALLOW_WITH_CONTROLS)، فوق 25 كم/س فقط إيقاف فعلي
+// (STOP_AFFECTED_ACTIVITY) — وقطع الأحجار مذكور صراحة ضمن الأنشطة التي
+// تتوقف فوق 25، لا عند 15. الإصلاح يفصّل النطاقين بدل معاملتهما معاملة
+// واحدة؛ STONE_CUTTING_WIND_STOP_KMH (25 افتراضياً) يبقى عتبة الإيقاف
+// الفعلي، وWIND_GATE_ENHANCED_MIN_KMH (15) يبقى عتبة بداية التثبيط المعزَّز
+// (نفس الثابت العام المستخدَم لتصنيف windBand أصلاً).
 function stoneCuttingRules(
   activity: DustActivityComplianceProfile,
   windBand: DustWindBand
 ): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
 
-  // إيقاف تلقائي من سرعة الرياح (API/مستشعر) — بلا سؤال مستخدم، بنفس مبدأ
-  // demolitionRules، لأعمال القطع المكشوفة فقط.
   const isExposed = !activity.isEnclosedOperation;
-  if (isExposed && (windBand === 'FROM_15_TO_25' || windBand === 'ABOVE_25')) {
+  if (isExposed && windBand === 'FROM_15_TO_25') {
+    const windGateEnhancedMinKmh = getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH;
+    hits.push(
+      ruleHit(
+        'STONECUT-WIND-ENHANCED-004',
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه: قطع أحجار مكشوف أثناء رياح ${windGateEnhancedMinKmh}-${STONE_CUTTING_WIND_STOP_KMH()} كم/س — تثبيط معزَّز مطلوب`,
+        'فعّل التثبيط المعزز فوراً: رش مائي مستمر أثناء القطع، تقليل واجهات العمل المتزامنة، ومراقبة سرعة الرياح باستمرار'
+      )
+    );
+  } else if (isExposed && windBand === 'ABOVE_25') {
     const stoneCuttingWindStopKmh = STONE_CUTTING_WIND_STOP_KMH();
     hits.push(
       ruleHit(
         'STONECUT-WIND-STOP-003',
-        'MANDATORY_STOP',
-        `إيقاف إلزامي: قطع أحجار مكشوف أثناء رياح تتجاوز الحد المسموح (${stoneCuttingWindStopKmh} كم/س)`,
+        'STOP_AFFECTED_ACTIVITY',
+        `إيقاف: قطع أحجار مكشوف أثناء رياح تتجاوز الحد المسموح (${stoneCuttingWindStopKmh} كم/س)`,
         `أوقف القطع المكشوف فوراً حتى تنخفض سرعة الرياح إلى ما دون ${stoneCuttingWindStopKmh} كم/س، أو حوّله لتشغيل مغلق`
       )
     );

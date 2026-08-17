@@ -1981,8 +1981,8 @@ describe('محرك امتثال الغبار — حركة الشاحنات (تغ
   });
 });
 
-describe('محرك امتثال الغبار — قطع الأحجار (إيقاف تلقائي من الرياح)', () => {
-  it('قطع مكشوف أثناء رياح 15-25 كم/س → إيقاف إلزامي تلقائي', () => {
+describe('محرك امتثال الغبار — قطع الأحجار (إيقاف تلقائي من الرياح، الملحق أ: 15-25=تثبيط معزَّز، >25=إيقاف)', () => {
+  it('قطع مكشوف أثناء رياح 15-25 كم/س → تثبيط معزَّز فقط، لا إيقاف', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 18,
@@ -1993,14 +1993,47 @@ describe('محرك امتثال الغبار — قطع الأحجار (إيقا
         }),
       })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(true);
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-ENHANCED-004')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(false);
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
   });
 
-  it('قطع مغلق (isEnclosedOperation) أثناء رياح 15-25 كم/س → لا إيقاف رياح', () => {
+  it('قطع مكشوف أثناء رياح تتجاوز 25 كم/س → إيقاف فعلي (لا MANDATORY_STOP قطعي)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'STONE_CUTTING',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, wetCuttingActive: true },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-ENHANCED-004')).toBe(false);
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+  });
+
+  it('قطع مغلق (isEnclosedOperation) أثناء رياح 15-25 كم/س → لا تثبيط ولا إيقاف من الرياح', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 18,
+        activity: activityProfile({
+          regulatoryActivity: 'STONE_CUTTING',
+          isEnclosedOperation: true,
+          controls: { ...activityProfile().controls, hepaExtractionActive: true, wetCuttingActive: false },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-ENHANCED-004')).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(false);
+  });
+
+  it('قطع مغلق (isEnclosedOperation) أثناء رياح تتجاوز 25 كم/س → لا إيقاف من الرياح', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
         activity: activityProfile({
           regulatoryActivity: 'STONE_CUTTING',
           isEnclosedOperation: true,

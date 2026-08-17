@@ -81,7 +81,12 @@ export const DEFAULT_RULE_PARAMETERS: RuleParameters = Object.freeze({
   DEBRIS_PILE_MAX_HEIGHT_M: 3,
   IMMERSION_ZONE_MIN_LENGTH_M: 8,
   WHEEL_WASH_CYCLE_MIN_SEC: 20,
-  STONE_CUTTING_WIND_STOP_KMH: 15,
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قطع الأحجار الخارجي لا يتبع
+  // تسلسل الملحق أ"): كانت 15 كم/س — نفس عتبة بداية التثبيط المعزَّز
+  // (WIND_GATE_ENHANCED_MIN_KMH)، لا عتبة الإيقاف الفعلي التي يجب أن تطابق
+  // بقية الأنشطة (WIND_GATE_STOP_KMH=25) حسب الملحق أ. راجع تعليق
+  // stoneCuttingRules الكامل في rulebook.ts.
+  STONE_CUTTING_WIND_STOP_KMH: 25,
   BATCHING_PM10_FILTER_MIN_PERCENT: 99,
   IDLE_SURFACE_COVER_INSPECTION_WIND_KMH: 20,
   WIND_GATE_ENHANCED_MIN_KMH: 15,
