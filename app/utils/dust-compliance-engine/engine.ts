@@ -404,8 +404,15 @@ export function evaluateDustCompliance(
     // حرجة/رياح شديدة مساهم بنفس اللحظة — dviMandatoryStopIsPm10Only)، هذه
     // البوابة لا تُصدر MANDATORY_STOP إطلاقاً. ثلاث حالات فعلية:
     //   1) لم يكتمل استمرار دقيقتين بعد (pm10ConfirmedViolation340 غير
-    //      true) → "معلَّقة" STOP_AFFECTED_ACTIVITY مؤقت (نفس معاملة
-    //      MRQ-PM10-BLACK-PENDING-104).
+    //      true) → "معلَّقة" ALLOW_WITH_CONTROLS (نفس معاملة
+    //      MRQ-PM10-BLACK-PENDING-104 — راجع الملاحظة #7: قرار مُعاد النظر
+    //      فيه مرة أخرى لاحقاً، "قبل 120 ثانية: MONITOR، وليس
+    //      STOP_AFFECTED_ACTIVITY/PROTECTIVE_STOP". كانت STOP_AFFECTED_
+    //      ACTIVITY هنا نفس الثغرة بالضبط التي أُصلحت في pm10ThresholdRule،
+    //      لكن عبر مسار GATE-DVI-002 المستقل تماماً — لم تُكتشَف إلا لاحقاً
+    //      عبر الملاحظة #8 التي رصدت أن final-decision-engine/engine.ts
+    //      لا يزال يُنتج PROTECTIVE_STOP لنفس النافذة الزمنية من dviCandidate،
+    //      المُغذَّى من GATE-DVI-002 هنا، لا من pm10ThresholdRule).
     //   2) اكتمل استمرار دقيقتين (مؤكَّدة، ≥2 لا >2) لكن لم يكتمل بعد
     //      استمرار 30 دقيقة فوق 340 (pm10Suspended250For30Min) →
     //      ALLOW_WITH_CONTROLS: توثيق/تنبيه بلا إيقاف، تماماً مثل
@@ -419,11 +426,9 @@ export function evaluateDustCompliance(
     const isPm10Only = ctx.dviMandatoryStopIsPm10Only === true;
     const pm10OnlyPending = isPm10Only && ctx.pm10ConfirmedViolation340 !== true;
     const pm10OnlySuspended = isPm10Only && ctx.pm10Suspended250For30Min === true;
-    const pm10OnlySeverity: DustComplianceDecisionCategory = pm10OnlyPending
+    const pm10OnlySeverity: DustComplianceDecisionCategory = pm10OnlySuspended
       ? 'STOP_AFFECTED_ACTIVITY'
-      : pm10OnlySuspended
-        ? 'STOP_AFFECTED_ACTIVITY'
-        : 'ALLOW_WITH_CONTROLS';
+      : 'ALLOW_WITH_CONTROLS';
     ruleHits.push(
       {
         code: 'GATE-DVI-002',
@@ -439,8 +444,10 @@ export function evaluateDustCompliance(
         // (لا يحمل كلمة "إيقاف" إطلاقاً، يصف الانتظار بدقة)؛ بقية الحالات
         // (مؤكَّدة/موقوفة 30 دقيقة/غير PM10) تبقى تستخدم dviShortReason أولاً
         // كما كانت — لا تغيير في أي حالة أخرى غير هذه المعلَّقة تحديداً.
+        // "تعليق مؤقت (معلَّق)" استُبدلت بـ"تنبيه" (الملاحظة #7/#8) — لم يعد
+        // يوجد أي تعليق/إيقاف فعلي أو حتى احترازي في هذه النافذة.
         messageAr: isPm10Only && pm10OnlyPending
-          ? 'تعليق مؤقت (معلَّق): تجاوز فوري في تركيز الغبار — بانتظار استمرار القراءة أكثر من دقيقتين لتصنيفها مخالفة تنظيمية مؤكدة'
+          ? 'تنبيه: تجاوز فوري في تركيز الغبار — بانتظار اكتمال دقيقتين استمرار لتصنيفها مخالفة تنظيمية مؤكدة'
           : ctx.dviShortReason ||
             (isPm10Only
               ? (pm10OnlySuspended
@@ -453,11 +460,12 @@ export function evaluateDustCompliance(
         actionAr: isPm10Only
           ? 'فعّل التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ، تقييد حركة النقل) وراقب استمرار التجاوز'
           : 'أخلِ منطقة العمل وانتظر تحسّن حالة الجو (الرؤية وتركيز الغبار) — لا يمكن استئناف العمل بإجراء تنظيمي',
-        // overridable=false لكل حالات STOP_AFFECTED_ACTIVITY (معلَّق أو
-        // موقوف فعلياً بـ30 دقيقة)، نفس افتراض ruleHit() الموحَّد في
-        // rulebook.ts (severity !== MANDATORY_STOP/STOP_AFFECTED_ACTIVITY).
-        // ALLOW_WITH_CONTROLS (مؤكَّدة موثَّقة بلا اكتمال 30 دقيقة) تبقى
-        // قابلة للتجاوز — النشاط مستمر أصلاً في هذه الحالة.
+        // overridable=false فقط لحالة STOP_AFFECTED_ACTIVITY الحقيقية
+        // الوحيدة المتبقية (pm10OnlySuspended، 30 دقيقة مؤكَّدة فوق 340) —
+        // نفس افتراض ruleHit() الموحَّد في rulebook.ts (severity !==
+        // MANDATORY_STOP/STOP_AFFECTED_ACTIVITY). ALLOW_WITH_CONTROLS
+        // (معلَّقة قبل الدقيقتين، أو مؤكَّدة موثَّقة بلا اكتمال 30 دقيقة)
+        // تبقى قابلة للتجاوز في كلتا الحالتين — النشاط مستمر أصلاً.
         overridable: isPm10Only && pm10OnlySeverity === 'ALLOW_WITH_CONTROLS',
       }
     );

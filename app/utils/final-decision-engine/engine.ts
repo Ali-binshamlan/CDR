@@ -266,17 +266,44 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // يُستهلَك من dviCandidate مباشرة، ومن complianceCandidate أدناه أيضاً
   // (floorLevel التنظيمي يُقارَن بلون DVI دائماً، بصرف النظر عن أي مرشح فاز).
   const dviLevel = suppressDviMonitoring ? 'GREEN' : LEVEL_BY_DVI[dvi.level] ?? 'GREEN';
+  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خبير خارجي،
+  // الملاحظة #8: "FinalDecisionEngine يرسخ هذا الإيقاف — تغيير الاسم من
+  // MANDATORY_STOP إلى PROTECTIVE_STOP لا يحل المشكلة"): الإصلاح السابق
+  // (الملاحظة الأصلية P0) استبعد dviMandatoryStopIsPm10Only من
+  // dviMandatoryCandidate وحده — لكن dviCandidate هنا مرشِّح منفصل تماماً
+  // يُبنى مباشرة من dvi.decisionCategory (STOP_DUST_GENERATING_ACTIVITIES/
+  // STOP_VISIBILITY_DEPENDENT_ACTIVITIES)، بلا أي فحص لـdvi.mandatoryStop
+  // نفسه — كان يستبعد فقط الحالة القديمة (dviStopIsPm10StaleOnly، قراءة
+  // PM10 غير طازجة)، لا حالة PM10 الطازجة المعلَّقة (dviMandatoryStopIsPm10Only،
+  // mandatoryStop=true فعلياً، stopBasis=PM10، confirmationState=PENDING).
+  // النتيجة: نفس سيناريو الإصلاح السابق بالضبط (PM10=350 لمدة 2-30 دقيقة،
+  // بلا خطر فيزيائي آخر) كان لا يزال يفوز بـPROTECTIVE_STOP (رتبة 4، ثاني
+  // أعلى رتبة بعد MANDATORY_STOP) عبر هذا المرشح البديل — وPROTECTIVE_STOP
+  // يُترجَم في finalDecisionStatus.ts إلى status='stopped' تماماً مثل
+  // MANDATORY_STOP (كلاهما يُعامَلان كإيقاف في التقارير/الواجهة)، فتغيير
+  // الاسم وحده لم يكن يحل المشكلة الفعلية للمستخدم كما وصف بدقة.
+  //
+  // الإصلاح: استبعاد dviMandatoryStopIsPm10Only أيضاً هنا، بجانب
+  // dviStopIsPm10StaleOnly القديمة — يغطي الآن كامل نطاق "PM10 وحده هو
+  // السبب" بصرف النظر عن حداثة القراءة (الحالتان متكاملتان لا متداخلتان:
+  // dviMandatoryStopIsPm10Only تشترط mandatoryStop=true فعلياً — deriveStop
+  // BasisAndConfirmation في dust-engine/engine.ts تُرجع stopBasis='NONE'
+  // دائماً إن كان mandatoryStop=false، فلا يمكن أن تتحقق الحالتان معاً لنفس
+  // dvi). لا يؤثر على MIXED (خطر فيزيائي مستقل حقيقي، stopBasis≠'PM10')
+  // ولا على WIND (DVI-WIND-LOOSE-MATERIAL-005) — كلاهما يبقيان يُوقفان
+  // كالمعتاد، تحققتُ عبر اختبارات هذا الملف.
+  const dviMandatoryCategoryIsPm10Only = dviStopIsPm10StaleOnly || dviMandatoryStopIsPm10Only;
   const dviCandidate: DecisionCandidate = {
     source: 'DVI',
     decision: suppressDviMonitoring
       ? 'ALLOW'
       : (dvi.decisionCategory === 'STOP_DUST_GENERATING_ACTIVITIES' ||
           dvi.decisionCategory === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES') &&
-        !dviStopIsPm10StaleOnly
+        !dviMandatoryCategoryIsPm10Only
         ? 'PROTECTIVE_STOP'
         : dvi.decisionCategory === 'RESTRICT' || dvi.decisionCategory === 'RESTRICT_SEVERE'
           ? 'RESTRICT'
-          : dvi.decisionCategory === 'ALLOW_WITH_MONITORING' || dviStopIsPm10StaleOnly
+          : dvi.decisionCategory === 'ALLOW_WITH_MONITORING' || dviMandatoryCategoryIsPm10Only
             ? 'MONITOR'
             : 'ALLOW',
     // نص/لون 'مسموح — تشغيل اعتيادي'/GREEN عند القمع يطابقان حرفياً ما كانت

@@ -350,7 +350,14 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
   // القواعد معاً، فيطغى MANDATORY_STOP من GATE-DVI-002 على STOP_AFFECTED_
   // ACTIVITY "المعلَّق" الصحيح من pm10ThresholdRule.
   describe('GATE-DVI-002 — PM10 لحظي فقط يشترط نفس دليل الاستمرار من pm10ThresholdRule', () => {
-    it('dviMandatoryStop سببه PM10 فقط + لا دليل استمرار إطلاقاً (لا pm10ConfirmedViolation340 ولا pm10Suspended250For30Min) → STOP_AFFECTED_ACTIVITY معلَّق (لم يثبت بعد استمرار >دقيقتين)، لا MANDATORY_STOP', () => {
+    // قرار تنظيمي مُعاد النظر فيه (الملاحظة #7 ثم #8 — نفس الثغرة رُصدت
+    // مرتين عبر مسارين مختلفين، pm10ThresholdRule ثم هذه البوابة GATE-
+    // DVI-002 المستقلة تماماً): STOP_AFFECTED_ACTIVITY هنا كانت تُصعِّد
+    // القرار النهائي عبر final-decision-engine (dviCandidate) إلى
+    // PROTECTIVE_STOP — تُعامَل كإيقاف فعلي في finalDecisionStatus.ts رغم
+    // عدم اكتمال حتى الدقيقتين. أصبحت ALLOW_WITH_CONTROLS (نفس مستوى
+    // pm10ThresholdRule تماماً).
+    it('dviMandatoryStop سببه PM10 فقط + لا دليل استمرار إطلاقاً (لا pm10ConfirmedViolation340 ولا pm10Suspended250For30Min) → ALLOW_WITH_CONTROLS معلَّق (لم يثبت بعد استمرار >دقيقتين)، لا MANDATORY_STOP ولا STOP_AFFECTED_ACTIVITY', () => {
       const r = evaluateDustCompliance(
         context({
           dviMandatoryStop: true,
@@ -361,8 +368,9 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
           // تأكيد الدقيقتين، تماماً كما كانت دائماً.
         })
       );
-      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
       expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
+      expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
       expect(r.pendingConfirmation).toBe(true);
     });
 
@@ -375,7 +383,7 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
     // undefined افتراضياً)، فلا يكشف هذا الخطأ تحديداً — هذا الاختبار يحاكي
     // البيانات الحقيقية (dviShortReason مملوءة، كما تصل فعلياً من dust-engine
     // دائماً) ليثبت أن النص المعلَّق يفوز الآن، لا نص dust-engine الخام.
-    it('dviShortReason مملوءة (كما يصل فعلياً من dust-engine) + معلَّق → رسالة GATE-DVI-002 لا تحمل كلمة "إيقاف" إطلاقاً', () => {
+    it('dviShortReason مملوءة (كما يصل فعلياً من dust-engine) + معلَّق → رسالة GATE-DVI-002 تنبيه بحت، لا تحمل كلمة "إيقاف" إطلاقاً', () => {
       const r = evaluateDustCompliance(
         context({
           dviMandatoryStop: true,
@@ -387,7 +395,7 @@ describe('محرك امتثال الغبار — بوابات الأولوية �
       const gateHit = r.triggeredRules.find((h) => h.code === 'GATE-DVI-002');
       expect(gateHit).toBeDefined();
       expect(gateHit?.messageAr).not.toContain('إيقاف');
-      expect(gateHit?.messageAr).toContain('معلَّق');
+      expect(gateHit?.messageAr).toContain('تنبيه');
     });
 
     // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — يُلغي MANDATORY_STOP
@@ -756,14 +764,14 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
   });
 
-  // بعد إعادة النظر في severity MRQ-PM10-BLACK-PENDING-104 (أصبحت
-  // ALLOW_WITH_CONTROLS)، لم تعد هذه القاعدة تدخل topHits عند STOP_AFFECTED_
-  // ACTIVITY إطلاقاً — GATE-DVI-002 وحدها هي topHit هنا الآن (لا تعادل بين
-  // قاعدتين، لكن نفس النتيجة: قاعدة واحدة معلَّقة تكفي لجعل pendingConfirmation
-  // كاملاً true، تماماً كما كانت الدلالة الأصلية لهذا الاختبار).
-  it('GATE-DVI-002 (PM10 لحظي وحده) هي القاعدة الوحيدة بأعلى شدة ومعلَّقة → pendingConfirmation يبقى true', () => {
-    // GATE-DVI-002 بseverity=STOP_AFFECTED_ACTIVITY تُعامَل كمعلَّقة أيضاً
-    // حين تكون PM10 لحظياً وحده سبب dviMandatoryStop — راجع isPendingRuleHit.
+  // قرار تنظيمي مُعاد النظر فيه مرتين (الملاحظة #7 ثم #8): كل من
+  // MRQ-PM10-BLACK-PENDING-104 وGATE-DVI-002 أصبحتا ALLOW_WITH_CONTROLS
+  // للحالة المعلَّقة — لا يوجد أي مسار متبقٍ ينتج STOP_AFFECTED_ACTIVITY
+  // لـPM10 لحظي وحده قبل اكتمال الدقيقتين. pendingConfirmation يبقى true
+  // (الحقل المستقل عن severity الذي يعكس فعلياً "لم يُثبَت الاستمرار بعد").
+  it('GATE-DVI-002 (PM10 لحظي وحده) هي القاعدة الوحيدة بأعلى شدة ومعلَّقة → ALLOW_WITH_CONTROLS، pendingConfirmation يبقى true', () => {
+    // GATE-DVI-002 بseverity=ALLOW_WITH_CONTROLS تُعامَل كمعلَّقة أيضاً حين
+    // تكون PM10 لحظياً وحده سبب dviMandatoryStop — راجع isPendingRuleHit.
     const r = evaluateDustCompliance(
       context({
         pm10UgM3: 345,
@@ -772,7 +780,7 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
         dviMandatoryStopIsPm10Only: true,
       })
     );
-    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
     expect(r.pendingConfirmation).toBe(true);
   });
 

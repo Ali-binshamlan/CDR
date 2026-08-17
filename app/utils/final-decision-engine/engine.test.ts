@@ -595,7 +595,14 @@ describe('decideFinal — إيقاف DVI مبني على PM10 لحظي قديم 
 // dviMandatoryStopIsPm10Only (سبب PM10 وحده) تُستبعَد بالكامل من هذا
 // المرشح، لا فقط في نافذتي (0-2 دقيقة)/(بيانات قديمة).
 describe('decideFinal — الإيقاف الرسمي لـPM10 وحده يأتي حصراً من محرك الامتثال، لا DVI', () => {
-  it('PM10=350 مستمرة 3 دقائق (بعد تأكيد الدقيقتين، قبل اكتمال 30 دقيقة)، بلا خطر فيزيائي آخر → لا MANDATORY_STOP رغم dvi.mandatoryStop=true', () => {
+  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — الملاحظة #8: "تغيير
+  // الاسم من MANDATORY_STOP إلى PROTECTIVE_STOP لا يحل المشكلة"): dviCandidate
+  // (منفصل تماماً عن dviMandatoryCandidate المُصلَح سابقاً) كان يُنتج
+  // PROTECTIVE_STOP لنفس هذا السيناريو بالضبط، مباشرة من dvi.decisionCategory
+  // بلا أي فحص لـstopBasis/confirmationState — وPROTECTIVE_STOP يُترجَم في
+  // finalDecisionStatus.ts إلى status='stopped' تماماً مثل MANDATORY_STOP.
+  // كلا الاستبعادين (MANDATORY_STOP وPROTECTIVE_STOP) مُختبَران هنا معاً.
+  it('PM10=350 مستمرة 3 دقائق (بعد تأكيد الدقيقتين، قبل اكتمال 30 دقيقة)، بلا خطر فيزيائي آخر → لا MANDATORY_STOP ولا PROTECTIVE_STOP رغم dvi.mandatoryStop=true', () => {
     const dvi = baseDvi({
       decisionCategory: 'STOP_DUST_GENERATING_ACTIVITIES',
       mandatoryStop: true,
@@ -621,6 +628,7 @@ describe('decideFinal — الإيقاف الرسمي لـPM10 وحده يأتي
     // القرار الفعلي يطابق ما يقوله محرك الامتثال — لا إيقاف، مخالفة موثَّقة فقط.
     expect(r.mandatoryStop).toBe(false);
     expect(r.operationalDecision).not.toBe('MANDATORY_STOP');
+    expect(r.operationalDecision).not.toBe('PROTECTIVE_STOP');
     expect(r.regulatoryFinding).toBe('NON_COMPLIANT');
   });
 
