@@ -537,25 +537,24 @@ function crusherRules(
   const autoResidential = activity.measurements.crusherDistanceToResidentialReceptorAutoM;
   const manualDistance = activity.measurements.crusherDistanceToReceptorM;
 
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "المستقبلات الحساسة: القائمة
-  // الفارغة قد تعني أن بيانات المستقبلات لم تُدخل أصلاً؛ يجب التفريق بين
-  // 'لا توجد مستقبلات بعد مسح مكتمل' و'لم يتم إدخال بيانات المستقبلات' —
-  // الحالة الثانية يجب أن تنتج FIELD_VERIFICATION_REQUIRED"): إحداثيات
-  // الكسارة موجودة فعلياً (autoAny !== null، أي nearestReceptorDistancesM
-  // حسبت شيئاً لا "لا إحداثيات") لكن النتيجة Infinity (لا مستقبِل ضمن
-  // المصفوفة الممرَّرة) — إن كانت تلك المصفوفة فارغة أصلاً على مستوى النظام
-  // كله (sensitiveReceptorsDataAvailable=false)، فـInfinity هنا لا تصلح
-  // دليل أمان (لم يُجرَ أي مسح فعلي بعد)، بخلاف نفس Infinity حين تتوفر بيانات
-  // مستقبلات حقيقية لمشاريع أخرى في النظام لكن لا شيء قريب من هذا الموقع
-  // تحديداً (حالة آمنة فعلياً، تبقى بلا تغيير). لا تتكرر مع بوابة المسافة
-  // اليدوية (manualDistance) أدناه — تُفحَص فقط حين المصدر هو الحساب التلقائي.
+  // قرار مُعاد النظر فيه بالكامل (طلب صريح من المستخدم — "المستقبلات الحساسة
+  // لا تدخل ضمن قرارات الإيقاف"): كل قواعد مسافة المستقبِل الحساس للكسارة
+  // (البيانات الناقصة، والمسافتان العامة/السكنية، واتجاه الريح) كانت تُصدر
+  // MANDATORY_STOP/FIELD_VERIFICATION_REQUIRED/RESTRICT_ACTIVITY — إيقاف أو
+  // تقييد فعلي للنشاط بناءً على بيانات مستقبلات قد تكون غير مكتملة أصلاً
+  // (جدول sensitive_receptors يدوي بحت، لا يشمل مستقبلات OSM المكتشفة تلقائياً
+  // المعروضة توعوياً في نفس الشاشة — راجع app/api/projects/[projectId]/route.ts).
+  // هذا التناقض (المستخدم يرى مستقبِلاً حقيقياً قريباً بينما القرار يقول "لا
+  // توجد بيانات") كان السبب المباشر لإعادة النظر. الأربع قواعد أدناه أصبحت
+  // جميعها ALLOW_WITH_CONTROLS (تحذير/تنبيه توعوي فقط، لا إيقاف ولا تقييد
+  // فعلي) — بلا حذف القواعد نفسها، فالمعلومة تبقى ظاهرة للمستخدم كتنبيه.
   if (autoAny === Infinity && activity.sensitiveReceptorsDataAvailable === false) {
     hits.push(
       ruleHit(
         'CRUSHER-RECEPTORS-DATA-MISSING',
-        'FIELD_VERIFICATION_REQUIRED',
-        'تعذر التحقق من مسافة الكسارة عن أقرب مستقبل حساس: لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد (لا يوجد مسح مكتمل يثبت غياب مستقبلات قريبة)',
-        'أدخِل بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام، أو أثبت مسافة الكسارة يدوياً حتى يتم التحقق التلقائي'
+        'ALLOW_WITH_CONTROLS',
+        'تنبيه: تعذر التحقق من مسافة الكسارة عن أقرب مستقبل حساس — لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد (لا يوجد مسح مكتمل يثبت غياب مستقبلات قريبة). تنبيه توعوي فقط، لا يوقف النشاط',
+        'يُفضَّل إدخال بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام، أو إثبات مسافة الكسارة يدوياً للتحقق التلقائي'
       )
     );
   }
@@ -568,9 +567,9 @@ function crusherRules(
     hits.push(
       ruleHit(
         'CRUSHER-DISTANCE-200-002B',
-        'MANDATORY_STOP',
-        `مسافة الكسارة عن أقرب مستقبل حساس (${autoAny !== null && autoAny !== undefined ? 'محسوبة تلقائياً: ' : ''}${generalDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م)`,
-        `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبل حساس`
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه: مسافة الكسارة عن أقرب مستقبل حساس (${autoAny !== null && autoAny !== undefined ? 'محسوبة تلقائياً: ' : ''}${generalDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
+        `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`
       )
     );
   }
@@ -580,21 +579,17 @@ function crusherRules(
     hits.push(
       ruleHit(
         'CRUSHER-DISTANCE-500-002C',
-        'MANDATORY_STOP',
-        `مسافة الكسارة عن سكني/مدارس/مستشفيات (${autoResidential !== null && autoResidential !== undefined ? 'محسوبة تلقائياً: ' : ''}${residentialDistance} م) أقل من الحد الأدنى (${crusherSensitiveReceptorDistanceM} م)`,
-        `أوقف تشغيل الكسارة أو انقلها لمسافة لا تقل عن ${crusherSensitiveReceptorDistanceM} م عن أقرب منطقة سكنية/مدرسة/مستشفى`
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه: مسافة الكسارة عن سكني/مدارس/مستشفيات (${autoResidential !== null && autoResidential !== undefined ? 'محسوبة تلقائياً: ' : ''}${residentialDistance} م) أقل من الحد الأدنى (${crusherSensitiveReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
+        `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherSensitiveReceptorDistanceM} م عن أقرب منطقة سكنية/مدرسة/مستشفى، أو زيادة إجراءات التثبيط`
       )
     );
   }
 
-  // MRQ-RECEPTOR-DOWNWIND-120: تصعيد الاستجابة عند وجود مستقبِل حساس فعلياً
-  // باتجاه هبوب الرياح (لا مجرد قريب بالمسافة المستقيمة) — يُطبَّق فقط لو
-  // كان اتجاه الرياح متوفراً (crusherDistanceToDownwindReceptorAutoM يبقى
-  // null لو غاب اتجاه الرياح أصلاً، راجع adapters.ts). لا يتكرر مع
-  // CRUSHER-DISTANCE-500-002C أعلاه: تلك تفحص
-  // أقرب مستقبِل بصرف النظر عن الاتجاه (وتوقف إلزامياً)، وهذه تفحص الاتجاه
-  // تحديداً (تقييد لا إيقاف كامل — الاتجاه عامل تصعيد إضافي، لا مخالفة
-  // مسافة مستقلة).
+  // MRQ-RECEPTOR-DOWNWIND-120: تنبيه عند وجود مستقبِل حساس فعلياً باتجاه هبوب
+  // الرياح (لا مجرد قريب بالمسافة المستقيمة) — يُطبَّق فقط لو كان اتجاه الرياح
+  // متوفراً (crusherDistanceToDownwindReceptorAutoM يبقى null لو غاب اتجاه
+  // الرياح أصلاً، راجع adapters.ts).
   const downwindDistance = activity.measurements.crusherDistanceToDownwindReceptorAutoM;
   if (
     downwindDistance !== null &&
@@ -604,9 +599,9 @@ function crusherRules(
     hits.push(
       ruleHit(
         'MRQ-RECEPTOR-DOWNWIND-120',
-        'RESTRICT_ACTIVITY',
-        `تصعيد الاستجابة: مستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً باتجاه هبوب الرياح الحالي من الكسارة (على بُعد ${downwindDistance === Infinity ? '—' : downwindDistance + ' م'})`,
-        'قيّد تشغيل الكسارة وزد إجراءات التثبيط فوراً طالما استمر اتجاه الرياح نحو المستقبِل الحساس، حتى يتغيّر الاتجاه أو تنخفض شدة النشاط'
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه: مستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً باتجاه هبوب الرياح الحالي من الكسارة (على بُعد ${downwindDistance === Infinity ? '—' : downwindDistance + ' م'}). تنبيه توعوي فقط، لا يوقف النشاط`,
+        'يُفضَّل زيادة إجراءات التثبيط طالما استمر اتجاه الرياح نحو المستقبِل الحساس'
       )
     );
   }
@@ -682,26 +677,26 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
   // crusherDistanceToReceptorM)، فـFIELD_VERIFICATION_REQUIRED هنا يمنع
   // فقط قرار ALLOW نظيف بلا أي إثبات موقع، بدل تمرير القاعدة بصمت.
   const batchingDistance = activity.measurements.batchingDistanceToNearestReceptorAutoM;
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — نفس تعليق CRUSHER-RECEPTORS-DATA-
-  // MISSING أعلاه بالضبط): إحداثيات محطة الخلط موجودة (batchingDistance
-  // !== null) لكن Infinity لأن جدول sensitive_receptors فارغ كلياً في
-  // النظام (لا لأن مسحاً فعلياً أثبت غياب مستقبلات قريبة).
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا
+  // تدخل ضمن قرارات الإيقاف"، نفس القرار المطبَّق على قواعد الكسارة أعلاه):
+  // الثلاث قواعد أدناه أصبحت ALLOW_WITH_CONTROLS (تنبيه توعوي فقط) بدل
+  // FIELD_VERIFICATION_REQUIRED/MANDATORY_STOP.
   if (batchingDistance === null) {
     hits.push(
       ruleHit(
         'BATCHING-DISTANCE-MISSING',
-        'FIELD_VERIFICATION_REQUIRED',
-        'تعذر إثبات مسافة محطة الخلط عن أقرب مستقبل حساس (لا إحداثيات مُدخلة لموقع المحطة)',
-        'حدّد موقع محطة الخلط على الخريطة للتحقق التلقائي من مسافتها عن أقرب مستقبِل حساس'
+        'ALLOW_WITH_CONTROLS',
+        'تنبيه: تعذر إثبات مسافة محطة الخلط عن أقرب مستقبل حساس (لا إحداثيات مُدخلة لموقع المحطة). تنبيه توعوي فقط، لا يوقف النشاط',
+        'يُفضَّل تحديد موقع محطة الخلط على الخريطة للتحقق التلقائي من مسافتها عن أقرب مستقبِل حساس'
       )
     );
   } else if (batchingDistance === Infinity && activity.sensitiveReceptorsDataAvailable === false) {
     hits.push(
       ruleHit(
         'BATCHING-RECEPTORS-DATA-MISSING',
-        'FIELD_VERIFICATION_REQUIRED',
-        'تعذر التحقق من مسافة محطة الخلط عن أقرب مستقبل حساس: لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد',
-        'أدخِل بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام للتحقق التلقائي من المسافة'
+        'ALLOW_WITH_CONTROLS',
+        'تنبيه: تعذر التحقق من مسافة محطة الخلط عن أقرب مستقبل حساس — لا توجد بيانات مستقبلات حساسة مُدخلة في النظام بعد. تنبيه توعوي فقط، لا يوقف النشاط',
+        'يُفضَّل إدخال بيانات المستقبلات الحساسة القريبة (سكني/مدرسي/صحي) في النظام للتحقق التلقائي من المسافة'
       )
     );
   } else if (batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M()) {
@@ -709,9 +704,9 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
     hits.push(
       ruleHit(
         'BATCHING-DISTANCE-200',
-        'MANDATORY_STOP',
-        `مسافة محطة الخلط عن أقرب مستقبل حساس (محسوبة تلقائياً: ${batchingDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م)`,
-        `أوقف تشغيل محطة الخلط أو انقلها لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)`
+        'ALLOW_WITH_CONTROLS',
+        `تنبيه: مسافة محطة الخلط عن أقرب مستقبل حساس (محسوبة تلقائياً: ${batchingDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
+        `يُفضَّل نقل محطة الخلط لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)، أو زيادة إجراءات التثبيط`
       )
     );
   }

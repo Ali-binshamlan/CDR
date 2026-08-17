@@ -1091,11 +1091,13 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
       })
     );
     // بلا إحداثيات مسافة مُدخلة صراحة هنا (خلافاً لـexemptBatchingActivity)،
-    // FIELD_VERIFICATION_REQUIRED (أولوية أعلى من ALLOW_WITH_CONTROLS) تفوز
-    // بالقرار النهائي — لكن PM10-VIOLATION-STOP-006 المؤكَّدة تبقى مفعَّلة
-    // ومسجَّلة ضمن القواعد، تماماً كما لا تُعفى محطة الخلط من PM10 إطلاقاً.
+    // BATCHING-DISTANCE-MISSING تُفعَّل أيضاً — لكنها أصبحت ALLOW_WITH_CONTROLS
+    // (قرار مُعاد النظر فيه: المستقبلات الحساسة لا تدخل ضمن قرارات الإيقاف/
+    // التحقق الميداني، راجع rulebook.ts)، فلم تعد تتفوق على PM10. النتيجة
+    // النهائية ALLOW_WITH_CONTROLS، وPM10-VIOLATION-STOP-006 المؤكَّدة تبقى
+    // مفعَّلة ومسجَّلة ضمن القواعد، تماماً كما لا تُعفى محطة الخلط من PM10 إطلاقاً.
     expect(r.triggeredRules.some((h) => h.code === 'PM10-VIOLATION-STOP-006')).toBe(true);
-    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
   });
 
   // خطأ مكتشَف ومُصلَح: كان enhancedSuppressionRule (GATE-WIND-15-25-ENHANCED-005)
@@ -1706,7 +1708,10 @@ describe('محرك امتثال الغبار — الكسارة', () => {
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-CATEGORY-001')).toBe(false);
   });
 
-  it('كسارة ضمن 500م من مستقبِل حساس → إيقاف إلزامي حتى في فئة ثالثة', () => {
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
+  // ضمن قرارات الإيقاف"): قواعد مسافة المستقبِل الحساس أصبحت ALLOW_WITH_CONTROLS
+  // (تنبيه توعوي فقط) بدل MANDATORY_STOP — راجع rulebook.ts.
+  it('كسارة ضمن 500م من مستقبِل حساس → تنبيه توعوي فقط (لا إيقاف)، حتى في فئة ثالثة', () => {
     const r = evaluateDustCompliance(
       context({
         project: projectProfile({ hasOnsiteCrusher: true }),
@@ -1716,11 +1721,11 @@ describe('محرك امتثال الغبار — الكسارة', () => {
         }),
       })
     );
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-500-002C')).toBe(true);
   });
 
-  it('مسافة الكسارة المحسوبة تلقائياً (auto) تفوز على الحقل اليدوي البعيد', () => {
+  it('مسافة الكسارة المحسوبة تلقائياً (auto) تفوز على الحقل اليدوي البعيد — تنبيه توعوي فقط، لا إيقاف', () => {
     const r = evaluateDustCompliance(
       context({
         project: projectProfile({ hasOnsiteCrusher: true }),
@@ -1737,7 +1742,7 @@ describe('محرك امتثال الغبار — الكسارة', () => {
         }),
       })
     );
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-200-002B')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-500-002C')).toBe(true);
   });
@@ -2100,7 +2105,11 @@ describe('محرك امتثال الغبار — MRQ-RECEPTOR-DOWNWIND-120 (تص
 // (adapters.ts، مشتق من طول مصفوفة sensitive_receptors العالمية) يميّز
 // الآن الحالتين، بدل السماح لـInfinity وحدها بإخفاء نقص البيانات.
 describe('محرك امتثال الغبار — تمييز "لا مستقبلات في النظام كله" عن "لا مستقبل قريب فعلياً"', () => {
-  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً (sensitiveReceptorsDataAvailable=false) → FIELD_VERIFICATION_REQUIRED، لا ALLOW صامت', () => {
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
+  // ضمن قرارات الإيقاف/التحقق الميداني"): القاعدة تبقى مُفعَّلة (تنبيه توعوي
+  // يوثِّق نقص البيانات) لكن لم تعد تفرض FIELD_VERIFICATION_REQUIRED — راجع
+  // rulebook.ts (ALLOW_WITH_CONTROLS بدل FIELD_VERIFICATION_REQUIRED).
+  it('كسارة بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً (sensitiveReceptorsDataAvailable=false) → تنبيه توعوي فقط، لا تحقق ميداني إلزامي', () => {
     const r = evaluateDustCompliance(
       context({
         project: projectProfile({ hasOnsiteCrusher: true }), // CATEGORY_III_HIGH — يعزل CRUSHER-CATEGORY-001
@@ -2116,7 +2125,7 @@ describe('محرك امتثال الغبار — تمييز "لا مستقبلا
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(true);
-    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+    expect(r.decisionCategory).not.toBe('FIELD_VERIFICATION_REQUIRED');
   });
 
   it('كسارة بإحداثيات معروفة + جدول sensitive_receptors يحتوي بيانات حقيقية لكن Infinity لهذا الموقع تحديداً (sensitiveReceptorsDataAvailable=true) → لا FIELD_VERIFICATION_REQUIRED، Infinity تبقى آمنة كما كانت', () => {
@@ -2137,7 +2146,7 @@ describe('محرك امتثال الغبار — تمييز "لا مستقبلا
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-RECEPTORS-DATA-MISSING')).toBe(false);
   });
 
-  it('محطة خلط بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً → FIELD_VERIFICATION_REQUIRED', () => {
+  it('محطة خلط بإحداثيات معروفة + جدول sensitive_receptors فارغ عالمياً → تنبيه توعوي فقط، لا تحقق ميداني إلزامي', () => {
     const r = evaluateDustCompliance(
       context({
         activity: activityProfile({
@@ -2151,7 +2160,7 @@ describe('محرك امتثال الغبار — تمييز "لا مستقبلا
       })
     );
     expect(r.triggeredRules.some((h) => h.code === 'BATCHING-RECEPTORS-DATA-MISSING')).toBe(true);
-    expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+    expect(r.decisionCategory).not.toBe('FIELD_VERIFICATION_REQUIRED');
   });
 
   it('كسارة بلا إحداثيات مُدخلة أصلاً (null، لا Infinity) + جدول فارغ → لا يُخلَط بين البابين، تبقى بوابة "لا إحداثيات" اليدوية وحدها إن وُجدت', () => {
@@ -2319,8 +2328,12 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
   // منفذة"): المرجع التنظيمي (القسم 3.5) يمنع محطات الخلط/تخزين المواد ضمن
   // 200م من مدرسة/مستشفى/مسجد/منطقة سكنية — الإحداثيات والمسافة المحسوبة
   // تلقائياً كانتا تُجمَعان (adapters.ts/geo.ts) لكن لا قاعدة كانت تستهلكهما.
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
+  // ضمن قرارات الإيقاف"): BATCHING-DISTANCE-200/BATCHING-DISTANCE-MISSING
+  // أصبحتا ALLOW_WITH_CONTROLS (تنبيه توعوي فقط) بدل MANDATORY_STOP/
+  // FIELD_VERIFICATION_REQUIRED — راجع rulebook.ts.
   describe('BATCHING-DISTANCE-200 — الحد الأدنى 200م عن أقرب مستقبِل حساس', () => {
-    it('مسافة 199.999م (أقل من 200 بالضبط) → إيقاف إلزامي', () => {
+    it('مسافة 199.999م (أقل من 200 بالضبط) → تنبيه توعوي فقط، لا إيقاف', () => {
       const r = evaluateDustCompliance(
         context({
           activity: activityProfile({
@@ -2329,7 +2342,7 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
           }),
         })
       );
-      expect(r.decisionCategory).toBe('MANDATORY_STOP');
+      expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
       expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(true);
     });
 
@@ -2358,7 +2371,7 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
       expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-200')).toBe(false);
     });
 
-    it('لا إحداثيات مُدخلة لمحطة الخلط (null، لا Infinity) → يتطلب تحقق ميداني، لا ALLOW نظيف', () => {
+    it('لا إحداثيات مُدخلة لمحطة الخلط (null، لا Infinity) → تنبيه توعوي فقط، لا تحقق ميداني إلزامي', () => {
       const r = evaluateDustCompliance(
         context({
           activity: activityProfile({
@@ -2368,7 +2381,7 @@ describe('محرك امتثال الغبار — محطات خلط الخرسا�
         })
       );
       expect(r.triggeredRules.some((h) => h.code === 'BATCHING-DISTANCE-MISSING')).toBe(true);
-      expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+      expect(r.decisionCategory).not.toBe('FIELD_VERIFICATION_REQUIRED');
     });
 
     it('إحداثيات مُدخلة لكن لا مستقبِلات حساسة مسجَّلة قريباً (Infinity) → لا مخالفة، ولا تحقق ميداني (موقع مُثبَت فعلياً وآمن)', () => {
@@ -3101,7 +3114,12 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
   // عن بوابة الرياح — isEnclosedOperation لم يعد يُعفي منها أصلاً (خلاف
   // محطة الخلط بشرطيها)، فرياح مرتفعة كانت ستُفعِّل GATE-WIND-ABOVE-25-004
   // فعلياً وتُبطل نية هذا الاختبار (عزل مسافة الكسارة عن الرياح).
-  it('H-06.2: إيقاف بسبب مسافة كسارة (لا رياح، رياح هادئة) → لا يُضاف شرط "انخفاض الرياح" لأنه ليس سبب الإيقاف الفعلي', () => {
+  // ملاحظة (قرار مُعاد النظر فيه — المستقبلات الحساسة لا تدخل ضمن قرارات
+  // الإيقاف): CRUSHER-DISTANCE-500-002C أصبحت ALLOW_WITH_CONTROLS بدل
+  // MANDATORY_STOP (راجع rulebook.ts)، فالسيناريو لم يعد "إيقافاً" فعلياً —
+  // لكن جوهر اختبار H-06.2 (عزل شرط "انخفاض الرياح" عن قواعد لا علاقة لها
+  // بالرياح) يبقى صالحاً ومهماً بصرف النظر عن severity القاعدة نفسها.
+  it('H-06.2: تنبيه بسبب مسافة كسارة (لا رياح، رياح هادئة) → لا يُضاف شرط "انخفاض الرياح" لأنه ليس سبب التنبيه الفعلي', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 10, // هادئة عمداً — تعزل السيناريو عن بوابة الرياح تماماً
@@ -3113,7 +3131,7 @@ describe('محرك امتثال الغبار — فصل وصف المخالفة 
         }),
       })
     );
-    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
     expect(r.triggeredRules.some((h) => h.code === 'CRUSHER-DISTANCE-500-002C')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(false);
     expect(r.restartConditions.some((c) => c.includes('انخفاض سرعة الرياح'))).toBe(false);

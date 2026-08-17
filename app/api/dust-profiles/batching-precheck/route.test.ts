@@ -94,7 +94,9 @@ describe('POST /api/dust-profiles/batching-precheck', () => {
     expect(body.reasonsAr).toEqual([]);
   });
 
-  it('مسجد على بُعد 100م (أقل من 200م) → blocked=true (المساجد تُحسَب ضمن nearestAnyM)', async () => {
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
+  // ضمن قرارات الإيقاف"، يشمل منع الحفظ): blocked أصبحت false دائماً.
+  it('مسجد على بُعد 100م (أقل من 200م) → تنبيه نصي فقط (blocked=false)، لا منع حفظ (المساجد تُحسَب ضمن nearestAnyM)', async () => {
     tableResults.sensitive_receptors = {
       data: [{ id: 'r1', name: 'مسجد', receptor_type: 'MOSQUE', lat: 24.7009, lng: 46.6 }],
       error: null,
@@ -102,7 +104,7 @@ describe('POST /api/dust-profiles/batching-precheck', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     const body = await res.json();
-    expect(body.blocked).toBe(true);
+    expect(body.blocked).toBe(false);
     expect(body.nearestReceptorM).not.toBeNull();
     expect(body.nearestReceptorM).toBeLessThan(200);
   });
@@ -129,12 +131,12 @@ describe('POST /api/dust-profiles/batching-precheck', () => {
 
   // طلب صريح من المستخدم — نفس إصلاح crusher-precheck: sensitive_receptors
   // اليدوي فارغ لا يعني عدم وجود مستقبِل حساس حقيقي.
-  it('OSM يكتشف معلَماً قريباً رغم sensitive_receptors فارغ → blocked=true بتحذير OSM', async () => {
+  it('OSM يكتشف معلَماً قريباً رغم sensitive_receptors فارغ → تنبيه نصي فقط (blocked=false) بتحذير OSM', async () => {
     mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap ("مسجد أبو بكر الصديق"، على بُعد 7 م تقريباً) — بيانات غير رسمية تتطلب تحققاً ميدانياً.';
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     const body = await res.json();
-    expect(body.blocked).toBe(true);
+    expect(body.blocked).toBe(false);
     expect(body.reasonsAr).toContain(mockOsmWarning);
   });
 

@@ -67,7 +67,11 @@ describe('validateDustUnitPlacement', () => {
     }
   });
 
-  it('كسارة في مشروع دون الفئة الثالثة → blocked:true', async () => {
+  // قرار مُعاد النظر فيه بالكامل (طلب صريح من المستخدم — "المستقبلات الحساسة
+  // لا تدخل ضمن قرارات الإيقاف"، يشمل صراحة منع حفظ الموقع على الخريطة):
+  // blocked أصبحت false دائماً — reasonsAr تبقى تُبنى وتُعاد كتنبيه نصي بحت،
+  // بلا منع فعلي للحفظ. راجع dustPlacementValidation.ts.
+  it('كسارة في مشروع دون الفئة الثالثة → تنبيه نصي فقط (blocked:false)، لا يزال reasonsAr يوثّق السبب', async () => {
     tableResults.projects = { data: { site_area_m2: 1000, daily_truck_movements: 5 }, error: null };
     const { validateDustUnitPlacement } = await import('./dustPlacementValidation');
     const result = await validateDustUnitPlacement({
@@ -77,10 +81,13 @@ describe('validateDustUnitPlacement', () => {
       activityType: 'CRUSHER',
     });
     expect(result.verified).toBe(true);
-    if (result.verified) expect(result.blocked).toBe(true);
+    if (result.verified) {
+      expect(result.blocked).toBe(false);
+      expect(result.reasonsAr.length).toBeGreaterThan(0);
+    }
   });
 
-  it('محطة خلط + مستقبل حساس على 100م → blocked:true', async () => {
+  it('محطة خلط + مستقبل حساس على 100م → تنبيه نصي فقط (blocked:false)', async () => {
     tableResults.sensitive_receptors = {
       data: [{ id: 'r1', name: 'مسجد', receptor_type: 'MOSQUE', lat: 24.7009, lng: 46.6 }],
       error: null,
@@ -94,12 +101,13 @@ describe('validateDustUnitPlacement', () => {
     });
     expect(result.verified).toBe(true);
     if (result.verified) {
-      expect(result.blocked).toBe(true);
+      expect(result.blocked).toBe(false);
+      expect(result.reasonsAr.length).toBeGreaterThan(0);
       expect(result.riskClass).toBeUndefined();
     }
   });
 
-  it('OSM يكتشف معلَماً قريباً → blocked:true مع سبب مضمَّن', async () => {
+  it('OSM يكتشف معلَماً قريباً → تنبيه نصي فقط (blocked:false) مع سبب مضمَّن', async () => {
     mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
     const { validateDustUnitPlacement } = await import('./dustPlacementValidation');
     const result = await validateDustUnitPlacement({
@@ -110,7 +118,7 @@ describe('validateDustUnitPlacement', () => {
     });
     expect(result.verified).toBe(true);
     if (result.verified) {
-      expect(result.blocked).toBe(true);
+      expect(result.blocked).toBe(false);
       expect(result.reasonsAr).toContain(mockOsmWarning);
     }
   });

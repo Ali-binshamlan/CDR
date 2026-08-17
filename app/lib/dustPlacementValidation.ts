@@ -126,18 +126,22 @@ export async function validateDustUnitPlacement({
     }
   }
 
-  // طلب صريح من المستخدم — جدول sensitive_receptors اليدوي قد يبقى فارغاً
-  // بلا إدخال بشري؛ اكتشاف OSM (مصدر مجتمعي مفتوح) هنا يمنع الحفظ فقط (لا
-  // يُصدر مخالفة تنظيمية) عند وجود مستقبِل قريب لم يُدخَل يدوياً بعد. فشل
+  // اكتشاف OSM (مصدر مجتمعي مفتوح) — تنبيه نصي فقط، لا يمنع الحفظ. فشل
   // الجلب من Overpass fail-open بتصميم متعمَّد (راجع overpassReceptors.ts)
   // — لا يُسقط هذا الفحص بأكمله.
   const osmThresholdM = activityType === 'CRUSHER' ? CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M : CRUSHER_GENERAL_RECEPTOR_DISTANCE_M;
   const osmWarning = await buildOsmProximityWarning(lat, lng, osmThresholdM);
   if (osmWarning) reasons.push(osmWarning);
 
+  // قرار مُعاد النظر فيه بالكامل (طلب صريح من المستخدم — "المستقبلات الحساسة
+  // لا تدخل ضمن قرارات الإيقاف"، يشمل صراحة منع حفظ الموقع على الخريطة، لا
+  // فقط القرار التشغيلي اللاحق): blocked أصبحت false دائماً — reasons تبقى
+  // تُبنى وتُعاد كتنبيه نصي بحت (reasonsAr) يعرضه index.tsx للمستخدم، لكن
+  // بلا منع فعلي للحفظ. لا حذف لمنطق حساب المسافة/التصنيف نفسه (لا يزال
+  // مفيداً كتنبيه توعوي)، فقط أثره على blocked أُلغي.
   return {
     verified: true,
-    blocked: reasons.length > 0,
+    blocked: false,
     reasonsAr: reasons,
     ...(activityType === 'CRUSHER' ? { riskClass } : {}),
     nearestReceptorM: nearestAnyM === Infinity ? null : nearestAnyM,

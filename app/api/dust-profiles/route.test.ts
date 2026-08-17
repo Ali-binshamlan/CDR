@@ -315,25 +315,24 @@ describe('POST /api/dust-profiles', () => {
     });
   });
 
-  // طلب صريح من المستخدم — ثغرة مكتشفة: crusher-precheck/batching-precheck
-  // بالواجهة تحققان تجربة مستخدم فقط (debounce 600ms + زمن شبكة)، وHard
-  // Block هناك يقرأ فقط آخر نتيجة *وصلت فعلاً* — الضغط على حفظ بسرعة كافية
-  // قبل وصول النتيجة كان يتجاوز الحارس بالكامل. هذه المجموعة تختبر الحارس
-  // الحقيقي المُضاف الآن في route.ts نفسه (المصدر الوحيد للحقيقة).
-  describe('حارس الكسارة/محطة الخلط عند الحفظ الفعلي (لا يعتمد على الواجهة)', () => {
-    it('كسارة في مشروع دون الفئة الثالثة (site_area_m2 صغيرة) → 422 PLACEMENT_BLOCKED', async () => {
+  // قرار مُعاد النظر فيه بالكامل (طلب صريح من المستخدم — "المستقبلات الحساسة
+  // لا تدخل ضمن قرارات الإيقاف"، يشمل صراحة منع حفظ الموقع على الخريطة): حارس
+  // PLACEMENT_BLOCKED هنا (وفي crusher-precheck/batching-precheck بالواجهة)
+  // لم يعد يمنع الحفظ أبداً — validateDustUnitPlacement تُرجع blocked:false
+  // دائماً الآن (راجع dustPlacementValidation.ts)، فكل سيناريوهات هذه
+  // المجموعة تنتهي بـ200 (يُحفَظ) بدل 422.
+  describe('فحص موقع الكسارة/محطة الخلط عند الحفظ الفعلي (تنبيه توعوي فقط، لا يمنع الحفظ)', () => {
+    it('كسارة في مشروع دون الفئة الثالثة (site_area_m2 صغيرة) → 200 (يُحفَظ، تنبيه توعوي فقط)', async () => {
       tableResults.projects = { data: { site_area_m2: 1000, daily_truck_movements: 5 }, error: null };
       const { POST } = await import('./route');
       const res = await POST(
         makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
       );
-      expect(res.status).toBe(422);
-      const body = await res.json();
-      expect(body.error).toBe('PLACEMENT_BLOCKED');
-      expect(lastDustProfileInsert).toBeNull();
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert).not.toBeNull();
     });
 
-    it('كسارة في مشروع فئة ثالثة + مستقبل سكني على 100م (sensitive_receptors يدوي) → 422 PLACEMENT_BLOCKED', async () => {
+    it('كسارة في مشروع فئة ثالثة + مستقبل سكني على 100م (sensitive_receptors يدوي) → 200 (يُحفَظ، تنبيه توعوي فقط)', async () => {
       tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
       tableResults.sensitive_receptors = {
         data: [{ id: 'r1', name: 'حي سكني', receptor_type: 'RESIDENTIAL', lat: 24.7009, lng: 46.6 }],
@@ -343,19 +342,19 @@ describe('POST /api/dust-profiles', () => {
       const res = await POST(
         makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
       );
-      expect(res.status).toBe(422);
-      expect(lastDustProfileInsert).toBeNull();
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert).not.toBeNull();
     });
 
-    it('كسارة في مشروع فئة ثالثة + OSM يكتشف مسجداً قريباً (sensitive_receptors فارغ) → 422 PLACEMENT_BLOCKED', async () => {
+    it('كسارة في مشروع فئة ثالثة + OSM يكتشف مسجداً قريباً (sensitive_receptors فارغ) → 200 (يُحفَظ، تنبيه توعوي فقط)', async () => {
       tableResults.projects = { data: { site_area_m2: 6000, daily_truck_movements: 10 }, error: null };
       mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
       const { POST } = await import('./route');
       const res = await POST(
         makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
       );
-      expect(res.status).toBe(422);
-      expect(lastDustProfileInsert).toBeNull();
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert).not.toBeNull();
     });
 
     it('كسارة في مشروع فئة ثالثة + لا مستقبلات (يدوية أو OSM) → 200 (يُحفَظ)', async () => {
@@ -368,7 +367,7 @@ describe('POST /api/dust-profiles', () => {
       expect(lastDustProfileInsert).not.toBeNull();
     });
 
-    it('محطة خلط + مسجد على 100م (أقل من 200م) → 422 PLACEMENT_BLOCKED', async () => {
+    it('محطة خلط + مسجد على 100م (أقل من 200م) → 200 (يُحفَظ، تنبيه توعوي فقط)', async () => {
       tableResults.sensitive_receptors = {
         data: [{ id: 'r1', name: 'مسجد', receptor_type: 'MOSQUE', lat: 24.7009, lng: 46.6 }],
         error: null,
@@ -384,13 +383,11 @@ describe('POST /api/dust-profiles', () => {
           })
         ) as never
       );
-      expect(res.status).toBe(422);
-      const body = await res.json();
-      expect(body.error).toBe('PLACEMENT_BLOCKED');
-      expect(lastDustProfileInsert).toBeNull();
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert).not.toBeNull();
     });
 
-    it('محطة خلط + OSM يكتشف معلَماً قريباً → 422 PLACEMENT_BLOCKED', async () => {
+    it('محطة خلط + OSM يكتشف معلَماً قريباً → 200 (يُحفَظ، تنبيه توعوي فقط)', async () => {
       mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap.';
       const { POST } = await import('./route');
       const res = await POST(
@@ -403,8 +400,8 @@ describe('POST /api/dust-profiles', () => {
           })
         ) as never
       );
-      expect(res.status).toBe(422);
-      expect(lastDustProfileInsert).toBeNull();
+      expect(res.status).toBe(200);
+      expect(lastDustProfileInsert).not.toBeNull();
     });
 
     it('كسارة بلا إحداثيات (activity_lat/lng غائبة) → لا يُطبَّق الحارس، القرار النهائي يبقى للتقييم اللاحق', async () => {
@@ -419,17 +416,19 @@ describe('POST /api/dust-profiles', () => {
   // نشاط الغبار ليس معاملة واحدة"): activity_groups لم يعد يُكتَب مباشرة من
   // route.ts بمعزل عن باقي التحققات — الكتابة الوحيدة الآن هي RPC واحدة
   // (insert_dust_profile_atomic) تُنشئ activity_groups وproject_dust_profiles
-  // معاً، ولا تُستدعى إطلاقاً قبل نجاح كل تحقق سابق (تاريخ/أوقات دوام/فحص
-  // موقع الكسارة). فشل أي تحقق لاحق يعني عدم استدعاء RPC مطلقاً — لا صف
+  // معاً، ولا تُستدعى إطلاقاً قبل نجاح كل تحقق سابق (تاريخ/أوقات دوام/تناسب
+  // activity_type). فشل أي تحقق لاحق يعني عدم استدعاء RPC مطلقاً — لا صف
   // مجموعة يتيم ممكن.
+  //
+  // ملاحظة: فحص موقع الكسارة/محطة الخلط لم يعد يمنع الحفظ (راجع describe
+  // أعلاه — "تنبيه توعوي فقط، لا يمنع الحفظ")، فلم يعد مصدراً صالحاً لسيناريو
+  // "فشل تحقق لاحق" هنا؛ استُبدل بتحقق تناسب activity_type (لا يزال حارساً
+  // حقيقياً يمنع الحفظ قبل RPC).
   describe('لا كتابة على activity_groups قبل نجاح كل التحققات (اختبار قبول صريح)', () => {
-    it('فشل فحص موقع الكسارة (PLACEMENT_BLOCKED) → RPC الذرية لا تُستدعى إطلاقاً', async () => {
-      tableResults.projects = { data: { site_area_m2: 1000, daily_truck_movements: 5 }, error: null };
+    it('فشل تناسب activity_type مع regulatory_activity → RPC الذرية لا تُستدعى إطلاقاً', async () => {
       const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ activity_lat: 24.7, activity_lng: 46.6 })) as never
-      );
-      expect(res.status).toBe(422);
+      const res = await POST(makeRequest(baseInsert({ activity_type: 'INDOOR_WORK' })) as never);
+      expect(res.status).toBe(400);
       expect(lastRpcCall).toBeNull();
     });
 

@@ -104,7 +104,10 @@ describe('POST /api/dust-profiles/crusher-precheck', () => {
     expect(body.reasonsAr).toEqual([]);
   });
 
-  it('مشروع فئة أولى/ثانية (مساحة صغيرة) → blocked=true بسبب الفئة', async () => {
+  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا تدخل
+  // ضمن قرارات الإيقاف"، يشمل منع الحفظ): blocked أصبحت false دائماً —
+  // reasonsAr يبقى يوثّق السبب كتنبيه نصي بحت. راجع dustPlacementValidation.ts.
+  it('مشروع فئة أولى/ثانية (مساحة صغيرة) → تنبيه نصي فقط (blocked=false)، لا منع حفظ', async () => {
     tableResults.projects = {
       data: { site_area_m2: 1000, daily_truck_movements: 5, has_onsite_crusher: false, has_onsite_batching_plant: false },
       error: null,
@@ -112,12 +115,12 @@ describe('POST /api/dust-profiles/crusher-precheck', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     const body = await res.json();
-    expect(body.blocked).toBe(true);
+    expect(body.blocked).toBe(false);
     expect(body.riskClass).not.toBe('CATEGORY_III_HIGH');
     expect(body.reasonsAr.length).toBeGreaterThan(0);
   });
 
-  it('مستقبل سكني على بُعد 100م (أقل من 500م) → blocked=true بسبب المسافة', async () => {
+  it('مستقبل سكني على بُعد 100م (أقل من 500م) → تنبيه نصي فقط (blocked=false)، لا منع حفظ', async () => {
     tableResults.sensitive_receptors = {
       data: [{ id: 'r1', name: 'حي سكني', receptor_type: 'RESIDENTIAL', lat: 24.7009, lng: 46.6 }],
       error: null,
@@ -125,7 +128,7 @@ describe('POST /api/dust-profiles/crusher-precheck', () => {
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     const body = await res.json();
-    expect(body.blocked).toBe(true);
+    expect(body.blocked).toBe(false);
     expect(body.nearestResidentialReceptorM).not.toBeNull();
     expect(body.nearestResidentialReceptorM).toBeLessThan(500);
   });
@@ -162,12 +165,12 @@ describe('POST /api/dust-profiles/crusher-precheck', () => {
   // طلب صريح من المستخدم — ثغرة مكتشفة: sensitive_receptors اليدوي فارغ
   // لا يعني بالضرورة عدم وجود مستقبِل حساس حقيقي (مثال حقيقي: مسجد على 7م
   // من كسارة، مكتشَف عبر OpenStreetMap لكن غير مُدخَل يدوياً بعد).
-  it('OSM يكتشف معلَماً قريباً رغم sensitive_receptors فارغ → blocked=true بتحذير OSM', async () => {
+  it('OSM يكتشف معلَماً قريباً رغم sensitive_receptors فارغ → تنبيه نصي فقط (blocked=false) بتحذير OSM', async () => {
     mockOsmWarning = 'تحذير: تم اكتشاف معلَم قريب محتمل الحساسية عبر خرائط OpenStreetMap ("مسجد أبو بكر الصديق"، على بُعد 7 م تقريباً) — بيانات غير رسمية تتطلب تحققاً ميدانياً.';
     const { POST } = await import('./route');
     const res = await POST(makeRequest({ projectId: 'p1', lat: 24.7, lng: 46.6 }));
     const body = await res.json();
-    expect(body.blocked).toBe(true);
+    expect(body.blocked).toBe(false);
     expect(body.reasonsAr).toContain(mockOsmWarning);
   });
 
