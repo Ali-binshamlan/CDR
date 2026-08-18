@@ -314,7 +314,14 @@ export async function evaluateProject(
 // الفعلية خلالها.
 export async function enqueueEvaluationRetryJob(
   projectId: string,
-  triggerType: 'DEVICE_EVENT' | 'PROVIDER_PULL',
+  // USER_REQUEST (مراجعة كود خارجي — P1، الملاحظة #13: "الواجهة ما زالت
+  // تستطيع عرض قرار حي لم يُحفظ بعد في Immutable Audit"): POST /evaluate
+  // (evaluate/route.ts) يُستدعى fire-and-forget من الواجهة بعد GET، بلا أي
+  // ضمان أن الحفظ سينجح أو يُعاد لاحقاً عند الفشل — إضافة هذا النوع تسمح
+  // لذلك المسار بالاستفادة من نفس آلية إعادة المحاولة المضمونة الموجودة
+  // أصلاً لـDEVICE_EVENT/PROVIDER_PULL، بدل ترك القرار المعروض للمستخدم بلا
+  // أي محاولة توثيق لاحقة مضمونة عند فشل الكتابة الأولى.
+  triggerType: 'DEVICE_EVENT' | 'PROVIDER_PULL' | 'USER_REQUEST',
   error: string
 ): Promise<void> {
   try {

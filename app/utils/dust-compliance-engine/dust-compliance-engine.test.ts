@@ -4,6 +4,8 @@ import { classifyProject, classifyWind } from './rulebook';
 import { buildActivityComplianceProfile, buildComplianceContext } from './adapters';
 import { resetRuleParametersForTests, setRuleParametersForTests } from './ruleParameters';
 import { haversineDistanceM, nearestReceptorDistancesM, receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from './geo';
+import { RULE_METADATA_REGISTRY } from './ruleMetadata';
+import { DUST_RULES_CATALOG } from './rulesCatalog';
 import { computeUnitReceptors } from '@/app/lib/dustEvaluation';
 import type {
   DustActivityComplianceProfile,
@@ -464,21 +466,11 @@ describe('محرك امتثال الغبار — الأعمال الترابية
   // EARTHWORKS-WATER-001 (رش التربة) حُذف من rulebook.ts — surfaceWatered
   // لم يعد يُدخَل عبر الواجهة (تحوّل إلى تنبيه نصي عام بقرار صريح بحذف
   // تأثيره من القرار)، فلم يعد اختباره ذا معنى.
+  //
+  // EARTHWORKS-DROP-002/003 (ارتفاع تفريغ التربة) حُذفتا لاحقاً بنفس السبب
+  // (طلب صريح من المستخدم — dropHeightM بلا حقل إدخال فعلي في DustStep.tsx).
 
-  it('ارتفاع تفريغ التربة > 1م أثناء رياح نشطة (15-25 كم/س) → إيقاف النشاط المتأثر', () => {
-    const r = evaluateDustCompliance(
-      context({
-        windSpeedKmh: 18,
-        activity: activityProfile({
-          regulatoryActivity: 'EARTHWORKS',
-          measurements: { ...activityProfile().measurements, dropHeightM: 1.2 },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'EARTHWORKS-DROP-002')).toBe(true);
-  });
-
-  it('ارتفاع تفريغ التربة > 1.5م في الوضع الاعتيادي → إيقاف النشاط المتأثر', () => {
+  it('لا مخالفات من هذا النشاط بصرف النظر عن ارتفاع التفريغ (تنبيه نصي فقط الآن)', () => {
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 5,
@@ -487,13 +479,6 @@ describe('محرك امتثال الغبار — الأعمال الترابية
           measurements: { ...activityProfile().measurements, dropHeightM: 1.8 },
         }),
       })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'EARTHWORKS-DROP-003')).toBe(true);
-  });
-
-  it('رش تربة فعّال وارتفاع تفريغ ضمن الحدود → لا مخالفات', () => {
-    const r = evaluateDustCompliance(
-      context({ activity: activityProfile({ regulatoryActivity: 'EARTHWORKS' }) })
     );
     expect(r.decisionCategory).toBe('ALLOW');
   });
@@ -762,6 +747,35 @@ describe('محرك امتثال الغبار — حدود PM10 التنظيمي�
     expect(r.shortReasonAr).not.toContain('بانتظار');
     // القاعدة المعلَّقة لا تظهر في القوائم المعروضة (نفس معاملة الاختبار أعلاه)
     expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(false);
+  });
+
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "PM10 المعلَّق يمكن أن
+  // يختفي إذا ظهرت قاعدة أخرى بنفس الشدة"): PM10>340 معلَّق (MRQ-PM10-BLACK-
+  // PENDING-104، ALLOW_WITH_CONTROLS) + رياح 15-25 كم/س (GATE-WIND-15-25-
+  // ENHANCED-005، نفس الشدة لكنها قاعدة مؤكَّدة لا معلَّقة، لا علاقة لها
+  // بـPM10 إطلاقاً) — topHits تضم القاعدتين معاً، فـpendingConfirmation
+  // العام (يصف "هل القرار الفائز بأكمله معلَّق؟") يصبح false بحق (الرياح
+  // وحدها سبب مستقل حقيقي، لا يعتمد على وقت). لكن decisionCategory النهائي
+  // يبقى ALLOW_WITH_CONTROLS (غير قطعي أصلاً، لا MANDATORY_STOP ولا
+  // STOP_AFFECTED_ACTIVITY) — لا تعارض حقيقي بين "مسموح بضوابط" و"PM10 لا
+  // يزال معلَّقاً بانتظار تأكيد 120 ثانية"، فيجب أن تبقى القاعدة المعلَّقة
+  // ظاهرة للمستخدم رغم أن pendingConfirmation العام=false.
+  it('PM10 معلَّق + رياح 15-25 كم/س (نفس الشدة، غير معلَّقة) → كلتا القاعدتين تظهران معاً في triggeredRules، لا اختفاء PM10', () => {
+    const r = evaluateDustCompliance(
+      context({
+        pm10UgM3: 350,
+        pm10ConfirmedViolation340: false,
+        windSpeedKmh: 20,
+        activity: activityProfile({ isDustGenerating: true, isEnclosedOperation: false }),
+      })
+    );
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    // القرار الفائز بأكمله ليس معلَّقاً (الرياح سبب مستقل مؤكَّد) — لكن هذا
+    // لا يجوز أن يُخفي قاعدة PM10 المعلَّقة عن العرض (الفرق بين الحقلين هو
+    // بالضبط جوهر هذا الإصلاح).
+    expect(r.pendingConfirmation).toBe(false);
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
   });
 
   // قرار تنظيمي مُعاد النظر فيه مرتين (الملاحظة #7 ثم #8): كل من
@@ -1239,16 +1253,17 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
       })
     );
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
-    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
-    // والقرار النهائي غير مكتمل"): كان canOverride يُشتق من decisionCategory
-    // العامة فقط (STOP_AFFECTED_ACTIVITY = دائماً false)، بصرف النظر عن كون
-    // السبب الفعلي مخالفة تنظيمية مؤكَّدة أم مجرد حجز زمني احترازي. حجز
-    // استقرار الاستئناف (RESUME-STABILITY-HOLD) الآن قاعدة DustRuleHit فعلية
-    // بـoverridable=true (راجع overridable في types.ts وengine.ts) — فهو
-    // "انتظر قليلاً أكثر"، لا مخالفة قائمة بذاتها كـGATE-SUPPRESSION-003
-    // (الذي يبقى overridable=false بوضوح). canOverride تعكس الآن قابلية
-    // القاعدة الفعلية الحاسمة، لا فئة القرار العامة.
-    expect(r.canOverride).toBe(true);
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — P2، الملاحظة #14:
+    // "عدم اتساق داخلي — Compliance Result الوسيط يستطيع أن يقول
+    // STOP_AFFECTED_ACTIVITY مع canOverride=true"): كانت RESUME-STABILITY-
+    // HOLD القاعدة الوحيدة بين كل قواعد resume-hold الشقيقة (PREVIOUS-
+    // DECISION-QUERY-FAILED-HOLD، VISIBILITY/WIND/PM10-DATA-MISSING-RESUME-
+    // HOLD) التي تمرر overridable=true صراحةً لنفس severity — البقية جميعها
+    // false. القرار النهائي الرسمي (final-decision-engine) لم يتأثر فعلياً
+    // (confirmedAffectedStop يُترجَم دائماً MANDATORY_STOP رتبةً بصرف النظر
+    // عن canOverride)، لكن هذا الحقل الوسيط كان عقداً غير نظيف قد يُضلِّل أي
+    // مستهلك مستقبلي يقرأه مباشرة. false يوحّد العقد مع كل القواعد الشقيقة.
+    expect(r.canOverride).toBe(false);
     expect(r.resumeHoldApplied).toBe(true);
     expect(r.restartConditions.some((c) => c.includes('10 دقائق'))).toBe(true);
   });
@@ -1929,61 +1944,84 @@ describe('محرك امتثال الغبار — الدخول والخروج (ت
   });
 });
 
-describe('محرك امتثال الغبار — نقل مخلفات الهدم والبناء (نشاط مستقل)', () => {
-  // CDWASTE-CAPACITY-007 (تجاوز السعة الاستيعابية) حُذف من rulebook.ts —
-  // loadExceedsCapacity لم يعد يُدخَل عبر الواجهة، فلم يعد اختباره ذا معنى.
+// CDWASTE-CAPACITY-007 (تجاوز السعة الاستيعابية) حُذف من rulebook.ts سابقاً
+// — loadExceedsCapacity لم يعد يُدخَل عبر الواجهة. CDWASTE-PILEHEIGHT-003
+// حُذفت لاحقاً بنفس السبب (طلب صريح من المستخدم — debrisPileHeightM بلا
+// حقل إدخال فعلي). لا قواعد فعلية متبقية لهذا النشاط، فلم يعد اختباره ذا
+// معنى.
+//
+// TRAFFIC-LOAD-004/TRAFFIC-UNPAVED-002/TRAFFIC-PAVED-003/TRAFFIC-SPILL-005
+// حُذفت جميعها بنفس السبب — لا قواعد فعلية متبقية لـSITE_TRAFFIC أيضاً.
 
-  it('ارتفاع أكوام المخلفات > 3م → تقييد', () => {
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5:
+// "regulatoryFinding مصمم حالياً حول PM10 فقط"): hasConfirmedRegulatoryViolation
+// كانت مقيَّدة حرفياً بمطابقة كود PM10-VIOLATION-STOP-006 وحده — مخالفات
+// صريحة أخرى موثَّقة (سرعة طريق، تأخر تنظيف انسكاب، حمولة غير مغطاة، صوامع
+// غير محكمة) لم تكن تُنتج hasConfirmedRegulatoryViolation=true إطلاقاً، رغم
+// أنها تجاوزات صريحة لحدود رقمية/قانونية موثَّقة — قد يُنتج نظرياً
+// operationalDecision=RESTRICT مع regulatoryFinding=COMPLIANT (final-decision-
+// engine) رغم أن سبب التقييد تجاوز حد صريح. الإصلاح: كل قاعدة تحمل الآن
+// regulatoryFinding مستقلاً (NONE|PENDING|VIOLATION، لا يُستنتَج من severity).
+describe('محرك امتثال الغبار — hasConfirmedRegulatoryViolation ليس مقصوراً على PM10 (الملاحظة #5)', () => {
+  // الأمثلة الأصلية هنا (سرعة طريق غير مسفلت، تأخر تنظيف انسكاب، حمولة غير
+  // مغطاة — كلها SITE_TRAFFIC) حُذفت قواعدها لاحقاً بالكامل (طلب صريح من
+  // المستخدم — بلا حقل إدخال فعلي في الواجهة). استُبدلت بأمثلة من أنشطة
+  // أخرى لا تزال قواعدها فعلية، تغطي نفس النقطة (مخالفة صريحة بمعزل عن
+  // PM10) بشكلين مختلفين: ضابط بولياني (BATCHING-SILO-001) وقياس رقمي
+  // (DEMO-AREA-002).
+  it('صوامع إسمنت غير محكمة الإغلاق (مخالفة صريحة، لا علاقة لها بـPM10) → hasConfirmedRegulatoryViolation=true', () => {
     const r = evaluateDustCompliance(
       context({
         activity: activityProfile({
-          regulatoryActivity: 'CD_WASTE_TRANSPORT',
-          measurements: { ...activityProfile().measurements, debrisPileHeightM: 4 },
+          regulatoryActivity: 'BATCHING_PLANT',
+          controls: { ...activityProfile().controls, silosSealed: false },
         }),
       })
     );
-    expect(r.triggeredRules.some((h) => h.code === 'CDWASTE-PILEHEIGHT-003')).toBe(true);
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+    expect(r.triggeredRules.some((h) => h.code === 'BATCHING-SILO-001')).toBe(true);
+    expect(r.hasConfirmedRegulatoryViolation).toBe(true);
+  });
+
+  it('مساحة هدم نشطة تتجاوز الحد المسموح → hasConfirmedRegulatoryViolation=true', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 5,
+        activity: activityProfile({
+          regulatoryActivity: 'DEMOLITION',
+          isEnclosedOperation: false,
+          measurements: { ...activityProfile().measurements, demolitionActiveAreaM2: 150 },
+        }),
+      })
+    );
+    expect(r.triggeredRules.some((h) => h.code === 'DEMO-AREA-002')).toBe(true);
+    expect(r.hasConfirmedRegulatoryViolation).toBe(true);
+  });
+
+  it('رياح 15-25 كم/س وحدها (حالة تشغيلية بحتة، لا تجاوز حد قانوني) → hasConfirmedRegulatoryViolation يبقى false', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 20,
+        activity: activityProfile({ isDustGenerating: true, isEnclosedOperation: false }),
+      })
+    );
+    expect(r.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    expect(r.triggeredRules.some((h) => h.code === 'GATE-WIND-15-25-ENHANCED-005')).toBe(true);
+    expect(r.hasConfirmedRegulatoryViolation).toBe(false);
+  });
+
+  it('PM10>340 معلَّق فقط (لم يكتمل التأكيد) → hasConfirmedRegulatoryViolation يبقى false (PENDING لا VIOLATION)', () => {
+    const r = evaluateDustCompliance(context({ pm10UgM3: 345, pm10ConfirmedViolation340: false }));
+    expect(r.triggeredRules.some((h) => h.code === 'MRQ-PM10-BLACK-PENDING-104')).toBe(true);
+    expect(r.hasConfirmedRegulatoryViolation).toBe(false);
   });
 });
 
-describe('محرك امتثال الغبار — حركة الشاحنات (تغطية الحمولة إلزامية)', () => {
-  it('حمولة غير مغطاة (loadCovered=false) → إيقاف النشاط المتأثر فوراً', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'SITE_TRAFFIC',
-          controls: { ...activityProfile().controls, loadCovered: false },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'TRAFFIC-LOAD-004')).toBe(true);
-    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
-  });
-
-  it('حمولة مغطاة (loadCovered=true) → لا قاعدة تغطية مفعّلة', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'SITE_TRAFFIC',
-          controls: { ...activityProfile().controls, loadCovered: true },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'TRAFFIC-LOAD-004')).toBe(false);
-  });
-
-  it('حالة تغطية الحمولة غير معروفة (null) → لا تُعامَل كمخالفة مؤكدة (فشل آمن نحو عدم الافتراض)', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'SITE_TRAFFIC',
-          controls: { ...activityProfile().controls, loadCovered: null },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'TRAFFIC-LOAD-004')).toBe(false);
-  });
-});
+// STONECUT-DUST-CONTROL-006 حُذفت نهائياً (طلب صريح من المستخدم — "لا
+// نريدها تدخل في الايقاف احذف المدخلات و حولها تنبيهات"، بعد محاولة سابقة
+// استثنتها من قرار الحوكمة العام). wetCuttingActive/hepaExtractionActive
+// لم يعودا يُدخَلان عبر الواجهة ولا يُقرَآن في stoneCuttingRules() —
+// راجع تعليق stoneCuttingRules الكامل في rulebook.ts للتاريخ الكامل.
 
 describe('محرك امتثال الغبار — قطع الأحجار (إيقاف تلقائي من الرياح، الملحق أ: 15-25=تثبيط معزَّز، >25=إيقاف)', () => {
   it('قطع مكشوف أثناء رياح 15-25 كم/س → تثبيط معزَّز فقط، لا إيقاف', () => {
@@ -2017,6 +2055,28 @@ describe('محرك امتثال الغبار — قطع الأحجار (إيقا
     expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(true);
     expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-ENHANCED-004')).toBe(false);
     expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+  });
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #7: "قاعدة رياح قطع
+  // الأحجار غير صحيحة... يجب إصلاح الإيقاف + الاستئناف معاً"): STONECUT-WIND-
+  // STOP-003 كانت مصنَّفة في restartConditions ضمن نفس مجموعة الهدم (عتبة
+  // "دون 15")، رغم أن القاعدة نفسها لا تُفعَّل إلا عند تجاوز 25 كم/س فعلياً
+  // (بعد إصلاح سابق هذه الجلسة) — فكان شرط الاستئناف المعروض يطلب انخفاضاً
+  // (دون 15) أشد بكثير مما تقتضيه القاعدة فعلياً (دون 25).
+  it('إيقاف قطع الأحجار بسبب الرياح >25 → شرط الاستئناف "دون 25 كم/س"، لا "دون 15" (نفس عتبة بوابة الرياح العامة، لا عتبة الهدم)', () => {
+    const r = evaluateDustCompliance(
+      context({
+        windSpeedKmh: 30,
+        activity: activityProfile({
+          regulatoryActivity: 'STONE_CUTTING',
+          isEnclosedOperation: false,
+          controls: { ...activityProfile().controls, wetCuttingActive: true },
+        }),
+      })
+    );
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(r.restartConditions.some((c) => c.includes('دون 25'))).toBe(true);
+    expect(r.restartConditions.some((c) => c.includes('دون 15'))).toBe(false);
   });
 
   it('قطع مغلق (isEnclosedOperation) أثناء رياح 15-25 كم/س → لا تثبيط ولا إيقاف من الرياح', () => {
@@ -3260,6 +3320,37 @@ describe('evaluateDustCompliance — PLANNING: PM10 المتوقّع يُدرَ�
 
     expect(r.shortReasonAr).toContain('تصلح للنشاط');
   });
+
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
+  // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"):
+  // planningSuitability هو الحقل الجاهز الذي يستهلكه final-decision-engine
+  // مباشرة الآن بلا أي حساب threshold من جانبه — هذه الاختبارات تثبت الحقل
+  // نفسه (لا فقط النص المشتق منه) لضمان أن العقد بين المحركين سليم.
+  it('planningSuitability.isFavorable=false + reasonAr يذكر PM10 عند تجاوز حد التحذير', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 1315 }), Date.now(), true);
+
+    expect(r.planningSuitability?.isFavorable).toBe(false);
+    expect(r.planningSuitability?.reasonAr).toContain('1315');
+    expect(r.planningSuitability?.reasonAr).toContain('تركيز الغبار');
+  });
+
+  it('planningSuitability.isFavorable=true عند PM10 تحت حد التحذير ودDVI ملائم', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 100 }), Date.now(), true);
+
+    expect(r.planningSuitability?.isFavorable).toBe(true);
+  });
+
+  it('planningSuitability.isFavorable=false عندما dviDecision غير ملائم حتى لو PM10 منخفض', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'RESTRICT', pm10UgM3: 50 }), Date.now(), true);
+
+    expect(r.planningSuitability?.isFavorable).toBe(false);
+  });
+
+  it('planningSuitability غائب (undefined) خارج isPlanning=true (LIVE_OPERATIONAL العادي)', () => {
+    const r = evaluateDustCompliance(context({ dviDecision: 'ALLOW', pm10UgM3: 100 }), Date.now(), false);
+
+    expect(r.planningSuitability).toBeUndefined();
+  });
 });
 
 // القسم 18.6 من "دليل الإصلاح الجذري لمنظومة مرقاب": "Forecast قديم: التخطيط
@@ -3292,3 +3383,111 @@ describe('evaluateDustCompliance — PLANNING: توقّع طقس قديم (isFor
     expect(r.shortReasonAr).not.toContain('قديمة');
   });
 });
+
+// البند 10 من "ما أطلب إصلاحه بالترتيب" (طلب صريح من المستخدم — "طوّر
+// Rule Hit ليحمل metadata المطلوبة بدل الاعتماد على catalog يدوي"): يثبت
+// أن كل قاعدة حقيقية يمكن أن تصدر فعلياً عن evaluateDustCompliance تحمل
+// metadata من RULE_METADATA_REGISTRY (لا undefined صامت)، وأن الإلحاق
+// توثيقي بحت لا يُغيّر أي حقل قرار فعلي.
+describe('محرك امتثال الغبار — metadata القواعد (البند 10)', () => {
+  it('قاعدة MANDATORY_STOP فعلية (BATCHING-SILO-001) تحمل metadata كاملة، بلا تأثير على حقول القرار', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'BATCHING_PLANT',
+          controls: { ...activityProfile().controls, silosSealed: false },
+        }),
+      })
+    );
+    const hit = r.triggeredRules.find((h) => h.code === 'BATCHING-SILO-001');
+    expect(hit).toBeDefined();
+    expect(hit?.metadata).toBeDefined();
+    expect(hit?.metadata?.ruleId).toBe('BATCHING-SILO-001');
+    expect(hit?.metadata?.mandatoryStop).toBe(true);
+    expect(hit?.metadata?.decisionCategory).toBe('MANDATORY_STOP');
+    expect(hit?.metadata?.overridePolicy).toBe('NO_OVERRIDE');
+    expect(hit?.metadata?.isActive).toBe(true);
+    expect(hit?.metadata?.effectiveTo).toBeNull();
+    // الإلحاق توثيقي بحت — القرار الفعلي غير متأثر
+    expect(hit?.severity).toBe('MANDATORY_STOP');
+    expect(hit?.overridable).toBe(false);
+    expect(r.decisionCategory).toBe('MANDATORY_STOP');
+  });
+
+  it('قاعدة تنبيه توعوي (STOCKPILE-DISTANCE-002) تحمل metadata، overridePolicy=FIELD_OVERRIDE_ALLOWED', () => {
+    const r = evaluateDustCompliance(
+      context({
+        activity: activityProfile({
+          regulatoryActivity: 'MATERIAL_HANDLING_STOCKPILE',
+          measurements: { ...activityProfile().measurements, stockpileBatchingDistanceToReceptorM: 150 },
+        }),
+      })
+    );
+    const hit = r.triggeredRules.find((h) => h.code === 'STOCKPILE-DISTANCE-002');
+    expect(hit).toBeDefined();
+    expect(hit?.metadata?.mandatoryStop).toBe(false);
+    expect(hit?.metadata?.overridePolicy).toBe('FIELD_OVERRIDE_ALLOWED');
+    expect(hit?.metadata?.riskLevel).toBe('LOW');
+  });
+
+  it('قاعدة ديناميكية مبنية في engine.ts مباشرة (GATE-DVI-002) تحمل metadata رغم بنائها كـobject literal لا عبر ruleHit()', () => {
+    const r = evaluateDustCompliance(context({ dviMandatoryStop: true, dviMandatoryStopIsPm10Only: false }));
+    const hit = r.triggeredRules.find((h) => h.code === 'GATE-DVI-002');
+    expect(hit).toBeDefined();
+    expect(hit?.metadata).toBeDefined();
+    expect(hit?.metadata?.ruleType).toBe('GATE');
+  });
+
+  it('كل رمز قاعدة مسجَّل في RULE_METADATA_REGISTRY يحمل الحقول الـ17 المطلوبة كاملة، بلا نقص', () => {
+    for (const [code, m] of Object.entries(RULE_METADATA_REGISTRY)) {
+      expect(m.ruleId, `${code}.ruleId`).toBe(code);
+      expect(typeof m.ruleVersion, `${code}.ruleVersion`).toBe('string');
+      expect(['GATE', 'ACTIVITY_SPECIFIC', 'DECISION_LAYER']).toContain(m.ruleType);
+      expect(typeof m.indicatorType, `${code}.indicatorType`).toBe('string');
+      expect(Array.isArray(m.activityTypes), `${code}.activityTypes`).toBe(true);
+      expect(typeof m.conditionPredicate, `${code}.conditionPredicate`).toBe('string');
+      expect(typeof m.priority, `${code}.priority`).toBe('number');
+      expect(typeof m.mandatoryStop, `${code}.mandatoryStop`).toBe('boolean');
+      expect(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).toContain(m.riskLevel);
+      expect(typeof m.decisionCategory, `${code}.decisionCategory`).toBe('string');
+      expect(Array.isArray(m.requiredActions), `${code}.requiredActions`).toBe(true);
+      expect(m.requiredActions.length, `${code}.requiredActions non-empty`).toBeGreaterThan(0);
+      expect(typeof m.restartConditions, `${code}.restartConditions`).toBe('string');
+      expect(['NONE', 'AUTO_ESCALATE_ON_PERSISTENCE']).toContain(m.escalationPolicy);
+      expect(['NO_OVERRIDE', 'FIELD_OVERRIDE_ALLOWED']).toContain(m.overridePolicy);
+      expect(typeof m.source, `${code}.source`).toBe('string');
+      expect(m.effectiveFrom, `${code}.effectiveFrom`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(typeof m.isActive, `${code}.isActive`).toBe('boolean');
+      // mandatoryStop مشتق حصراً من decisionCategory === 'MANDATORY_STOP' —
+      // لا يجوز أن يتناقضا (نفس مبدأ فصل الدلالات في RuleRegulatoryFinding).
+      expect(m.mandatoryStop, `${code} mandatoryStop/decisionCategory consistency`).toBe(m.decisionCategory === 'MANDATORY_STOP');
+    }
+  });
+
+  // اختبار حارس ضد الانحراف الصامت (طلب صريح من المستخدم — بديل "إعادة
+  // البناء الكاملة" لـrulesCatalog.ts التي تحمل مخاطرة أعلى لصفحة إدارية
+  // حية): rulesCatalog.ts يبقى ملفاً منفصلاً يدوياً (نصوص/ملاحظات عربية
+  // منسَّقة لصفحة "قواعد الامتثال")، لكن هذا الاختبار يفشل بناءً (لا صمتاً)
+  // إن انحرف رمز أو severity فيه عن RULE_METADATA_REGISTRY — بالضبط الفجوة
+  // المكتشفة أثناء هذه الجلسة (4 رموز resume-hold ناقصة من الكتالوج رغم
+  // كونها فعّالة في engine.ts).
+  it('كل قاعدة في DUST_RULES_CATALOG (صفحة الإدارة) مسجَّلة في RULE_METADATA_REGISTRY بنفس severity — لا انحراف صامت', () => {
+    for (const section of DUST_RULES_CATALOG) {
+      for (const rule of section.rules) {
+        const registryEntry = RULE_METADATA_REGISTRY[rule.code];
+        expect(registryEntry, `${rule.code} missing from RULE_METADATA_REGISTRY`).toBeDefined();
+        expect(registryEntry?.decisionCategory, `${rule.code} severity mismatch (catalog vs registry)`).toBe(rule.severity);
+      }
+    }
+  });
+
+  it('كل قاعدة نشطة (isActive=true) في RULE_METADATA_REGISTRY موجودة في DUST_RULES_CATALOG — لا رمز فعّال منسي من صفحة الإدارة', () => {
+    const catalogCodes = new Set(DUST_RULES_CATALOG.flatMap((s) => s.rules.map((r) => r.code)));
+    for (const [code, m] of Object.entries(RULE_METADATA_REGISTRY)) {
+      if (m.isActive) {
+        expect(catalogCodes.has(code), `${code} isActive=true but missing from DUST_RULES_CATALOG`).toBe(true);
+      }
+    }
+  });
+});
+

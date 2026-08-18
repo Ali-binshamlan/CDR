@@ -15,17 +15,6 @@ function toDate(value: string | number | Date): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
-// تاريخ قصير: "الأحد، ٢٦ يوليو" — للترويسات وبطاقات الأنشطة.
-export function formatArDateShort(value: string | number | Date): string {
-  return toDate(value).toLocaleDateString(AR_LOCALE, {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    timeZone: RIYADH_TZ,
-    calendar: 'gregory',
-  });
-}
-
 // تاريخ كامل: "الأحد ٢٦ يوليو ٢٠٢٦".
 export function formatArDateLong(value: string | number | Date): string {
   return toDate(value).toLocaleDateString(AR_LOCALE, {

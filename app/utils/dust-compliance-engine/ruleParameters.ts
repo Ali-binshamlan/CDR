@@ -140,10 +140,6 @@ export function resetRuleParametersForTests(): void {
   currentVersionIds = {};
 }
 
-export function resetRuleParameterVersionIdsForTests(): void {
-  currentVersionIds = {};
-}
-
 // للاختبارات فقط — يضبط معاملاً واحداً أو أكثر مباشرة بلا Supabase، لإثبات
 // أن rulebook.ts/engine.ts يقرآن القيمة الحية فعلياً (لا ثابتاً مجمَّداً)
 // من هذه الوحدة تحديداً — نفس آلية النشر الحقيقية (كائن كامل جديد، لا تحديث

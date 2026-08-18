@@ -124,3 +124,38 @@ describe('buildRecentActivities — تجميع وحدات النشاط الوا�
     expect(activities[0].summaries.map((s) => s.riskWeight).sort()).toEqual([0, 4]);
   });
 });
+
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #13: "الواجهة
+// ما زالت تستطيع عرض قرار حي لم يُحفظ بعد في Immutable Audit"): isLiveComputed
+// يسمح للعميل بتمييز "معاينة حية" (لم تُكتب في final_decinsions بالضرورة
+// بعد) عن "قرار رسمي محفوظ فعلياً" — هذه الاختبارات تثبت الحقل في كلا
+// المسارين (fallback مخزَّن، وانتظار تقييم أول).
+describe('buildRecentActivities — isLiveComputed يميّز مصدر كل ملخّص (الملاحظة #13)', () => {
+  it('لا نتيجة محرك حية (dustByGroup فارغة) + قرار مخزَّن موجود → isLiveComputed=false', () => {
+    const rows: DustActivityRow[] = [makeRow({ id: 1, activity_group_id: 'base' })];
+    const stored: StoredFinalDecisionRow = {
+      activity_group_id: 'base',
+      decision_label_ar: 'مسموح',
+      level: 'GREEN',
+      operational_decision: 'ALLOW',
+      pending_confirmation: false,
+      mandatory_stop: false,
+    };
+    const finalDecisionsByGroup = new Map<string, StoredFinalDecisionRow>([
+      [activityDecisionKey('project-1', 'base'), stored],
+    ]);
+
+    const activities = buildRecentActivities('project-1', rows, new Map(), finalDecisionsByGroup);
+
+    expect(activities[0].summaries[0].isLiveComputed).toBe(false);
+  });
+
+  it('لا نتيجة محرك حية ولا قرار مخزَّن (لم يُقيَّم بعد) → isLiveComputed=false ("بانتظار التقييم")', () => {
+    const rows: DustActivityRow[] = [makeRow({ id: 1, activity_group_id: 'base' })];
+
+    const activities = buildRecentActivities('project-1', rows, new Map(), new Map());
+
+    expect(activities[0].summaries[0].decisionLabel).toBe('بانتظار التقييم');
+    expect(activities[0].summaries[0].isLiveComputed).toBe(false);
+  });
+});

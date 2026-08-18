@@ -317,9 +317,120 @@ export type DustRuleSeverity =
   | 'STOP_AFFECTED_ACTIVITY'
   | 'MANDATORY_STOP';
 
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "regulatoryFinding مصمم
+// حالياً حول PM10 فقط"): كان hasConfirmedRegulatoryViolation (engine.ts)
+// مقيَّداً حرفياً بمطابقة كود قاعدة واحد (PM10-VIOLATION-STOP-006) — أي
+// مخالفة صريحة أخرى موثَّقة في rulebook.ts (سرعة طريق غير مسفلت >10، طريق
+// مسفلت >20، تأخر تنظيف انسكاب >15 دقيقة، حمولة غير مغطاة، صوامع غير محكمة،
+// تسرب صومعة، إلخ) لم تكن تُنتج hasConfirmedRegulatoryViolation=true إطلاقاً
+// رغم كونها تجاوزاً صريحاً لحد رقمي/قانوني موثَّق — يُنتج نظرياً
+// operationalDecision=RESTRICT + regulatoryFinding=COMPLIANT، تناقض مباشر.
+// السبب الجذري: severity (ماذا نفعل تشغيلياً؟) لا يمكن أن يُستنتَج منه هل
+// وقع إخلال تنظيمي — نفس severity (ALLOW_WITH_CONTROLS) قد تعني "حالة
+// تشغيلية بحتة تتطلب تحكماً معززاً، ليست مخالفة" (رياح 15-25 كم/س) أو
+// "مخالفة مؤكَّدة موثَّقة" (PM10>340 مؤكَّد) بحسب القاعدة نفسها، لا شدتها.
+// الإصلاح: كل DustRuleHit يحمل الآن دلالته التنظيمية المستقلة صراحة —
+//   NONE: حالة تشغيلية بحتة، لا تجاوز حد رقمي/قانوني موثَّق (مثال: تثبيط
+//     معزَّز عام عند رياح 15-25، تنبيه توعوي عن مسافة مستقبِل حساس، نقص
+//     بيانات يستوجب تحقق ميداني).
+//   PENDING: تجاوز مرصود لكن لم يكتمل دليل التأكيد بعد (مثال: PM10>340
+//     قبل اكتمال دقيقتي الاستمرار).
+//   VIOLATION: تجاوز حد رقمي/قانوني صريح موثَّق ومؤكَّد الآن (مثال: سرعة
+//     طريق تتجاوز الحد، حمولة غير مغطاة، صوامع غير محكمة، PM10 مؤكَّد).
+export type RuleRegulatoryFinding = 'NONE' | 'PENDING' | 'VIOLATION';
+
+// خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — البند 10 من "ما أطلب
+// إصلاحه بالترتيب": "طوّر Rule Hit ليحمل metadata المطلوبة بدل الاعتماد
+// على catalog يدوي"): rulesCatalog.ts كان مصدراً توثيقياً منفصلاً تماماً
+// عن rulebook.ts/engine.ts (القرار الفعلي) — بلا أي رابط برمجي بينهما، لا
+// شيء يمنع الانحراف الصامت (تعديل قاعدة في rulebook.ts بلا تحديث الكتالوج
+// المقابل — بالضبط ما اكتُشف أثناء هذه الجلسة: rulesCatalog.ts كان يفتقد
+// PREVIOUS-DECISION-QUERY-FAILED-HOLD/VISIBILITY-DATA-MISSING-RESUME-HOLD/
+// WIND-DATA-MISSING-RESUME-HOLD/PM10-DATA-MISSING-RESUME-HOLD رغم كونها
+// قواعد حقيقية فعّالة في engine.ts منذ إصلاحات سابقة). الحل: سجل مركزي
+// واحد (RULE_METADATA_REGISTRY في ruleMetadata.ts) هو مصدر الحقيقة الوحيد
+// لكل الحقول التوثيقية — attachRuleMetadata() تُلحقها تلقائياً بكل
+// DustRuleHit وقت إنشائه (عبر ruleHit() في rulebook.ts، أو مباشرة في
+// engine.ts للقواعد المبنية كـobject literal)، وrulesCatalog.ts (صفحة
+// الإدارة) يُشتق الآن من نفس السجل بدل نسخة يدوية منفصلة — استحالة
+// الانحراف بنيوياً، لا مجرد انضباط يدوي.
+export interface RuleMetadata {
+  // نفس code — تكرار متعمَّد للتوثيق الذاتي عند تمرير الكائن بمعزل عن
+  // DustRuleHit الأصلي (مثال: عرض سجل قاعدة واحدة في صفحة تدقيق مستقلة).
+  ruleId: string;
+  // نسخة دليل القواعد (RULEBOOK_VERSION، من ACTIVE_RULE_BUNDLE.id) وقت
+  // آخر تعديل موثَّق لهذه القاعدة تحديداً — لا نسخة المحرك الحالية دائماً؛
+  // قاعدة لم تتغيّر منذ نسخة أقدم تحتفظ برقم تلك النسخة حتى تُعدَّل فعلياً.
+  ruleVersion: string;
+  // GATE: بوابة أولوية قصوى تُفحص بصرف النظر عن النشاط التنظيمي (قسم
+  // "gates" في rulesCatalog سابقاً). ACTIVITY_SPECIFIC: مقصورة على نشاط
+  // تنظيمي واحد أو أكثر محدَّد صراحة. DECISION_LAYER: تُطبَّق بعد حساب
+  // decisionCategory الأولي (استئناف/ثقة)، لا على نشاط بعينه.
+  ruleType: 'GATE' | 'ACTIVITY_SPECIFIC' | 'DECISION_LAYER';
+  // المؤشر الفيزيائي/التشغيلي الذي تعتمد عليه القاعدة أساساً. NONE لقواعد
+  // لا تعتمد على قياس حي (مثال: تصنيف فئة مشروع، حالة موافقة DMP).
+  indicatorType: 'PM10' | 'WIND' | 'VISIBILITY' | 'DISTANCE' | 'AREA' | 'CONTROL_STATE' | 'CONFIDENCE' | 'NONE';
+  // الأنشطة التنظيمية التي تنطبق عليها — مصفوفة فارغة تعني "كل الأنشطة"
+  // (بوابة عامة، لا نشاط محدَّد).
+  activityTypes: RegulatoryDustActivity[];
+  // وصف نصي مختصر للشرط المنطقي الفعلي المُنفَّذ في rulebook.ts/engine.ts
+  // (توثيقي بحت — لا يُنفَّذ برمجياً، القرار الفعلي يبقى في الكود نفسه).
+  conditionPredicate: string;
+  // ترتيب الأولوية النسبي بين القواعد عند التعادل بنفس severity — أعلى
+  // رقم = أولوية أعلى. مشتق من DECISION_PRIORITY[severity] الفعلي في
+  // engine.ts (لا رقم مستقل قد ينحرف عنه)، مضروباً بمعامل 10 لإتاحة تمايز
+  // دقيق مستقبلي بين قواعد بنفس severity بلا تصادم.
+  priority: number;
+  // هل هذه القاعدة بذاتها (بصرف النظر عن باقي القواعد المتزامنة) تعني
+  // إيقافاً إلزامياً قطعياً — severity === 'MANDATORY_STOP' حصراً (لا
+  // STOP_AFFECTED_ACTIVITY، وهو إيقاف فعلي لكن قابل للتجاوز الميداني
+  // استثنائياً بحسب overridable لكل حالة).
+  mandatoryStop: boolean;
+  // تصنيف خطورة عام مستقل عن severity التشغيلي (severity يجيب "ماذا نفعل
+  // الآن؟"، riskLevel يجيب "كم هذا خطير جوهرياً؟" — راجع تعليق
+  // RuleRegulatoryFinding أعلاه لسبب مماثل يفصل الدلالتين).
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  // نفس severity الفعلي — اسم موحَّد بديل للتوثيق فقط (rulesCatalog.ts
+  // كان يستخدم "severity" وDustRuleHit يستخدم "severity" أيضاً؛ الحقل هنا
+  // يكرر نفس القيمة تحت اسم decisionCategory ليطابق حرفياً تسمية الملاحظة
+  // الأصلية دون كسر أي مستهلك حالي لـseverity).
+  decisionCategory: DustRuleSeverity;
+  // قائمة إجراءات مجزَّأة (بديل actionAr كنص حر واحد) — actionAr يبقى
+  // المصدر الوحيد المعروض فعلياً بالواجهة (لا كسر لأي مستهلك)، هذا الحقل
+  // توثيقي إضافي فقط لتفكيك الإجراء لخطوات منفصلة عند الحاجة مستقبلاً.
+  requiredActions: string[];
+  // وصف نصي لشرط الاستئناف بعد إيقاف ناتج عن هذه القاعدة تحديداً — فارغ
+  // ('') لقواعد لا تُوقف نشاطاً أصلاً (severity أخف من STOP_AFFECTED_ACTIVITY).
+  restartConditions: string;
+  // NONE: لا تصعيد تلقائي. AUTO_ESCALATE_ON_PERSISTENCE: القاعدة تتصاعد
+  // شدة تلقائياً إن استمر الشرط (مثال: MRQ-PM10-BLACK-PENDING-104 →
+  // RCRC-PM10-30M-SUSPENSION-012 بعد 30 دقيقة).
+  escalationPolicy: 'NONE' | 'AUTO_ESCALATE_ON_PERSISTENCE';
+  // من يملك صلاحية تجاوز هذه القاعدة ميدانياً — مشتق من overridable
+  // الافتراضي لكل severity (راجع ruleHit() في rulebook.ts)، لا حقلاً
+  // مستقلاً قد يتناقض معه.
+  overridePolicy: 'NO_OVERRIDE' | 'FIELD_OVERRIDE_ALLOWED';
+  // المرجع التنظيمي الأصلي (اسم الوثيقة/القسم) — نفس المصدر المذكور في
+  // تعليقات rulebook.ts لهذه القاعدة تحديداً.
+  source: string;
+  // تاريخ بداية سريان آخر نسخة موثَّقة من هذه القاعدة (YYYY-MM-DD).
+  effectiveFrom: string;
+  // تاريخ نهاية السريان — null لقاعدة لا تزال سارية حالياً (كل القواعد
+  // النشطة اليوم).
+  effectiveTo: string | null;
+  // هل القاعدة مفعّلة حالياً في منطق القرار الفعلي — false فقط لقاعدة
+  // مُبقاة في الكود لأسباب توافقية (كود ميت موثَّق) لا تزال قابلة للتفعيل
+  // مستقبلاً، كقواعد ENTRY_EXIT (حذفها مؤجَّل صراحةً بطلب المستخدم).
+  isActive: boolean;
+}
+
 export interface DustRuleHit {
   code: string;
   severity: DustRuleSeverity;
+  // راجع تعليق RuleRegulatoryFinding الكامل أعلاه. افتراضي 'NONE' لأي قاعدة
+  // لا تحدد الحقل صراحة (فشل آمن نحو "لا مخالفة" لا العكس — لا يجوز افتراض
+  // مخالفة تنظيمية بلا تصنيف صريح متعمَّد لكل قاعدة).
+  regulatoryFinding?: RuleRegulatoryFinding;
   // messageAr: وصف المخالفة/الحالة المكتشفة ("لا يوجد رش للتربة...") — يُعرض
   // تحت "القواعد المفعّلة". actionAr: الإجراء التصحيحي المطلوب لمعالجتها
   // ("فعّل رش التربة...") — نص مستقل الصياغة يُعرض تحت "الإجراءات المطلوبة".
@@ -334,12 +445,24 @@ export interface DustRuleHit {
   // لا من القاعدة الفعلية التي بنت القرار — أي قاعدتين بنفس severity كانتا
   // تُعامَلان معاملة واحدة حتماً حتى لو كانت إحداهما (فيزيائياً) غير قابلة
   // للتجاوز إطلاقاً بينما الأخرى قابلة استثنائياً. الآن كل قاعدة تحمل
-  // قابليتها الخاصة صراحة — canOverride النهائي يُشتق من decidingRule.overridable
-  // تحديداً (راجع engine.ts)، لا من فئة القرار العامة. افتراضي true (نفس
-  // سلوك decisionCategory !== MANDATORY_STOP/STOP_AFFECTED_ACTIVITY السابق)
-  // لأي قاعدة لا تحدد الحقل صراحة — القواعد الأشد (MANDATORY_STOP) تضبطه
-  // false صراحة عبر ruleHit() في rulebook.ts.
+  // قابليتها الخاصة صراحة.
+  //
+  // تعليق مُصحَّح (مراجعة كود خارجي — P2، الملاحظة #15): كان هذا التعليق
+  // يصف canOverride النهائي بأنه يُشتق من decidingRule.overridable تحديداً
+  // (قاعدة واحدة مُفضَّلة) — الفعلي في engine.ts هو
+  // topHits.every(hit => hit.overridable !== false): **كل** القواعد الفائزة
+  // بأعلى شدة معاً (لا decidingRule وحدها) يجب أن تكون قابلة للتجاوز حتى
+  // يكون canOverride=true — قاعدة واحدة غير قابلة للتجاوز ضمن topHits تكفي
+  // لمنع التجاوز، حتى لو كانت decidingRule نفسها (المُفضَّلة لعرض النص)
+  // قابلة للتجاوز. افتراضي true (نفس سلوك decisionCategory !== MANDATORY_STOP/
+  // STOP_AFFECTED_ACTIVITY السابق) لأي قاعدة لا تحدد الحقل صراحة — القواعد
+  // الأشد (MANDATORY_STOP) تضبطه false صراحة عبر ruleHit() في rulebook.ts.
   overridable?: boolean;
+  // البند 10 (راجع تعليق RuleMetadata الكامل أعلاه) — اختياري (undefined
+  // لقاعدة لم تُسجَّل بعد في RULE_METADATA_REGISTRY، فشل آمن توثيقي بحت لا
+  // يؤثر على القرار الفعلي إطلاقاً؛ code/severity/messageAr/actionAr/
+  // overridable/regulatoryFinding أعلاه تبقى المصدر الوحيد للقرار دائماً).
+  metadata?: RuleMetadata;
 }
 
 export interface DustMonitoringObligation {
@@ -378,13 +501,23 @@ export interface DustComplianceResult {
   canOverride: boolean;
   shortReasonAr: string;
 
-  // القرار STOP_AFFECTED_ACTIVITY هنا "معلَّق" فقط بانتظار تأكيد استمرار
-  // (مثال: MRQ-PM10-BLACK-PENDING-104 — قراءة ≥340 لم تستمر بعد دقيقتين)،
-  // وليس مخالفة تنظيمية مؤكَّدة. false دائماً لو decisionCategory من
-  // MANDATORY_STOP فعلياً، أو من قاعدة إيقاف مؤكَّدة أخرى. تُستخدم في
-  // computeUnifiedActivityDecision/AEI لتفادي عرض "إيقاف إلزامي نظامي"
-  // (لغة قطعية دائمة) على حالة مؤقتة قد تتحول تلقائياً لـALLOW أو
-  // MANDATORY_STOP بمجرد التقييم التالي.
+  // تعليق مُصحَّح (مراجعة كود خارجي — P2، الملاحظة #15: "Drift في التعليقات
+  // والأنواع"): العبارة السابقة هنا ربطت pendingConfirmation=true حصراً
+  // بـdecisionCategory=STOP_AFFECTED_ACTIVITY "المعلَّق" — كانت صحيحة وقت
+  // كتابتها، لكن بعد إصلاحَي الملاحظتين #7/#8 هذه الجلسة (MRQ-PM10-BLACK-
+  // PENDING-104/GATE-DVI-002 المعلَّقتان أصبحتا ALLOW_WITH_CONTROLS، لا
+  // STOP_AFFECTED_ACTIVITY) لم تعد دقيقة — القاعدة (topHits.every(isPendingRuleHit)
+  // أدناه في engine.ts) لا تفحص decisionCategory إطلاقاً، فقط كون كل
+  // القواعد الفائزة بأعلى شدة معلَّقة، بصرف النظر عن تلك الشدة نفسها.
+  //
+  // الدلالة الفعلية: "لم يكتمل بعد دليل التأكيد (دقيقتا الاستمرار) لهذا
+  // القرار" — قد تكون true بينما decisionCategory=ALLOW_WITH_CONTROLS (لا
+  // إيقاف من أي نوع)، وهذه بالتحديد الحالة الشائعة اليوم لنافذة PM10 قبل
+  // 120 ثانية. false دائماً لو decisionCategory من MANDATORY_STOP فعلياً،
+  // أو من قاعدة إيقاف/تقييد مؤكَّدة أخرى غير معلَّقة. تُستخدم في
+  // computeUnifiedActivityDecision/AEI/FinalDecision.pendingConfirmation
+  // لتفادي عرض لغة قطعية على حالة مؤقتة قد تتحول تلقائياً بمجرد التقييم
+  // التالي — لا لتفادي "إيقاف إلزامي نظامي" حصراً كما كان التعليق يوحي.
   pendingConfirmation: boolean;
 
   // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
@@ -395,9 +528,18 @@ export interface DustComplianceResult {
   // decisionCategory النهائي (أعلى شدة بين كل القواعد) قد يبقى ALLOW_WITH_
   // CONTROLS بالكامل إن لم توجد أي مشكلة أخرى — فلا يعكس وحده وجود مخالفة
   // PM10 مؤكَّدة فعلياً. هذا الحقل مستقل تماماً عن decisionCategory/
-  // mandatoryStop (لا يتأثر بأيهما ولا يؤثر عليهما): true فقط إن كانت
-  // PM10-VIOLATION-STOP-006 ضمن triggeredRules فعلياً، بصرف النظر عن كونها
-  // القاعدة الفائزة بأعلى شدة أم لا. final-decision-engine يقرأه ليضبط
+  // mandatoryStop (لا يتأثر بأيهما ولا يؤثر عليهما).
+  //
+  // تعليق مُصحَّح (مراجعة كود خارجي — P0 ثم P2، الملاحظتان #5 و#15): "true
+  // فقط إن كانت PM10-VIOLATION-STOP-006 ضمن triggeredRules" كانت وصفاً
+  // دقيقاً للتطبيق القديم، لكنها كانت *هي نفسها* عيب معماري (الملاحظة #5:
+  // "regulatoryFinding مصمم حالياً حول PM10 فقط") — مخالفات صريحة أخرى
+  // موثَّقة (سرعة طريق، حمولة غير مغطاة، صوامع غير محكمة...) لم تكن تُنتج
+  // true إطلاقاً رغم كونها تجاوزات صريحة مؤكَّدة. الحقل الآن عام لكل
+  // القواعد: true إن كانت أي قاعدة ضمن triggeredRules تحمل
+  // regulatoryFinding==='VIOLATION' (راجع RuleRegulatoryFinding أعلاه)، لا
+  // PM10-VIOLATION-STOP-006 تحديداً — بصرف النظر عن كونها القاعدة الفائزة
+  // بأعلى شدة أم لا. final-decision-engine يقرأه ليضبط
   // regulatoryFinding='NON_COMPLIANT' حتى لو operationalDecision لم يصل
   // درجة إيقاف — فصل operationalDecision عن regulatoryFinding، كما يجب.
   hasConfirmedRegulatoryViolation: boolean;
@@ -491,6 +633,28 @@ export interface DustComplianceResult {
   // ملاحظات تحذيرية لصحة القراءة (من DVI، راجع DviEvaluationResult.caveatsAr)
   // — لا تُغيّر decisionCategory/shortReasonAr إطلاقاً، طلب صريح من المستخدم.
   caveatsAr: string[];
+
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
+  // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"): كان
+  // final-decision-engine/engine.ts يستورد PM10_WARNING_UG_M3 من هذا المحرك
+  // ويُعيد حساب isFavorable (PM10 + dvi.decisionCategory معاً) بنفسه من
+  // الصفر لوضع PLANNING فقط — بينما هذا المحرك (buildPlanningForecastResult
+  // أدناه) يحسب نفس isFavorable بالفعل لبناء shortReasonAr. نفس الحد الرقمي
+  // (250) وnفس المنطق مكرَّران في مكانين — لو تغيّر الحد هنا (القاعدة
+  // التنظيمية الفعلية) بلا تزامن مع النسخة المكرَّرة هناك، يفترق القراران.
+  // العقد المعماري صريح: FinalDecisionEngine حَكَم قرارات (Decision Arbiter)
+  // يستقبل نتائج المحركات، لا مُقيِّم قواعد (Rule Evaluator) يعرف أرقام
+  // العتبات بنفسه. الإصلاح: هذا الحقل يحمل النتيجة الجاهزة (محسوبة هنا مرة
+  // واحدة فقط، حيث تُعرَّف القاعدة فعلياً) — undefined خارج PLANNING (لا
+  // معنى له في LIVE_OPERATIONAL، الذي له مساره الكامل الخاص في
+  // final-decision-engine). final-decision-engine يقرأ هذا الحقل مباشرة
+  // بلا أي استيراد لعتبة PM10 أو إعادة حساب.
+  planningSuitability?: {
+    isFavorable: boolean;
+    // سبب عدم الملاءمة عند isFavorable=false — نص جاهز للعرض المباشر (لا
+    // كود يحتاج ترجمة/تفسير إضافي من final-decision-engine).
+    reasonAr: string;
+  };
 
   // true فقط عندما يكون القرار الخام (لو تُرك بلا قيد استئناف) أفضل من
   // STOP_AFFECTED_ACTIVITY، لكن تم تثبيته عندها احترازياً بسبب عدم مرور

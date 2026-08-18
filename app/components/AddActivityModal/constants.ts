@@ -1,4 +1,4 @@
-import type { ActivityCategory, ReceptorType, DistanceBand, DviLevel } from '@/app/utils/dust-engine/types';
+import type { ActivityCategory, ReceptorType, DistanceBand } from '@/app/utils/dust-engine/types';
 import type { IndicatorTab } from './types';
 
 export const labelClass = 'block text-xs font-semibold text-[#061B40]/70 mb-1';
@@ -276,15 +276,6 @@ export interface RegulatoryActivityItem {
   customEndTime: string;
 }
 
-export const DVI_STYLES: Record<DviLevel, { bg: string; border: string; text: string; dot: string }> = {
-  GREEN: { bg: 'bg-green-50', border: 'border-green-400', text: 'text-green-700', dot: 'bg-green-500' },
-  YELLOW: { bg: 'bg-yellow-50', border: 'border-yellow-400', text: 'text-yellow-700', dot: 'bg-yellow-500' },
-  ORANGE: { bg: 'bg-orange-50', border: 'border-orange-400', text: 'text-orange-700', dot: 'bg-orange-500' },
-  RED: { bg: 'bg-red-50', border: 'border-red-400', text: 'text-red-700', dot: 'bg-red-500' },
-  DARK_RED: { bg: 'bg-red-100', border: 'border-red-600', text: 'text-red-800', dot: 'bg-red-700' },
-  BLACK: { bg: 'bg-[#061B40]/5', border: 'border-[#061B40]', text: 'text-[#061B40]', dot: 'bg-[#061B40]' },
-};
-
 // نوع النشاط التنظيمي (regulatoryActivity في REGULATORY_ACTIVITY_FIELDS_DEFAULTS)
 export type RegulatoryActivityKey = RegulatoryActivityFields['regulatoryActivity'];
 
@@ -340,40 +331,3 @@ export const LOCATION_OPTIONS = [
   'أخرى',
 ];
 
-export const CONCRETE_POUR_TYPES = [
-  'صب قواعد',
-  'صب أعمدة',
-  'صب أسقف',
-  'صب أرضيات',
-  'صب خرسانة طرق',
-  'صب ليلي',
-  'صب صغير',
-  'صب كبير ومستمر'
-];
-
-export const PAVING_TYPES = [
-  'فرش طبقة أساس',
-  'رش طبقة لاصقة',
-  'فرد أسفلت',
-  'دمك',
-  'صيانة طريق',
-  'سفلتة ليلية'
-];
-
-export const EXCAVATION_TYPES = [
-  'حفر مفتوح',
-  'حفر خنادق',
-  'ردم',
-  'تسوية',
-  'نقل تربة',
-  'أعمال ترابية عامة'
-];
-
-export const HEIGHT_WORK_TYPES = [
-  'تركيب واجهات',
-  'أعمال سقالات',
-  'أعمال أسطح',
-  'أعمال صيانة خارجية',
-  'أعمال إنارة أو كهرباء',
-  'أعمال تركيب عامة'
-];

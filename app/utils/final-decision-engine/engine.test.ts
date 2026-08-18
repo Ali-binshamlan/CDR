@@ -778,7 +778,14 @@ describe('decideFinal — ALLOW نظيف', () => {
 // شدة dvi/compliance المُدخَلة، بلا استثناءات متفرقة قد تُنسى مستقبلاً.
 // =====================================================================
 describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهما كانت شدة التوقّع', () => {
-  it('dvi.mandatoryStop=true (PM10 توقّعي مرتفع جداً) + mode=PLANNING → mandatoryStop=false, level=GREEN, operationalDecision=ALLOW', () => {
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
+  // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"):
+  // decideFinal لم يعد يفحص dvi.decisionCategory أو pm10UgM3 الخام بنفسه في
+  // هذا الفرع — يقرأ compliance.planningSuitability الجاهزة حصراً (محسوبة
+  // في dust-compliance-engine، حيث تُعرَّف عتبة PM10 فعلياً). الاختبار الآن
+  // يبني planningSuitability صراحةً بدل الاعتماد على dvi.decisionCategory
+  // وحدها لإثبات نفس السيناريو (توقّع غير مناسب).
+  it('compliance.planningSuitability.isFavorable=false (PM10 توقّعي مرتفع جداً) + mode=PLANNING → mandatoryStop=false, level=YELLOW, operationalDecision=MONITOR', () => {
     const dvi = baseDvi({
       decisionCategory: 'MANDATORY_STOP',
       level: 'BLACK',
@@ -791,20 +798,21 @@ describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهم
       mandatoryStop: true,
       canOverride: false,
       pendingConfirmation: false,
+      planningSuitability: { isFavorable: false, reasonAr: 'تركيز الغبار (PM10) المتوقّع (2041.5 ميكروجرام/م³) يتجاوز حد التحذير التنظيمي.' },
     });
     const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance }));
 
-    // dvi.decisionCategory=MANDATORY_STOP ليست ALLOW/ALLOW_WITH_MONITORING
-    // → "لا تصلح" → أصفر/MONITOR (لا إيقاف إلزامي فعلي، لكن اللون يعكس
-    // التحذير بدل أخضر ثابت رغم النص — راجع تعليق decideFinal الكامل).
     expect(r.mandatoryStop).toBe(false);
     expect(r.overridable).toBe(true);
     expect(r.level).toBe('YELLOW');
     expect(r.operationalDecision).toBe('MONITOR');
-    expect(r.regulatoryFinding).toBe('COMPLIANT');
+    // خطأ دلالي مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #12):
+    // PLANNING (توقّع طقس، لا قراءة ميدانية حقيقية) لا يجوز أن يُصدر حكماً
+    // قاطعاً COMPLIANT — لا دليل ميداني كافٍ للحكم لا بامتثال ولا بمخالفة.
+    expect(r.regulatoryFinding).toBe('NOT_DETERMINABLE');
     expect(r.pendingConfirmation).toBe(false);
     expect(r.shortReasonAr).toContain('توقّعات طقس');
-    expect(r.shortReasonAr).toContain('لا تصلح للنشاط');
+    expect(r.shortReasonAr).toContain('2041.5');
   });
 
   it('dvi.decisionCategory=ALLOW + mode=PLANNING → نص "تصلح للنشاط" (لا "لا تصلح")', () => {
@@ -825,17 +833,15 @@ describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهم
     expect(r.level).toBe('BLACK');
   });
 
-  // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "ليه ما يقول تنبيه استباقي
-  // الأجواء غير المناسبة... اتوقع انه يستثني قاعدة PM10". قبل هذا الإصلاح،
-  // dvi.decisionCategory=ALLOW (رياح/رؤية فيزيائية جيدة) كان يكفي وحده
-  // لإظهار "مسموح — تشغيل اعتيادي" في وضع PLANNING، حتى لو كان تركيز PM10
-  // المتوقّع (compliance.evidence.pm10UgM3) ضخماً جداً (أكبر من حد المخالفة
-  // 340 بأضعاف) — لا خاص بنشاط معيّن (محطة الخلط)، بل لكل الأنشطة في وضع
-  // PLANNING على حد سواء.
-  it('dvi.decisionCategory=ALLOW لكن compliance.evidence.pm10UgM3 مرتفع جداً + mode=PLANNING → "لا تصلح" أصفر، لا "مسموح" أخضر', () => {
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11):
+  // decideFinal لم يعد يقرأ compliance.evidence.pm10UgM3 الخام أو يقارنه
+  // بأي عتبة بنفسه — يقرأ compliance.planningSuitability الجاهزة حصراً
+  // (محسوبة في dust-compliance-engine، حيث تُعرَّف عتبة PM10 فعلياً).
+  it('compliance.planningSuitability.isFavorable=false (PM10 توقّعي مرتفع جداً) + mode=PLANNING → "لا تصلح" أصفر، لا "مسموح" أخضر', () => {
     const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
     const compliance = baseCompliance({
       evidence: { ...baseCompliance().evidence, pm10UgM3: 1315 },
+      planningSuitability: { isFavorable: false, reasonAr: 'تركيز الغبار (PM10) المتوقّع (1315 ميكروجرام/م³) يتجاوز حد التحذير التنظيمي (251 ميكروجرام/م³).' },
     });
     const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance }));
 
@@ -847,7 +853,7 @@ describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهم
     expect(r.mandatoryStop).toBe(false); // لا إيقاف إلزامي فعلي على تقدير، مهما بلغت القيمة
   });
 
-  it('dvi.decisionCategory=ALLOW وpm10UgM3 تحت حد التحذير (251) + mode=PLANNING → يبقى "مسموح" أخضر', () => {
+  it('compliance.planningSuitability غائبة (undefined) → فشل آمن نحو "مسموح" أخضر (لا افتراض PM10 مرتفع بلا دليل جاهز)', () => {
     const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
     const compliance = baseCompliance({
       evidence: { ...baseCompliance().evidence, pm10UgM3: 100 },
@@ -857,6 +863,24 @@ describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهم
     expect(r.operationalDecision).toBe('ALLOW');
     expect(r.level).toBe('GREEN');
     expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+  });
+
+  it('compliance.planningSuitability.isFavorable=true صراحةً + mode=PLANNING → "مسموح" أخضر', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const compliance = baseCompliance({
+      evidence: { ...baseCompliance().evidence, pm10UgM3: 100 },
+      planningSuitability: { isFavorable: true, reasonAr: 'الأجواء المتوقعة تصلح للنشاط.' },
+    });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance }));
+
+    expect(r.operationalDecision).toBe('ALLOW');
+    expect(r.level).toBe('GREEN');
+    expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+    // خطأ دلالي مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #12):
+    // حتى عند توقّع مناسب (isFavorable=true)، لا يوجد دليل ميداني حقيقي
+    // بعد — NOT_DETERMINABLE تبقى صحيحة في كلتا حالتَي isFavorable، لا
+    // COMPLIANT (حكم قاطع يفترض تحققاً ميدانياً فعلياً لم يحدث بعد).
+    expect(r.regulatoryFinding).toBe('NOT_DETERMINABLE');
   });
 
   it('compliance غائب تماماً (undefined) + dvi.decisionCategory=ALLOW → يبقى "مسموح" (فشل آمن، لا افتراض PM10 مرتفع بلا دليل)', () => {
@@ -1101,7 +1125,11 @@ describe('decideFinal — يدمج input.aei داخلياً (لا طبقة خا�
       mandatoryStop: true,
       overridable: false,
     });
-    const compliance = baseCompliance({ decisionCategory: 'MANDATORY_STOP', decisionLabelAr: 'إيقاف إلزامي نظامي' });
+    const compliance = baseCompliance({
+      decisionCategory: 'MANDATORY_STOP',
+      decisionLabelAr: 'إيقاف إلزامي نظامي',
+      planningSuitability: { isFavorable: false, reasonAr: 'الأجواء المتوقعة (رياح/رؤية) لا تصلح للنشاط.' },
+    });
     const aei = baseAei({ status: 'CLOSED', statusLabelAr: 'بيئة العمل غير آمنة (مغلق)', color: 'BLACK', score: 0 });
 
     const r = decideFinal(input({ dvi, compliance, aei, mode: 'PLANNING' }));

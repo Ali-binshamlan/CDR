@@ -21,6 +21,7 @@ import {
   PM10_WARNING_UG_M3,
   ruleHit,
 } from './rulebook';
+import { attachRuleMetadata } from './ruleMetadata';
 import { getRuleParameters } from './ruleParameters';
 import type {
   DustComplianceContext,
@@ -104,6 +105,23 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
         ? `الأجواء المتوقعة لا تصلح للنشاط — تركيز الغبار (PM10) المتوقّع (${ctx.pm10UgM3} ميكروجرام/م³) يتجاوز حد التحذير التنظيمي (${PM10_WARNING_UG_M3} ميكروجرام/م³). يُرجى مراجعة توقعات الساعات القادمة قبل البدء الفعلي (لا إيقاف إلزامي، تقييم توقّعي فقط).`
         : 'الأجواء المتوقعة لا تصلح للنشاط — يُرجى مراجعة توقعات الساعات القادمة قبل البدء الفعلي (لا إيقاف إلزامي، تقييم توقّعي فقط).';
 
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
+  // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"): راجع
+  // تعليق planningSuitability الكامل في types.ts. هذا هو المكان الوحيد الذي
+  // يُحسَب فيه isFavorable الآن — final-decision-engine يقرأ هذا الحقل
+  // الجاهز مباشرة، بلا أي استيراد لـPM10_WARNING_UG_M3 أو إعادة حساب. نفس
+  // القيمة المستخدَمة أعلاه لبناء shortReasonAr بالضبط — مصدر واحد لا اثنان.
+  const planningSuitability = {
+    isFavorable,
+    reasonAr: ctx.isForecastStale
+      ? 'تعذّر تحديث توقّعات الطقس لهذه الساعة (انقطاع مؤقت في مصدر التوقعات) — النتيجة المعروضة قديمة وقد لا تعكس الأجواء الفعلية.'
+      : isFavorable
+        ? 'الأجواء المتوقعة تصلح للنشاط.'
+        : isPm10Unfavorable
+          ? `تركيز الغبار (PM10) المتوقّع (${ctx.pm10UgM3} ميكروجرام/م³) يتجاوز حد التحذير التنظيمي (${PM10_WARNING_UG_M3} ميكروجرام/م³).`
+          : 'الأجواء المتوقعة (رياح/رؤية) لا تصلح للنشاط.',
+  };
+
   return {
     engineType: 'RIYADH_DUST_COMPLIANCE',
     engineVersion: ENGINE_VERSION,
@@ -170,6 +188,7 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
       pm10EvidenceState: ctx.pm10EvidenceState,
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
+    planningSuitability,
   };
 }
 
@@ -369,6 +388,7 @@ export function evaluateDustCompliance(
         messageAr: 'إيقاف إلزامي: نشاط غبار نشط/مخطط بلا موافقة معتمدة على خطة إدارة الغبار (DMP)',
         actionAr: 'أوقف النشاط حتى تصدر موافقة معتمدة على خطة إدارة الغبار (DMP) من الجهة المختصة',
         overridable: false,
+        regulatoryFinding: 'VIOLATION',
       }
     );
   }
@@ -467,6 +487,13 @@ export function evaluateDustCompliance(
         // (معلَّقة قبل الدقيقتين، أو مؤكَّدة موثَّقة بلا اكتمال 30 دقيقة)
         // تبقى قابلة للتجاوز في كلتا الحالتين — النشاط مستمر أصلاً.
         overridable: isPm10Only && pm10OnlySeverity === 'ALLOW_WITH_CONTROLS',
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): نفس
+        // تصنيف MRQ-PM10-BLACK-PENDING-104 في rulebook.ts بالضبط —
+        // pm10OnlyPending (لم يكتمل دليل الدقيقتين بعد) هو PENDING؛ خطر
+        // فيزيائي حقيقي (رؤية حرجة/عاصفة، !isPm10Only) أو PM10 مؤكَّد/موقوف
+        // 30 دقيقة (isPm10Only && !pm10OnlyPending) كلاهما VIOLATION —
+        // تجاوز موثَّق وقائم فعلياً.
+        regulatoryFinding: isPm10Only && pm10OnlyPending ? 'PENDING' : 'VIOLATION',
       }
     );
   }
@@ -479,6 +506,7 @@ export function evaluateDustCompliance(
         messageAr: 'إيقاف إلزامي: نظام تثبيط الغبار غير عامل على نشاط مولّد للغبار',
         actionAr: 'أعد تشغيل نظام تثبيط الغبار وتحقق من عمله فعلياً قبل استئناف النشاط',
         overridable: false,
+        regulatoryFinding: 'VIOLATION',
       }
     );
   }
@@ -512,6 +540,7 @@ export function evaluateDustCompliance(
         messageAr: `إيقاف الأنشطة المولّدة للغبار: سرعة الرياح تتجاوز ${windGateStopKmh} كم/س `,
         actionAr: `أوقف النشاط وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون ${windGateStopKmh} كم/س`,
         overridable: false,
+        regulatoryFinding: 'VIOLATION',
       }
     );
   }
@@ -650,7 +679,11 @@ export function evaluateDustCompliance(
         'STOP_AFFECTED_ACTIVITY',
         'تعذّر قراءة القرار السابق لهذا النشاط (فشل استعلام) — لا يمكن التأكد من عدم وجود إيقاف سابق فعّال، فيبقى النشاط موقوفاً احترازياً',
         'أعد المحاولة أو تحقق من اتصال قاعدة البيانات قبل اعتماد أي قرار على هذا النشاط',
-        false
+        false,
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): استمرارية
+        // احترازية (فشل استعلام يمنع إثبات زوال إيقاف سابق) — لا تجاوز حد
+        // رقمي/قانوني جديد مؤكَّد الآن بذاته.
+        'NONE'
       )
     );
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -670,7 +703,21 @@ export function evaluateDustCompliance(
           'STOP_AFFECTED_ACTIVITY',
           `الظروف تحسّنت لكن لم يمضِ وقت كافٍ على استقرارها بعد آخر إيقاف — بانتظار استقرار القراءة (${RESUME_STABILITY_MINUTES} دقائق) قبل الاستئناف`,
           `أبقِ النشاط موقوفاً حتى تستقر القراءة الجيدة لمدة ${RESUME_STABILITY_MINUTES} دقائق متواصلة قبل الاستئناف`,
-          true
+          // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P2، الملاحظة #14: "عقد
+          // Override غير متسق"): كانت overridable=true صراحةً هنا — الوحيدة
+          // بين كل قواعد resume-hold الشقيقة (PREVIOUS-DECISION-QUERY-FAILED-
+          // HOLD، VISIBILITY/WIND/PM10-DATA-MISSING-RESUME-HOLD) التي تمرر
+          // جميعها false صراحةً لنفس severity=STOP_AFFECTED_ACTIVITY. القرار
+          // النهائي الرسمي (final-decision-engine) لم يتأثر فعلياً (confirmedAffectedStop
+          // يُترجَم دائماً MANDATORY_STOP رتبةً بصرف النظر عن canOverride)،
+          // لكن DustComplianceResult.canOverride الوسيط كان يبقى true بلا
+          // مبرر — عقد غير نظيف قد يُضلِّل أي مستهلك مستقبلي يقرأه مباشرة.
+          // false (نفس افتراض ruleHit() الطبيعي لهذا الـseverity أصلاً، ونفس
+          // قيمة كل القواعد الشقيقة) يوحّد العقد.
+          false,
+          // الظروف تحسّنت فعلياً (النص نفسه يقر بذلك) — استمرارية احترازية
+          // لإثبات استقرار الزوال، لا مخالفة جديدة.
+          'NONE'
         )
       );
       decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -695,7 +742,8 @@ export function evaluateDustCompliance(
         'STOP_AFFECTED_ACTIVITY',
         'قراءة الرؤية غير متوفرة من الجهاز — لا يمكن التأكد من تحسّن الرؤية بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
         'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من الرؤية قبل اعتماد أي استئناف',
-        false
+        false,
+        'NONE'
       )
     );
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -716,7 +764,8 @@ export function evaluateDustCompliance(
         'STOP_AFFECTED_ACTIVITY',
         'قراءة سرعة الرياح غير متوفرة من الجهاز — لا يمكن التأكد من انخفاض الرياح بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
         'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من سرعة الرياح قبل اعتماد أي استئناف',
-        false
+        false,
+        'NONE'
       )
     );
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -743,7 +792,8 @@ export function evaluateDustCompliance(
         'STOP_AFFECTED_ACTIVITY',
         'قراءة PM10 غير متوفرة/قديمة من الجهاز — لا يمكن التأكد من انخفاض تركيز الغبار بعد إيقاف سابق، فيبقى النشاط موقوفاً احترازياً',
         'أعد الاتصال بجهاز الرصد أو تحقق ميدانياً من تركيز PM10 قبل اعتماد أي استئناف',
-        false
+        false,
+        'NONE'
       )
     );
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -812,7 +862,22 @@ export function evaluateDustCompliance(
   // وجود المخالفة في أي حقل. مستقل تماماً عن topHits/decisionCategory —
   // يفحص كل ruleHits (لا فقط الفائزة بأعلى شدة)، لأن هذا حقل "هل حدثت
   // مخالفة تنظيمية مؤكَّدة إطلاقاً هذه الدورة"، لا "ما القرار الفائز".
-  const hasConfirmedRegulatoryViolation = ruleHits.some((hit) => hit.code === 'PM10-VIOLATION-STOP-006');
+  //
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5:
+  // "regulatoryFinding مصمم حالياً حول PM10 فقط"): كان هذا الحقل مقيَّداً
+  // حرفياً بمطابقة كود قاعدة واحد (PM10-VIOLATION-STOP-006) — أي مخالفة
+  // صريحة أخرى موثَّقة في rulebook.ts (سرعة طريق غير مسفلت >10، طريق مسفلت
+  // >20، تأخر تنظيف انسكاب >15 دقيقة، حمولة غير مغطاة، صوامع غير محكمة،
+  // تسرب صومعة، إلخ) لم تكن تُنتج hasConfirmedRegulatoryViolation=true
+  // إطلاقاً رغم كونها تجاوزاً صريحاً لحد رقمي/قانوني موثَّق — قد يُنتج
+  // operationalDecision=RESTRICT + regulatoryFinding=COMPLIANT، تناقض
+  // مباشر. الإصلاح: كل قاعدة تحمل الآن دلالتها التنظيمية المستقلة صراحة
+  // (regulatoryFinding: NONE|PENDING|VIOLATION، راجع RuleRegulatoryFinding
+  // في types.ts) — لا تُستنتَج من severity (الذي يجيب "ماذا نفعل تشغيلياً؟"
+  // فقط، لا "هل وقع إخلال تنظيمي؟"). هذا الحقل يفحص أي قاعدة VIOLATION عبر
+  // كل ruleHits (لا فقط topHits)، بنفس مبدأ الفحص الشامل السابق تماماً —
+  // فقط معيار المطابقة تغيّر من كود واحد صريح إلى دلالة عامة لكل قاعدة.
+  const hasConfirmedRegulatoryViolation = ruleHits.some((hit) => hit.regulatoryFinding === 'VIOLATION');
 
   // canOverride مشتقة الآن من overridable الفعلي لقاعدة(قواعد) القرار
   // الحاسمة (topHits)، لا من فئة decisionCategory العامة كما كانت سابقاً —
@@ -824,16 +889,41 @@ export function evaluateDustCompliance(
   // يعني قابلية تجاوز كاملة بداهة.
   const canOverride = topHits.length === 0 || topHits.every((hit) => hit.overridable !== false);
 
-  // إن كان القرار النهائي إيقافاً مؤكَّداً فعلياً (MANDATORY_STOP أو
-  // STOP_AFFECTED_ACTIVITY) من قاعدة أخرى غير MRQ-PM10-BLACK-PENDING-104
-  // (مثال: بوابة رياح/هدم مكشوف)، فإن نص "معلَّق... بانتظار استمرار القراءة"
-  // الخاص بتلك القاعدة يصبح متناقضاً ومضلِّلاً — النشاط موقوف فعلياً الآن،
-  // لا "بانتظار" شيء. نستبعدها من القوائم المعروضة (لا من ruleHits الداخلية
-  // نفسها، فقط من triggeredRules/requiredActions المعروضتين للمستخدم) حتى
-  // لا تظهر رسالة تصف حالة مؤقتة بجانب قرار قطعي بالفعل.
-  const displayedRuleHits = pendingConfirmation
-    ? ruleHits
-    : ruleHits.filter((r) => r.code !== 'MRQ-PM10-BLACK-PENDING-104');
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "PM10 المعلَّق يمكن أن
+  // يختفي إذا ظهرت قاعدة أخرى بنفس الشدة"): كان الاستبعاد أدناه مربوطاً
+  // بـpendingConfirmation العام (topHits.every(isPending)) — لكن ذلك الحقل
+  // يجيب سؤالاً مختلفاً تماماً ("هل القرار الفائز بأكمله معلَّق؟")، لا السؤال
+  // المقصود فعلياً هنا ("هل يوجد إيقاف مؤكَّد فعلي يجعل نص PM10 المعلَّق
+  // متناقضاً؟"). مثال حقيقي: PM10>340 معلَّق (MRQ-PM10-BLACK-PENDING-104،
+  // ALLOW_WITH_CONTROLS) + رياح 15-25 كم/س (GATE-WIND-15-25-ENHANCED-005،
+  // نفس الشدة ALLOW_WITH_CONTROLS لكنها قاعدة مؤكَّدة لا معلَّقة) — topHits
+  // تضم القاعدتين معاً بنفس الشدة، فـpendingConfirmation=false (صحيح: القرار
+  // الفائز ليس معلَّقاً بالكامل)، فكانت MRQ-PM10-BLACK-PENDING-104 تُحذَف
+  // كلياً من displayedRuleHits رغم أنها لا تتعارض إطلاقاً مع ALLOW_WITH_
+  // CONTROLS (القرار النهائي، غير قطعي أصلاً) — يُخفي عن المستخدم أن عداد
+  // تأكيد PM10 لا يزال يجري (120 ثانية)، لا لأي سبب حقيقي.
+  //
+  // الإصلاح: شرط الاستبعاد يعكس الآن حرفياً ما وصفه التعليق الأصلي أدناه —
+  // إيقاف مؤكَّد فعلياً (MANDATORY_STOP أو STOP_AFFECTED_ACTIVITY تحديداً،
+  // الفئتان اللتان تتعارض نصوصهما فعلياً مع "بانتظار...") ناتج عن قاعدة أخرى
+  // غير MRQ-PM10-BLACK-PENDING-104 نفسها. أي شدة أخف (بما فيها ALLOW_WITH_
+  // CONTROLS، كما في المثال أعلاه) لا تُخفي القاعدة المعلَّقة إطلاقاً — لا
+  // تعارض حقيقي بين "مسموح بضوابط" و"PM10 لا يزال معلَّقاً بانتظار تأكيد".
+  const pm10PendingRuleCode = 'MRQ-PM10-BLACK-PENDING-104';
+  const confirmedStopFromOtherRule =
+    (decisionCategory === 'MANDATORY_STOP' || decisionCategory === 'STOP_AFFECTED_ACTIVITY') &&
+    ruleHits.some((r) => r.code !== pm10PendingRuleCode && r.severity === decisionCategory);
+  // البند 10 ("طوّر Rule Hit ليحمل metadata المطلوبة بدل الاعتماد على
+  // catalog يدوي"، راجع تعليق RuleMetadata الكامل في types.ts): metadata
+  // تُلحق هنا فقط — نقطة تجميع واحدة قبل التصدير النهائي كـtriggeredRules
+  // — لا أثناء بناء كل قاعدة على حدة (يتجنب استيراداً دائرياً بين
+  // rulebook.ts وruleMetadata.ts، وrulebook.ts يستورد من ruleMetadata.ts).
+  // إلحاق توثيقي بحت — لا يُغيّر code/severity/messageAr/actionAr/
+  // overridable/regulatoryFinding لأي قاعدة، فلا يؤثر على القرار الفعلي.
+  const displayedRuleHits = (confirmedStopFromOtherRule
+    ? ruleHits.filter((r) => r.code !== pm10PendingRuleCode)
+    : ruleHits
+  ).map(attachRuleMetadata);
 
   // الإجراءات المطلوبة تُبنى من actionAr (نص الإجراء التصحيحي) وليس من
   // messageAr (وصف المخالفة) — وإلا ظهرت نفس الجملة حرفياً مرتين في البطاقة:
@@ -874,8 +964,20 @@ export function evaluateDustCompliance(
   // معاً (حالة نظرية: هدم مكشوف + رياح فوق 25 في نفس اللحظة)، يفوز الحد
   // الأشد (دون 15) — أي نشاط يحتاج انخفاضاً أكبر يحتاج بداهة الانخفاض
   // الأصغر أيضاً، فذكر الحد الأشد وحده كافٍ ولا يُضلِّل.
-  const GENERAL_WIND_STOP_RULE_CODES = new Set(['GATE-WIND-ABOVE-25-004', 'GATE-WIND-ABOVE-25-RESUME-HOLD']);
-  const ACTIVITY_WIND_15_STOP_RULE_CODES = new Set(['DEMO-WIND-STOP-001', 'STONECUT-WIND-STOP-003']);
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #7: "قاعدة رياح قطع
+  // الأحجار غير صحيحة"): STONECUT-WIND-STOP-003 كانت مُصنَّفة ضمن مجموعة
+  // "دون 15" (نفس مجموعة الهدم) رغم أنها لم تعد تُفعَّل إلا عند windBand===
+  // 'ABOVE_25' (>25 كم/س، بعد إصلاح سابق هذه الجلسة) — فكان شرط الاستئناف
+  // المعروض للمستخدم عند إيقاف قطع الأحجار بسبب الرياح يقول خطأً "انخفاض
+  // الرياح دون 15"، رغم أن القاعدة نفسها تشترط تجاوز 25 لتُفعَّل أصلاً (لا
+  // علاقة لها بعتبة 15 — تلك عتبة التثبيط المعزَّز STONECUT-WIND-ENHANCED-004
+  // المنفصلة تماماً، التي لا تُنتج إيقافاً إطلاقاً). الهدم يبقى الاستثناء
+  // الوحيد الموثَّق فعلياً بعتبة 15 (DEMO-WIND-STOP-001، ثابته الخاص
+  // WIND_GATE_ENHANCED_MIN_KMH). الإصلاح: STONECUT-WIND-STOP-003 تنتقل إلى
+  // مجموعة "دون 25" (نفس عتبة GATE-WIND-ABOVE-25-004 العامة تماماً — القاعدة
+  // فعلياً تكرار لنفس شرط تلك البوابة، بعتبة مطابقة تماماً الآن).
+  const GENERAL_WIND_STOP_RULE_CODES = new Set(['GATE-WIND-ABOVE-25-004', 'GATE-WIND-ABOVE-25-RESUME-HOLD', 'STONECUT-WIND-STOP-003']);
+  const ACTIVITY_WIND_15_STOP_RULE_CODES = new Set(['DEMO-WIND-STOP-001']);
   const requiresWindBelow15 = topHits.some((hit) => ACTIVITY_WIND_15_STOP_RULE_CODES.has(hit.code));
   const requiresWindBelow25 = topHits.some((hit) => GENERAL_WIND_STOP_RULE_CODES.has(hit.code));
 

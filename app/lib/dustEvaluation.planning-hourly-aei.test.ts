@@ -40,7 +40,9 @@ function buildDecision(overrides: Partial<FinalDecision> = {}): FinalDecision {
     snapshotId: 'test-snapshot',
     mode: 'PLANNING',
     operationalDecision: 'MONITOR',
-    regulatoryFinding: 'COMPLIANT',
+    // NOT_DETERMINABLE (لا COMPLIANT) — راجع الملاحظة #12: PLANNING توقّع
+    // بلا قراءة ميدانية حقيقية، لا يجوز حكم قاطع بامتثال.
+    regulatoryFinding: 'NOT_DETERMINABLE',
     mandatoryStop: false,
     overridable: true,
     shortReasonAr: 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة لا تصلح للنشاط.',

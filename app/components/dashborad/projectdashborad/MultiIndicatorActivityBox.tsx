@@ -17,6 +17,14 @@ export interface IndicatorSummary {
   decisionLabel: string;
   riskWeight: number;
   reasonText?: string;
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #13: "الواجهة
+  // ما زالت تستطيع عرض قرار حي لم يُحفظ بعد في Immutable Audit"): true يعني
+  // أن هذا الملخص محسوب حياً ضمن نفس طلب GET (راجع app/api/projects/
+  // [projectId]/route.ts، summaryFromLiveDecision) — قد لا يكون مطابقاً بعد
+  // لأي صف محفوظ فعلياً في final_decisions (POST /evaluate المتوازي قد لا
+  // يكون اكتمل أو نجح). false يعني قرار مخزَّن فعلياً (fallback) أو "بانتظار
+  // التقييم". اختياري (لا يكسر مستهلكين قديمين لا يمررونه).
+  isLiveComputed?: boolean;
 }
 
 // DCR: مصدر واحد فقط (dust) — لا 'heat'/'crane' كما في مرقاب.
@@ -447,6 +455,17 @@ export default function MultiIndicatorActivityBox({
             <div className="flex items-center gap-2 mb-1">
               <span className={`w-2 h-2 rounded-full shrink-0 ${bannerStyle.dot} ${mandatoryStop ? 'animate-pulse' : ''}`} />
               <span className={`text-[11px] font-black uppercase tracking-wide opacity-80 ${bannerStyle.text}`}>القرار الموحد للنشاط</span>
+              {/* راجع تعليق IndicatorSummary.isLiveComputed أعلاه — الملاحظة
+                  #13: معاينة حية قد لا تطابق بعد آخر صف محفوظ فعلياً في
+                  سجل الأدلة (Immutable Audit)، فتُميَّز بصرياً عن قرار مؤكَّد. */}
+              {driverSummary.isLiveComputed && (
+                <span
+                  title="محسوب حياً الآن — قد يستغرق حفظه رسمياً في سجل الأدلة لحظات قليلة"
+                  className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border opacity-70 ${bannerStyle.soft} ${bannerStyle.text}`}
+                >
+                  معاينة حية
+                </span>
+              )}
             </div>
 
             <p className={`text-xl font-black mb-4 ${bannerStyle.text}`}>

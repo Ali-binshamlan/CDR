@@ -441,3 +441,45 @@ describe('End-to-End — الإيقاف بسبب الرياح مستقل تما�
     expect(reasonText).toContain('رياح');
   });
 });
+
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5:
+// "regulatoryFinding مصمم حالياً حول PM10 فقط") — اختبار End-to-End حقيقي
+// عبر السلسلة الكاملة (لا synthetic fixtures) يثبت أن مخالفة صريحة غير
+// PM10 تصل فعلياً إلى final.regulatoryFinding=NON_COMPLIANT، لا COMPLIANT
+// كما كانت قبل الإصلاح.
+//
+// المثال الأصلي هنا (سرعة طريق غير مسفلت، TRAFFIC-UNPAVED-002) حُذفت
+// قاعدته لاحقاً بالكامل (طلب صريح من المستخدم — بلا حقل إدخال فعلي في
+// الواجهة، تحوّل SITE_TRAFFIC كاملاً لتنبيهات نصية). استُبدل بمثال من
+// نشاط آخر لا تزال قاعدته فعلية (DEMO-AREA-002).
+describe('End-to-End — regulatoryFinding يعكس مخالفات صريحة غير PM10 أيضاً (الملاحظة #5)', () => {
+  it('مساحة هدم نشطة تتجاوز الحد (لا PM10 مرتفع، لا رياح) → operationalDecision=RESTRICT، regulatoryFinding=NON_COMPLIANT لا COMPLIANT', () => {
+    const nowMs = Date.now();
+    const { dvi } = buildDviWithDeviceReading(20, nowMs);
+
+    const demolitionActivityRow: Record<string, unknown> = {
+      activity_group_id: 'e2e-demolition-activity-1',
+      regulatory_activity: 'DEMOLITION',
+      is_dust_generating: true,
+      is_enclosed_operation: false,
+      is_active_or_planned: true,
+      demolition_active_area_m2: 150,
+    };
+
+    const ctx = buildComplianceContext(projectRow(), demolitionActivityRow, dvi, [], null, null, nowMs, false);
+    const compliance = evaluateDustCompliance(ctx, nowMs);
+
+    expect(compliance.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(compliance.triggeredRules.some((h) => h.code === 'DEMO-AREA-002')).toBe(true);
+    expect(compliance.hasConfirmedRegulatoryViolation).toBe(true);
+
+    const finalInput = buildFinalDecisionInput('e2e-demolition-snapshot', dvi, compliance, null, 'LIVE_OPERATIONAL', new Date(nowMs).toISOString());
+    const final = decideFinal(finalInput);
+
+    expect(final.mandatoryStop).toBe(true);
+    // هذا هو صلب الإصلاح: قبله كانت regulatoryFinding تسقط إلى COMPLIANT
+    // رغم مخالفة صريحة موثَّقة (تجاوز حد مساحة رقمي)، لأن hasConfirmedRegulatory
+    // Violation كانت مقيَّدة بكود PM10-VIOLATION-STOP-006 وحده.
+    expect(final.regulatoryFinding).toBe('NON_COMPLIANT');
+  });
+});

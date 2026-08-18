@@ -9,12 +9,6 @@
 
 import type { FinalDecision, FinalDecisionInput, OperationalDecision, RegulatoryFinding } from './types';
 import type { AeiStatus } from '@/app/utils/aei-engine/types';
-// PM10_WARNING_UG_M3 (251 ميكروجرام/م³) — نفس الحد المستخدَم في
-// buildPlanningForecastResult (dust-compliance-engine/engine.ts) لتصنيف
-// توقّع PM10 "غير مناسب". decideFinal تبقى "الدالة الوحيدة المسموح لها
-// بقراءة dvi/compliance معاً" (راجع تعليق أعلى الملف) — هذا الاستيراد ثابت
-// قيمة رقمية بحتة فقط، لا منطق قرار من محرك آخر، فلا يخالف ذلك المبدأ.
-import { PM10_WARNING_UG_M3 as PM10_FORECAST_WARNING_UG_M3 } from '@/app/utils/dust-compliance-engine';
 
 // invariant صارم — لا يعتمد على التزام كل فرع من decideFinal بضبط
 // overridable=false يدوياً عند mandatoryStop=true (نفس مبدأ
@@ -95,35 +89,45 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // الحالتين mandatoryStop=false/overridable=true دائماً (لا إيقاف إلزامي
   // فعلي على توقّع، مهما كان اللون).
   if (mode === 'PLANNING') {
-    // خطأ مكتشَف ومُصلَح — طلب صريح من المستخدم: "ليه ما يقول تنبيه استباقي
-    // الأجواء غير المناسبة... اتوقع انه يستثني قاعدة PM10". isFavorable كانت
-    // تفحص dvi.decisionCategory (DVI الفيزيائي: رياح/رؤية) فقط، بلا أي فحص
-    // لتركيز PM10 المتوقّع — فتوقّع بـPM10=1315 (أضعاف حد المخالفة 340) كان
-    // يظهر "مسموح — تشغيل اعتيادي" طالما الرياح/الرؤية جيدتان، لكل الأنشطة
-    // (لا خاص بمحطة الخلط). compliance.evidence.pm10UgM3 هو نفس تركيز PM10
-    // المتوقّع الذي بنى عليه buildPlanningForecastResult (dust-compliance-
-    // engine/engine.ts) نصه التوعوي المطابق — قراءته هنا مباشرة (بدل نص
-    // shortReasonAr الهش) يجعل isFavorable يعكس فعلياً DVI + PM10 معاً، مع
-    // بقاء decisionCategory=ALLOW/mandatoryStop=false دائماً (لا إيقاف إلزامي
-    // على تقدير مهما بلغت القيمة).
-    const isPm10Unfavorable =
-      compliance?.evidence?.pm10UgM3 !== null &&
-      compliance?.evidence?.pm10UgM3 !== undefined &&
-      compliance.evidence.pm10UgM3 >= PM10_FORECAST_WARNING_UG_M3;
-    const isFavorable =
-      (dvi.decisionCategory === 'ALLOW' || dvi.decisionCategory === 'ALLOW_WITH_MONITORING') && !isPm10Unfavorable;
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
+    // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"):
+    // كانت هذه الدالة تستورد PM10_WARNING_UG_M3 وتُعيد حساب isFavorable
+    // (PM10 + dvi.decisionCategory معاً) بنفسها من الصفر — بينما dust-
+    // compliance-engine (buildPlanningForecastResult) يحسب نفس isFavorable
+    // بالفعل لبناء shortReasonAr الخاص به. العقد المعماري صريح:
+    // FinalDecisionEngine حَكَم قرارات (Decision Arbiter) يستقبل نتائج
+    // المحركات الجاهزة، لا مُقيِّم قواعد (Rule Evaluator) يعرف أرقام
+    // العتبات التنظيمية بنفسه. الإصلاح: compliance.planningSuitability
+    // (محسوبة مرة واحدة في dust-compliance-engine، راجع تعليقها الكامل في
+    // types.ts) تُقرأ هنا مباشرة — بلا أي استيراد لعتبة PM10 أو إعادة حساب.
+    // compliance غائب (undefined) → فشل آمن نحو "تصلح" (نفس مبدأ عدم افتراض
+    // مخالفة بلا دليل المطبَّق في كل مكان آخر بهذا الملف).
+    const isFavorable = compliance?.planningSuitability?.isFavorable ?? true;
+    const unfavorableReasonAr = compliance?.planningSuitability?.reasonAr;
+    // خطأ دلالي مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #12:
+    // "PLANNING يُصدر Regulatory Finding = COMPLIANT رغم أنه توقّع فقط"):
+    // كان regulatoryFinding يُثبَّت دائماً COMPLIANT في وضع PLANNING — لكن
+    // COMPLIANT حكم قاطع ("فُحص النشاط وثبت التزامه") يفترض دليلاً ميدانياً
+    // حقيقياً؛ توقّع طقس عام لساعة لم تبدأ بعد ليس دليلاً كهذا، بصرف النظر
+    // عن كون التوقّع مناسباً أم لا. النظام لا يملك دليلاً كافياً للحكم لا
+    // بامتثال ولا بمخالفة في كلتا الحالتين. الإصلاح: NOT_DETERMINABLE
+    // (القيمة الموجودة أصلاً في RegulatoryFinding، بنفس الدلالة الموثَّقة في
+    // الفرع الآخر أدناه — "لا يمكن الحكم بامتثال أو مخالفة قبل تحقق ميداني
+    // فعلي" — تطابق حالة PLANNING تماماً، فلا داعٍ لقيمة جديدة) تحل محل
+    // COMPLIANT الثابتة، في كلتا حالتَي isFavorable (مناسب/غير مناسب) — لا
+    // فرق بينهما هنا: كلاهما توقّع بلا قراءة حية، بصرف النظر عن جودة
+    // التوقّع نفسه. operationalDecision/mandatoryStop/level تبقى بلا تغيير
+    // (لا علاقة لها بهذا الإصلاح — تعكس جودة التوقّع، لا وجود دليل ميداني).
     const result: FinalDecision = {
       snapshotId: input.snapshotId,
       mode,
       operationalDecision: isFavorable ? 'ALLOW' : 'MONITOR',
-      regulatoryFinding: 'COMPLIANT',
+      regulatoryFinding: 'NOT_DETERMINABLE',
       mandatoryStop: false,
       overridable: true,
       shortReasonAr: isFavorable
         ? 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة تصلح للنشاط. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.'
-        : isPm10Unfavorable
-          ? `تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — تركيز الغبار (PM10) المتوقّع (${compliance!.evidence.pm10UgM3} ميكروجرام/م³) يتجاوز حد التحذير التنظيمي (${PM10_FORECAST_WARNING_UG_M3} ميكروجرام/م³). يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.`
-          : 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة لا تصلح للنشاط، يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.',
+        : `تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — ${unfavorableReasonAr ?? 'الأجواء المتوقعة لا تصلح للنشاط.'} يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.`,
       decisionLabelAr: isFavorable ? 'مسموح — تشغيل اعتيادي' : 'تنبيه: أجواء متوقعة غير مناسبة',
       level: isFavorable ? 'GREEN' : 'YELLOW',
       pendingConfirmation: false,
@@ -523,8 +527,14 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     // تماماً)؛ فقط regulatoryFinding يتغيّر هنا.
     regulatoryFinding = 'NON_COMPLIANT';
   } else {
-    // compliance غائب أصلاً (مثال: PLANNING بلا سياق امتثال كامل) يُعامَل
-    // كـCOMPLIANT بفشل آمن — لا يجوز الإبلاغ عن مخالفة بلا محرك امتثال
+    // تعليق مُصحَّح (مراجعة كود خارجي — P2، الملاحظة #15: "Drift في
+    // التعليقات والأنواع"): المثال السابق هنا ("PLANNING بلا سياق امتثال
+    // كامل") لم يعد صحيحاً — mode==='PLANNING' يعود مبكراً بفرعه المستقل
+    // أعلى هذه الدالة (راجع الملاحظة #12) بقيمة NOT_DETERMINABLE صراحةً، لا
+    // يصل هذا الفرع إطلاقاً. هذا الفرع الآن يُطبَّق فقط على LIVE_OPERATIONAL
+    // (أو أي mode آخر مستقبلي) حين compliance تصل null/undefined فعلياً —
+    // مثال حقيقي: فشل محرك الامتثال نفسه في هذه الدورة (لا PLANNING). يبقى
+    // فشلاً آمناً نحو COMPLIANT — لا يجوز الإبلاغ عن مخالفة بلا محرك امتثال
     // شغَّال فعلياً قيّمها.
     regulatoryFinding = 'COMPLIANT';
   }

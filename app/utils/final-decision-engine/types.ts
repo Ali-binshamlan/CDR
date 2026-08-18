@@ -91,14 +91,17 @@ export type OperationalDecision =
 // يكون operationalDecision=ALLOW فيزيائياً بينما regulatoryFinding=
 // PENDING_CONFIRMATION إدارياً، مثال: قراءة أخف من عتبة DVI لكن محرك
 // الامتثال ما زال بانتظار تأكيد استمرار من تقييم سابق).
-//   COMPLIANT: لا مخالفة — decisionCategory=ALLOW (أو compliance غائب أصلاً،
-//     PLANNING بلا سياق امتثال كامل مثلاً).
+//   COMPLIANT: لا مخالفة — decisionCategory=ALLOW في LIVE_OPERATIONAL، أو
+//     compliance غائب أصلاً هناك (فشل آمن، لا PLANNING — راجع تعليق مُصحَّح
+//     أدناه، الملاحظة #15).
 //   PENDING_CONFIRMATION: قرار امتثال معلَّق بانتظار دليل استمرار
-//     (compliance.pendingConfirmation=true).
+//     (compliance.pendingConfirmation=true) في LIVE_OPERATIONAL.
 //   NON_COMPLIANT: مخالفة تنظيمية مؤكَّدة (MANDATORY_STOP، أو
-//     STOP_AFFECTED_ACTIVITY غير معلَّق — دليل مؤكَّد بالفعل).
-//   NOT_DETERMINABLE: الأدلة غير كافية للحكم إطلاقاً (evidenceQuality
-//     UNAVAILABLE في LIVE_OPERATIONAL).
+//     STOP_AFFECTED_ACTIVITY غير معلَّق — دليل مؤكَّد بالفعل) في LIVE_OPERATIONAL.
+//   NOT_DETERMINABLE: الأدلة غير كافية للحكم إطلاقاً — إما evidenceQuality
+//     UNAVAILABLE/نقص بيانات حرجة في LIVE_OPERATIONAL، أو mode==='PLANNING'
+//     دائماً (توقّع طقس، لا دليل ميداني حقيقي بعد بصرف النظر عن جودة
+//     التوقّع — راجع الملاحظة #12، تعليق مُصحَّح إثر الملاحظة #15).
 export type RegulatoryFinding =
   | 'COMPLIANT'
   | 'PENDING_CONFIRMATION'
@@ -127,8 +130,19 @@ export interface FinalDecision {
   // بقية النظام.
   level: 'GREEN' | 'YELLOW' | 'ORANGE' | 'RED' | 'DARK_RED' | 'BLACK';
 
-  // true فقط عند PROTECTIVE_STOP (امتثال معلَّق بانتظار تأكيد) — يحل محل
-  // UnifiedActivityDecision.pendingConfirmation القديم بنفس الدلالة تماماً.
+  // تعليق مُصحَّح (مراجعة كود خارجي — P2، الملاحظة #15: "Drift في التعليقات
+  // والأنواع" — العبارة السابقة هنا "true فقط عند PROTECTIVE_STOP" أصبحت
+  // غير دقيقة بعد إصلاح الملاحظة #10 ولم تُحدَّث، فخاطر إغراء مبرمج لاحق
+  // بـ"إصلاح" الكود ليطابق التعليق القديم ويُعيد نفس العلة).
+  //
+  // الدلالة الفعلية الآن: = compliance?.pendingConfirmation === true مباشرة
+  // (راجع تعليق engine.ts الكامل عند هذا الحقل، والملاحظة #10) — مستقلة
+  // تماماً عن operationalDecision/level. يمكن أن تكون true بينما
+  // operationalDecision=MONITOR (لا PROTECTIVE_STOP إطلاقاً)، وهذا بالتحديد
+  // السيناريو المقصود: PM10>340 قبل اكتمال دقيقتي التأكيد (نافذة "أ") يُنتج
+  // MONITOR/ALLOW_WITH_CONTROLS مع pendingConfirmation=true معاً — "معلَّق
+  // بانتظار تأكيد" لا يعني بالضرورة "قرار تشغيلي محجوب فعلياً". لا تفترض
+  // أن true تستلزم PROTECTIVE_STOP أو العكس — الحقلان مستقلان.
   pendingConfirmation: boolean;
 
   reasonCodes: readonly string[];

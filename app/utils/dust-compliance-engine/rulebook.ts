@@ -13,6 +13,7 @@ import type {
   DustRiskClass,
   DustRuleHit,
   DustWindBand,
+  RuleRegulatoryFinding,
 } from './types';
 import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 import { getRuleParameters } from './ruleParameters';
@@ -61,12 +62,12 @@ const CATEGORY_I_MAX_AREA_M2 = 2000;
 const STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M = () => getRuleParameters().STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M;
 const DEMOLITION_MAX_AREA_M2 = () => getRuleParameters().DEMOLITION_MAX_AREA_M2;
 const IDLE_SURFACE_MAX_DAYS = () => getRuleParameters().IDLE_SURFACE_MAX_DAYS;
-const UNPAVED_SPEED_LIMIT_KMH = () => getRuleParameters().UNPAVED_SPEED_LIMIT_KMH;
-const PAVED_SPEED_LIMIT_KMH = () => getRuleParameters().PAVED_SPEED_LIMIT_KMH;
-const SPILL_CLEANUP_LIMIT_MIN = () => getRuleParameters().SPILL_CLEANUP_LIMIT_MIN;
-const DROP_HEIGHT_NORMAL_LIMIT_M = () => getRuleParameters().DROP_HEIGHT_NORMAL_LIMIT_M;
-const DROP_HEIGHT_HIGH_WIND_LIMIT_M = () => getRuleParameters().DROP_HEIGHT_HIGH_WIND_LIMIT_M;
-const DEBRIS_PILE_MAX_HEIGHT_M = () => getRuleParameters().DEBRIS_PILE_MAX_HEIGHT_M;
+// UNPAVED_SPEED_LIMIT_KMH/PAVED_SPEED_LIMIT_KMH/SPILL_CLEANUP_LIMIT_MIN
+// (SITE_TRAFFIC)، DROP_HEIGHT_NORMAL_LIMIT_M/DROP_HEIGHT_HIGH_WIND_LIMIT_M
+// (EARTHWORKS/MATERIAL_HANDLING_STOCKPILE)، وDEBRIS_PILE_MAX_HEIGHT_M
+// (CD_WASTE_TRANSPORT) حُذفت — القواعد الوحيدة التي استخدمتها حُذفت (طلب
+// صريح من المستخدم)، راجع تعليقات siteTrafficRules/earthworksRules/
+// stockpileRules/cdWasteTransportRules.
 const IMMERSION_ZONE_MIN_LENGTH_M = () => getRuleParameters().IMMERSION_ZONE_MIN_LENGTH_M;
 const WHEEL_WASH_CYCLE_MIN_SEC = () => getRuleParameters().WHEEL_WASH_CYCLE_MIN_SEC;
 const STONE_CUTTING_WIND_STOP_KMH = () => getRuleParameters().STONE_CUTTING_WIND_STOP_KMH;
@@ -221,14 +222,26 @@ export function decisionFromRules(
 // (استئناف بوابة الرياح/استقرار الاستئناف/الثقة المنخفضة) بعد تحويلها من
 // تعديل decisionCategory مباشرة إلى DustRuleHit فعلي — راجع تعليق الفصل بين
 // القواعد والقرار في engine.ts.
+//
+// regulatoryFinding اختياري (راجع RuleRegulatoryFinding في types.ts) —
+// افتراضي 'NONE' لـFIELD_VERIFICATION_REQUIRED/PRECAUTION (نقص بيانات أو
+// احتراز، لا مخالفة بذاتها)، و'VIOLATION' لأي severity أشد (RESTRICT_
+// ACTIVITY فأعلى، بما فيها ALLOW_WITH_CONTROLS التي تحمل قواعد مخالفة
+// موثَّقة فعلياً مثل PM10-VIOLATION-STOP-006) — يعكس الغالبية العظمى من
+// القواعد الفعلية (تجاوز حد رقمي/قانوني صريح). القواعد الاستثنائية (حالة
+// تشغيلية بحتة بلا تجاوز حد، أو معلَّقة بانتظار تأكيد) تُمرِّر القيمة
+// صراحة عند نداء ruleHit() — لا حاجة لتعديل كل نداء، فقط الاستثناءات.
 export function ruleHit(
   code: string,
   severity: DustRuleHit['severity'],
   messageAr: string,
   actionAr: string,
-  overridable: boolean = severity !== 'MANDATORY_STOP' && severity !== 'STOP_AFFECTED_ACTIVITY'
+  overridable: boolean = severity !== 'MANDATORY_STOP' && severity !== 'STOP_AFFECTED_ACTIVITY',
+  regulatoryFinding: RuleRegulatoryFinding = severity === 'FIELD_VERIFICATION_REQUIRED' || severity === 'PRECAUTION'
+    ? 'NONE'
+    : 'VIOLATION'
 ): DustRuleHit {
-  return { code, severity, messageAr, actionAr, overridable };
+  return { code, severity, messageAr, actionAr, overridable, regulatoryFinding };
 }
 
 // بوابة عامة على كل الأنشطة المكشوفة المولّدة للغبار — "الاستخراج التنظيمي
@@ -250,7 +263,13 @@ export function enhancedSuppressionRule(
       'GATE-WIND-15-25-ENHANCED-005',
       'ALLOW_WITH_CONTROLS',
       'تثبيط معزز مطلوب: سرعة الرياح بين 15-25 كم/س',
-      'فعّل الرش الساعي، غطِّ الأكوام، اخفض ارتفاع التفريغ إلى متر واحد، وشدّد تنظيف الطرق وغسيل الإطارات'
+      'فعّل الرش الساعي، غطِّ الأكوام، اخفض ارتفاع التفريغ إلى متر واحد، وشدّد تنظيف الطرق وغسيل الإطارات',
+      undefined,
+      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): حالة تشغيلية
+      // بحتة (نفس مثال المستخدم الحرفي: "رياح 20 → ALLOW_WITH_CONTROLS هي
+      // حالة تشغيلية تتطلب تحكماً معززاً، وليست بالضرورة مخالفة") — لا تجاوز
+      // حد رقمي/قانوني موثَّق بذاتها، فقط نطاق تشغيلي وسيط.
+      'NONE'
     ),
   ];
 }
@@ -288,7 +307,11 @@ export function windGustSafetyRule(
       'GATE-WIND-GUST-SAFETY',
       'ALLOW_WITH_CONTROLS',
       `هبة رياح قوية عابرة رُصدت (${windGustKmh} كم/س) — احتراز سلامة إضافي، ليست مخالفة بموجب بروتوكول الملحق أ`,
-      'أمّن المواد السائبة والمعدات الخفيفة فوراً حتى تهدأ الهبة، وراقب استقرار سرعة الرياح المستدامة'
+      'أمّن المواد السائبة والمعدات الخفيفة فوراً حتى تهدأ الهبة، وراقب استقرار سرعة الرياح المستدامة',
+      undefined,
+      // احتراز سلامة إضافي منّا (راجع تعليق الدالة الكامل أعلاه) — الرسالة
+      // نفسها تنص صراحة "ليست مخالفة بموجب بروتوكول الملحق أ".
+      'NONE'
     ),
   ];
 }
@@ -391,7 +414,14 @@ export function pm10ThresholdRule(
           'MRQ-PM10-BLACK-PENDING-104',
           'ALLOW_WITH_CONTROLS',
           `تنبيه: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) — بانتظار اكتمال دقيقتين استمرار لتصنيفها مخالفة تنظيمية مؤكدة`,
-          'فعّل التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ) وراقب استمرار القراءة عن كثب — ستُصبح مخالفة تنظيمية مؤكدة وموثَّقة (بلا إيقاف إلزامي فوري) إن استمر التجاوز دقيقتين فأكثر'
+          'فعّل التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ) وراقب استمرار القراءة عن كثب — ستُصبح مخالفة تنظيمية مؤكدة وموثَّقة (بلا إيقاف إلزامي فوري) إن استمر التجاوز دقيقتين فأكثر',
+          undefined,
+          // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): تجاوز
+          // مرصود لكن لم يكتمل دليل التأكيد بعد (دقيقتا الاستمرار) — PENDING
+          // لا VIOLATION، بصرف النظر عن أن regulatoryFinding النهائي
+          // (final-decision-engine) قد يعرضها ضمن PENDING_CONFIRMATION بحكم
+          // pendingConfirmation المنفصل أصلاً.
+          'PENDING'
         )
       );
     }
@@ -406,7 +436,12 @@ export function pm10ThresholdRule(
         'PM10-WARNING-008',
         'ALLOW_WITH_CONTROLS',
         `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) بلغ أو تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
-        'فعّل التثبيط المعزز فوراً: رش ساعي أو مثبطات، تغطية الأكوام وخفض ارتفاع التفريغ إلى متر واحد، تقليل واجهات العمل المتزامنة، وتقييد حركة النقل'
+        'فعّل التثبيط المعزز فوراً: رش ساعي أو مثبطات، تغطية الأكوام وخفض ارتفاع التفريغ إلى متر واحد، تقليل واجهات العمل المتزامنة، وتقييد حركة النقل',
+        undefined,
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): نطاق
+        // التحذير [250,340] حالة تشغيلية تستوجب تحكماً معززاً، لم تتجاوز حد
+        // المخالفة (340) بعد — لا مخالفة تنظيمية بذاتها.
+        'NONE'
       )
     );
   }
@@ -437,45 +472,19 @@ export function pm10ThresholdRule(
 // A1 — تجهيز الموقع وأعمال الحفر والأعمال الترابية (الحفر، التسوية، الردم،
 // الخنادق، الدمك). القسم الرابع، ثانياً: "رش التربة أثناء الحفر والتحميل
 // والتفريغ" إلزامي، وارتفاع تفريغ التربة يخضع لنفس حدود A5 (1.5م اعتيادياً،
-// 1م أثناء الرياح ≥15 كم/س).
-// حقول الضوابط البوليانية لهذا النشاط (رش التربة، مسارات الشاحنات، الدك،
-// إلخ) لم تعد تُدخَل عبر الواجهة — تحوّلت إلى تنبيهات نصية عامة توعوية
-// (راجع GENERAL_ALERTS_AR في AddActivityModal/DustStep.tsx) بقرار صريح
-// بحذف تأثيرها من القرار التنظيمي بدل الاعتماد على قيم افتراضية/فارغة قد
-// تُخفي مخالفة فعلية. الحقل الرقمي الوحيد المتبقي كمدخل حقيقي (dropHeightM)
-// يبقى قاعدة فعلية لأنه قياس، لا تصريح "نعم/لا".
+// 1م أثناء الرياح ≥15 كم/س) — كلاهما الآن تنبيه توعوي فقط، بلا أي تأثير
+// على القرار.
+//
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم بعد فحص إضافي، تمديداً لنفس
+// معالجة SITE_TRAFFIC): كان dropHeightM (EARTHWORKS-DROP-002/003) مُستثنى
+// من قرار الحوكمة العام بحجة أنه "قياس رقمي، لا تصريح" — لكن فحصاً كشف أنه
+// بلا أي حقل إدخال في DustStep.tsx إطلاقاً (نفس فجوة SITE_TRAFFIC)، فأُلغي
+// الاستثناء وتوحَّدت المعاملة مع بقية ضوابط هذا النشاط.
 function earthworksRules(
-  activity: DustActivityComplianceProfile,
-  windBand: DustWindBand
+  _activity: DustActivityComplianceProfile,
+  _windBand: DustWindBand
 ): DustRuleHit[] {
-  const hits: DustRuleHit[] = [];
-
-  const dropHeightHighWindLimitM = DROP_HEIGHT_HIGH_WIND_LIMIT_M();
-  const dropHeightNormalLimitM = DROP_HEIGHT_NORMAL_LIMIT_M();
-  const dropHeight = activity.measurements.dropHeightM;
-  if (dropHeight !== null && dropHeight !== undefined) {
-    if (windBand !== 'BELOW_15' && dropHeight > dropHeightHighWindLimitM) {
-      hits.push(
-        ruleHit(
-          'EARTHWORKS-DROP-002',
-          'STOP_AFFECTED_ACTIVITY',
-          `ارتفاع تفريغ التربة (${dropHeight} م) يتجاوز الحد المسموح أثناء الرياح النشطة (${dropHeightHighWindLimitM} م)`,
-          `خفّض ارتفاع تفريغ التربة إلى ${dropHeightHighWindLimitM} م أو أقل طوال فترة الرياح النشطة`
-        )
-      );
-    } else if (dropHeight > dropHeightNormalLimitM) {
-      hits.push(
-        ruleHit(
-          'EARTHWORKS-DROP-003',
-          'STOP_AFFECTED_ACTIVITY',
-          `ارتفاع تفريغ التربة (${dropHeight} م) يتجاوز الحد الاعتيادي (${dropHeightNormalLimitM} م)`,
-          `خفّض ارتفاع تفريغ التربة إلى ${dropHeightNormalLimitM} م أو أقل`
-        )
-      );
-    }
-  }
-
-  return hits;
+  return [];
 }
 
 // 9.4 الهدم — بوابة الرياح (DEMO-WIND-STOP-001) وحد المساحة (DEMO-AREA-002)
@@ -483,7 +492,8 @@ function earthworksRules(
 // بنيوي حقيقي، راجع تعليقه في DustStep.tsx) وdemolitionActiveAreaM2 (قياس
 // رقمي)، وهما الحقلان الوحيدان الباقيان كمدخلات حقيقية لهذا النشاط. بقية
 // الضوابط (الرش/الشاشات/مدى المدفع/تغطية الكسارات/طريقة القطع/الضغط
-// الرملي) تحوّلت إلى تنبيهات نصية عامة — حُذف تأثيرها من القرار هنا.
+// الرملي) تظهر كتنبيهات نصية عامة فقط، بلا أي تأثير على القرار — قرار
+// حوكمة معتمَد صراحةً (راجع تعليق earthworksRules أعلاه للسياق الكامل).
 function demolitionRules(
   activity: DustActivityComplianceProfile,
   windBand: DustWindBand
@@ -575,7 +585,13 @@ function crusherRules(
         'CRUSHER-DISTANCE-200-002B',
         'ALLOW_WITH_CONTROLS',
         `تنبيه: مسافة الكسارة عن أقرب مستقبل حساس (${autoAny !== null && autoAny !== undefined ? 'محسوبة تلقائياً: ' : ''}${generalDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
-        `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`
+        `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`,
+        undefined,
+        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): تنبيه
+        // توعوي بحت (النص نفسه ينص صراحة "لا يوقف النشاط") — لا مخالفة
+        // تنظيمية بذاتها، راجع قرار إزالة قرارات الإيقاف/المنع المبنية على
+        // مسافة المستقبِلات الحساسة (commit 6f328f8).
+        'NONE'
       )
     );
   }
@@ -587,7 +603,9 @@ function crusherRules(
         'CRUSHER-DISTANCE-500-002C',
         'ALLOW_WITH_CONTROLS',
         `تنبيه: مسافة الكسارة عن سكني/مدارس/مستشفيات (${autoResidential !== null && autoResidential !== undefined ? 'محسوبة تلقائياً: ' : ''}${residentialDistance} م) أقل من الحد الأدنى (${crusherSensitiveReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
-        `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherSensitiveReceptorDistanceM} م عن أقرب منطقة سكنية/مدرسة/مستشفى، أو زيادة إجراءات التثبيط`
+        `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherSensitiveReceptorDistanceM} م عن أقرب منطقة سكنية/مدرسة/مستشفى، أو زيادة إجراءات التثبيط`,
+        undefined,
+        'NONE'
       )
     );
   }
@@ -607,14 +625,17 @@ function crusherRules(
         'MRQ-RECEPTOR-DOWNWIND-120',
         'ALLOW_WITH_CONTROLS',
         `تنبيه: مستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً باتجاه هبوب الرياح الحالي من الكسارة (على بُعد ${downwindDistance === Infinity ? '—' : downwindDistance + ' م'}). تنبيه توعوي فقط، لا يوقف النشاط`,
-        'يُفضَّل زيادة إجراءات التثبيط طالما استمر اتجاه الرياح نحو المستقبِل الحساس'
+        'يُفضَّل زيادة إجراءات التثبيط طالما استمر اتجاه الرياح نحو المستقبِل الحساس',
+        undefined,
+        'NONE'
       )
     );
   }
 
   // ضوابط الكسارة التفصيلية (تغطية الوحدات/الناقلات، أنظمة الرش والضباب،
-  // ارتفاع التفريغ، الشفط والفلترة) تحوّلت إلى تنبيهات نصية عامة — حُذف
-  // تأثيرها من القرار هنا. القواعد الباقية فعلياً: CRUSHER-CATEGORY-001
+  // ارتفاع التفريغ، الشفط والفلترة) تظهر كتنبيهات نصية عامة فقط، بلا أي
+  // تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق earthworksRules
+  // أعلاه للسياق الكامل). القواعد الباقية فعلياً: CRUSHER-CATEGORY-001
   // (تصنيف المشروع، لا مدخل مستخدم) ومسافتا المستقبِل الحساس أعلاه
   // (محسوبتان تلقائياً من موقع الكسارة على الخريطة، ما زال مدخلاً حقيقياً).
 
@@ -699,37 +720,40 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
         'BATCHING-DISTANCE-200',
         'ALLOW_WITH_CONTROLS',
         `تنبيه: مسافة محطة الخلط عن أقرب مستقبل حساس (محسوبة تلقائياً: ${batchingDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
-        `يُفضَّل نقل محطة الخلط لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)، أو زيادة إجراءات التثبيط`
+        `يُفضَّل نقل محطة الخلط لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبِل حساس (مدرسة/مستشفى/مسجد/منطقة سكنية)، أو زيادة إجراءات التثبيط`,
+        undefined,
+        'NONE'
       )
     );
   }
 
   // بقية ضوابط محطة الخلط (صيانة الفلاتر، فحص موانع التسرب، حظر الكنس
-  // الجاف/الهواء المضغوط، رطوبة النفايات) تحوّلت إلى تنبيهات نصية عامة —
-  // حُذف تأثيرها من القرار هنا. الحقول الخمسة السابقة + مسافة المستقبِل
-  // الحساس أعلاه تبقى مدخلات حقيقية.
+  // الجاف/الهواء المضغوط، رطوبة النفايات) تظهر كتنبيهات نصية عامة فقط، بلا
+  // أي تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق
+  // earthworksRules أعلاه للسياق الكامل). الحقول الخمسة السابقة + مسافة
+  // المستقبِل الحساس أعلاه تبقى مدخلات حقيقية.
 
   return hits;
 }
 
-// 9.6 قطع الأحجار — wetCuttingActive/hepaExtractionActive/cuttingResiduesCleaned
-// لم تعد تُدخَل عبر الواجهة (تحوّلت لتنبيه نصي عام) — حُذف تأثيرها من
-// القرار هنا. القاعدة الباقية فعلياً هي بوابة الرياح، المعتمدة على
-// isEnclosedOperation (سؤال بنيوي حقيقي ما زال مدخلاً) وبيانات الرياح
-// الحية، لا تصريح المستخدم عن طريقة القطع.
+// 9.6 قطع الأحجار — cuttingResiduesCleaned/wetCuttingActive/hepaExtractionActive
+// لا تُدخَل عبر الواجهة، تظهر كتنبيه نصي عام فقط، بلا أي تأثير على القرار —
+// قرار حوكمة معتمَد صراحةً (راجع تعليق earthworksRules أعلاه للسياق الكامل).
 //
-// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قطع الأحجار الخارجي لا يتبع
-// تسلسل الملحق أ"): كانت STONECUT-WIND-STOP-003 تُطلِق MANDATORY_STOP فوراً
-// عند FROM_15_TO_25 (15-25 كم/س) — نفس شدة تجاوز 25 تماماً. تسلسل الملحق أ
-// الحاكم لكل الأنشطة (باستثناء الهدم، الذي له استثناء موثَّق صراحة يوقف عند
-// 15 كم/س، ولا علاقة له بهذا الإصلاح — DEMO-WIND-STOP-001 منفصل تماماً
-// بثابته الخاص WIND_GATE_ENHANCED_MIN_KMH ورمز قاعدة مختلف) هو: 15-25 كم/س
-// تثبيط معزَّز (ALLOW_WITH_CONTROLS)، فوق 25 كم/س فقط إيقاف فعلي
-// (STOP_AFFECTED_ACTIVITY) — وقطع الأحجار مذكور صراحة ضمن الأنشطة التي
-// تتوقف فوق 25، لا عند 15. الإصلاح يفصّل النطاقين بدل معاملتهما معاملة
-// واحدة؛ STONE_CUTTING_WIND_STOP_KMH (25 افتراضياً) يبقى عتبة الإيقاف
-// الفعلي، وWIND_GATE_ENHANCED_MIN_KMH (15) يبقى عتبة بداية التثبيط المعزَّز
-// (نفس الثابت العام المستخدَم لتصنيف windBand أصلاً).
+// خطأ مكتشَف ومُصلَح مرتين (مراجعة كود خارجي، الملاحظة #8 المُعاد فتحها
+// مرتين): المحاولة الأولى استثنت قطع الأحجار من قرار الحوكمة العام
+// (STONECUT-DUST-CONTROL-006، MANDATORY_STOP فعلي) بحجة أن المرجع التنظيمي
+// يصيغ شرط الرش المائي/HEPA بحسم إلزامي غير مسبوق. لكن التطبيق كشف فجوة
+// حقيقية: القاعدة تعتمد حصراً على wetCuttingActive/hepaExtractionActive،
+// وكلاهما كان بلا أي checkbox في DustStep.tsx (نفس فجوة SITE_TRAFFIC
+// المكتشفة لاحقاً) — فكل نشاط قطع أحجار مكشوف كان يُوقَف حتماً بصرف النظر
+// عن الواقع الفعلي. أُضيف checkbox فعلي لسد الفجوة، لكن المستخدم قرر بعدها
+// صراحةً ("لا نريدها تدخل في الايقاف احذف المدخلات و حولها تنبيهات")
+// توحيد المعاملة مع بقية التسع أنشطة نهائياً — لا استثناء لقطع الأحجار
+// بعد الآن. الـcheckboxان حُذفا من DustStep.tsx (راجع GENERAL_ALERTS_AR
+// هناك للنص التوعوي البديل)، وREGULATORY_ACTIVITY_FIELDS_DEFAULTS يبقي
+// الحقلين معرَّفين (توافقاً مع صفوف قديمة محفوظة قد تحمل true فعلياً) لكن
+// بلا أي قراءة لهما هنا.
 function stoneCuttingRules(
   activity: DustActivityComplianceProfile,
   windBand: DustWindBand
@@ -737,6 +761,19 @@ function stoneCuttingRules(
   const hits: DustRuleHit[] = [];
 
   const isExposed = !activity.isEnclosedOperation;
+
+  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قطع الأحجار الخارجي لا يتبع
+  // تسلسل الملحق أ"): كانت STONECUT-WIND-STOP-003 تُطلِق MANDATORY_STOP فوراً
+  // عند FROM_15_TO_25 (15-25 كم/س) — نفس شدة تجاوز 25 تماماً. تسلسل الملحق أ
+  // الحاكم لكل الأنشطة (باستثناء الهدم، الذي له استثناء موثَّق صراحة يوقف عند
+  // 15 كم/س، ولا علاقة له بهذا الإصلاح — DEMO-WIND-STOP-001 منفصل تماماً
+  // بثابته الخاص WIND_GATE_ENHANCED_MIN_KMH ورمز قاعدة مختلف) هو: 15-25 كم/س
+  // تثبيط معزَّز (ALLOW_WITH_CONTROLS)، فوق 25 كم/س فقط إيقاف فعلي
+  // (STOP_AFFECTED_ACTIVITY) — وقطع الأحجار مذكور صراحة ضمن الأنشطة التي
+  // تتوقف فوق 25، لا عند 15. الإصلاح يفصّل النطاقين بدل معاملتهما معاملة
+  // واحدة؛ STONE_CUTTING_WIND_STOP_KMH (25 افتراضياً) يبقى عتبة الإيقاف
+  // الفعلي، وWIND_GATE_ENHANCED_MIN_KMH (15) يبقى عتبة بداية التثبيط المعزَّز
+  // (نفس الثابت العام المستخدَم لتصنيف windBand أصلاً).
   if (isExposed && windBand === 'FROM_15_TO_25') {
     const windGateEnhancedMinKmh = getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH;
     hits.push(
@@ -806,7 +843,7 @@ function entryExitRules(
       hits.push(ruleHit('ENTRY-WASHCYCLE-009', 'RESTRICT_ACTIVITY', `مدة دورة غسيل الإطارات أقل من ${wheelWashCycleMinSec} ثانية لكل محور`, `اضبط مدة دورة الغسيل على ${wheelWashCycleMinSec} ثانية على الأقل لكل محور`));
     }
     if (activity.controls.washWaterReused === false) {
-      hits.push(ruleHit('ENTRY-WASHREUSE-010', 'ALLOW_WITH_CONTROLS', 'يُفضَّل إعادة استخدام مياه غسيل الإطارات', 'أضف نظام إعادة استخدام لمياه غسيل الإطارات'));
+      hits.push(ruleHit('ENTRY-WASHREUSE-010', 'ALLOW_WITH_CONTROLS', 'يُفضَّل إعادة استخدام مياه غسيل الإطارات', 'أضف نظام إعادة استخدام لمياه غسيل الإطارات', undefined, 'NONE'));
     }
   }
 
@@ -834,62 +871,38 @@ function entryExitRules(
   return hits;
 }
 
-// 9.8 الطرق والنقل (A2 — النقل داخل الموقع والطرق الخدمية) — ضوابط الرش/
-// اللافتات/الكنس/غسيل الإطارات تحوّلت إلى تنبيهات نصية عامة — حُذف تأثيرها
-// من القرار. الحقول الرقمية العتبية الثلاثة (سرعة الطرق، زمن تنظيف
-// الانسكاب) تبقى قواعد فعلية لأنها قياسات، لا تصريحات. تغطية الحمولة
-// (loadCovered) استثناء متعمَّد من "التحوّل لتنبيه نصي": منع خروج شاحنة
-// غير مغطاة الحمولة قاعدة إلزامية صريحة في الدليل التنظيمي (لا مجرد إجراء
-// موصى به)، فتبقى قاعدة فعلية تؤثر على القرار.
+// 9.8 الطرق والنقل (A2 — النقل داخل الموقع والطرق الخدمية) — كل ضوابط هذا
+// النشاط (تغطية الحمولة، سرعة الطرق المسفلتة/غير المسفلتة، زمن تنظيف
+// الانسكاب، الرش/اللافتات/الكنس/غسيل الإطارات) أصبحت تنبيهات نصية عامة
+// فقط، بلا أي تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق
+// earthworksRules أعلاه للسياق الكامل).
+//
+// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "بإستثناء الأحجار أريد البقية
+// تكون تنبيهات توعوية"): TRAFFIC-LOAD-004/TRAFFIC-UNPAVED-002/TRAFFIC-
+// PAVED-003/TRAFFIC-SPILL-005 كانت الاستثناء الوحيد المتبقي من قرار
+// الحوكمة العام (الملاحظة #8) — TRAFFIC-LOAD-004 تحديداً كانت مُستثناة
+// عمداً بحجة "قاعدة إلزامية صريحة في الدليل التنظيمي"، والثلاثة الأخرى
+// كانت "قياسات رقمية، لا تصريحات". لكن فحصاً لاحقاً كشف أن حقولها الأربعة
+// (loadCovered/unpavedSpeedKmh/pavedSpeedKmh/spillCleanupMinutes) لم تكن
+// موجودة في DustStep.tsx كحقول إدخال فعلية أصلاً (فقط في constants.ts/
+// index.tsx كقيم افتراضية ثابتة لا تُعرَض للمستخدم أبداً) — نفس فجوة
+// STONECUT-DUST-CONTROL-006 المُكتشَفة سابقاً، لكن دون حسم صريح لصالح
+// "قاعدة فعلية" هنا. المستخدم أُبلغ بالتناقض (الاستثناء التوثيقي مقابل
+// غياب أي حقل إدخال) واختار توحيد المعاملة مع بقية النشاط: تنبيه فقط.
 function siteTrafficRules(
-  activity: DustActivityComplianceProfile,
+  _activity: DustActivityComplianceProfile,
   _riskClass: DustRiskClass
 ): DustRuleHit[] {
-  const hits: DustRuleHit[] = [];
-
-  if (activity.controls.loadCovered === false) {
-    hits.push(
-      ruleHit(
-        'TRAFFIC-LOAD-004',
-        'STOP_AFFECTED_ACTIVITY',
-        'حمولة نقل التربة/المواد غير مغطاة — يُمنع خروج أي شاحنة بحمولة مكشوفة من الموقع',
-        'أوقف خروج الشاحنات حتى يتم تغطية الحمولة بالكامل، والتزم بتغطية كل حمولة لاحقة قبل الخروج'
-      )
-    );
-  }
-
-  const unpaved = activity.measurements.unpavedSpeedKmh;
-  const unpavedSpeedLimitKmh = UNPAVED_SPEED_LIMIT_KMH();
-  if (unpaved !== null && unpaved !== undefined && unpaved > unpavedSpeedLimitKmh) {
-    hits.push(ruleHit('TRAFFIC-UNPAVED-002', 'RESTRICT_ACTIVITY', `سرعة الطرق غير المسفلتة (${unpaved} كم/س) تتجاوز الحد (${unpavedSpeedLimitKmh} كم/س)`, `اخفض السرعة على الطرق غير المسفلتة إلى ${unpavedSpeedLimitKmh} كم/س أو أقل`));
-  }
-  const paved = activity.measurements.pavedSpeedKmh;
-  const pavedSpeedLimitKmh = PAVED_SPEED_LIMIT_KMH();
-  if (paved !== null && paved !== undefined && paved > pavedSpeedLimitKmh) {
-    hits.push(ruleHit('TRAFFIC-PAVED-003', 'RESTRICT_ACTIVITY', `سرعة الطرق المسفلتة (${paved} كم/س) تتجاوز الحد (${pavedSpeedLimitKmh} كم/س)`, `اخفض السرعة على الطرق المسفلتة إلى ${pavedSpeedLimitKmh} كم/س أو أقل`));
-  }
-  const spillMin = activity.measurements.spillCleanupMinutes;
-  const spillCleanupLimitMin = SPILL_CLEANUP_LIMIT_MIN();
-  if (spillMin !== null && spillMin !== undefined && spillMin > spillCleanupLimitMin) {
-    hits.push(ruleHit('TRAFFIC-SPILL-005', 'RESTRICT_ACTIVITY', `تنظيف المواد المنسكبة تجاوز الحد الزمني (${spillCleanupLimitMin} دقيقة)`, `قلّص زمن تنظيف المواد المنسكبة إلى ${spillCleanupLimitMin} دقيقة أو أقل`));
-  }
-
-  return hits;
+  return [];
 }
 
-// نقل مخلفات الهدم والبناء — ضوابط الرش/التخزين/التغطية/السعة تحوّلت إلى
-// تنبيهات نصية عامة — حُذف تأثيرها من القرار. ارتفاع أكوام المخلفات يبقى
-// قاعدة فعلية لأنه قياس رقمي، لا تصريح.
-function cdWasteTransportRules(activity: DustActivityComplianceProfile): DustRuleHit[] {
-  const hits: DustRuleHit[] = [];
-
-  const pileHeight = activity.measurements.debrisPileHeightM;
-  const debrisPileMaxHeightM = DEBRIS_PILE_MAX_HEIGHT_M();
-  if (pileHeight !== null && pileHeight !== undefined && pileHeight > debrisPileMaxHeightM) {
-    hits.push(ruleHit('CDWASTE-PILEHEIGHT-003', 'RESTRICT_ACTIVITY', `ارتفاع أكوام المخلفات (${pileHeight} م) يتجاوز الحد (${debrisPileMaxHeightM} م)`, `اخفض ارتفاع أكوام المخلفات إلى ${debrisPileMaxHeightM} م أو أقل`));
-  }
-
-  return hits;
+// نقل مخلفات الهدم والبناء — كل ضوابط هذا النشاط (الرش/التخزين/التغطية/
+// السعة، وارتفاع أكوام المخلفات) أصبحت تنبيهات نصية عامة فقط، بلا أي
+// تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق earthworksRules
+// أعلاه للسياق الكامل، بما فيه سبب إلغاء استثناء debrisPileHeightM لاحقاً
+// — طلب صريح من المستخدم، نفس فجوة dropHeightM: بلا أي حقل إدخال فعلي).
+function cdWasteTransportRules(_activity: DustActivityComplianceProfile): DustRuleHit[] {
+  return [];
 }
 
 // 9.9 الأكوام والمناولة
@@ -899,12 +912,13 @@ function stockpileRules(
   activity: DustActivityComplianceProfile
 ): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
-  const stockpileLimit = riskClass === 'CATEGORY_I_LOW' ? 1 : 3;
 
-  const height = activity.measurements.stockpileHeightM;
-  if (height !== null && height !== undefined && height > stockpileLimit) {
-    hits.push(ruleHit('STOCKPILE-HEIGHT-001', 'RESTRICT_ACTIVITY', `ارتفاع الأكوام (${height} م) يتجاوز الحد (${stockpileLimit} م) لفئة المشروع`, `اخفض ارتفاع الأكوام إلى ${stockpileLimit} م أو أقل`));
-  }
+  // STOCKPILE-HEIGHT-001 حُذفت (طلب صريح من المستخدم — نفس معالجة
+  // dropHeightM أدناه: stockpileHeightM بلا أي حقل إدخال في DustStep.tsx
+  // إطلاقاً، فأُلغي استثناؤها من قرار الحوكمة العام). riskClass لم يعد
+  // يُستخدَم داخل هذه الدالة بعد الحذف — يبقى في التوقيع للتوافق مع
+  // applyActivityRules فقط.
+  void riskClass;
 
   // المسافة المحسوبة تلقائياً من إحداثيات موقع الأكوام + جدول
   // sensitive_receptors (عند توفرها) لها الأولوية على الحقل اليدوي — لا
@@ -930,23 +944,18 @@ function stockpileRules(
         'STOCKPILE-DISTANCE-002',
         'ALLOW_WITH_CONTROLS',
         `تنبيه: مسافة الأكوام/محطة الخلط من المستقبِل الحساس (${activity.measurements.stockpileDistanceToNearestReceptorAutoM !== null && activity.measurements.stockpileDistanceToNearestReceptorAutoM !== undefined ? 'محسوبة تلقائياً: ' : ''}${distance} م) أقل من ${stockpileSensitiveReceptorDistanceM} م — تنبيه توعوي فقط، لا يوقف النشاط`,
-        `يُفضَّل نقل الأكوام/محطة الخلط إلى مسافة لا تقل عن ${stockpileSensitiveReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`
+        `يُفضَّل نقل الأكوام/محطة الخلط إلى مسافة لا تقل عن ${stockpileSensitiveReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`,
+        undefined,
+        'NONE'
       )
     );
   }
 
-  // ضوابط التغطية/الرش/الشكل/الحواجز/السيور تحوّلت إلى تنبيهات نصية عامة —
-  // حُذف تأثيرها من القرار. ارتفاع التفريغ يبقى قاعدة فعلية (قياس رقمي).
-  const dropHeight = activity.measurements.dropHeightM;
-  const dropHeightHighWindLimitM = DROP_HEIGHT_HIGH_WIND_LIMIT_M();
-  const dropHeightNormalLimitM = DROP_HEIGHT_NORMAL_LIMIT_M();
-  if (dropHeight !== null && dropHeight !== undefined) {
-    if (windBand !== 'BELOW_15' && dropHeight > dropHeightHighWindLimitM) {
-      hits.push(ruleHit('STOCKPILE-DROP-004', 'STOP_AFFECTED_ACTIVITY', `ارتفاع تفريغ المواد (${dropHeight} م) يتجاوز الحد المسموح أثناء الرياح النشطة (${dropHeightHighWindLimitM} م)`, `خفّض ارتفاع تفريغ المواد إلى ${dropHeightHighWindLimitM} م أو أقل طوال فترة الرياح النشطة`));
-    } else if (dropHeight > dropHeightNormalLimitM) {
-      hits.push(ruleHit('STOCKPILE-DROP-005', 'STOP_AFFECTED_ACTIVITY', `ارتفاع تفريغ المواد (${dropHeight} م) يتجاوز الحد الاعتيادي (${dropHeightNormalLimitM} م)`, `خفّض ارتفاع تفريغ المواد إلى ${dropHeightNormalLimitM} م أو أقل`));
-    }
-  }
+  // ضوابط التغطية/الرش/الشكل/الحواجز/السيور، وارتفاع التفريغ
+  // (STOCKPILE-DROP-004/005) تظهر كلها كتنبيهات نصية عامة فقط، بلا أي
+  // تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق earthworksRules
+  // أعلاه للسياق الكامل، بما فيه سبب إلغاء استثناء dropHeightM لاحقاً).
+  void windBand;
 
   return hits;
 }
@@ -1002,8 +1011,10 @@ function idleSurfaceRules(
 
   // exposedAreaCurrentlyIdle/stockpileAreaExists/suppressantUsedAtStockpileArea/
   // windBarriersNearStockpiles/constructionScheduledImmediatelyAfterPrep
-  // تحوّلت إلى تنبيهات نصية عامة — حُذف تأثيرها من القرار. idleDays/
-  // idleSurfaceStabilized/idleSurfaceCoverIntact أعلاه تبقى مدخلات حقيقية.
+  // تظهر كتنبيهات نصية عامة فقط، بلا أي تأثير على القرار — قرار حوكمة
+  // معتمَد صراحةً (راجع تعليق earthworksRules أعلاه للسياق الكامل).
+  // idleDays/idleSurfaceStabilized/idleSurfaceCoverIntact أعلاه تبقى
+  // مدخلات حقيقية.
 
   return hits;
 }
@@ -1025,6 +1036,12 @@ export function applyActivityRules(
       return batchingPlantRules(activity);
     case 'STONE_CUTTING':
       return stoneCuttingRules(activity, windBand);
+    // ENTRY_EXIT: قرار حذف نهائي مؤجَّل صراحةً (المستخدم: "لا ناجل الحذف
+    // الى وقت لاحق") — entryExitRules() كود ميت عملياً بالفعل (ENTRY_EXIT
+    // محذوف من REGULATORY_ACTIVITY_OPTIONS في AddActivityModal/constants.ts
+    // فلا يمكن للمستخدم إنشاء هذا النوع من الواجهة)، فإبقاء هذا الفرع هنا
+    // لا يؤثر على أي قرار فعلي — لا تُحذف هذه الحالة قبل تعليمات لاحقة
+    // صريحة بإتمام الحذف.
     case 'ENTRY_EXIT':
       return entryExitRules(activity, windBand);
     case 'SITE_TRAFFIC':

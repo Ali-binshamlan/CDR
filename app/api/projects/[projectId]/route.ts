@@ -72,7 +72,7 @@ function riskWeightFromColor(color: string | undefined | null): number {
 // مع دمج aei تماماً كما تفعل الدالة نفسها) بدل الصف المخزَّن، فيعكسان دائماً
 // نفس اللحظة بالضبط. الصف المخزَّن يبقى fallback فقط حين لا توجد نتيجة محرك
 // حية لهذا النشاط في هذا الطلب (نادر: نشاط فشل حسابه هذه الدورة تحديداً).
-function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel: string; riskWeight: number; reasonText?: string } {
+function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean } {
   const dviWorst = engineResult.windowEval.worst;
   // startIso ضروري لحساب mode الصحيح (PLANNING لنشاط مستقبلي بعيد) — راجع
   // تعليق computeUnifiedActivityDecision في dustEvaluation.ts للسبب الكامل.
@@ -81,14 +81,16 @@ function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel:
     decisionLabel: decision.decisionLabelAr,
     riskWeight: riskWeightFromColor(decision.level),
     reasonText: decision.shortReason || undefined,
+    isLiveComputed: true,
   };
 }
 
-function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { decisionLabel: string; riskWeight: number; reasonText?: string } {
+function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean } {
   return {
     decisionLabel: storedDecision.decision_label_ar,
     riskWeight: riskWeightFromColor(storedDecision.level),
     reasonText: storedDecision.short_reason_ar || undefined,
+    isLiveComputed: false,
   };
 }
 
@@ -111,7 +113,17 @@ interface RecentActivityItem {
   activityGroupId: string;
   activityTitle: string;
   kinds: Array<'dust'>;
-  summaries: { kind: 'dust'; label: string; decisionLabel: string; riskWeight: number; reasonText?: string }[];
+  // isLiveComputed: راجع تعليق summaryFromLiveDecision الكامل أعلاه — true
+  // يعني أن هذا الملخص محسوب حياً ضمن نفس طلب GET هذا (لم يُكتب في
+  // final_decisions بعد بالضرورة؛ POST /evaluate المتوازي قد لا يكون اكتمل
+  // أو نجح بعد). false يعني أنه من صف final_decisions مخزَّن فعلياً
+  // (fallback فقط، لا نتيجة محرك حية لهذا الطلب). خطأ معماري مكتشَف ومُصلَح
+  // (مراجعة كود خارجي — P1، الملاحظة #13: "الواجهة ما زالت تستطيع عرض قرار
+  // حي لم يُحفظ بعد في Immutable Audit"): هذا الحقل يسمح للواجهة بتمييز
+  // "معاينة حية" (Live Preview) عن "قرار رسمي محفوظ" بدل عرض كليهما بنفس
+  // المظهر دون تفريق — بلا تغيير في زمن الاستجابة (لا إعادة هيكلة GET/
+  // evaluate، فقط شفافية إضافية حول مصدر كل قيمة معروضة).
+  summaries: { kind: 'dust'; label: string; decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean }[];
   decisionTargets: DecisionTarget[];
   mandatoryStop: boolean;
   isFutureActivity: boolean;
@@ -176,6 +188,7 @@ export function buildRecentActivities(
     decisionLabel: string;
     riskWeight: number;
     reasonText?: string;
+    isLiveComputed: boolean;
   };
 
   const groups = new Map<string, Acc>();
@@ -247,7 +260,7 @@ export function buildRecentActivities(
     // dustEvaluation.ts للسبب (عزل المشاريع، القسم 12.2).
     const storedDecision = finalDecisionsByGroup.get(activityDecisionKey(projectId, groupId));
 
-    let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string };
+    let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean };
     if (engineResult) {
       summaryFields = summaryFromLiveDecision(engineResult);
     } else if (storedDecision) {
@@ -258,6 +271,7 @@ export function buildRecentActivities(
         decisionLabel: 'بانتظار التقييم',
         riskWeight: 0,
         reasonText: 'لم يصدر قرار موثّق لهذا المؤشر بعد',
+        isLiveComputed: false,
       };
     }
 

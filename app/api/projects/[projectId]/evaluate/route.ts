@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
-import { evaluateProject } from '@/app/lib/evaluateProject';
+import { evaluateProject, enqueueEvaluationRetryJob } from '@/app/lib/evaluateProject';
 
 // يكتب تقييمات غبار/امتثال جديدة لمشروع (dust_evaluations، current_dust_decisions،
 // dust_compliance_evaluations، current_dust_compliance_decisions — بما فيها
@@ -56,6 +56,13 @@ export async function POST(
       );
     }
     if (!result.success && result.failedActivityIds?.length) {
+      // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #13):
+      // فشل حفظ جزئي هنا لا يُعاد التقاطه تلقائياً بأي ضمان صريح — الواجهة
+      // fire-and-forget لا تنتظر هذه الاستجابة أصلاً (راجع تعليق أعلى
+      // الملف). enqueueEvaluationRetryJob يضمن محاولة لاحقة مضمونة عبر
+      // scheduler-worker بدل الاعتماد على دورة scheduler-tick العامة القادمة
+      // فقط. فشل الإدراج نفسه لا يُسقط الاستجابة (raced بأمان داخل الدالة).
+      await enqueueEvaluationRetryJob(projectId, 'USER_REQUEST', result.error ?? 'فشل تقييم جزئي غير محدَّد');
       return NextResponse.json(
         {
           success: false,
@@ -68,6 +75,7 @@ export async function POST(
       );
     }
     if (!result.success) {
+      await enqueueEvaluationRetryJob(projectId, 'USER_REQUEST', result.error ?? 'فشل تقييم غير محدَّد');
       return NextResponse.json({ error: safeErrorResponse(new Error(result.error), 'project evaluate/persist failed') }, { status: 500 });
     }
 

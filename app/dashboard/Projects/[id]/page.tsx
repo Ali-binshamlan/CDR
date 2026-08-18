@@ -180,23 +180,30 @@ export default function ProjectDetailsPage({
     if (!id) return;
 
     let cancelled = false;
-    // خطأ أداء مكتشَف: الدخول الأول لهذه الصفحة كان يُطلق POST /evaluate
-    // (ثقيل جداً — يعيد حساب DVI+Compliance+FinalDecision ويكتب 5 جداول
-    // عبر RPC لكل نشاط) بالتوازي مع GET (ثقيل بذاته أيضاً، ويبني نفس
-    // dustResults/compliance من الصفر لعرض البطاقات). كلا الطلبين يحسبان
-    // نفس الشيء تقريباً بشكل مستقل ومتزامن، فيُضاعف زمن التحميل الأول بلا
-    // فائدة فعلية: GET يقرأ current_dust_decisions/current_dust_compliance_
-    // decisions/final_decisions الفعلية من القاعدة وقت الطلب على أي حال،
-    // وscheduler-tick الجديد (كل دقيقتين، راجع app/api/cron/scheduler-tick/
-    // route.ts) يكتب قرارات جديدة في الخلفية باستمرار بصرف النظر عن هذه
-    // الصفحة. skipEvaluate=true هنا يكتفي بـGET وحده للتحميل الأول (أسرع
-    // بمقدار الحساب المكرر) — evaluate يبقى يعمل عند الطلب اليدوي الفعلي
-    // (handleEdited بعد تعديل نشاط، handleCountdownElapsed بعد انتهاء
-    // مهلة عدّاد PM10) حيث تغيّر حقيقي في المدخلات يستدعي إعادة حساب فورية.
+    // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #13: "الواجهة
+    // ما زالت تستطيع عرض قرار حي لم يُحفظ بعد في Immutable Audit — المعمارية
+    // المطلوبة: Compute → Persist atomically → UI reads official result"،
+    // طلب صريح لاحق من المستخدم: "أريد أن تحل كامله"): كان التحميل الأول
+    // skipEvaluate=true (GET وحده، يعرض قراراً محسوباً حياً قد لا يكون
+    // مطابقاً بعد لأي صف محفوظ فعلياً في final_decisions — راجع
+    // summaryFromLiveDecision في route.ts) — أول ما يراه المستخدم لم يكن
+    // مضموناً أنه القرار الرسمي المحفوظ. الإصلاح: waitForEvaluate=true هنا
+    // (ينتظر POST /evaluate فعلياً — الحفظ الذري الحقيقي — قبل GET) للتحميل
+    // الأول تحديداً فقط، فيصبح أول عرض دائماً القرار المحفوظ فعلاً، لا معاينة
+    // حية سابقة له.
+    //
+    // مقايضة أداء مقصودة وواعية (لا مُغفَلة): هذا يُعيد بالضبط نفس التأخير
+    // (حساب مضاعف: evaluate ثم GET بالتسلسل بدل التوازي) الذي وُثِّق سابقاً
+    // كخطأ أداء — لكنه الآن مقصور على التحميل الأول فقط (مرة واحدة لكل زيارة
+    // صفحة)، لا على الـpolling الدوري أدناه (يبقى skipEvaluate=true بلا أي
+    // تغيير — حادثة الإنتاج الموثَّقة في DASHBOARD_POLL_INTERVAL_MS أعلاه
+    // تحديداً حذّرت من تكرار evaluate على كل استدعاء متكرر، لا على استدعاء
+    // واحد لمرة التحميل). Realtime (final_decisions INSERT، أدناه) يبقى
+    // المسار السريع لأي تحديث لاحق بعد التحميل الأول.
     //
     // جدولة عبر microtask بدل استدعاء fetchDashboardData مباشرة من جسم
     // الـEffect — نفس السبب الموثَّق أعلى الدالة (تعديل حالة متزامن داخل Effect).
-    void Promise.resolve().then(() => { if (!cancelled) fetchDashboardData(false, false, true); });
+    void Promise.resolve().then(() => { if (!cancelled) fetchDashboardData(false, true, false); });
 
     const intervalId = window.setInterval(() => {
       if (!cancelled) fetchDashboardData(true, false, true);
@@ -348,7 +355,13 @@ export default function ProjectDetailsPage({
   // — الزمن الجديد يغيّر windowStartIso/windowEndIso/dustResults المشتقة
   // من الخادم، بخلاف الحذف الذي يكفيه إزالة العنصر محلياً.
   const handleEdited = () => {
-    fetchDashboardData();
+    // خطأ مكتشَف ومُصلَح أثناء إصلاح الملاحظة #13 (راجع تعليق التحميل الأول
+    // أعلاه): كان هذا الاستدعاء بلا معاملات — waitForEvaluate يُهمَل ضمنياً
+    // (افتراضي false)، فلا ينتظر فعلياً حفظ إعادة الحساب بعد تعديل نشاط قبل
+    // القراءة، رغم أن التعليق القديم في هذا الملف كان يفترض خطأً أنه ينتظر.
+    // نفس مبدأ التحميل الأول: تغيّر حقيقي في المدخلات يستحق ضمان أن أول عرض
+    // بعده هو القرار المحفوظ فعلاً، لا معاينة حية سابقة له.
+    fetchDashboardData(false, true, false);
   };
 
   return (

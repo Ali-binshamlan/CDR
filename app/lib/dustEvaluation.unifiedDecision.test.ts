@@ -370,7 +370,14 @@ describe('computeUnifiedActivityDecision — دمج aei في العنوان ال
   // "لا تصلح" → أصفر (لا أخضر) بتصميم decideFinal، لكن الأهم: aei.color=
   // BLACK لا يجوز أن يستبدل هذا بلون أسود/mandatoryStop=true إطلاقاً.
   it('mode=PLANNING (startIso بعيد) + aei.color=BLACK → aei لا يُستبدَل به إطلاقاً، لا mandatoryStop ولا لون أسود', () => {
-    const compliance = complianceWith('MANDATORY_STOP', 'إيقاف إلزامي نظامي', 'PM10 تجاوز حد المخالفة');
+    const compliance = {
+      ...complianceWith('MANDATORY_STOP', 'إيقاف إلزامي نظامي', 'PM10 تجاوز حد المخالفة'),
+      // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11):
+      // decideFinal لم يعد يشتق "هل الأجواء المتوقعة مناسبة؟" من dvi.
+      // decisionCategory بنفسه — يقرأ compliance.planningSuitability الجاهزة
+      // (محسوبة في dust-compliance-engine). راجع تعليقها الكامل في types.ts.
+      planningSuitability: { isFavorable: false, reasonAr: 'الأجواء المتوقعة (رياح/رؤية) لا تصلح للنشاط.' },
+    } as unknown as DustComplianceResult;
     const dvi = baseDviWorst({
       level: 'BLACK',
       decisionCategory: 'MANDATORY_STOP',
