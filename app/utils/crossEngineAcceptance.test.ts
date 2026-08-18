@@ -288,7 +288,7 @@ describe('Cross-Engine Invariant — PM10 وحده عبر الزمن', () => {
 });
 
 describe('Cross-Engine Invariant — PM10 معلَّق + رياح 15-25 كم/س متزامنين', () => {
-  it('PM10=350 @60s + wind=20 → MONITOR، القاعدة المعلَّقة لـPM10 تبقى ظاهرة في triggeredRules، regulatory=COMPLIANT (تعادل مع قاعدة رياح مؤكَّدة، لا معلَّقة)', () => {
+  it('PM10=350 @60s + wind=20 → MONITOR، القاعدة المعلَّقة لـPM10 تبقى ظاهرة في triggeredRules، regulatory=PENDING_CONFIRMATION (لا يجوز إسقاطها لـCOMPLIANT بمجرد تعادل رياح مؤكَّدة بلا مخالفة)', () => {
     const { compliance, final } = runFullChain({ pm10UgM3: 350, pm10AgeSeconds: 60, windSpeedKmh: 20 });
 
     expect(final.operationalDecision).toBe('MONITOR');
@@ -296,21 +296,23 @@ describe('Cross-Engine Invariant — PM10 معلَّق + رياح 15-25 كم/س 
     // يمكن أن يختفي إذا ظهرت قاعدة أخرى بنفس الشدة"): قاعدة الرياح
     // (GATE-WIND-15-25-ENHANCED-005، غير معلَّقة) تتعادل شدةً مع قاعدة PM10
     // المعلَّقة (MRQ-PM10-BLACK-PENDING-104) — كلتاهما ALLOW_WITH_CONTROLS.
-    // يجب أن تظهرا معاً في triggeredRules، لا أن تُخفي إحداهما الأخرى — هذا
-    // ما أصلحه الإصلاح الموثَّق فعلياً.
+    // يجب أن تظهرا معاً في triggeredRules، لا أن تُخفي إحداهما الأخرى.
     const codes = compliance.triggeredRules.map((h) => h.code);
     expect(codes).toContain('MRQ-PM10-BLACK-PENDING-104');
     expect(codes).toContain('GATE-WIND-15-25-ENHANCED-005');
-    // تصحيح توقُّع (تحقَّق صراحةً مع المستخدم بعد فشل هذا الاختبار مبدئياً):
-    // pendingConfirmation العام (topHits.every(isPending)) يشترط أن كل
-    // القواعد المتصدرة معلَّقة معاً — عند التعادل أعلاه، قاعدة الرياح مؤكَّدة
-    // حاضرة (ليست "بانتظار" شيء كعدّاد PM10)، فـevery() يفشل، فالقرار الفائز
-    // ليس معلَّقاً بالكامل → regulatoryFinding يسقط إلى COMPLIANT بصرف النظر.
-    // هذا سلوك مقصود موثَّق (راجع تعليق engine.ts أعلى pendingConfirmation
-    // وحول استبعاد displayedRuleHits) — لا يجوز خلط حقيقة رياح مؤكَّدة حاضرة
-    // مع حالة PM10 غير المؤكَّدة تحت تسمية "معلَّق" واحدة.
+    // خطأ ثانٍ مكتشَف ومُصلَح (مراجعة كود خارجي — P0 مُعاد فتحه: "PM10
+    // المعلَّق يمكن أن يصبح COMPLIANT"): compliance.pendingConfirmation
+    // الخام (topHits.every(isPending)) تصبح false هنا بالفعل (تعادل مع قاعدة
+    // رياح غير معلَّقة) — هذا صحيح بذاته (القرار التشغيلي الفائز ليس معلَّقاً
+    // بالكامل). لكن regulatoryFinding النهائي لا يجوز أن يسقط إلى COMPLIANT
+    // لمجرد ذلك التعادل: قاعدة الرياح لا تحمل أي دلالة تنظيمية خاصة بها
+    // (regulatoryFinding='NONE')، فلا يصح أن تُسقط حالة "بانتظار تأكيد PM10"
+    // النشطة فعلياً إلى "متوافق تماماً". hasPendingRegulatoryFinding
+    // (يفحص كل ruleHits لوجود أي PENDING، بمعزل عن topHits) يبقى true هنا،
+    // فـfinal-decision-engine يبقي PENDING_CONFIRMATION.
     expect(compliance.pendingConfirmation).toBe(false);
-    expect(final.regulatoryFinding).toBe('COMPLIANT');
+    expect(compliance.hasPendingRegulatoryFinding).toBe(true);
+    expect(final.regulatoryFinding).toBe('PENDING_CONFIRMATION');
   });
 });
 
@@ -426,6 +428,20 @@ describe('Cross-Engine Invariant — قطع الأحجار: بوابة الري�
     expect(compliance.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(true);
     expect(compliance.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
     expect(final.mandatoryStop).toBe(true);
+  });
+
+  it('wind=20 (ضمن نطاق التثبيط المعزَّز 15-25) → MONITOR تشغيلياً، regulatory=COMPLIANT (لا مخالفة زائفة)', () => {
+    const { compliance, final } = stoneCuttingChain(20);
+    expect(compliance.triggeredRules.some((h) => h.code === 'STONECUT-WIND-ENHANCED-004')).toBe(true);
+    expect(compliance.decisionCategory).toBe('ALLOW_WITH_CONTROLS');
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "رياح قطع الأحجار 15-25
+    // تسجل مخالفة زائفة"): STONECUT-WIND-ENHANCED-004 كانت تفتقد
+    // regulatoryFinding='NONE' الصريحة (سقطت لافتراض ruleHit() نحو
+    // 'VIOLATION')، فيُصدر final-decision-engine خطأً regulatoryFinding=
+    // NON_COMPLIANT رغم أن القرار التشغيلي MONITOR فعلياً (تناقض مباشر).
+    expect(compliance.hasConfirmedRegulatoryViolation).toBe(false);
+    expect(final.operationalDecision).toBe('MONITOR');
+    expect(final.regulatoryFinding).toBe('COMPLIANT');
   });
 });
 

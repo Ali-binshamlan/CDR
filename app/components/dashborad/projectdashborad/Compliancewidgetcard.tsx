@@ -14,6 +14,7 @@ import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveRec
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
 import { ACTIVITY_LABEL_AR } from '@/app/utils/dust-engine/tables';
 import { DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
+import { GENERAL_ALERTS_AR } from '@/app/components/AddActivityModal/constants';
 import ActivityReadingsCharts from './ActivityReadingsCharts';
 
 /** قرار امتثال ساعة واحدة ضمن ساعات دوام اليوم — نفس نمط DviHourlyEvaluation
@@ -695,16 +696,8 @@ export default function ComplianceWidgetCard({
         <div className="p-5 flex-1 flex flex-col">
           <div className="flex items-start justify-between mb-5 gap-3">
             <div className="w-full">
-              <div className="flex items-baseline gap-2 mb-1.5">
-                <span className={`text-2xl font-black leading-none ${style.text}`}>
-                  {isEnded ? 'انتهى النشاط' : aei ? aei.statusLabelAr : worst.decisionLabelAr}
-                </span>
-              </div>
-              <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
-                {isEnded
-                  ? 'انقضت نافذة تنفيذ هذا النشاط — لا يوجد قرار تشغيلي حالي بشأنه.'
-                  : aei ? aei.shortReasonAr : worst.shortReasonAr}
-              </p>
+              
+              
               {complianceEntries.length > 1 && (
                 <span className="inline-block mt-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-slate-500">
                   محسوب من أسوأ حالة بين {complianceEntries.length} أنشطة تنظيمية
@@ -712,52 +705,6 @@ export default function ComplianceWidgetCard({
               )}
             </div>
           </div>
-
-          {/* خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "اخفي التايمر لان
-              المستخدم اذا سوا تحديث للصفحه راح ينعاد من اول"): العدّاد
-              التنازلي كان يعتمد على asOfMs (لحظة مرجعية) وsustainedMinutes
-              (لقطة من الخادم) معاً لحساب "المتبقي" محلياً في المتصفح — حتى
-              بعد ربط asOfMs بـworst.evaluatedAt (وقت حساب الخادم الفعلي)،
-              ظل عرض عدّاد دقيق بالثانية عرضة لأي تفاوت توقيت بين لحظة تحديث
-              الصفحة ولحظة حساب الخادم، فيظهر للمستخدم وكأن الوقت "أعيد من
-              الأول" بينما الاستمرار الفعلي مستمر بلا انقطاع خلفياً. الحل:
-              استبدال العدّاد الدقيق بنص ثابت لا يعتمد على أي حساب توقيت
-              محلي — يخبر المستخدم أن هناك مراقبة استمرار جارية دون الإدعاء
-              برقم دقائق/ثوانٍ متبقية قد يتناقض ظاهرياً مع نفسه بين تحديثين.
-              القرار الفعلي (معلَّق/مؤكَّد) يبقى محسوباً بدقة كاملة في الخادم
-              كما هو، هذا يمس نص العرض فقط. */}
-          {isDeviceStalledDuringPending && (
-            <div className="flex items-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 mb-4">
-              <Timer className="w-4 h-4 text-orange-600 shrink-0" />
-              <span className="text-[11px] font-bold text-orange-700">
-                الجهاز لم يرسل قراءة جديدة منذ فترة — تأكيد المخالفة متوقف مؤقتاً بانتظار وصول قراءة حديثة
-              </span>
-            </div>
-          )}
-          {!isDeviceStalledDuringPending && worst?.pendingConfirmation && (
-            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
-              <Timer className="w-4 h-4 text-red-600 shrink-0" />
-              <span className="text-[11px] font-bold text-red-700">
-                جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين ستُسجَّل مخالفة تنظيمية مؤكَّدة (توثيق فقط، بلا إيقاف)، وإلا ستعود الحالة آمنة تلقائياً
-              </span>
-            </div>
-          )}
-          {isConfirmedViolationNow && (
-            <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/5 px-3 py-2 mb-4">
-              <Timer className="w-4 h-4 text-slate-800 shrink-0" />
-              <span className="text-[11px] font-bold text-slate-800">
-                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (أكثر من 340 ميكروجرام/م³) لمدة 30 دقيقة متواصلة
-              </span>
-            </div>
-          )}
-          {showSuspensionCountdown && (
-            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 mb-4">
-              <Timer className="w-4 h-4 text-amber-600 shrink-0" />
-              <span className="text-[11px] font-bold text-amber-700">
-                جارٍ مراقبة استمرار التجاوز (أكثر من 340 ميكروجرام/م³) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
-              </span>
-            </div>
-          )}
 
           <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 mb-4">
             <div className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
@@ -810,6 +757,54 @@ export default function ComplianceWidgetCard({
               <span className="text-[8px] font-bold text-slate-400">الحرارة</span>
             </div>
           </div>
+
+          {/* خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "اخفي التايمر لان
+              المستخدم اذا سوا تحديث للصفحه راح ينعاد من اول"): العدّاد
+              التنازلي كان يعتمد على asOfMs (لحظة مرجعية) وsustainedMinutes
+              (لقطة من الخادم) معاً لحساب "المتبقي" محلياً في المتصفح — حتى
+              بعد ربط asOfMs بـworst.evaluatedAt (وقت حساب الخادم الفعلي)،
+              ظل عرض عدّاد دقيق بالثانية عرضة لأي تفاوت توقيت بين لحظة تحديث
+              الصفحة ولحظة حساب الخادم، فيظهر للمستخدم وكأن الوقت "أعيد من
+              الأول" بينما الاستمرار الفعلي مستمر بلا انقطاع خلفياً. الحل:
+              استبدال العدّاد الدقيق بنص ثابت لا يعتمد على أي حساب توقيت
+              محلي — يخبر المستخدم أن هناك مراقبة استمرار جارية دون الإدعاء
+              برقم دقائق/ثوانٍ متبقية قد يتناقض ظاهرياً مع نفسه بين تحديثين.
+              القرار الفعلي (معلَّق/مؤكَّد) يبقى محسوباً بدقة كاملة في الخادم
+              كما هو، هذا يمس نص العرض فقط.
+              طلب صريح لاحق من المستخدم: نُقلت هذه التنبيهات لتظهر أسفل شبكة
+              القراءات الحية أعلاه بدل ما قبلها. */}
+          {isDeviceStalledDuringPending && (
+            <div className="flex items-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-orange-600 shrink-0" />
+              <span className="text-[11px] font-bold text-orange-700">
+                الجهاز لم يرسل قراءة جديدة منذ فترة — تأكيد المخالفة متوقف مؤقتاً بانتظار وصول قراءة حديثة
+              </span>
+            </div>
+          )}
+          {!isDeviceStalledDuringPending && worst?.pendingConfirmation && (
+            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-red-600 shrink-0" />
+              <span className="text-[11px] font-bold text-red-700">
+                جارٍ التحقق من استمرار التجاوز — إن استمر التجاوز لأكثر من دقيقتين متتاليتين ستُسجَّل مخالفة تنظيمية مؤكَّدة (توثيق فقط، بلا إيقاف)، وإلا ستعود الحالة آمنة تلقائياً
+              </span>
+            </div>
+          )}
+          {isConfirmedViolationNow && (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/5 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-slate-800 shrink-0" />
+              <span className="text-[11px] font-bold text-slate-800">
+                تم تسجيل مخالفة تنظيمية مؤكَّدة — استمر التجاوز لأكثر من دقيقتين متتاليتين. النشاط مستمر تحت الضوابط المعزَّزة؛ الإيقاف الفعلي يرتبط فقط باستمرار التجاوز (أكثر من 340 ميكروجرام/م³) لمدة 30 دقيقة متواصلة
+              </span>
+            </div>
+          )}
+          {showSuspensionCountdown && (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 mb-4">
+              <Timer className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="text-[11px] font-bold text-amber-700">
+                جارٍ مراقبة استمرار التجاوز (أكثر من 340 ميكروجرام/م³) — سيُعلَّق النشاط تلقائياً إن استمر التجاوز 30 دقيقة متواصلة
+              </span>
+            </div>
+          )}
 
           {worst.caveatsAr && worst.caveatsAr.length > 0 && (
             <div className="space-y-1.5 mb-4">
@@ -999,6 +994,26 @@ export default function ComplianceWidgetCard({
                   </span>
                 </div>
               )}
+
+              {/* تنبيهات عامة توعوية — نفس قائمة GENERAL_ALERTS_AR المعروضة
+                  عند إنشاء/تعديل النشاط (AddActivityModal/DustStep.tsx)،
+                  لكن دائمة هنا أسفل الرسوم البيانية بدل الظهور مرة واحدة
+                  فقط أثناء الإعداد. لا تؤثر على القرار. */}
+              {!isEnded && (() => {
+                const activityKey = worst?.regulatoryActivity;
+                const generalAlerts = activityKey ? GENERAL_ALERTS_AR[activityKey] ?? [] : [];
+                if (generalAlerts.length === 0) return null;
+                return (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-1.5">
+                    <p className="text-[12px] font-black text-amber-800 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4" /> تنبيهات عامة — متطلبات الامتثال لهذا النشاط
+                    </p>
+                    {generalAlerts.map((a, i) => (
+                      <p key={i} className="text-[13px] text-amber-900 pr-4">⚠ {a}</p>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* تنبيهات إعلامية (رؤية ضعيفة/حرارة مرتفعة) + نصائح ميدانية
                   عملية — إعلامية بحتة، لا تمثّل قراراً/إيقافاً ولا تدخل ضمن

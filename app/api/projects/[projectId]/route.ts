@@ -100,13 +100,33 @@ function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { de
 // الملخص العلوي (البانر) يعكس قرار المحرك الحي مباشرةً عبر خريطة dustByGroup،
 // فإن لم تتوفر نتيجة محرك نرجع لآخر قرار مخزَّن في final_decisions
 // (finalDecisionsByGroup)، وإلا "بانتظار التقييم" (نشاط لم يُقيَّم بعد إطلاقاً).
+// هذا السلوك يبقى مقصوداً لعرض "معاينة حية" (راجع isLiveComputed) — لكن
+// decisionTargets (أدناه) منفصل تماماً الآن، راجع تعليقه الكامل.
+//
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "مصدر القرار الرسمي ما
+// زال PARTIAL"): كانت decisionTargets تُبنى من engineResult.windowEval.worst
+// (نتيجة DVI حية، غير محفوظة في final_decisions بعد بالضرورة) كلما توفرت،
+// بمعزل تام عن storedDecision. reason/requiredAction/weatherSnapshot فيها
+// كانت تُملأ من هذا الحساب الحي — رغم أن لا مستهلك فعلي بالواجهة يعرضهما
+// (فحص شامل لكل استخدامات decisionTargets: PATCH/DELETE /api/activities
+// تقرأان فقط projectId/activityId/source كمعرّفات صف للأرشفة/إعادة الجدولة،
+// لا reason/requiredAction إطلاقاً) — لكن هذا يبقى فخاً معمارياً حقيقياً:
+// أي تطوير مستقبلي قد يستخدم هذه الحقول ظاناً أنها القرار الرسمي المحفوظ.
+// الإصلاح: decisionTargets الآن تُبنى حصراً من storedDecision (لا
+// engineResult إطلاقاً)، وتحمل decisionId حقيقي (final_decisions.id) —
+// "الواجهة لا تقرر" بحسب الوثيقة المعمارية: FinalDecisionEngine → Persist
+// → Audit/Evidence → decisionId → UI، لا اختصار عبر نتيجة حية غير محفوظة.
+// وحدة نشاط متعددة (كسارتان/خلاطتان بصفوف project_dust_profiles منفصلة)
+// قد يحمل قرارها المخزَّن dust_profile_id لوحدة واحدة فقط ضمنها —
+// storedDecision?.dust_profile_id === row.id يفرض تطابقاً دقيقاً على مستوى
+// الصف الفعلي، لا فقط activity_group_id (الذي قد يخص وحدة شقيقة أخرى)؛
+// الوحدات غير المطابقة تُستثنى من decisionTargets كلياً (لا قرار رسمي محفوظ
+// لها في هذا الطلب) بدل عرض هدف تنفيذي مبني على تخمين.
 interface DecisionTarget {
   projectId: string;
   activityId: string;
   source: 'dust';
-  reason: string;
-  requiredAction: string;
-  weatherSnapshot: { label: string; value: string }[];
+  decisionId: string;
 }
 
 interface RecentActivityItem {
@@ -248,16 +268,18 @@ export function buildRecentActivities(
     if (!acc.windowEndIso && windowEndIso) acc.windowEndIso = windowEndIso;
     if (!acc.durationMinutes && durationMinutes) acc.durationMinutes = durationMinutes;
 
-    // نتيجة المحرك الحية لهذا المؤشر (إن وُجدت) — المصدر المفضّل الآن لكل
-    // من summaryFields وdecisionTargets معاً (راجع تعليق summaryFromLiveDecision
-    // أعلاه للسبب: يضمن أن البانر وبطاقة AEI يعكسان نفس لحظة الحساب بالضبط،
-    // لا صفاً مخزَّناً قد يسبق قراءة الجهاز الحالية).
+    // نتيجة المحرك الحية لهذا المؤشر (إن وُجدت) — المصدر المفضّل لـ
+    // summaryFields وحدها (راجع تعليق summaryFromLiveDecision أعلاه للسبب:
+    // يضمن أن البانر وبطاقة AEI يعكسان نفس لحظة الحساب بالضبط)، مُميَّزة
+    // دائماً بشارة "معاينة حية" (isLiveComputed) — لا تُستخدَم إطلاقاً لبناء
+    // decisionTargets (راجع تعليقها أدناه، وتعليق DecisionTarget أعلى الملف).
     const engineResult = dustByGroup.get(`${groupId}-${row.id}`);
 
-    // القرار النهائي المخزَّن (كتبه evaluate/route.ts) يبقى fallback فقط
-    // حين لا توجد نتيجة محرك حية لهذا النشاط في هذا الطلب تحديداً. المفتاح
-    // مركّب (projectId, groupId) — راجع تعليق fetchLatestFinalDecisions في
-    // dustEvaluation.ts للسبب (عزل المشاريع، القسم 12.2).
+    // القرار النهائي المخزَّن (كتبه evaluate/route.ts) — fallback لـ
+    // summaryFields حين لا توجد نتيجة محرك حية، والمصدر الوحيد الآن لـ
+    // decisionTargets بلا استثناء. المفتاح مركّب (projectId, groupId) —
+    // راجع تعليق fetchLatestFinalDecisions في dustEvaluation.ts للسبب (عزل
+    // المشاريع، القسم 12.2).
     const storedDecision = finalDecisionsByGroup.get(activityDecisionKey(projectId, groupId));
 
     let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean };
@@ -281,22 +303,21 @@ export function buildRecentActivities(
       ...summaryFields,
     });
 
-    // هدف قرار موحّد لهذا المؤشر — يفعّل أزرار الاعتماد/التأجيل في البانر
-    if (engineResult) {
-      const r = engineResult.windowEval.worst;
-      // اللقطة المناخية وقت القرار — تُعرض ضمن بطاقة النشاط في الواجهة.
-      const snapshot = [
-        { label: 'الرؤية', value: r.visibilityKm != null ? `${r.visibilityKm} كم` : '—' },
-        { label: 'الرياح الفعّالة', value: r.effectiveWindKmh != null ? `${r.effectiveWindKmh} كم/س` : '—' },
-        { label: 'درجة الخطر', value: `${r.score} / 100` },
-      ];
+    // هدف قرار موحّد لهذا المؤشر — يفعّل أزرار الأرشفة/إعادة الجدولة في
+    // البطاقة (لا "اعتماد/تأجيل" فعلي، راجع تعليق DecisionTarget أعلاه:
+    // لا مستهلك بالواجهة يقرأ محتوى قرار تنفيذي من هنا حالياً). يُبنى حصراً
+    // من storedDecision (قرار محفوظ فعلياً في final_decisions يحمل id حقيقي)
+    // — لا engineResult الحي إطلاقاً، بصرف النظر عن توفره. dust_profile_id
+    // على الصف المخزَّن يجب أن يطابق row.id تحديداً (لا فقط نفس
+    // activity_group_id) — نشاط متعدد الوحدات (كسارتان/خلاطتان) قد يحمل
+    // قراره المخزَّن dust_profile_id لوحدة واحدة فقط؛ الوحدات الأخرى غير
+    // المطابقة تُستثنى من decisionTargets كلياً، لا تُعرض بتخمين.
+    if (storedDecision && String(storedDecision.dust_profile_id) === String(row.id)) {
       acc.decisionTargets.push({
         projectId,
         activityId: String(row.id),
         source: kind,
-        reason: `توصية مرقاب: ${r.decisionLabelAr} (${r.score} نقطة)`,
-        requiredAction: (r.requiredActions || []).join('، ') || 'لا توجد متطلبات إضافية',
-        weatherSnapshot: snapshot,
+        decisionId: String(storedDecision.id),
       });
     }
   }

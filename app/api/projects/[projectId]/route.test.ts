@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DustActivityRow, StoredFinalDecisionRow } from '@/app/lib/dustEvaluation';
+import type { DustActivityRow, StoredFinalDecisionRow, DustResultItem } from '@/app/lib/dustEvaluation';
 import { activityDecisionKey } from '@/app/lib/dustEvaluation';
 
 // route.ts يستورد supabaseAdmin على مستوى الوحدة (module-level) — يحتاج
@@ -157,5 +157,99 @@ describe('buildRecentActivities — isLiveComputed يميّز مصدر كل مل
 
     expect(activities[0].summaries[0].decisionLabel).toBe('بانتظار التقييم');
     expect(activities[0].summaries[0].isLiveComputed).toBe(false);
+  });
+});
+
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "مصدر القرار الرسمي ما زال
+// PARTIAL"): decisionTargets كانت تُبنى من engineResult.windowEval.worst
+// الحي بمعزل تام عن storedDecision — فيمكن أن تحمل هدفاً "تنفيذياً" بلا أي
+// قرار محفوظ فعلياً في final_decisions يقابله. الإصلاح: decisionTargets
+// تُبنى الآن حصراً من storedDecision (لا engineResult إطلاقاً)، وتحمل
+// decisionId حقيقي، وتُستثنى كلياً إن لم يطابق dust_profile_id المخزَّن
+// صف النشاط بالضبط.
+function makeMinimalDustResultItem(overrides: Partial<DustResultItem> = {}): DustResultItem {
+  return {
+    activityGroupId: 'base',
+    activityId: '1',
+    activityType: 'GRADING',
+    windowEval: {
+      worst: {
+        decisionLabelAr: 'مسموح',
+        score: 10,
+        visibilityKm: 10,
+        effectiveWindKmh: 10,
+        requiredActions: [],
+      },
+    } as unknown as DustResultItem['windowEval'],
+    aei: {} as DustResultItem['aei'],
+    hourlyForecasts: [],
+    startIso: '2026-08-16T08:00:00.000Z',
+    ...overrides,
+  } as DustResultItem;
+}
+
+describe('buildRecentActivities — decisionTargets مصدرها الوحيد storedDecision (لا engineResult الحي)', () => {
+  it('نتيجة محرك حية موجودة لكن بلا قرار مخزَّن مطابق → decisionTargets فارغة (لا هدف تنفيذي بلا قرار محفوظ)', () => {
+    const rows: DustActivityRow[] = [makeRow({ id: 1, activity_group_id: 'base' })];
+    const dustByGroup = new Map<string, DustResultItem>([
+      ['base-1', makeMinimalDustResultItem()],
+    ]);
+
+    const activities = buildRecentActivities('project-1', rows, dustByGroup, new Map());
+
+    expect(activities[0].summaries[0].isLiveComputed).toBe(true);
+    expect(activities[0].decisionTargets).toHaveLength(0);
+  });
+
+  it('قرار مخزَّن يطابق dust_profile_id لصف النشاط → decisionTargets تحمل decisionId حقيقياً', () => {
+    const rows: DustActivityRow[] = [makeRow({ id: 1, activity_group_id: 'base' })];
+    const stored: StoredFinalDecisionRow = {
+      id: 'decision-abc-123',
+      activity_group_id: 'base',
+      dust_profile_id: 1,
+      decision_label_ar: 'مسموح',
+      level: 'GREEN',
+      operational_decision: 'ALLOW',
+      pending_confirmation: false,
+      mandatory_stop: false,
+    };
+    const finalDecisionsByGroup = new Map<string, StoredFinalDecisionRow>([
+      [activityDecisionKey('project-1', 'base'), stored],
+    ]);
+    // نتيجة محرك حية موجودة أيضاً بنفس الوقت — يجب ألا تؤثر على decisionTargets إطلاقاً.
+    const dustByGroup = new Map<string, DustResultItem>([
+      ['base-1', makeMinimalDustResultItem()],
+    ]);
+
+    const activities = buildRecentActivities('project-1', rows, dustByGroup, finalDecisionsByGroup);
+
+    expect(activities[0].decisionTargets).toHaveLength(1);
+    expect(activities[0].decisionTargets[0]).toEqual({
+      projectId: 'project-1',
+      activityId: '1',
+      source: 'dust',
+      decisionId: 'decision-abc-123',
+    });
+  });
+
+  it('قرار مخزَّن لنفس activity_group_id لكن dust_profile_id لوحدة أخرى (نشاط متعدد الوحدات) → decisionTargets فارغة لهذه الوحدة', () => {
+    const rows: DustActivityRow[] = [makeRow({ id: 1, activity_group_id: 'base' })];
+    const stored: StoredFinalDecisionRow = {
+      id: 'decision-for-other-unit',
+      activity_group_id: 'base',
+      dust_profile_id: 999, // وحدة أخرى ضمن نفس النشاط، لا الصف الحالي (id=1)
+      decision_label_ar: 'مسموح',
+      level: 'GREEN',
+      operational_decision: 'ALLOW',
+      pending_confirmation: false,
+      mandatory_stop: false,
+    };
+    const finalDecisionsByGroup = new Map<string, StoredFinalDecisionRow>([
+      [activityDecisionKey('project-1', 'base'), stored],
+    ]);
+
+    const activities = buildRecentActivities('project-1', rows, new Map(), finalDecisionsByGroup);
+
+    expect(activities[0].decisionTargets).toHaveLength(0);
   });
 });

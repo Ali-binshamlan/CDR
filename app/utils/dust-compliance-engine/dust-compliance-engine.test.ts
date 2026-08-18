@@ -2039,6 +2039,15 @@ describe('محرك امتثال الغبار — قطع الأحجار (إيقا
     expect(r.triggeredRules.some((h) => h.code === 'STONECUT-WIND-STOP-003')).toBe(false);
     expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
     expect(r.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "رياح قطع الأحجار 15-25
+    // تسجل مخالفة زائفة"): STONECUT-WIND-ENHANCED-004 كانت تُنشأ عبر ruleHit()
+    // بلا تمرير regulatoryFinding صراحة، فتسقط للافتراضي (severity !==
+    // FIELD_VERIFICATION_REQUIRED/PRECAUTION → 'VIOLATION') رغم كونها تثبيطاً
+    // معزَّزاً توعوياً بحتاً، مطابقاً تماماً لـGATE-WIND-15-25-ENHANCED-005
+    // العامة (regulatoryFinding='NONE' هناك بالفعل). يجب ألا تُصنَّف مخالفة.
+    const hit = r.triggeredRules.find((h) => h.code === 'STONECUT-WIND-ENHANCED-004');
+    expect(hit?.regulatoryFinding).toBe('NONE');
+    expect(r.hasConfirmedRegulatoryViolation).toBe(false);
   });
 
   it('قطع مكشوف أثناء رياح تتجاوز 25 كم/س → إيقاف فعلي (لا MANDATORY_STOP قطعي)', () => {

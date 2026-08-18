@@ -488,7 +488,7 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     regulatoryFinding = 'NON_COMPLIANT';
   } else if (pendingAffectedStop) {
     regulatoryFinding = 'PENDING_CONFIRMATION';
-  } else if (compliance?.pendingConfirmation === true) {
+  } else if (compliance?.pendingConfirmation === true || compliance?.hasPendingRegulatoryFinding === true) {
     // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "PM10 قبل 120 ثانية
     // يظهر تنظيمياً COMPLIANT"): pendingAffectedStop أعلاه يشترط complianceBlocks
     // (decisionCategory=MANDATORY_STOP/STOP_AFFECTED_ACTIVITY تحديداً) قبل أن
@@ -505,6 +505,17 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     // بعد confirmedAffectedStop/pendingAffectedStop (الإيقاف الفعلي الأشد يبقى
     // يفوز دائماً) وقبل evidenceUnavailable/FIELD_VERIFICATION_REQUIRED (نقص
     // بيانات حرج يبقى يفوز على حالة PM10 المعلَّقة — طلب صريح من المستخدم).
+    //
+    // خطأ ثانٍ مكتشَف ومُصلَح (مراجعة كود خارجي — P0 مُعاد فتحه: "PM10
+    // المعلَّق يمكن أن يصبح COMPLIANT"): compliance.pendingConfirmation وحدها
+    // (topHits.every(isPending)) تصبح false فور تعادل قاعدة PM10 المعلَّقة مع
+    // أي قاعدة أخرى غير معلَّقة بنفس الشدة (مثال حقيقي: رياح 15-25 كم/س،
+    // GATE-WIND-15-25-ENHANCED-005، regulatoryFinding='NONE' — حقيقة مؤكَّدة
+    // حاضرة، لكنها لا تمثّل مخالفة بذاتها). كانت هذي الحالة تسقط مباشرة إلى
+    // COMPLIANT رغم استمرار انتظار تأكيد PM10 فعلياً — قاعدة بلا دلالة تنظيمية
+    // خاصة بها (NONE) لا يجوز أن تُسقط حالة معلَّقة نشطة إلى "متوافق تماماً".
+    // hasPendingRegulatoryFinding (يفحص كل ruleHits، لا فقط topHits، ويستبعد
+    // أي حالة توجد فيها مخالفة مؤكَّدة VIOLATION في أي مكان) يلتقط هذه الحالة.
     regulatoryFinding = 'PENDING_CONFIRMATION';
   } else if (evidenceUnavailable || compliance?.decisionCategory === 'FIELD_VERIFICATION_REQUIRED') {
     // FIELD_VERIFICATION_REQUIRED (نقص بيانات مشروع/موقع حرجة يمنع الحكم —

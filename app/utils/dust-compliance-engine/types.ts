@@ -470,6 +470,20 @@ export interface DustComplianceResult {
   // even when operationalDecision hasn't reached a stop, keeping the two concepts separate.
   hasConfirmedRegulatoryViolation: boolean;
 
+  // True if any rule in triggeredRules carries regulatoryFinding === 'PENDING'
+  // AND no rule anywhere has regulatoryFinding === 'VIOLATION' (a confirmed
+  // violation always outranks an unrelated pending condition). Distinct from
+  // pendingConfirmation above: pendingConfirmation asks "is the whole winning
+  // operational decision pending?" (false the moment any non-pending rule ties
+  // at the top severity, e.g. a concurrent 15-25 km/h wind gate) — this field
+  // asks "does an unresolved pending regulatory condition exist at all?",
+  // independent of what else is tied at the top severity. A confirmed fact
+  // with no regulatory finding of its own (regulatoryFinding: 'NONE', e.g.
+  // wind in the enhanced-control band) must not demote an active pending PM10
+  // confirmation window down to a plain "compliant" reading. final-decision-
+  // engine reads this to keep regulatoryFinding='PENDING_CONFIRMATION' in that case.
+  hasPendingRegulatoryFinding: boolean;
+
   // The code of the rule that actually built the final decision (decidingRule.code
   // in engine.ts), e.g. 'GATE-WIND-ABOVE-25-004' or 'MRQ-PM10-BLACK-PENDING-104'.
   // Stored as current_dust_compliance_decisions.deciding_rule_code and later read

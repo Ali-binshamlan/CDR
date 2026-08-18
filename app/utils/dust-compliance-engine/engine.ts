@@ -145,6 +145,7 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
     // إطلاقاً (راجع تعليق evaluateDustCompliance للفرع المبكر)، فلا مخالفة
     // مؤكَّدة ممكنة أصلاً.
     hasConfirmedRegulatoryViolation: false,
+    hasPendingRegulatoryFinding: false,
     resumeHoldApplied: false,
     decidingRuleCode: null,
     decidingRuleMessageAr: null,
@@ -628,7 +629,12 @@ export function evaluateDustCompliance(
         'STOP_AFFECTED_ACTIVITY',
         `الإيقاف السابق كان بسبب رياح تجاوزت ${windGateStopKmhForResume} كم/س — الاستئناف يتطلب انخفاضها إلى ما دون ${windGateStopKmhForResume} كم/س صراحة، لا مجرد العودة إلى ${windGateStopKmhForResume} بالضبط`,
         `انتظر انخفاض سرعة الرياح إلى ما دون ${windGateStopKmhForResume} كم/س صراحة قبل الاستئناف`,
-        false
+        false,
+        // Same violation the wind gate itself is enforcing
+        // (GATE-WIND-ABOVE-25-004, regulatoryFinding='VIOLATION') — this rule
+        // only extends how long that violation's stop must persist before
+        // resuming, not a separate/lesser condition.
+        'VIOLATION'
       )
     );
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -810,7 +816,10 @@ export function evaluateDustCompliance(
         'FIELD_VERIFICATION_REQUIRED',
         `مستوى الثقة في القرار (${confidenceScore}) أقل من الحد الأدنى المطلوب للسماح التلقائي (${confidenceMinForAllow})`,
         'راجع البيانات الناقصة/غير المؤكدة ميدانياً قبل اعتماد القرار كسماح كامل',
-        true
+        true,
+        // Uncertainty gate on decision confidence — not a confirmed
+        // violation of a numeric/legal threshold.
+        'NONE'
       )
     );
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
@@ -878,6 +887,19 @@ export function evaluateDustCompliance(
   // كل ruleHits (لا فقط topHits)، بنفس مبدأ الفحص الشامل السابق تماماً —
   // فقط معيار المطابقة تغيّر من كود واحد صريح إلى دلالة عامة لكل قاعدة.
   const hasConfirmedRegulatoryViolation = ruleHits.some((hit) => hit.regulatoryFinding === 'VIOLATION');
+
+  // hasPendingRegulatoryFinding: separate from pendingConfirmation above —
+  // pendingConfirmation answers "is the whole winning topHits decision pending?"
+  // (false the moment any non-pending rule ties at the same severity, e.g. a
+  // concurrent 15-25 km/h wind gate with regulatoryFinding='NONE'). This field
+  // answers "does an unresolved pending regulatory condition exist at all right
+  // now?", checked across all ruleHits like hasConfirmedRegulatoryViolation
+  // above, not just topHits. A confirmed violation always wins over an unrelated
+  // pending condition (hasConfirmedRegulatoryViolation is checked first by
+  // final-decision-engine). Without this field, a confirmed-but-non-violating
+  // fact (e.g. wind's regulatoryFinding='NONE') could silently demote an active
+  // PM10 pending-confirmation window down to a plain "compliant" reading.
+  const hasPendingRegulatoryFinding = ruleHits.some((hit) => hit.regulatoryFinding === 'PENDING');
 
   // canOverride مشتقة الآن من overridable الفعلي لقاعدة(قواعد) القرار
   // الحاسمة (topHits)، لا من فئة decisionCategory العامة كما كانت سابقاً —
@@ -1025,6 +1047,7 @@ export function evaluateDustCompliance(
     canOverride,
     pendingConfirmation,
     hasConfirmedRegulatoryViolation,
+    hasPendingRegulatoryFinding,
     resumeHoldApplied,
     decidingRuleCode: decidingRule?.code ?? null,
     decidingRuleMessageAr: decidingRule?.messageAr ?? null,

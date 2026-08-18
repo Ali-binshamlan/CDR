@@ -238,9 +238,17 @@ export function ruleHit(
   messageAr: string,
   actionAr: string,
   overridable: boolean = severity !== 'MANDATORY_STOP' && severity !== 'STOP_AFFECTED_ACTIVITY',
-  regulatoryFinding: RuleRegulatoryFinding = severity === 'FIELD_VERIFICATION_REQUIRED' || severity === 'PRECAUTION'
-    ? 'NONE'
-    : 'VIOLATION'
+  // Required, no inferred default (deliberately removed — a P0 bug slipped
+  // through exactly because a rule silently fell back to this argument's old
+  // default: STONECUT-WIND-ENHANCED-004 omitted it and inherited 'VIOLATION'
+  // for what was actually a non-violating advisory, wrongly flipping
+  // regulatoryFinding to NON_COMPLIANT downstream). severity alone cannot
+  // answer "did a regulatory violation occur?" — the same severity
+  // (ALLOW_WITH_CONTROLS) means "operational state, no violation" for one
+  // rule (wind 15-25 km/h) and "confirmed violation, no immediate stop" for
+  // another (PM10 confirmed >340 for 2+ minutes) — every call site must state
+  // its own regulatoryFinding explicitly, never inherit one from severity.
+  regulatoryFinding: RuleRegulatoryFinding
 ): DustRuleHit {
   return { code, severity, messageAr, actionAr, overridable, regulatoryFinding };
 }
@@ -397,8 +405,12 @@ export function pm10ThresholdRule(
         ruleHit(
           'PM10-VIOLATION-STOP-006',
           'ALLOW_WITH_CONTROLS',
-          `مخالفة تنظيمية مؤكدة ومسجَّلة: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) لدقيقتين متتاليتين فأكثر — النشاط مستمر تحت الضوابط المعزَّزة، الإيقاف الفعلي مرتبط فقط باستمرار التجاوز فوق ${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³ لمدة ${PM10_SUSPENSION_MINUTES} دقيقة متواصلة`,
-          'استمر بتطبيق التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ، تقييد حركة النقل) — هذه مخالفة موثَّقة رسمياً، لا إيقاف إلزامي بحد ذاته'
+          `مخالفة تنظيمية مؤكدة ومسجَّلة: تركيز PM10 تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) لدقيقتين متتاليتين فأكثر — النشاط مستمر تحت الضوابط المعزَّزة، الإيقاف الفعلي مرتبط فقط باستمرار التجاوز فوق ${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³ لمدة ${PM10_SUSPENSION_MINUTES} دقيقة متواصلة`,
+          'استمر بتطبيق التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ، تقييد حركة النقل) — هذه مخالفة موثَّقة رسمياً، لا إيقاف إلزامي بحد ذاته',
+          undefined,
+          // Confirmed violation (2+ minutes sustained above 340) — documented
+          // and alerted, not an operational stop by itself (see message).
+          'VIOLATION'
         )
       );
     } else {
@@ -416,7 +428,7 @@ export function pm10ThresholdRule(
         ruleHit(
           'MRQ-PM10-BLACK-PENDING-104',
           'ALLOW_WITH_CONTROLS',
-          `تنبيه: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) — بانتظار اكتمال دقيقتين استمرار لتصنيفها مخالفة تنظيمية مؤكدة`,
+          `تنبيه: تركيز PM10 تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) — بانتظار اكتمال دقيقتين استمرار لتصنيفها مخالفة تنظيمية مؤكدة`,
           'فعّل التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ) وراقب استمرار القراءة عن كثب — ستُصبح مخالفة تنظيمية مؤكدة وموثَّقة (بلا إيقاف إلزامي فوري) إن استمر التجاوز دقيقتين فأكثر',
           undefined,
           // Exceedance observed but confirmation evidence (two-minute
@@ -439,7 +451,7 @@ export function pm10ThresholdRule(
       ruleHit(
         'PM10-WARNING-008',
         'ALLOW_WITH_CONTROLS',
-        `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) بلغ أو تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
+        `تحذير: تركيز PM10 بلغ أو تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
         'فعّل التثبيط المعزز فوراً: رش ساعي أو مثبطات، تغطية الأكوام وخفض ارتفاع التفريغ إلى متر واحد، تقليل واجهات العمل المتزامنة، وتقييد حركة النقل',
         undefined,
         // The [250,340] warning range is an operational state requiring
@@ -463,8 +475,12 @@ export function pm10ThresholdRule(
       ruleHit(
         'RCRC-PM10-30M-SUSPENSION-012',
         'STOP_AFFECTED_ACTIVITY',
-        `تعليق النشاط: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) استمر فوق ${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³ لمدة ${PM10_SUSPENSION_MINUTES} دقيقة متواصلة`,
-        'علّق النشاط المسبب للغبار حتى ينخفض التركيز ويستقر دون الحد لفترة كافية، وفعّل التثبيط المعزز فوراً'
+        `تعليق النشاط: تركيز PM10 استمر فوق ${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³ لمدة ${PM10_SUSPENSION_MINUTES} دقيقة متواصلة`,
+        'علّق النشاط المسبب للغبار حتى ينخفض التركيز ويستقر دون الحد لفترة كافية، وفعّل التثبيط المعزز فوراً',
+        undefined,
+        // Confirmed sustained violation (>340 for 30 continuous minutes) —
+        // the actual operational stop.
+        'VIOLATION'
       )
     );
   }
@@ -510,7 +526,9 @@ function demolitionRules(
         'DEMO-WIND-STOP-001',
         'MANDATORY_STOP',
         `إيقاف إلزامي: أعمال هدم مكشوفة أثناء رياح ≥${windGateEnhancedMinKmh} كم/س (الحد الأقصى التنظيمي ${windGateEnhancedMinKmh} كم/س لأعمال الهدم)`,
-        `أوقف أعمال الهدم المكشوفة فوراً حتى تنخفض سرعة الرياح إلى ما دون ${windGateEnhancedMinKmh} كم/س، أو حوّلها لعملية مغلقة`
+        `أوقف أعمال الهدم المكشوفة فوراً حتى تنخفض سرعة الرياح إلى ما دون ${windGateEnhancedMinKmh} كم/س، أو حوّلها لعملية مغلقة`,
+        undefined,
+        'VIOLATION'
       )
     );
   }
@@ -523,7 +541,9 @@ function demolitionRules(
         'DEMO-AREA-002',
         'STOP_AFFECTED_ACTIVITY',
         `مساحة الهدم النشطة (${activeArea} م²) تتجاوز الحد المسموح (${demolitionMaxAreaM2} م² في المرة الواحدة)`,
-        `قسّم أعمال الهدم إلى مراحل بحيث لا تتجاوز المساحة النشطة ${demolitionMaxAreaM2} م² في المرة الواحدة`
+        `قسّم أعمال الهدم إلى مراحل بحيث لا تتجاوز المساحة النشطة ${demolitionMaxAreaM2} م² في المرة الواحدة`,
+        undefined,
+        'VIOLATION'
       )
     );
   }
@@ -545,7 +565,9 @@ function crusherRules(
         'CRUSHER-CATEGORY-001',
         'MANDATORY_STOP',
         'الكسارات مسموحة فقط في مشاريع الفئة الثالثة (عالية المخاطر)',
-        'أوقف تشغيل الكسارة — غير مسموح بها إلا في مشاريع الفئة الثالثة (عالية المخاطر)'
+        'أوقف تشغيل الكسارة — غير مسموح بها إلا في مشاريع الفئة الثالثة (عالية المخاطر)',
+        undefined,
+        'VIOLATION'
       )
     );
   }
@@ -651,7 +673,7 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
 
   if (activity.controls.silosSealed === false) {
     hits.push(
-      ruleHit('BATCHING-SILO-001', 'MANDATORY_STOP', 'إيقاف إلزامي: صوامع الإسمنت غير محكمة الإغلاق', 'أوقف التشغيل حتى يتم إحكام إغلاق صوامع الإسمنت بالكامل')
+      ruleHit('BATCHING-SILO-001', 'MANDATORY_STOP', 'إيقاف إلزامي: صوامع الإسمنت غير محكمة الإغلاق', 'أوقف التشغيل حتى يتم إحكام إغلاق صوامع الإسمنت بالكامل', undefined, 'VIOLATION')
     );
   }
 
@@ -666,26 +688,28 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
         'BATCHING-FILTER-002',
         'MANDATORY_STOP',
         `كفاءة فلتر الجسيمات العالقة (${filterEfficiency}%) أقل من الحد الأدنى (${batchingPm10FilterMinPercent}%)`,
-        `استبدل أو اصلح فلتر الجسيمات العالقة حتى تصل كفاءته إلى ${batchingPm10FilterMinPercent}% على الأقل`
+        `استبدل أو اصلح فلتر الجسيمات العالقة حتى تصل كفاءته إلى ${batchingPm10FilterMinPercent}% على الأقل`,
+        undefined,
+        'VIOLATION'
       )
     );
   }
 
   if (activity.controls.leakDetected === true) {
     hits.push(
-      ruleHit('BATCHING-LEAK-003', 'STOP_AFFECTED_ACTIVITY', 'تسرب مرصود من صومعة الإسمنت أو نظام النقل', 'أصلح مصدر التسرب في الصومعة أو نظام النقل فوراً')
+      ruleHit('BATCHING-LEAK-003', 'STOP_AFFECTED_ACTIVITY', 'تسرب مرصود من صومعة الإسمنت أو نظام النقل', 'أصلح مصدر التسرب في الصومعة أو نظام النقل فوراً', undefined, 'VIOLATION')
     );
   }
 
   if (activity.controls.dryCleaningMethodUsed === true) {
     hits.push(
-      ruleHit('BATCHING-DRYCLEAN-004', 'RESTRICT_ACTIVITY', 'استخدام الكنس الجاف أو النفخ بالهواء المضغوط ممنوع؛ يلزم الشفط أو التنظيف الرطب', 'استبدل الكنس الجاف/الهواء المضغوط بالشفط أو التنظيف الرطب')
+      ruleHit('BATCHING-DRYCLEAN-004', 'RESTRICT_ACTIVITY', 'استخدام الكنس الجاف أو النفخ بالهواء المضغوط ممنوع؛ يلزم الشفط أو التنظيف الرطب', 'استبدل الكنس الجاف/الهواء المضغوط بالشفط أو التنظيف الرطب', undefined, 'VIOLATION')
     );
   }
 
   if (activity.controls.dustSuppressionSystemOperational === false) {
     hits.push(
-      ruleHit('BATCHING-SUPPRESSION-005', 'STOP_AFFECTED_ACTIVITY', 'نظام تثبيط الغبار غير مُشغَّل عند محطة الخلط', 'شغّل نظام تثبيط الغبار عند محطة الخلط قبل الاستئناف')
+      ruleHit('BATCHING-SUPPRESSION-005', 'STOP_AFFECTED_ACTIVITY', 'نظام تثبيط الغبار غير مُشغَّل عند محطة الخلط', 'شغّل نظام تثبيط الغبار عند محطة الخلط قبل الاستئناف', undefined, 'VIOLATION')
     );
   }
 
@@ -779,7 +803,17 @@ function stoneCuttingRules(
         'STONECUT-WIND-ENHANCED-004',
         'ALLOW_WITH_CONTROLS',
         `تنبيه: قطع أحجار مكشوف أثناء رياح ${windGateEnhancedMinKmh}-${STONE_CUTTING_WIND_STOP_KMH()} كم/س — تثبيط معزَّز مطلوب`,
-        'فعّل التثبيط المعزز فوراً: رش مائي مستمر أثناء القطع، تقليل واجهات العمل المتزامنة، ومراقبة سرعة الرياح باستمرار'
+        'فعّل التثبيط المعزز فوراً: رش مائي مستمر أثناء القطع، تقليل واجهات العمل المتزامنة، ومراقبة سرعة الرياح باستمرار',
+        undefined,
+        // Same enhanced-suppression band as the general GATE-WIND-15-25-
+        // ENHANCED-005 gate (regulatoryFinding='NONE' there) — an operational
+        // state requiring enhanced controls, not itself a regulatory
+        // violation. This rule previously omitted the argument and fell back
+        // to ruleHit()'s default (severity !== FIELD_VERIFICATION_REQUIRED/
+        // PRECAUTION -> 'VIOLATION'), incorrectly marking a 15-25 km/h
+        // advisory as a confirmed violation and pushing final-decision-engine
+        // to regulatoryFinding='NON_COMPLIANT' for stone cutting alone.
+        'NONE'
       )
     );
   } else if (isExposed && windBand === 'ABOVE_25') {
@@ -789,7 +823,9 @@ function stoneCuttingRules(
         'STONECUT-WIND-STOP-003',
         'STOP_AFFECTED_ACTIVITY',
         `إيقاف: قطع أحجار مكشوف أثناء رياح تتجاوز الحد المسموح (${stoneCuttingWindStopKmh} كم/س)`,
-        `أوقف القطع المكشوف فوراً حتى تنخفض سرعة الرياح إلى ما دون ${stoneCuttingWindStopKmh} كم/س، أو حوّله لتشغيل مغلق`
+        `أوقف القطع المكشوف فوراً حتى تنخفض سرعة الرياح إلى ما دون ${stoneCuttingWindStopKmh} كم/س، أو حوّله لتشغيل مغلق`,
+        undefined,
+        'VIOLATION'
       )
     );
   }
@@ -806,38 +842,38 @@ function entryExitRules(
   const hits: DustRuleHit[] = [];
 
   if (activity.controls.wheelWashOperational === false) {
-    hits.push(ruleHit('ENTRY-WHEELWASH-001', 'STOP_AFFECTED_ACTIVITY', 'وحدة غسيل الإطارات غير متوفرة أو غير عاملة', 'شغّل وحدة غسيل الإطارات أو وفّر بديلاً عاملاً قبل السماح بخروج الشاحنات'));
+    hits.push(ruleHit('ENTRY-WHEELWASH-001', 'STOP_AFFECTED_ACTIVITY', 'وحدة غسيل الإطارات غير متوفرة أو غير عاملة', 'شغّل وحدة غسيل الإطارات أو وفّر بديلاً عاملاً قبل السماح بخروج الشاحنات', undefined, 'VIOLATION'));
   }
 
   if (activity.measurements.visibleTrackoutBeyond15m === true) {
-    hits.push(ruleHit('ENTRY-TRACKOUT-002', 'STOP_AFFECTED_ACTIVITY', 'أتربة منقولة مرئية تتجاوز 15 متراً من بوابة الخروج', 'نظّف الأتربة المنقولة خارج البوابة فوراً وعالج سبب انتقالها'));
+    hits.push(ruleHit('ENTRY-TRACKOUT-002', 'STOP_AFFECTED_ACTIVITY', 'أتربة منقولة مرئية تتجاوز 15 متراً من بوابة الخروج', 'نظّف الأتربة المنقولة خارج البوابة فوراً وعالج سبب انتقالها', undefined, 'VIOLATION'));
   }
 
   if (windBand === 'FROM_15_TO_25' && activity.controls.hourlyInspectionRecorded === false) {
-    hits.push(ruleHit('ENTRY-INSPECTION-003', 'RESTRICT_ACTIVITY', 'لم يُسجَّل فحص وحدة غسيل الإطارات كل ساعة أثناء الرياح 15-25 كم/س', 'سجّل فحصاً موثقاً لوحدة غسيل الإطارات كل ساعة طوال فترة الرياح 15-25 كم/س'));
+    hits.push(ruleHit('ENTRY-INSPECTION-003', 'RESTRICT_ACTIVITY', 'لم يُسجَّل فحص وحدة غسيل الإطارات كل ساعة أثناء الرياح 15-25 كم/س', 'سجّل فحصاً موثقاً لوحدة غسيل الإطارات كل ساعة طوال فترة الرياح 15-25 كم/س', undefined, 'VIOLATION'));
   }
 
   if (activity.measurements.entryPointLat === null || activity.measurements.entryPointLng === null) {
-    hits.push(ruleHit('ENTRY-POINT-MISSING-004', 'FIELD_VERIFICATION_REQUIRED', 'لم يتم تحديد نقطة دخول المشروع على الخريطة', 'حدّد نقطة دخول المشروع على الخريطة في بيانات النشاط'));
+    hits.push(ruleHit('ENTRY-POINT-MISSING-004', 'FIELD_VERIFICATION_REQUIRED', 'لم يتم تحديد نقطة دخول المشروع على الخريطة', 'حدّد نقطة دخول المشروع على الخريطة في بيانات النشاط', undefined, 'NONE'));
   }
   if (activity.measurements.exitPointLat === null || activity.measurements.exitPointLng === null) {
-    hits.push(ruleHit('ENTRY-EXITPOINT-MISSING-005', 'FIELD_VERIFICATION_REQUIRED', 'لم يتم تحديد نقطة خروج المشروع على الخريطة', 'حدّد نقطة خروج المشروع على الخريطة في بيانات النشاط'));
+    hits.push(ruleHit('ENTRY-EXITPOINT-MISSING-005', 'FIELD_VERIFICATION_REQUIRED', 'لم يتم تحديد نقطة خروج المشروع على الخريطة', 'حدّد نقطة خروج المشروع على الخريطة في بيانات النشاط', undefined, 'NONE'));
   }
   if (activity.controls.accessRoadPaved === false) {
-    hits.push(ruleHit('ENTRY-ROADPAVED-006', 'RESTRICT_ACTIVITY', 'الطريق المؤدي للمدخل غير مسفلت أو غير ممهد', 'اسفلت الطريق المؤدي للمدخل أو مهّده بمادة تمنع تطاير الغبار'));
+    hits.push(ruleHit('ENTRY-ROADPAVED-006', 'RESTRICT_ACTIVITY', 'الطريق المؤدي للمدخل غير مسفلت أو غير ممهد', 'اسفلت الطريق المؤدي للمدخل أو مهّده بمادة تمنع تطاير الغبار', undefined, 'VIOLATION'));
   }
 
   // فرع وحدة غسيل الإطارات
   if (activity.controls.tireCleaningMethod === 'WHEEL_WASH') {
     if (activity.controls.sandTrapPresent === false) {
-      hits.push(ruleHit('ENTRY-SANDTRAP-007', 'RESTRICT_ACTIVITY', 'لا توجد مصيدة رمال في وحدة غسيل الإطارات', 'ركّب مصيدة رمال في وحدة غسيل الإطارات'));
+      hits.push(ruleHit('ENTRY-SANDTRAP-007', 'RESTRICT_ACTIVITY', 'لا توجد مصيدة رمال في وحدة غسيل الإطارات', 'ركّب مصيدة رمال في وحدة غسيل الإطارات', undefined, 'VIOLATION'));
     }
     if (activity.controls.oilSeparatorPresent === false) {
-      hits.push(ruleHit('ENTRY-OILSEP-008', 'RESTRICT_ACTIVITY', 'لا يوجد فاصل زيوت في وحدة غسيل الإطارات', 'ركّب فاصل زيوت في وحدة غسيل الإطارات'));
+      hits.push(ruleHit('ENTRY-OILSEP-008', 'RESTRICT_ACTIVITY', 'لا يوجد فاصل زيوت في وحدة غسيل الإطارات', 'ركّب فاصل زيوت في وحدة غسيل الإطارات', undefined, 'VIOLATION'));
     }
     if (activity.controls.washCycleDurationAdequate === false) {
       const wheelWashCycleMinSec = WHEEL_WASH_CYCLE_MIN_SEC();
-      hits.push(ruleHit('ENTRY-WASHCYCLE-009', 'RESTRICT_ACTIVITY', `مدة دورة غسيل الإطارات أقل من ${wheelWashCycleMinSec} ثانية لكل محور`, `اضبط مدة دورة الغسيل على ${wheelWashCycleMinSec} ثانية على الأقل لكل محور`));
+      hits.push(ruleHit('ENTRY-WASHCYCLE-009', 'RESTRICT_ACTIVITY', `مدة دورة غسيل الإطارات أقل من ${wheelWashCycleMinSec} ثانية لكل محور`, `اضبط مدة دورة الغسيل على ${wheelWashCycleMinSec} ثانية على الأقل لكل محور`, undefined, 'VIOLATION'));
     }
     if (activity.controls.washWaterReused === false) {
       hits.push(ruleHit('ENTRY-WASHREUSE-010', 'ALLOW_WITH_CONTROLS', 'يُفضَّل إعادة استخدام مياه غسيل الإطارات', 'أضف نظام إعادة استخدام لمياه غسيل الإطارات', undefined, 'NONE'));
@@ -847,22 +883,22 @@ function entryExitRules(
   // فرع غمر الإطارات بالمياه
   if (activity.controls.tireCleaningMethod === 'WATER_IMMERSION') {
     if (activity.controls.antiSlipMeshPresent === false) {
-      hits.push(ruleHit('ENTRY-IMMERSION-MESH-011', 'RESTRICT_ACTIVITY', 'لا توجد شبكة مانعة للانزلاق في منطقة غمر الإطارات', 'ركّب شبكة مانعة للانزلاق في منطقة غمر الإطارات'));
+      hits.push(ruleHit('ENTRY-IMMERSION-MESH-011', 'RESTRICT_ACTIVITY', 'لا توجد شبكة مانعة للانزلاق في منطقة غمر الإطارات', 'ركّب شبكة مانعة للانزلاق في منطقة غمر الإطارات', undefined, 'VIOLATION'));
     }
     if (activity.controls.immersionZoneLengthAdequate === false) {
       const immersionZoneMinLengthM = IMMERSION_ZONE_MIN_LENGTH_M();
-      hits.push(ruleHit('ENTRY-IMMERSION-LENGTH-012', 'RESTRICT_ACTIVITY', `طول منطقة غمر الإطارات أقل من ${immersionZoneMinLengthM} أمتار`, `وسّع منطقة غمر الإطارات إلى ${immersionZoneMinLengthM} أمتار على الأقل`));
+      hits.push(ruleHit('ENTRY-IMMERSION-LENGTH-012', 'RESTRICT_ACTIVITY', `طول منطقة غمر الإطارات أقل من ${immersionZoneMinLengthM} أمتار`, `وسّع منطقة غمر الإطارات إلى ${immersionZoneMinLengthM} أمتار على الأقل`, undefined, 'VIOLATION'));
     }
     if (activity.controls.collectionBasinPresent === false) {
-      hits.push(ruleHit('ENTRY-BASIN-013', 'RESTRICT_ACTIVITY', 'لا يوجد حوض سفلي لتجميع مخلفات غمر الإطارات', 'أنشئ حوضاً سفلياً لتجميع مخلفات غمر الإطارات'));
+      hits.push(ruleHit('ENTRY-BASIN-013', 'RESTRICT_ACTIVITY', 'لا يوجد حوض سفلي لتجميع مخلفات غمر الإطارات', 'أنشئ حوضاً سفلياً لتجميع مخلفات غمر الإطارات', undefined, 'VIOLATION'));
     }
   }
 
   if (activity.controls.truckPathCleanedWithin15Min === false) {
-    hits.push(ruleHit('ENTRY-PATHCLEAN-014', 'RESTRICT_ACTIVITY', 'لم يتم تنظيف مسار الشاحنات خلال 15 دقيقة', 'نظّف مسار الشاحنات خلال 15 دقيقة من كل عملية عبور'));
+    hits.push(ruleHit('ENTRY-PATHCLEAN-014', 'RESTRICT_ACTIVITY', 'لم يتم تنظيف مسار الشاحنات خلال 15 دقيقة', 'نظّف مسار الشاحنات خلال 15 دقيقة من كل عملية عبور', undefined, 'VIOLATION'));
   }
   if (activity.measurements.waterTracesBeyond15mFromGate === true) {
-    hits.push(ruleHit('ENTRY-WATERTRACE-015', 'RESTRICT_ACTIVITY', 'آثار مياه أو مخلفات ظاهرة على بعد 15 متراً من البوابة', 'أزل آثار المياه والمخلفات حول البوابة وقلّل كمية المياه المستخدمة في الغسيل'));
+    hits.push(ruleHit('ENTRY-WATERTRACE-015', 'RESTRICT_ACTIVITY', 'آثار مياه أو مخلفات ظاهرة على بعد 15 متراً من البوابة', 'أزل آثار المياه والمخلفات حول البوابة وقلّل كمية المياه المستخدمة في الغسيل', undefined, 'VIOLATION'));
   }
 
   return hits;
@@ -976,7 +1012,9 @@ function idleSurfaceRules(
         'IDLE-STABILIZE-001',
         'RESTRICT_ACTIVITY',
         `سطح غير نشط لأكثر من ${idleSurfaceMaxDays} أيام دون تثبيت`,
-        'ثبّت السطح غير النشط بمواد تثبيت أو أغطية واقية'
+        'ثبّت السطح غير النشط بمواد تثبيت أو أغطية واقية',
+        undefined,
+        'VIOLATION'
       )
     );
   }
@@ -984,7 +1022,7 @@ function idleSurfaceRules(
   // حالة الأغطية غير سليمة — مخالفة بذاتها بصرف النظر عن عدد الأيام
   if (activity.controls.idleSurfaceCoverIntact === false) {
     hits.push(
-      ruleHit('IDLE-COVER-002', 'RESTRICT_ACTIVITY', 'غطاء السطح غير النشط غير سليم أو تالف', 'أصلح أو استبدل غطاء السطح غير النشط التالف')
+      ruleHit('IDLE-COVER-002', 'RESTRICT_ACTIVITY', 'غطاء السطح غير النشط غير سليم أو تالف', 'أصلح أو استبدل غطاء السطح غير النشط التالف', undefined, 'VIOLATION')
     );
   }
 
@@ -1001,7 +1039,9 @@ function idleSurfaceRules(
         'IDLE-COVER-WIND-003',
         'FIELD_VERIFICATION_REQUIRED',
         `رياح تجاوزت ${idleSurfaceCoverInspectionWindKmh} كم/س — يلزم فحص أغطية الأسطح غير النشطة وإصلاحها فوراً`,
-        'انزل للموقع وافحص أغطية الأسطح غير النشطة الآن، وأصلح أي غطاء تضرر من الرياح'
+        'انزل للموقع وافحص أغطية الأسطح غير النشطة الآن، وأصلح أي غطاء تضرر من الرياح',
+        undefined,
+        'NONE'
       )
     );
   }

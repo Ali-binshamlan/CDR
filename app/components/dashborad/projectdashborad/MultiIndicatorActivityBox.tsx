@@ -28,13 +28,22 @@ export interface IndicatorSummary {
 }
 
 // DCR: مصدر واحد فقط (dust) — لا 'heat'/'crane' كما في مرقاب.
+//
+// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "مصدر القرار الرسمي ما
+// زال PARTIAL": decisionTargets كانت تُبنى من engineResult.windowEval.worst
+// الحي (DVI غير محفوظ بعد) بدل القرار الرسمي المخزَّن في final_decisions —
+// راجع تعليق buildRecentActivities الكامل في route.ts للتفاصيل الكاملة).
+// reason/requiredAction/weatherSnapshot حُذفت (كانت تُملأ من الحساب الحي،
+// ولم تكن مقروءة في أي مكان بالواجهة أصلاً — فحص شامل لكل مستهلكي
+// decisionTargets لم يجد أي عرض/استخدام لهذين الحقلين، فقط projectId/
+// activityId/source كمعرّفات صف للأرشفة/التعديل). decisionId الجديد إلزامي
+// (لا اختياري) — كل عنصر هنا الآن يُبنى حصراً من صف final_decisions محفوظ
+// فعلياً يحمل معرّفه الحقيقي، لا أي حساب حي.
 export interface UnifiedDecisionTarget {
   projectId: string;
   activityId: string;
   source: 'dust';
-  reason: string;
-  requiredAction: string;
-  weatherSnapshot: { label: string; value: string }[];
+  decisionId: string;
 }
 
 // 1. إصلاح مشكلة اللون الأخضر عند وجود إيقاف إلزامي

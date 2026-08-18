@@ -1,18 +1,25 @@
 // =============================================================
-// Rule Bundles — RCRC-NCEC-RIYADH-DUST-2026.2 وRIYADH-DUST-2026.3
+// Rule Bundles — RCRC-NCEC-RIYADH-DUST-2026.3
 // حزم قواعد مجمَّدة وموثَّقة بالإصدار (القسم 5.3 من "دليل الإصلاح الجذري
 // لمنظومة مرقاب") — تفصل النطاق التشغيلي لمرقاب (operational) عن الحكم
 // التنظيمي الرسمي (regulatory) بدل خلطهما في حدود PM10 واحدة كما كانت في
 // rulebook.ts. لا تُعدَّل حزمة بعد نشرها؛ أي تغيير على الحدود يتطلب حزمة
-// جديدة تُضاف إلى RULE_BUNDLES أدناه — هذا بالضبط ما فعلته 2026.3 (راجع
-// تعليقها الكامل أدناه).
+// جديدة تُضاف إلى RULE_BUNDLES أدناه.
 //
 // خطأ مكتشَف ومُصلَح سابقاً (طلب صريح من المستخدم): كانت حزمة
 // RIYADH_DUST_2026_3 سابقة (نطاق تشغيلي أضيق: أخضر≤150، تقييد شديد من
-// 321) معرَّفة هنا بجانب RIYADH_DUST_2026_2 كمرشَّحة للاعتماد لاحقاً بلا
-// أي مستهلك فعلي — حُذفت بالكامل حينها. الاسم RIYADH_DUST_2026_3 يُعاد
-// استخدامه الآن (حزمة مختلفة تماماً) لغرض مختلف: تصحيح توثيقي/ربط فعلي
-// لحقول regulatory الثلاثة غير المقروءة (راجع Pm10RegulatoryBoundsV3).
+// 321) معرَّفة هنا بجانب حزمة 2026.2 (سابقة، محذوفة الآن بالكامل) كمرشَّحة
+// للاعتماد لاحقاً بلا أي مستهلك فعلي — حُذفت بالكامل حينها. الاسم
+// RIYADH_DUST_2026_3 يُعاد استخدامه الآن (حزمة مختلفة تماماً) لغرض مختلف:
+// تصحيح توثيقي/ربط فعلي لحقول regulatory الثلاثة غير المقروءة.
+//
+// حزمة RIYADH_DUST_2026_2 (السجل التاريخي السابق لهذا الملف) حُذفت نهائياً
+// (طلب صريح من المستخدم — مراجعة كود خارجي: "Rule Bundle قديم خطير يجب
+// حذفه... استيراده مستقبلاً بالخطأ يستطيع إعادة السياسة القديمة"): لم تكن
+// مستوردة من أي مكان آخر في المشروع (تحقُّق شامل)، وكانت مُبقاة كسجل توثيقي
+// فقط داخل هذا الملف نفسه، لا ACTIVE_RULE_BUNDLE. القوانين/القيم نفسها لم
+// تتغيّر بين 2026.2 و2026.3 (2 دقيقة، 30 دقيقة، >340 كما هي بالضبط) — فقط
+// تصحيح أسماء الحقول لتعكس الدلالة الفعلية (راجع RIYADH_DUST_2026_3 أدناه).
 // =============================================================
 
 export interface Pm10OperationalBounds {
@@ -22,32 +29,6 @@ export interface Pm10OperationalBounds {
   severeMaxInclusive: number;
 }
 
-// خطأ توثيقي مكتشَف ومُصلَح (مراجعة كود خارجي — "حزمة القواعد نفسها ما
-// زالت تحمل السياسة القديمة"): الحقول الثلاثة (violationDurationMsExclusive/
-// suspensionThresholdInclusive/suspensionDurationMsInclusive) في 2026.2
-// كانت معرَّفة هنا لكن لا يقرأها أي كود حي إطلاقاً — dustEvaluation.ts/
-// rulebook.ts استخدما ثوابت محلية مستقلة تماماً عن هذه الحزمة (PM10_
-// VIOLATION_CONFIRM_MINUTES=2, PM10_SUSPENSION_MINUTES=30، ومقارنة >340
-// مباشرة). لا تغيير في القوانين/القيم نفسها هنا (2/30 دقيقة، >340 تبقى
-// كما هي بالضبط) — فقط ربط فعلي: 2026.3 تصحّح الأسماء لتعكس الدلالة
-// الفعلية (violationDurationMsInclusive بدل Exclusive — الإصلاح السابق
-// جعل اكتمال الدقيقتين كافياً `>=` لا تجاوزهما `>`؛ activityStopThresholdExclusive/
-// activityStopDurationMsInclusive بدل suspensionThresholdInclusive/
-// suspensionDurationMsInclusive — الإيقاف مقصور على >340 حصراً، لا نطاق
-// التحذير 250)، ودustEvaluation.ts/rulebook.ts يقرآن منها فعلياً بدل
-// الثوابت المحلية — راجع تعليق RIYADH_DUST_2026_3 أدناه للتفاصيل الكاملة.
-export interface Pm10RegulatoryBoundsV2 {
-  warningThresholdInclusive: number;
-  violationThresholdExclusive: number;
-  violationDurationMsExclusive: number;
-  suspensionThresholdInclusive: number;
-  suspensionDurationMsInclusive: number;
-}
-
-// 2026.3 فقط — الشكل الجديد المطابق للدلالة الفعلية المُطبَّقة في الكود
-// (راجع تعليق Pm10RegulatoryBoundsV2 أعلاه). لا حقل operational منفصل هنا
-// لأن operational (150/250/340 التشغيلية) لم تتغيّر بين 2026.2 و2026.3 —
-// كلا الحزمتين تشتركان بنفس Pm10OperationalBounds.
 export interface Pm10RegulatoryBoundsV3 {
   warningThresholdInclusive: number;
   violationThresholdExclusive: number;
@@ -57,15 +38,12 @@ export interface Pm10RegulatoryBoundsV3 {
 }
 
 export interface Pm10EvidenceBounds {
-  liveFreshnessMsInclusive: number;
   maxContinuityGapMs: number;
   sourceMustBe: 'device';
 }
 
-// عام على شكل regulatory (V2 القديم أو V3 الحالي) — يسمح لحزم مختلفة
-// الإصدار بالتعايش في RULE_BUNDLES بأشكال حقول مختلفة، بلا فقدان أمان
-// الأنواع لكل حزمة بمفردها (RIYADH_DUST_2026_2 يبقى Pm10RegulatoryBoundsV2
-// حرفياً، RIYADH_DUST_2026_3 يصبح Pm10RegulatoryBoundsV3).
+// عام على شكل regulatory — يسمح لحزم مستقبلية بأشكال حقول مختلفة
+// بالتعايش في RULE_BUNDLES، بلا فقدان أمان الأنواع لكل حزمة بمفردها.
 export interface RuleBundle<TRegulatory = Pm10RegulatoryBoundsV3> {
   id: string;
   effectiveFrom: string;
@@ -91,60 +69,24 @@ function deepFreeze<T>(value: T): Readonly<T> {
 // حدود الحكم التنظيمي (regulatory) — مستقلة تماماً عن الأعلى.
 //
 // maxContinuityGapMs (90 ثانية) هامش منطقي بعد فترة تسجيل معتمدة لا تتجاوز
-// دقيقة (الملحق ب، صفحة 82) — ليس دليل اتصال مستمر تلقائي؛ الأربع دقائق
-// (liveFreshnessMsInclusive) هي أقصى عمر قراءة للقرار الحي، لا فجوة استمرار.
+// دقيقة (الملحق ب، صفحة 82) — ليس دليل اتصال مستمر تلقائي.
 //
-// السجل (Registry) — لا تُعدَّل RIYADH_DUST_2026_2 بعد نشرها. مُبقاة كسجل
-// تاريخي فقط (ليست ACTIVE_RULE_BUNDLE بعد الآن — راجع RIYADH_DUST_2026_3
-// أدناه) — أضِف حزماً جديدة هنا (القسم 5.3) لأي تعديل لاحق، لا تعدّل حزمة
-// قائمة.
-export const RIYADH_DUST_2026_2: Readonly<RuleBundle<Pm10RegulatoryBoundsV2>> = deepFreeze({
-  id: 'RCRC-NCEC-RIYADH-DUST-2026.2',
-  effectiveFrom: '2026-01-01T00:00:00+03:00',
-  pm10: {
-    // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد إلى 3 مستويات فقط،
-    // لا 4): كانت هذه الحدود تُنتج 4 مستويات فعلية في pm10ThresholdRule
-    // (طبيعي/احتراز 201-249/ضوابط 250-339/تقييد شديد 340 فقط)، بينما الوثيقة
-    // التنظيمية تنص على 3 مستويات حصراً: <250 سماح، 250-340 تحذير+تحكم
-    // معزَّز موحَّد (بلا تدرّج داخلي)، >340 مخالفة. الإصلاح: normalMaxInclusive
-    // يمتد الآن حتى 249 (يبتلع نطاق الاحتراز السابق بالكامل)،
-    // precautionMaxInclusive يساوي normalMaxInclusive فعلياً (لا نطاق احتراز
-    // منفصل بعد الآن)، وcontrolsMaxInclusive=340 (يبتلع نطاق التقييد الشديد
-    // السابق 340 فقط) — فرع RESTRICT_ACTIVITY/PRECAUTION في pm10ThresholdRule
-    // حُذف، يبقى فرع WARNING واحد يغطي [250,340] بالكامل. لا تغيير على حدود
-    // regulatory/evidence (340 حد المخالفة، 120s المدة، 250/30min التعليق) —
-    // هذه الثلاثة مطابقة للوثيقة التنظيمية أصلاً بلا حاجة لتعديل.
-    operational: {
-      normalMaxInclusive: 249,
-      precautionMaxInclusive: 249,
-      controlsMaxInclusive: 340,
-      severeMaxInclusive: 340,
-    },
-    regulatory: {
-      warningThresholdInclusive: 250,
-      violationThresholdExclusive: 340,
-      violationDurationMsExclusive: 120_000,
-      suspensionThresholdInclusive: 250,
-      suspensionDurationMsInclusive: 1_800_000,
-    },
-    evidence: {
-      liveFreshnessMsInclusive: 1_200_000,
-      maxContinuityGapMs: 90_000,
-      sourceMustBe: 'device',
-    },
-  },
-});
-
-// حزمة جديدة (خطأ توثيقي مكتشَف ومُصلَح — مراجعة كود خارجي: "حزمة القواعد
-// نفسها ما زالت تحمل السياسة القديمة"، راجع تعليق Pm10RegulatoryBoundsV3
-// أعلاه للتفاصيل الكاملة). لا تغيير في القوانين/القيم — 2 دقيقة، 30 دقيقة،
-// >340 تبقى كما هي بالضبط في dustEvaluation.ts/rulebook.ts؛ فقط تصحيح
-// أسماء الحقول لتعكس الدلالة الفعلية، وربط الكود الحي بقراءتها من هنا
-// فعلياً (dustEvaluation.ts: PM10_SUSTAINED_VIOLATION_THRESHOLD/
-// PM10_VIOLATION_CONFIRM_MINUTES/PM10_SUSPENSION_MINUTES، rulebook.ts:
-// PM10_VIOLATION_STOP_UG_M3/PM10_SUSPENSION_MINUTES تُشتَق الآن من
-// ACTIVE_RULE_BUNDLE.pm10.regulatory بدل ثوابت محلية مستقلة). operational
-// (150/250/340 التشغيلية) لم تتغيّر — مطابقة حرفياً لـ2026.2.
+// حقل liveFreshnessMsInclusive (كان 20 دقيقة هنا) حُذف نهائياً (طلب صريح من
+// المستخدم — مراجعة كود خارجي: "تعارض حداثة PM10 ما زال موجودًا... Runtime =
+// 4 min، Rule Bundle metadata = 20 min"): لم يكن مقروءاً من أي كود فعلياً؛
+// أقصى عمر قراءة للقرار الحي مصدره الوحيد الآن LIVE_FIELD_FRESHNESS_MS في
+// field-freshness.ts (4 دقائق بالضبط)، لا نسخة موازية هنا.
+//
+// السجل (Registry) — لا تُعدَّل حزمة بعد نشرها. أضِف حزماً جديدة هنا (القسم
+// 5.3) لأي تعديل لاحق، لا تعدّل حزمة قائمة.
+//
+// القوانين/القيم لم تتغيّر عن السياسة السابقة (2 دقيقة، 30 دقيقة، >340 كما
+// هي بالضبط) — فقط تصحيح أسماء الحقول لتعكس الدلالة الفعلية، وربط الكود
+// الحي بقراءتها من هنا فعلياً (dustEvaluation.ts:
+// PM10_SUSTAINED_VIOLATION_THRESHOLD/PM10_VIOLATION_CONFIRM_MINUTES/
+// PM10_SUSPENSION_MINUTES، rulebook.ts: PM10_VIOLATION_STOP_UG_M3/
+// PM10_SUSPENSION_MINUTES تُشتَق من ACTIVE_RULE_BUNDLE.pm10.regulatory بدل
+// ثوابت محلية مستقلة).
 export const RIYADH_DUST_2026_3: Readonly<RuleBundle<Pm10RegulatoryBoundsV3>> = deepFreeze({
   id: 'RCRC-NCEC-RIYADH-DUST-2026.3',
   effectiveFrom: '2026-08-16T00:00:00+03:00',
@@ -170,7 +112,6 @@ export const RIYADH_DUST_2026_3: Readonly<RuleBundle<Pm10RegulatoryBoundsV3>> = 
       activityStopDurationMsInclusive: 1_800_000,
     },
     evidence: {
-      liveFreshnessMsInclusive: 1_200_000,
       maxContinuityGapMs: 90_000,
       sourceMustBe: 'device',
     },
@@ -178,7 +119,6 @@ export const RIYADH_DUST_2026_3: Readonly<RuleBundle<Pm10RegulatoryBoundsV3>> = 
 });
 
 export const RULE_BUNDLES = {
-  'RCRC-NCEC-RIYADH-DUST-2026.2': RIYADH_DUST_2026_2,
   'RCRC-NCEC-RIYADH-DUST-2026.3': RIYADH_DUST_2026_3,
 } as const;
 
