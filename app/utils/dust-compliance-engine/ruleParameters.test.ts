@@ -9,12 +9,10 @@ import {
   withRuleParametersLock,
 } from './ruleParameters';
 
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
-// لا يوجد نظام حقيقي يدعم إنشاء نسخة قاعدة، النشر الذري، منع تعديل نسخة
-// منشورة، التراجع لنسخة سابقة"): هذا الملف يختبر الطبقة التي تجعل العتبات
-// الرقمية في rulebook.ts/engine.ts قابلة للنشر فعلياً — getRuleParameters
-// تبدأ بالافتراضي المطابق للثوابت القديمة، وrefreshRuleParameters تستبدلها
-// بآخر نسخة PUBLISHED من قاعدة البيانات.
+// Tests the layer that makes numeric thresholds in rulebook.ts/engine.ts
+// publishable at runtime — getRuleParameters starts from defaults matching
+// the old constants, and refreshRuleParameters replaces them with the latest
+// PUBLISHED version from the database.
 
 function mockSupabase(
   rows: { id?: string; parameter_code: string; value: number }[] | null,
@@ -59,7 +57,7 @@ describe('ruleParameters', () => {
 
     const supabaseFail = mockSupabase(null, { message: 'db down' });
     await refreshRuleParameters(supabaseFail);
-    // القيمة السابقة (12) تبقى كما هي — لا ترجع لـ15 الافتراضية بصمت.
+    // Previous value (12) is retained — must not silently fall back to the default 15.
     expect(getRuleParameters().STONE_CUTTING_WIND_STOP_KMH).toBe(12);
   });
 
@@ -86,17 +84,16 @@ describe('ruleParameters', () => {
     expect(getRuleParameters().STONE_CUTTING_WIND_STOP_KMH).toBe(12);
     expect(getRuleParameters().UNPAVED_SPEED_LIMIT_KMH).toBe(8);
 
-    // دورة ثانية تُرجع فقط معاملاً واحداً منشوراً الآن (الآخر رجع لحالة
-    // غير منشورة نظرياً) — يجب أن يرجع UNPAVED_SPEED_LIMIT_KMH للافتراضي،
-    // لا يبقى عالقاً على القيمة القديمة من الدورة الأولى.
+    // A second refresh returns only one published parameter now (the other
+    // reverted to unpublished) — UNPAVED_SPEED_LIMIT_KMH must fall back to
+    // the default, not stay stuck on the first refresh's value.
     const second = mockSupabase([{ parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }]);
     await refreshRuleParameters(second);
     expect(getRuleParameters().UNPAVED_SPEED_LIMIT_KMH).toBe(DEFAULT_RULE_PARAMETERS.UNPAVED_SPEED_LIMIT_KMH);
   });
 
-  // خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات المستخدمة مع
-  // القرار"): getActiveParameterVersionIds تُلتقَط بعد refresh وتُمرَّر حتى
-  // final_decisions.rule_parameter_version_snapshot — راجع evaluateProject.ts.
+  // getActiveParameterVersionIds is captured after refresh and passed through
+  // to final_decisions.rule_parameter_version_snapshot — see evaluateProject.ts.
   describe('getActiveParameterVersionIds', () => {
     it('تُرجع كائناً فارغاً قبل أي refresh', () => {
       expect(getActiveParameterVersionIds()).toEqual({});
@@ -142,12 +139,11 @@ describe('ruleParameters', () => {
     });
   });
 
-  // خطأ سباق تزامن حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لقطة القواعد
-  // قابلة لسباق تزامن، ولقطة المدخلات لا تكفي لإعادة إنتاج القرار تاريخياً"):
-  // withRuleParametersLock يضمن تنفيذاً تسلسلياً (لا متشابكاً) لكل القسم
-  // الحرج من refresh حتى استهلاك القيم عبر دورات evaluateProject المتزامنة
-  // — راجع تعليق evaluateProject.ts الكامل للسيناريو الفعلي (3 مصادر
-  // استدعاء مستقلة قد تتشابك على نفس الـinstance).
+  // withRuleParametersLock guarantees sequential (non-interleaved) execution
+  // of the critical section from refresh through value consumption across
+  // concurrent evaluateProject cycles — see the full comment in
+  // evaluateProject.ts for the real scenario (3 independent call sites that
+  // can interleave on the same instance).
   describe('withRuleParametersLock', () => {
     it('استدعاءان متزامنان يُنفَّذان بالتسلسل — الثاني ينتظر انتهاء الأول كاملاً قبل البدء', async () => {
       const executionOrder: string[] = [];
@@ -166,7 +162,7 @@ describe('ruleParameters', () => {
       const [firstResult, secondResult] = await Promise.all([first, second]);
       expect(firstResult).toBe('first-result');
       expect(secondResult).toBe('second-result');
-      // second:start لا يظهر إلا بعد first:end — لا تشابك بينهما إطلاقاً.
+      // second:start only appears after first:end — no interleaving at all.
       expect(executionOrder).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
     });
 
@@ -174,8 +170,9 @@ describe('ruleParameters', () => {
       const slowSupabase = mockSupabase([{ id: 'v-slow', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 11 }]);
       const fastSupabase = mockSupabase([{ id: 'v-fast', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 22 }]);
 
-      // القفل الأول: refresh ثم "استهلاك" متأخر (يحاكي await فعلي بين
-      // refresh والاستهلاك، مثل استعلامات DB الوسيطة في evaluateProject.ts).
+      // First lock: refresh, then a delayed "consumption" (simulates a real
+      // await between refresh and consumption, like intervening DB queries
+      // in evaluateProject.ts).
       const firstCapturedValue: { value?: number; versionId?: string } = {};
       const first = withRuleParametersLock(async () => {
         await refreshRuleParameters(slowSupabase);
@@ -184,8 +181,8 @@ describe('ruleParameters', () => {
         firstCapturedValue.versionId = getActiveParameterVersionIds().STONE_CUTTING_WIND_STOP_KMH;
       });
 
-      // القفل الثاني (محاولة تزامن): لولا القفل، refresh هذا كان سيُغيِّر
-      // current تحت أقدام القفل الأول أثناء انتظاره.
+      // Second lock (attempted concurrency): without the lock, this refresh
+      // would change `current` out from under the first lock while it waits.
       const secondCapturedValue: { value?: number; versionId?: string } = {};
       const second = withRuleParametersLock(async () => {
         await refreshRuleParameters(fastSupabase);
@@ -195,11 +192,11 @@ describe('ruleParameters', () => {
 
       await Promise.all([first, second]);
 
-      // القفل الأول يجب أن يرى قيمته الخاصة (11/v-slow) رغم التأخير، لا
-      // قيمة القفل الثاني التي "تسرّبت" أثناء انتظاره.
+      // The first lock must see its own value (11/v-slow) despite the delay,
+      // not a value "leaked" from the second lock during its wait.
       expect(firstCapturedValue.value).toBe(11);
       expect(firstCapturedValue.versionId).toBe('v-slow');
-      // القفل الثاني (نفّذ بعد انتهاء الأول بالكامل) يرى قيمته الخاصة.
+      // The second lock (ran only after the first fully finished) sees its own value.
       expect(secondCapturedValue.value).toBe(22);
       expect(secondCapturedValue.versionId).toBe('v-fast');
     });

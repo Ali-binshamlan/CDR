@@ -1,9 +1,9 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Rulebook
-// منطق التصنيف والقواعد المأخوذ من دليل RCRC/NCEC لضبط الغبار في
-// مشاريع الإنشاء بمدينة الرياض + مستند "مرقاب" التصميمي (الأقسام 6-9).
-// كل قاعدة IF/THEN دالة منفصلة تُرجع DustRuleHit[] — بلا eval، بلا
-// تفسير ديناميكي (القسم 17.1 من مستند "مرقاب").
+// Classification and rule logic from the RCRC/NCEC dust-control guide for
+// Riyadh construction projects, plus the "Marqab" design document (Sections 6-9).
+// Each IF/THEN rule is a separate function returning DustRuleHit[] — no eval,
+// no dynamic interpretation (Marqab Section 17.1).
 // =============================================================
 
 import type {
@@ -20,10 +20,10 @@ import { getRuleParameters } from './ruleParameters';
 
 export const RULEBOOK_VERSION = ACTIVE_RULE_BUNDLE.id;
 
-// تسمية عربية لكل نشاط تنظيمي (RegulatoryDustActivity) — تُعرض في بطاقة
-// الامتثال بدل مسمى نشاط DVI الفيزيائي (activity_type)، لأن المستخدم يهتم
-// بالنشاط التنظيمي المحدد الذي تُبنى عليه قرارات الإيقاف/التقييد (هدم/كسارة/
-// حركة شاحنات...)، لا التصنيف الفيزيائي العام.
+// Arabic label for each regulatory activity (RegulatoryDustActivity) — shown on
+// the compliance card instead of the underlying physical DVI activity_type,
+// since the user cares about the specific regulatory activity that stop/restrict
+// decisions are built on, not the general physical classification.
 export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = {
   EARTHWORKS: 'أعمال الحفر والترابية',
   SITE_TRAFFIC: 'حركة الشاحنات والطرق الداخلية',
@@ -38,68 +38,67 @@ export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = {
   OTHER: 'نشاط غبار عام',
 };
 
-// حد الكسارة من المستقبِل الحساس: الدليل التنظيمي يذكر 200م في موضع (القسم
-// 3.5، تخزين المواد) و500م في موضع آخر (القسم 3.8، مناطق الكسارات تحديداً).
-// نطبّق الحد الأكثر تحفظاً (500م) للكسارة تحديداً حتى يصدر تفسير رسمي من
-// الجهة — راجع ملاحظة "مرقاب" القسم 9.5.
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا نظام إدارة قواعد حقيقي: لا
-// نسخ، لا نشر، لا rollback"): العتبات أدناه لم تعد ثوابت TypeScript صرفة —
-// تُقرأ الآن حية من getRuleParameters() (ruleParameters.ts)، القيمة
-// المنشورة فعلياً حالياً (أو الافتراضي المطابق لما كان هنا قبل هذا التغيير
-// إن لم يُنشَر أي شيء بعد). دوال getter صغيرة بدل استبدال كل استخدام مباشرة
-// بـgetRuleParameters().X المطوَّل — الأسماء والدلالة تبقيان كما هما تماماً
-// في بقية الملف، فقط القراءة تحوّلت من حرفي ثابت إلى حالة حية قابلة للنشر.
+// Crusher-to-sensitive-receptor distance: the regulatory guide cites 200m in
+// one place (Section 3.5, material storage) and 500m in another (Section 3.8,
+// crusher zones specifically). We apply the more conservative 500m for the
+// crusher specifically until an official clarification is issued — see Marqab
+// Section 9.5. These thresholds are read live from getRuleParameters()
+// (ruleParameters.ts) — the currently published value (or the default matching
+// the prior hardcoded constant if nothing has been published yet) — via small
+// getter functions instead of inlining getRuleParameters().X everywhere; names
+// and meaning are unchanged elsewhere in the file, only the read source moved
+// from a static literal to a publishable live value.
 const CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M = () => getRuleParameters().CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M;
 const CRUSHER_GENERAL_RECEPTOR_DISTANCE_M = () => getRuleParameters().CRUSHER_GENERAL_RECEPTOR_DISTANCE_M;
-// حد مساحة الفئة الأولى (منخفضة المخاطر) — يُستخدم في classifyProject فقط
-// لتصنيف فئة المشروع حسب المساحة (القسم 6). لا علاقة له بأهلية تشغيل
-// الكسارة؛ أهلية الكسارة تُحدَّد حصراً عبر riskClass النهائي في crusherRules
-// (CRUSHER-CATEGORY-001)، الذي يسمح للفئة الثالثة بصرف النظر عن سبب وصول
-// المشروع إليها (مساحة كبيرة، أو حركة شاحنات، أو تصريح صريح بوجود كسارة).
-// مُستبعَدة عمداً من نظام النسخ (raise the bar): تُحدِّد الفئة التنظيمية
-// الأساسية للمشروع كاملاً، لا عتبة قاعدة مفردة — تبقى ثابتاً برمجياً.
+// Category I (low risk) area threshold — used only in classifyProject to
+// classify the project category by area (Section 6). Unrelated to crusher
+// operating eligibility, which is determined solely by the final riskClass in
+// crusherRules (CRUSHER-CATEGORY-001), which permits Category III regardless of
+// why the project reached it (large area, truck traffic, or an explicit crusher
+// declaration). Deliberately excluded from the rule-parameter publishing system —
+// this determines the project's overall regulatory category, not a single rule
+// threshold, so it stays a hardcoded constant.
 const CATEGORY_I_MAX_AREA_M2 = 2000;
 const STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M = () => getRuleParameters().STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M;
 const DEMOLITION_MAX_AREA_M2 = () => getRuleParameters().DEMOLITION_MAX_AREA_M2;
 const IDLE_SURFACE_MAX_DAYS = () => getRuleParameters().IDLE_SURFACE_MAX_DAYS;
 // UNPAVED_SPEED_LIMIT_KMH/PAVED_SPEED_LIMIT_KMH/SPILL_CLEANUP_LIMIT_MIN
-// (SITE_TRAFFIC)، DROP_HEIGHT_NORMAL_LIMIT_M/DROP_HEIGHT_HIGH_WIND_LIMIT_M
-// (EARTHWORKS/MATERIAL_HANDLING_STOCKPILE)، وDEBRIS_PILE_MAX_HEIGHT_M
-// (CD_WASTE_TRANSPORT) حُذفت — القواعد الوحيدة التي استخدمتها حُذفت (طلب
-// صريح من المستخدم)، راجع تعليقات siteTrafficRules/earthworksRules/
-// stockpileRules/cdWasteTransportRules.
+// (SITE_TRAFFIC), DROP_HEIGHT_NORMAL_LIMIT_M/DROP_HEIGHT_HIGH_WIND_LIMIT_M
+// (EARTHWORKS/MATERIAL_HANDLING_STOCKPILE), and DEBRIS_PILE_MAX_HEIGHT_M
+// (CD_WASTE_TRANSPORT) were removed along with the only rules that used them —
+// see the siteTrafficRules/earthworksRules/stockpileRules/cdWasteTransportRules comments.
 const IMMERSION_ZONE_MIN_LENGTH_M = () => getRuleParameters().IMMERSION_ZONE_MIN_LENGTH_M;
 const WHEEL_WASH_CYCLE_MIN_SEC = () => getRuleParameters().WHEEL_WASH_CYCLE_MIN_SEC;
 const STONE_CUTTING_WIND_STOP_KMH = () => getRuleParameters().STONE_CUTTING_WIND_STOP_KMH;
-// A6 — كفاءة فلاتر PM10 الدنيا في الصوامع ومحطات الخلط المغلقة (القسم
-// الرابع، الفقرة "ب"؛ "الاستخراج التنظيمي من المرفق" القسم 6 — الحد المعتمد
-// للاستمرار أثناء إيقاف الرياح فوق 25 كم/س).
-// مصدَّرة (لا محلية فقط) لأن engine.ts يحتاجها أيضاً لربط استثناء البيتشنج
-// المغلق ببوابة إيقاف الرياح >25 كم/س (GATE-WIND-ABOVE-25-004)، لا فقط
-// لقاعدة BATCHING-FILTER-002 المحلية هنا.
+// A6 — minimum PM10 filter efficiency for sealed silos and enclosed batching
+// plants (Section 4-b; the annex regulatory extraction, Section 6 — the
+// threshold used to stay operational during the >25 km/h wind stop).
+// Exported (not local-only) because engine.ts also needs it to tie the enclosed
+// batching exemption to the >25 km/h wind stop gate (GATE-WIND-ABOVE-25-004),
+// not just to the local BATCHING-FILTER-002 rule here.
 export const BATCHING_PM10_FILTER_MIN_PERCENT = () => getRuleParameters().BATCHING_PM10_FILTER_MIN_PERCENT;
-// A4 — سرعة الرياح التي تستوجب فحص أغطية الأسطح غير النشطة وإصلاحها فوراً
-// (مختلفة عن عتبات 15/25 كم/س العامة — خاصة بحالة الأغطية تحديداً).
+// A4 — wind speed above which idle-surface cover must be inspected and
+// repaired immediately (distinct from the general 15/25 km/h thresholds — specific to cover condition).
 const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = () => getRuleParameters().IDLE_SURFACE_COVER_INSPECTION_WIND_KMH;
 
-// حدود PM10 — 3 مستويات فقط (طلب صريح من المستخدم، توحيد عن 4 فروع سابقة):
-// النطاق التشغيلي لمرقاب منفصل عن الحكم التنظيمي الرسمي
-// (warningThresholdInclusive/violationThresholdExclusive أدناه). لا تُعدَّل
-// هذه القيم هنا مباشرة — أي تغيير يتطلب حزمة قواعد جديدة في
-// app/utils/rule-bundles.
-//   ≤249    → سماح (ALLOW) — لا Trigger خاص بـPM10
-//   250-340 → تحذير + تحكم معزَّز موحَّد (ALLOW_WITH_CONTROLS)، مع قاعدة
-//             استمرار 30 دقيقة (RCRC-PM10-30M-SUSPENSION-012) أدناه
-//   > 340   → معلَّق/مؤكَّد (STOP_AFFECTED_ACTIVITY/MANDATORY_STOP)، بقاعدة
-//             استمرار الدقيقتين (>120s)
-// مُصدَّر (لا محلي فقط) — يُستخدَم أيضاً في buildPlanningForecastResult
-// (engine.ts) لتحديد "هل التوقّع صالح للنشاط؟" بناءً على الحكم التنظيمي، لا
-// DVI الفيزيائي وحده (راجع تعليق isFavorable هناك للسبب الكامل).
+// PM10 thresholds — 3 levels only (unified from 4 previous branches): Marqab's
+// operational range is separate from the official regulatory judgment
+// (warningThresholdInclusive/violationThresholdExclusive below). Don't edit
+// these values directly here — any change requires a new rule bundle in app/utils/rule-bundles.
+//   <=249   -> allowed (ALLOW) — no PM10-specific trigger
+//   250-340 -> unified warning + enhanced controls (ALLOW_WITH_CONTROLS), with
+//              the 30-minute sustain rule (RCRC-PM10-30M-SUSPENSION-012) below
+//   > 340   -> pending/confirmed (STOP_AFFECTED_ACTIVITY/MANDATORY_STOP), with
+//              the 2-minute sustain rule (>120s)
+// Exported (not local-only) — also used in buildPlanningForecastResult
+// (engine.ts) to determine "is the forecast suitable for the activity?" based
+// on the regulatory judgment, not physical DVI alone (see the isFavorable
+// comment there for the full rationale).
 export const PM10_WARNING_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.warningThresholdInclusive;
 const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
 
 // -----------------------------------------------------------------------
-// تصنيف فئة مخاطر المشروع (القسم 6 من "مرقاب"، جدول 1 من الدليل التنظيمي)
+// Project risk category classification (Marqab Section 6, Table 1 of the regulatory guide)
 // -----------------------------------------------------------------------
 export function classifyProject(profile: DustProjectComplianceProfile): {
   riskClass: DustRiskClass;
@@ -124,8 +123,8 @@ export function classifyProject(profile: DustProjectComplianceProfile): {
     return { riskClass: 'CATEGORY_III_HIGH', reasonAr: 'يوجد محطة خلط خرساني داخل الموقع' };
   }
 
-  // حماية من التصنيف المنخفض الكاذب: لا يجوز استبعاد الفئة الثالثة إذا كان
-  // أي محفز عالي الخطورة مجهولاً — نقص البيانات لا يساوي خطراً منخفضاً.
+  // Guard against a false-low classification: Category III can never be ruled
+  // out when any high-risk trigger is unknown — missing data is not equivalent to low risk.
   if (
     siteAreaM2 === null || siteAreaM2 === undefined ||
     dailyTruckMovements === null || dailyTruckMovements === undefined ||
@@ -142,7 +141,7 @@ export function classifyProject(profile: DustProjectComplianceProfile): {
 }
 
 // -----------------------------------------------------------------------
-// تصنيف نطاق الرياح (بروتوكول الملحق أ)
+// Wind band classification (Annex A protocol)
 // -----------------------------------------------------------------------
 export function classifyWind(windSpeedKmh: number | null): DustWindBand {
   if (windSpeedKmh === null || windSpeedKmh === undefined) return 'UNKNOWN';
@@ -152,10 +151,10 @@ export function classifyWind(windSpeedKmh: number | null): DustWindBand {
   return 'ABOVE_25';
 }
 
-// بوابة الرياح التنظيمية لكل ساعة على حدة (نفس عتبة GATE-WIND-ABOVE-25-004
-// في engine.ts) — تُستخدم لوسم شبكة التوقعات الساعية (workDayHourly) بلا
-// تشغيل محرك الامتثال الكامل لكل ساعة؛ فقط نفس شرط البوابة العامة: نشاط
-// مكشوف ومولّد للغبار + رياح >25 كم/س لتلك الساعة تحديداً.
+// Per-hour regulatory wind gate (same threshold as GATE-WIND-ABOVE-25-004 in
+// engine.ts) — used to tag the hourly forecast grid (workDayHourly) without
+// running the full compliance engine per hour; just the same gate condition:
+// exposed dust-generating activity + >25 km/h wind for that specific hour.
 export function isRegulatoryWindGateActive(
   windSpeedKmh: number | null,
   isDustGenerating: boolean,
@@ -165,7 +164,7 @@ export function isRegulatoryWindGateActive(
 }
 
 // -----------------------------------------------------------------------
-// ترتيب أولوية القرار (القسم 8 من "مرقاب") — الأعلى دائماً يفوز
+// Decision priority order (Marqab Section 8) — highest always wins
 // -----------------------------------------------------------------------
 export const DECISION_PRIORITY: Record<DustComplianceDecisionCategory, number> = {
   ALLOW: 0,
@@ -194,7 +193,8 @@ export function decisionFromRules(
     }
   }
 
-  // نقص البيانات الحرجة يمنع القرار الأخضر فقط — لا يُخفِّض قراراً أشد قائماً.
+  // Missing critical data only blocks a green decision — it never downgrades an
+  // already-worse decision.
   if (
     missingCriticalInputs.length > 0 &&
     DECISION_PRIORITY.FIELD_VERIFICATION_REQUIRED > DECISION_PRIORITY[decision]
@@ -206,31 +206,32 @@ export function decisionFromRules(
 }
 
 // -----------------------------------------------------------------------
-// قواعد الأنشطة التنظيمية (القسم 9 من "مرقاب")
+// Regulatory activity rules (Marqab Section 9)
 // -----------------------------------------------------------------------
 
-// actionAr مستقل تماماً عن messageAr (راجع تعليق DustRuleHit في types.ts) —
-// إجراء تصحيحي موجَّه للمستخدم، وليس إعادة وصف للمخالفة نفسها.
+// actionAr is fully independent of messageAr (see the DustRuleHit comment in
+// types.ts) — a corrective action directed at the user, not a restatement of the violation.
 //
-// overridable اختياري — يفترض تلقائياً نفس القاعدة العامة القديمة (severity
-// دون MANDATORY_STOP/STOP_AFFECTED_ACTIVITY = قابل للتجاوز) لأي قاعدة لا
-// تحدده صراحة، فلا حاجة لتعديل عشرات نداءات ruleHit() الحالية. مرِّر القيمة
-// صراحة فقط حين تختلف قابلية القاعدة عن افتراض severity العام (راجع
-// overridable في types.ts للسبب الكامل).
+// overridable is optional — defaults to the old general rule (severity below
+// MANDATORY_STOP/STOP_AFFECTED_ACTIVITY = overridable) for any rule that
+// doesn't set it explicitly, so dozens of existing ruleHit() calls don't need
+// updating. Pass it explicitly only when a rule's overridability differs from
+// the general severity default (see overridable in types.ts for the full rationale).
 //
-// مُصدَّرة (لا محلية فقط) لأن engine.ts يبنيها أيضاً لطبقات القرار الثلاث
-// (استئناف بوابة الرياح/استقرار الاستئناف/الثقة المنخفضة) بعد تحويلها من
-// تعديل decisionCategory مباشرة إلى DustRuleHit فعلي — راجع تعليق الفصل بين
-// القواعد والقرار في engine.ts.
+// Exported (not local-only) because engine.ts also builds it for the three
+// decision layers (wind-gate resume/resume stability/low confidence) after
+// converting them from directly mutating decisionCategory to a real
+// DustRuleHit — see the rule/decision separation comment in engine.ts.
 //
-// regulatoryFinding اختياري (راجع RuleRegulatoryFinding في types.ts) —
-// افتراضي 'NONE' لـFIELD_VERIFICATION_REQUIRED/PRECAUTION (نقص بيانات أو
-// احتراز، لا مخالفة بذاتها)، و'VIOLATION' لأي severity أشد (RESTRICT_
-// ACTIVITY فأعلى، بما فيها ALLOW_WITH_CONTROLS التي تحمل قواعد مخالفة
-// موثَّقة فعلياً مثل PM10-VIOLATION-STOP-006) — يعكس الغالبية العظمى من
-// القواعد الفعلية (تجاوز حد رقمي/قانوني صريح). القواعد الاستثنائية (حالة
-// تشغيلية بحتة بلا تجاوز حد، أو معلَّقة بانتظار تأكيد) تُمرِّر القيمة
-// صراحة عند نداء ruleHit() — لا حاجة لتعديل كل نداء، فقط الاستثناءات.
+// regulatoryFinding is optional (see RuleRegulatoryFinding in types.ts) —
+// defaults to 'NONE' for FIELD_VERIFICATION_REQUIRED/PRECAUTION (missing data
+// or a precaution, not a violation in itself), and 'VIOLATION' for any higher
+// severity (RESTRICT_ACTIVITY and up, including ALLOW_WITH_CONTROLS rules that
+// carry an actually documented violation like PM10-VIOLATION-STOP-006) — this
+// matches the vast majority of actual rules (an explicit numeric/legal
+// threshold exceeded). Exceptional rules (a purely operational state with no
+// threshold exceeded, or pending confirmation) pass the value explicitly at
+// the ruleHit() call site — no need to touch every call, only the exceptions.
 export function ruleHit(
   code: string,
   severity: DustRuleHit['severity'],
@@ -244,14 +245,14 @@ export function ruleHit(
   return { code, severity, messageAr, actionAr, overridable, regulatoryFinding };
 }
 
-// بوابة عامة على كل الأنشطة المكشوفة المولّدة للغبار — "الاستخراج التنظيمي
-// من المرفق" القسم 5: رياح 15-25 كم/س تستوجب تثبيطاً معززاً (رش ساعي،
-// تغطية الأكوام، خفض ارتفاع التفريغ لمتر، تشديد تنظيف الطرق وغسيل
-// الإطارات)، دون إيقاف كامل — بخلاف GATE-WIND-ABOVE-25-004 (نفس النطاق
-// المكشوف/المولّد للغبار لكن فوق 25 كم/س، إيقاف فعلي). أولويتها الدنيا
-// (ALLOW_WITH_CONTROLS) تعني أنها لا تتجاوز أي قاعدة نشاط أشد قائمة أصلاً
-// على نفس نطاق الرياح (مثال: إيقاف الهدم الصارم DEMO-WIND-STOP-001 عند
-// نفس النطاق يبقى الأعلى أولوية).
+// General gate over all exposed, dust-generating activities — the annex
+// regulatory extraction, Section 5: 15-25 km/h wind requires enhanced
+// suppression (hourly spraying, covering piles, reducing drop height to one
+// meter, stricter road cleaning and wheel washing), without a full stop —
+// unlike GATE-WIND-ABOVE-25-004 (same exposed/dust-generating scope but above
+// 25 km/h, an actual stop). Its low priority (ALLOW_WITH_CONTROLS) means it
+// never overrides a more severe activity rule already active at the same wind
+// band (e.g. the strict demolition stop DEMO-WIND-STOP-001 at the same band remains higher priority).
 export function enhancedSuppressionRule(
   isDustGenerating: boolean,
   isEnclosedOperation: boolean,
@@ -265,26 +266,28 @@ export function enhancedSuppressionRule(
       'تثبيط معزز مطلوب: سرعة الرياح بين 15-25 كم/س',
       'فعّل الرش الساعي، غطِّ الأكوام، اخفض ارتفاع التفريغ إلى متر واحد، وشدّد تنظيف الطرق وغسيل الإطارات',
       undefined,
-      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): حالة تشغيلية
-      // بحتة (نفس مثال المستخدم الحرفي: "رياح 20 → ALLOW_WITH_CONTROLS هي
-      // حالة تشغيلية تتطلب تحكماً معززاً، وليست بالضرورة مخالفة") — لا تجاوز
-      // حد رقمي/قانوني موثَّق بذاتها، فقط نطاق تشغيلي وسيط.
+      // A purely operational state (e.g. "20 km/h -> ALLOW_WITH_CONTROLS is an
+      // operational state requiring enhanced controls, not necessarily a
+      // violation") — no documented numeric/legal threshold exceeded by itself,
+      // just an intermediate operational band.
       'NONE'
     ),
   ];
 }
 
-// هبة قوية عابرة — احتراز سلامة إضافي منّا، لا بند من "بروتوكول الملحق أ"
-// (النص التنظيمي يذكر "سرعة الرياح" فقط بعتبتي 15/25 كم/س، بلا أي إشارة
-// للهبات). يقرأ windGustKmh الخام مباشرة (لا effectiveWindKmh، ولا يؤثر
-// على windBand/classifyWind إطلاقاً) — منفصل تماماً عن بوابتي الرياح
-// النظاميتين أعلاه (GATE-WIND-ABOVE-25-004/GATE-WIND-15-25-ENHANCED-005)،
-// برمز مستقل (GATE-WIND-GUST-SAFETY) وseverity أخف (تنبيه/تثبيط، لا إيقاف
-// إلزامي قطعي) حتى لا تُقرأ الواجهة أنها مخالفة تنظيمية بموجب الملحق أ.
-// العتبة (50 كم/س) أعلى بكثير من حد الملحق أ (25) عمداً — هبة عابرة عند
-// 30 مثلاً لا تستحق أي إجراء إضافي فوق ما تفرضه سرعة الرياح المستدامة
-// نفسها؛ فقط هبات شديدة الخطورة فعلياً (قريبة من عتبة DVI-WIND-LOOSE-
-// MATERIAL-005 الفيزيائية في dust-engine/engine.ts) تستحق تنبيهاً منفصلاً.
+// A transient strong gust — an additional safety precaution of our own, not a
+// clause from the "Annex A protocol" (the regulatory text only cites "wind
+// speed" at the 15/25 km/h thresholds, with no mention of gusts). Reads raw
+// windGustKmh directly (not effectiveWindKmh, and never affects
+// windBand/classifyWind) — entirely separate from the two regulatory wind
+// gates above (GATE-WIND-ABOVE-25-004/GATE-WIND-15-25-ENHANCED-005), with its
+// own code (GATE-WIND-GUST-SAFETY) and a lighter severity (advisory/
+// suppression, not a hard mandatory stop) so the UI doesn't read it as an
+// Annex A violation. The threshold (50 km/h) is deliberately far above the
+// Annex A limit (25) — a transient gust of, say, 30 doesn't warrant any action
+// beyond what the sustained wind speed itself already requires; only gusts
+// genuinely severe (near the physical DVI-WIND-LOOSE-MATERIAL-005 threshold in
+// dust-engine/engine.ts) warrant a separate alert.
 const WIND_GUST_SAFETY_THRESHOLD_KMH = () => getRuleParameters().WIND_GUST_SAFETY_THRESHOLD_KMH;
 
 export function windGustSafetyRule(
@@ -309,61 +312,65 @@ export function windGustSafetyRule(
       `هبة رياح قوية عابرة رُصدت (${windGustKmh} كم/س) — احتراز سلامة إضافي، ليست مخالفة بموجب بروتوكول الملحق أ`,
       'أمّن المواد السائبة والمعدات الخفيفة فوراً حتى تهدأ الهبة، وراقب استقرار سرعة الرياح المستدامة',
       undefined,
-      // احتراز سلامة إضافي منّا (راجع تعليق الدالة الكامل أعلاه) — الرسالة
-      // نفسها تنص صراحة "ليست مخالفة بموجب بروتوكول الملحق أ".
+      // An additional safety precaution of our own (see the full function
+      // comment above) — the message itself explicitly states "not a violation under the Annex A protocol".
       'NONE'
     ),
   ];
 }
 
-// مدة الاستمرار الدنيا (بالدقائق) قبل تصنيف قراءة ≥340 "مخالفة تنظيمية
-// مؤكدة" (RCRC-PM10-340-VIOLATION-011) بدل "معلَّقة" فقط (MRQ-PM10-BLACK-
-// PENDING-104) — النص التنظيمي: "لأكثر من دقيقتين". العتبة الفعلية
-// (PM10_VIOLATION_CONFIRM_MINUTES) لم تعد هنا — انتقلت مع الحساب بالكامل
-// إلى computeSustainedPm10Status في app/lib/dustEvaluation.ts، المصدر
-// الوحيد الآن لقرار "مؤكَّدة" (راجع pm10ConfirmedViolation340 في
-// DustComplianceContext وتعليق pm10ThresholdRule أدناه). لا ثابت مكرَّر هنا
-// كي لا يبدو مصدراً فعلياً للقرار بينما هو ليس كذلك.
+// Minimum sustain duration (in minutes) before a >=340 reading is classified as
+// a "confirmed regulatory violation" (RCRC-PM10-340-VIOLATION-011) rather than
+// merely "pending" (MRQ-PM10-BLACK-PENDING-104) — the regulatory text says
+// "for more than two minutes". The actual threshold
+// (PM10_VIOLATION_CONFIRM_MINUTES) no longer lives here — it moved along with
+// the full computation to computeSustainedPm10Status in
+// app/lib/dustEvaluation.ts, now the sole source for the "confirmed" decision
+// (see pm10ConfirmedViolation340 in DustComplianceContext and the
+// pm10ThresholdRule comment below). No duplicate constant here, so this file
+// doesn't look like an actual decision source when it isn't.
 
-// مدة الاستمرار الدنيا لتفعيل تعليق النشاط الكامل عند >340 (RCRC-PM10-30M-
-// SUSPENSION-012) — راجع تعليق pm10ThresholdRule أدناه لتفاصيل القرار
-// التنظيمي (الجولة الثانية: الإيقاف يشترط استمرار التجاوز فوق 340 نفسه
-// حصراً، لا نطاق التحذير [250,340]). يبقى مستخدَماً هنا للعرض النصي فقط
-// بالرسالة (عدد الدقائق بالجملة) — قرار "معلَّقة 30 دقيقة" نفسه يُقرأ جاهزاً
-// من pm10Suspended250For30Min، لا يُشتق من هذا الثابت.
+// Minimum sustain duration to trigger a full activity suspension at >340
+// (RCRC-PM10-30M-SUSPENSION-012) — see the pm10ThresholdRule comment below for
+// the full regulatory decision detail (round two: the stop requires the
+// exceedance to sustain above 340 itself specifically, not the [250,340]
+// warning range). Still used here only to render the minute count in the
+// message text — the "suspended 30 minutes" decision itself is read ready-made
+// from pm10Suspended250For30Min, not derived from this constant.
 //
-// خطأ توثيقي مكتشَف ومُصلَح (مراجعة كود خارجي — "حزمة القواعد نفسها ما
-// زالت تحمل السياسة القديمة"): كان رقماً مستقلاً مكتوباً يدوياً هنا، بمعزل
-// عن ACTIVE_RULE_BUNDLE.pm10.regulatory.activityStopDurationMsInclusive —
-// القيمة الفعلية (30 دقيقة) لم تتغيّر، فقط أصبحت تُقرأ من الحزمة النشطة.
+// This used to be an independently hand-written number, disconnected from
+// ACTIVE_RULE_BUNDLE.pm10.regulatory.activityStopDurationMsInclusive — the
+// actual value (30 minutes) hasn't changed, it's now just read from the active bundle.
 const PM10_SUSPENSION_MINUTES = ACTIVE_RULE_BUNDLE.pm10.regulatory.activityStopDurationMsInclusive / 60_000;
 
-// حدود PM10 التنظيمية العامة — "الاستخراج التنظيمي من المرفق" القسم 6.
-// منفصلة تماماً عن بوابات DVI الفيزيائية (DVI-PM10-ACTION-003 وDVI-DUST-
-// ACTIVITY-STOP-004 في dust-engine/engine.ts) — هذه عتبات تنظيمية رسمية
-// من الوثيقة مباشرة، لا تقديرات فيزيائية.
+// General regulatory PM10 thresholds — the annex regulatory extraction,
+// Section 6. Entirely separate from the physical DVI gates
+// (DVI-PM10-ACTION-003 and DVI-DUST-ACTIVITY-STOP-004 in dust-engine/engine.ts)
+// — these are official regulatory thresholds straight from the document, not physical estimates.
 //
-// خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كانت هذي الدالة تستقبل رقمي الدقائق
-// (sustainedMinutesAbove340/250) وتُعيد اشتقاق "مؤكَّدة"/"معلَّقة 30 دقيقة"
-// بنفسها من مقارنة محلية بسيطة — فتفقد كل فحوص computeSustainedPm10Status
-// الحقيقية (هل مصدر السلسلة device فعلاً؟ هل آخر قراءة حديثة أم الجهاز
-// متوقف؟)، وقد تقارن رقم دقائق محسوباً من سلسلة قراءات مصدرها مختلف عن
-// pm10UgM3 نفسه (قراءات جهاز على مستوى المشروع تُدمَج لأي نشاط، راجع
-// fetchPm10SustainedStatus). الإصلاح: القرار يُحسب مرة واحدة فقط في
-// computeSustainedPm10Status (حيث كل الأدلة متوفرة معاً) ويُمرَّر هنا جاهزاً
-// كـconfirmedViolation340/suspended250For30Min — لا إعادة اشتقاق من أرقام
-// خام هنا إطلاقاً.
+// This function used to receive the two minute counts
+// (sustainedMinutesAbove340/250) and re-derive "confirmed"/"suspended 30
+// minutes" itself from a simple local comparison — losing all of
+// computeSustainedPm10Status's real checks (is the series actually
+// device-sourced? is the last reading fresh or is the device stalled?), and
+// potentially comparing a minute count computed from a series with a different
+// source than pm10UgM3 itself (project-level device readings are merged into
+// any activity — see fetchPm10SustainedStatus). Fix: the decision is now
+// computed exactly once in computeSustainedPm10Status (where all the evidence
+// is available together) and passed here ready-made as
+// confirmedViolation340/suspended250For30Min — never re-derived from raw numbers here.
 export function pm10ThresholdRule(
   pm10UgM3: number | null,
-  // الحالتان الجاهزتان من computeSustainedPm10Status (عبر DustComplianceContext.
-  // pm10ConfirmedViolation340/pm10Suspended250For30Min) — undefined يعني "لا
-  // بيانات استمرار متاحة"، فيُعامَل كـfalse (فشل آمن: يبقى القرار معلَّقاً لا
-  // مؤكَّداً بلا دليل).
+  // The two ready-made states from computeSustainedPm10Status (via
+  // DustComplianceContext.pm10ConfirmedViolation340/pm10Suspended250For30Min)
+  // — undefined means "no sustain data available", treated as false (fail-safe:
+  // the decision stays pending, never confirmed without evidence).
   //
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "إعفاء محطة الخلط مخالف
-  // للمرجع"): كان هذا التوقيع يقبل معامل isPm10ExemptEnclosedBatching يُعفي
-  // محطة خلط (صوامع مغلقة + فلتر ≥99%) من قواعد PM10 كلها. الإعفاء يبقى
-  // مقصوراً على بوابة الرياح (isEnclosedExemptFromHighWind في engine.ts).
+  // This signature previously accepted an isPm10ExemptEnclosedBatching
+  // parameter that exempted a batching plant (sealed silos + filter >=99%)
+  // from all PM10 rules — inconsistent with the regulatory reference. The
+  // exemption remains scoped only to the wind gate
+  // (isEnclosedExemptFromHighWind in engine.ts).
   confirmedViolation340?: boolean,
   suspended250For30Min?: boolean
 ): DustRuleHit[] {
@@ -371,18 +378,18 @@ export function pm10ThresholdRule(
 
   const hits: DustRuleHit[] = [];
 
-  // قرار تنظيمي مُعاد النظر فيه عبر عدة جولات (طلب صريح من المستخدم في كل
-  // مرة): تصعيد إلى >340 لأكثر من دقيقتين كان يوقف النشاط فوراً وإلزامياً
-  // في التصميم الأصلي — أُلغي ذلك، فأصبح تأكيد مخالفة 340 توثيقاً/تنبيهاً
-  // فقط (PM10-VIOLATION-STOP-006، ALLOW_WITH_CONTROLS)، نفس مستوى الضوابط
-  // المعروض في نطاق [250,340]. الإيقاف الفعلي الوحيد للنشاط هو RCRC-PM10-
-  // 30M-SUSPENSION-012 أدناه — والذي أصبح بدوره (الجولة الثانية) يشترط
-  // استمرار التجاوز فوق 340 نفسه لمدة 30 دقيقة، لا استمراراً موحَّداً من
-  // 250 (راجع computeSustainedPm10Status في dustEvaluation.ts للتفاصيل
-  // الكاملة). `>` صراحة لا `>=` عند حد المخالفة (340 بالضبط يبقى ضمن نطاق
-  // التحذير أدناه لا "مخالفة"، حتى تتجاوز الحد فعلياً). أما تأكيد المخالفة
-  // نفسها (الدقيقتان)، فأصبح `>=` بدل `>` (طلب صريح: اكتمال الدقيقتين كافٍ)
-  // — راجع isConfirmedViolation340 في dustEvaluation.ts.
+  // Escalation to >340 for more than two minutes no longer triggers an
+  // immediate mandatory stop; confirming a 340 violation is now
+  // documentation/alerting only (PM10-VIOLATION-STOP-006,
+  // ALLOW_WITH_CONTROLS), the same control level as the [250,340] range. The
+  // only actual activity stop is RCRC-PM10-30M-SUSPENSION-012 below, which
+  // itself now requires the exceedance to stay above 340 for 30 minutes, not
+  // a unified sustain from 250 (see computeSustainedPm10Status in
+  // dustEvaluation.ts for full detail). Uses `>` explicitly, not `>=`, at the
+  // violation threshold (340 exactly stays in the warning range below, not a
+  // "violation", until actually exceeded). Confirming the violation itself
+  // (the two minutes) uses `>=` instead of `>` (completing exactly two
+  // minutes is sufficient) — see isConfirmedViolation340 in dustEvaluation.ts.
   if (pm10UgM3 > PM10_VIOLATION_STOP_UG_M3) {
     const isConfirmed = confirmedViolation340 === true;
     if (isConfirmed) {
@@ -395,20 +402,16 @@ export function pm10ThresholdRule(
         )
       );
     } else {
-      // قرار تنظيمي مُعاد النظر فيه (طلب صريح من المستخدم — مراجعة كود
-      // خبير خارجي، الملاحظة #7: "قبل 30 دقيقة يوجد إيقاف احترازي ❌ P0
-      // — المطلوب قبل 120 ثانية: PENDING_CONFIRMATION + ENHANCED_CONTROLS
-      // + MONITOR، وليس STOP_AFFECTED_ACTIVITY"): كانت severity=
-      // STOP_AFFECTED_ACTIVITY هنا تجعل decideFinal يُصعِّد القرار إلى
-      // PROTECTIVE_STOP (عبر pendingAffectedStop في final-decision-engine/
-      // engine.ts)، وAEI يعرض حالة "معلَّق مؤقتاً" حمراء مع سقف درجة —
-      // تقييد/تحذير فعلي قبل حتى اكتمال الدقيقتين، رغم أن القرار الصريح
-      // المُثبَّت مسبقاً هو: لا إيقاف ولا تقييد بسبب PM10 قبل تأكيد 30
-      // دقيقة فوق 340. الآن ALLOW_WITH_CONTROLS (نفس مستوى PM10-WARNING-008)
-      // — القراءة لم تُثبِت بعد اكتمال دقيقتين استمرار، فتبقى "معلَّقة"
-      // (pendingConfirmation=true عبر isPendingRuleHit في engine.ts، غير
-      // متأثر بهذا التغيير) لكن بلا أي تقييد تشغيلي، فقط ضوابط معزَّزة
-      // ومراقبة (MONITOR عبر decideFinal/AEI).
+      // A reading not yet confirmed (under two minutes sustained) stays
+      // ALLOW_WITH_CONTROLS (same level as PM10-WARNING-008), not
+      // STOP_AFFECTED_ACTIVITY — the latter would make decideFinal escalate
+      // to PROTECTIVE_STOP (via pendingAffectedStop in
+      // final-decision-engine/engine.ts) and show a red "temporarily
+      // suspended" state with a score cap, i.e. an actual restriction before
+      // the two minutes even complete. No stop or restriction for PM10 is
+      // warranted before 30 minutes above 340 is confirmed. The reading
+      // stays "pending" (pendingConfirmation=true via isPendingRuleHit in
+      // engine.ts) but with enhanced controls and monitoring only, no operational restriction.
       hits.push(
         ruleHit(
           'MRQ-PM10-BLACK-PENDING-104',
@@ -416,21 +419,22 @@ export function pm10ThresholdRule(
           `تنبيه: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) تجاوز حد المخالفة (${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³) — بانتظار اكتمال دقيقتين استمرار لتصنيفها مخالفة تنظيمية مؤكدة`,
           'فعّل التثبيط المعزز فوراً (رش ساعي أو مثبطات، تغطية الأكوام، خفض ارتفاع التفريغ) وراقب استمرار القراءة عن كثب — ستُصبح مخالفة تنظيمية مؤكدة وموثَّقة (بلا إيقاف إلزامي فوري) إن استمر التجاوز دقيقتين فأكثر',
           undefined,
-          // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): تجاوز
-          // مرصود لكن لم يكتمل دليل التأكيد بعد (دقيقتا الاستمرار) — PENDING
-          // لا VIOLATION، بصرف النظر عن أن regulatoryFinding النهائي
-          // (final-decision-engine) قد يعرضها ضمن PENDING_CONFIRMATION بحكم
-          // pendingConfirmation المنفصل أصلاً.
+          // Exceedance observed but confirmation evidence (two-minute
+          // sustain) not yet complete — PENDING, not VIOLATION, regardless of
+          // the fact that the final regulatoryFinding
+          // (final-decision-engine) may display it under
+          // PENDING_CONFIRMATION via the separate pendingConfirmation flag.
           'PENDING'
         )
       );
     }
   } else if (pm10UgM3 >= PM10_WARNING_UG_M3) {
-    // نطاق التحذير/التحكم المعزَّز الموحَّد [250,340] — طلب صريح من
-    // المستخدم بدمج نطاقي "احتراز" و"تقييد شديد" السابقين في مستوى واحد
-    // فقط (لا تدرّج داخلي)، مطابقةً لنص الوثيقة التنظيمية حرفياً (3 مستويات
-    // لا 4). الفرع أعلاه (> PM10_VIOLATION_STOP_UG_M3 = 340) يتولى ما بعد
-    // حد المخالفة بمعزل تام — هذا الفرع (else) يتوقف تلقائياً عنده.
+    // Unified warning/enhanced-control range [250,340] — merges the former
+    // separate "caution" and "severe restriction" ranges into a single level
+    // (no internal grading), matching the regulatory document's literal text
+    // (3 tiers, not 4). The branch above (> PM10_VIOLATION_STOP_UG_M3 = 340)
+    // handles everything past the violation threshold in complete isolation
+    // — this else branch stops automatically at that point.
     hits.push(
       ruleHit(
         'PM10-WARNING-008',
@@ -438,23 +442,22 @@ export function pm10ThresholdRule(
         `تحذير: تركيز PM10 (${pm10UgM3} ميكروجرام/م³) بلغ أو تجاوز حد التحذير (${PM10_WARNING_UG_M3} ميكروجرام/م³)`,
         'فعّل التثبيط المعزز فوراً: رش ساعي أو مثبطات، تغطية الأكوام وخفض ارتفاع التفريغ إلى متر واحد، تقليل واجهات العمل المتزامنة، وتقييد حركة النقل',
         undefined,
-        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): نطاق
-        // التحذير [250,340] حالة تشغيلية تستوجب تحكماً معززاً، لم تتجاوز حد
-        // المخالفة (340) بعد — لا مخالفة تنظيمية بذاتها.
+        // The [250,340] warning range is an operational state requiring
+        // enhanced control; it has not yet exceeded the violation threshold
+        // (340) — not itself a regulatory violation.
         'NONE'
       )
     );
   }
 
-  // RCRC-PM10-30M-SUSPENSION-012: قرار تنظيمي مُعاد النظر فيه (طلب صريح من
-  // المستخدم — "الإيقاف الفعلي فقط عند استمرار التجاوز فوق 340 لمدة 30
-  // دقيقة"، يُلغي التوحيد السابق مع نطاق التحذير [250,340]): الشرط أصبح
-  // pm10UgM3 > PM10_VIOLATION_STOP_UG_M3 (لا >= PM10_WARNING_UG_M3) —
-  // القراءة الحالية يجب أن تكون فوق 340 فعلياً، متسقاً مع suspended250For30Min
-  // التي أصبحت تقيس (عبر computeSustainedPm10Status) مدة الاستمرار فوق 340
-  // حصراً، لا استمراراً موحَّداً من 250. منفصلة عن شرط PM10-VIOLATION-STOP-006/
-  // MRQ-PM10-BLACK-PENDING-104 أعلاه (قد يتحقق الاثنان معاً؛ decisionFromRules
-  // يختار الأشد). القرار جاهز من computeSustainedPm10Status، لا يُعاد اشتقاقه هنا.
+  // RCRC-PM10-30M-SUSPENSION-012: the actual stop requires the exceedance to
+  // stay above 340 itself (pm10UgM3 > PM10_VIOLATION_STOP_UG_M3, not >=
+  // PM10_WARNING_UG_M3) for 30 minutes, consistent with suspended250For30Min
+  // now measuring (via computeSustainedPm10Status) the sustain duration above
+  // 340 specifically, not a unified sustain from 250. Independent of the
+  // PM10-VIOLATION-STOP-006/MRQ-PM10-BLACK-PENDING-104 condition above (both
+  // may fire together; decisionFromRules picks the stricter one). The
+  // decision is ready-made from computeSustainedPm10Status, not re-derived here.
   if (pm10UgM3 > PM10_VIOLATION_STOP_UG_M3 && suspended250For30Min === true) {
     hits.push(
       ruleHit(
@@ -469,17 +472,15 @@ export function pm10ThresholdRule(
   return hits;
 }
 
-// A1 — تجهيز الموقع وأعمال الحفر والأعمال الترابية (الحفر، التسوية، الردم،
-// الخنادق، الدمك). القسم الرابع، ثانياً: "رش التربة أثناء الحفر والتحميل
-// والتفريغ" إلزامي، وارتفاع تفريغ التربة يخضع لنفس حدود A5 (1.5م اعتيادياً،
-// 1م أثناء الرياح ≥15 كم/س) — كلاهما الآن تنبيه توعوي فقط، بلا أي تأثير
-// على القرار.
+// A1 — site prep and earthworks (excavation, grading, backfill, trenching,
+// compaction). Section 4-2: soil spraying during excavation/loading/dumping
+// is mandatory, and soil drop height follows the same A5 limits (1.5m
+// normal, 1m at wind >=15 km/h) — both are advisory-only text now, with no effect on the decision.
 //
-// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم بعد فحص إضافي، تمديداً لنفس
-// معالجة SITE_TRAFFIC): كان dropHeightM (EARTHWORKS-DROP-002/003) مُستثنى
-// من قرار الحوكمة العام بحجة أنه "قياس رقمي، لا تصريح" — لكن فحصاً كشف أنه
-// بلا أي حقل إدخال في DustStep.tsx إطلاقاً (نفس فجوة SITE_TRAFFIC)، فأُلغي
-// الاستثناء وتوحَّدت المعاملة مع بقية ضوابط هذا النشاط.
+// dropHeightM (EARTHWORKS-DROP-002/003) was previously excluded from the
+// general governance decision as "a numeric measurement, not a disclosure" —
+// but it has no input field in DustStep.tsx at all (same gap as
+// SITE_TRAFFIC), so the exception was removed and treatment unified with the rest of this activity's controls.
 function earthworksRules(
   _activity: DustActivityComplianceProfile,
   _windBand: DustWindBand
@@ -487,13 +488,14 @@ function earthworksRules(
   return [];
 }
 
-// 9.4 الهدم — بوابة الرياح (DEMO-WIND-STOP-001) وحد المساحة (DEMO-AREA-002)
-// وحدهما يبقيان قاعدتين فعليتين: يعتمدان على isEnclosedOperation (سؤال
-// بنيوي حقيقي، راجع تعليقه في DustStep.tsx) وdemolitionActiveAreaM2 (قياس
-// رقمي)، وهما الحقلان الوحيدان الباقيان كمدخلات حقيقية لهذا النشاط. بقية
-// الضوابط (الرش/الشاشات/مدى المدفع/تغطية الكسارات/طريقة القطع/الضغط
-// الرملي) تظهر كتنبيهات نصية عامة فقط، بلا أي تأثير على القرار — قرار
-// حوكمة معتمَد صراحةً (راجع تعليق earthworksRules أعلاه للسياق الكامل).
+// 9.4 Demolition — only the wind gate (DEMO-WIND-STOP-001) and area limit
+// (DEMO-AREA-002) are active rules: they depend on isEnclosedOperation (a
+// real structural question, see its comment in DustStep.tsx) and
+// demolitionActiveAreaM2 (a numeric measurement), the only two fields that
+// remain real inputs for this activity. The remaining controls
+// (spraying/screens/water-cannon range/crusher covering/cutting
+// method/sand-blast pressure) are shown as general advisory text only, with
+// no effect on the decision — see the earthworksRules comment above for full context.
 function demolitionRules(
   activity: DustActivityComplianceProfile,
   windBand: DustWindBand
@@ -529,7 +531,7 @@ function demolitionRules(
   return hits;
 }
 
-// 9.5 الكسارة
+// 9.5 Crusher
 function crusherRules(
   project: DustProjectComplianceProfile,
   riskClass: DustRiskClass,
@@ -549,32 +551,32 @@ function crusherRules(
   }
 
 
-  // المسافة المحسوبة تلقائياً من إحداثيات الكسارة + جدول sensitive_receptors
-  // (عند توفرها) لها الأولوية على الحقل اليدوي القديم — نفس مبدأ "دع مرقاب
-  // يحسبها" الوارد صراحة في المستند.
+  // The distance auto-computed from crusher coordinates + the
+  // sensitive_receptors table (when available) takes priority over the
+  // legacy manual field.
   const autoAny = activity.measurements.crusherDistanceToNearestReceptorAutoM;
   const autoResidential = activity.measurements.crusherDistanceToResidentialReceptorAutoM;
   const manualDistance = activity.measurements.crusherDistanceToReceptorM;
 
-  // قرار مُعاد النظر فيه بالكامل (طلب صريح من المستخدم — "المستقبلات الحساسة
-  // لا تدخل ضمن قرارات الإيقاف"): كل قواعد مسافة المستقبِل الحساس للكسارة
-  // (البيانات الناقصة، والمسافتان العامة/السكنية، واتجاه الريح) كانت تُصدر
-  // MANDATORY_STOP/FIELD_VERIFICATION_REQUIRED/RESTRICT_ACTIVITY — إيقاف أو
-  // تقييد فعلي للنشاط بناءً على بيانات مستقبلات قد تكون غير مكتملة أصلاً
-  // (جدول sensitive_receptors يدوي بحت، لا يشمل مستقبلات OSM المكتشفة تلقائياً
-  // المعروضة توعوياً في نفس الشاشة — راجع app/api/projects/[projectId]/route.ts).
-  // هذا التناقض (المستخدم يرى مستقبِلاً حقيقياً قريباً بينما القرار يقول "لا
-  // توجد بيانات") كان السبب المباشر لإعادة النظر. المسافتان العامة/السكنية
-  // واتجاه الريح أدناه أصبحت ALLOW_WITH_CONTROLS (تحذير/تنبيه توعوي فقط).
+  // Sensitive-receptor distance no longer drives a stop/restriction: all
+  // crusher receptor-distance rules (missing data, general/residential
+  // distance, wind direction) used to emit
+  // MANDATORY_STOP/FIELD_VERIFICATION_REQUIRED/RESTRICT_ACTIVITY based on
+  // receptor data that may be incomplete (the sensitive_receptors table is
+  // purely manual and excludes auto-discovered OSM receptors shown
+  // advisory-only on the same screen — see
+  // app/api/projects/[projectId]/route.ts). The general/residential distance
+  // and wind-direction rules below are now ALLOW_WITH_CONTROLS
+  // (warning/advisory only).
   //
-  // CRUSHER-RECEPTORS-DATA-MISSING حُذفت بالكامل (لا مجرد تخفيف severity —
-  // طلب صريح لاحق من المستخدم: "لا اريد ان يظهر تعذر"): حتى كتنبيه
-  // ALLOW_WITH_CONTROLS، رسالة "تعذّر التحقق... لا توجد بيانات" تبقى مربكة
-  // بذاتها لأنها لا تعرف شيئاً عن مستقبلات OSM المكتشفة والمعروضة توعوياً في
-  // نفس الشاشة (computeUnitReceptors في route.ts) — غياب الجدول اليدوي وحده
-  // لا يعني فعلياً "لا بيانات متاحة"، فعرض هذه الرسالة أصلاً مضلِّل بصرف
-  // النظر عن severity. القواعد الأخرى (المسافة الفعلية إن حُسبت auto/يدوياً)
-  // تبقى، فهي معلومة حقيقية عن مسافة معروفة فعلاً، لا عن غياب بيانات.
+  // CRUSHER-RECEPTORS-DATA-MISSING was removed entirely (not just
+  // downgraded): even as an ALLOW_WITH_CONTROLS advisory, a "could not
+  // verify... no data" message is inherently misleading because it knows
+  // nothing about the auto-discovered OSM receptors shown advisory-only on
+  // the same screen (computeUnitReceptors in route.ts) — absence of the
+  // manual table alone does not actually mean "no data available". The other
+  // rules (actual distance when computed auto/manual) remain, since they
+  // reflect a genuinely known distance, not an absence of data.
   const crusherGeneralReceptorDistanceM = CRUSHER_GENERAL_RECEPTOR_DISTANCE_M();
   const crusherSensitiveReceptorDistanceM = CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M();
 
@@ -587,10 +589,8 @@ function crusherRules(
         `تنبيه: مسافة الكسارة عن أقرب مستقبل حساس (${autoAny !== null && autoAny !== undefined ? 'محسوبة تلقائياً: ' : ''}${generalDistance} م) أقل من الحد الأدنى (${crusherGeneralReceptorDistanceM} م). تنبيه توعوي فقط، لا يوقف النشاط`,
         `يُفضَّل نقل الكسارة لمسافة لا تقل عن ${crusherGeneralReceptorDistanceM} م عن أقرب مستقبل حساس، أو زيادة إجراءات التثبيط`,
         undefined,
-        // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — P0، الملاحظة #5): تنبيه
-        // توعوي بحت (النص نفسه ينص صراحة "لا يوقف النشاط") — لا مخالفة
-        // تنظيمية بذاتها، راجع قرار إزالة قرارات الإيقاف/المنع المبنية على
-        // مسافة المستقبِلات الحساسة (commit 6f328f8).
+        // Purely advisory (the message itself states "does not stop the
+        // activity") — not itself a regulatory violation.
         'NONE'
       )
     );
@@ -610,10 +610,11 @@ function crusherRules(
     );
   }
 
-  // MRQ-RECEPTOR-DOWNWIND-120: تنبيه عند وجود مستقبِل حساس فعلياً باتجاه هبوب
-  // الرياح (لا مجرد قريب بالمسافة المستقيمة) — يُطبَّق فقط لو كان اتجاه الرياح
-  // متوفراً (crusherDistanceToDownwindReceptorAutoM يبقى null لو غاب اتجاه
-  // الرياح أصلاً، راجع adapters.ts).
+  // MRQ-RECEPTOR-DOWNWIND-120: advisory when a sensitive receptor is actually
+  // located in the current wind's downwind direction (not just nearby in
+  // straight-line distance) — applies only when wind direction is available
+  // (crusherDistanceToDownwindReceptorAutoM stays null if wind direction is
+  // unavailable at all, see adapters.ts).
   const downwindDistance = activity.measurements.crusherDistanceToDownwindReceptorAutoM;
   if (
     downwindDistance !== null &&
@@ -632,18 +633,19 @@ function crusherRules(
     );
   }
 
-  // ضوابط الكسارة التفصيلية (تغطية الوحدات/الناقلات، أنظمة الرش والضباب،
-  // ارتفاع التفريغ، الشفط والفلترة) تظهر كتنبيهات نصية عامة فقط، بلا أي
-  // تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق earthworksRules
-  // أعلاه للسياق الكامل). القواعد الباقية فعلياً: CRUSHER-CATEGORY-001
-  // (تصنيف المشروع، لا مدخل مستخدم) ومسافتا المستقبِل الحساس أعلاه
-  // (محسوبتان تلقائياً من موقع الكسارة على الخريطة، ما زال مدخلاً حقيقياً).
+  // Detailed crusher controls (unit/conveyor covering, spray/fog systems, drop
+  // height, suction and filtration) are shown as general advisory text only,
+  // with no effect on the decision — an explicitly adopted governance decision
+  // (see the earthworksRules comment above for full context). The rules that
+  // remain actually active: CRUSHER-CATEGORY-001 (project classification, not
+  // a user input) and the two sensitive-receptor distances above
+  // (auto-computed from the crusher's map location, still a real input).
 
   return hits;
 }
 
-// A6 — محطات خلط الخرسانة ونقل الإسمنت (القسم الرابع، الفقرة "ب"؛
-// مصفوفة الأنشطة A6 في "الاستخراج التنظيمي من المرفق").
+// A6 — batching plants and cement transport (Section 4-b; the A6 activity
+// matrix in the annex regulatory extraction).
 function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHit[] {
   const hits: DustRuleHit[] = [];
 
@@ -687,32 +689,32 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
     );
   }
 
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "قاعدة 200م لمحطة الخلط غير
-  // منفذة"): المرجع التنظيمي (القسم 3.5، تخزين المواد) يمنع إنشاء محطات
-  // خلط أو تخزين مواد ضمن 200م من المدارس/المستشفيات/المساجد/المناطق
-  // السكنية — نفس الحد المستخدم فعلاً لأقرب مستقبِل حساس للكسارة
-  // (CRUSHER_GENERAL_RECEPTOR_DISTANCE_M أعلاه). الإحداثيات والمسافة
-  // المحسوبة تلقائياً (batchingDistanceToNearestReceptorAutoM، عبر
-  // adapters.ts + geo.ts) كانتا تُجمَعان وتُمرَّران بالكامل حتى
-  // DustActivityComplianceProfile، لكن لا قاعدة هنا كانت تستهلكهما —
-  // فمحطة خلط على بُعد أمتار من مدرسة كانت تمر بلا أي مخالفة مسافة إطلاقاً.
+  // The regulatory reference (Section 3.5, material storage) prohibits
+  // establishing batching plants or material storage within 200m of
+  // schools/hospitals/mosques/residential areas — the same threshold actually
+  // used for the crusher's nearest sensitive receptor
+  // (CRUSHER_GENERAL_RECEPTOR_DISTANCE_M above). The auto-computed coordinates
+  // and distance (batchingDistanceToNearestReceptorAutoM, via adapters.ts +
+  // geo.ts) were already being collected and passed all the way to
+  // DustActivityComplianceProfile, but no rule here consumed them — so a
+  // batching plant meters from a school passed with no distance violation at all.
   //
-  // null (لا Infinity) يعني تحديداً "لم تُدخَل إحداثيات محطة الخلط على
-  // الخريطة بعد" (راجع nearestReceptorDistancesM في geo.ts: lat/lng غائبين
-  // → null؛ إحداثيات موجودة بلا أي مستقبِل حساس مسجَّل قريب → Infinity).
+  // null (not Infinity) means specifically "batching plant coordinates haven't
+  // been entered on the map yet" (see nearestReceptorDistancesM in geo.ts:
+  // missing lat/lng -> null; coordinates present but no nearby sensitive
+  // receptor registered -> Infinity).
   const batchingDistance = activity.measurements.batchingDistanceToNearestReceptorAutoM;
-  // قرار مُعاد النظر فيه (طلب صريح من المستخدم — "المستقبلات الحساسة لا
-  // تدخل ضمن قرارات الإيقاف"، نفس القرار المطبَّق على قواعد الكسارة أعلاه):
-  // BATCHING-DISTANCE-200 أدناه أصبحت ALLOW_WITH_CONTROLS (تنبيه توعوي فقط)
-  // بدل MANDATORY_STOP.
+  // Sensitive receptors no longer drive stop decisions (same governance
+  // decision applied to the crusher rules above): BATCHING-DISTANCE-200 below
+  // is now ALLOW_WITH_CONTROLS (advisory only) instead of MANDATORY_STOP.
   //
-  // BATCHING-DISTANCE-MISSING وBATCHING-RECEPTORS-DATA-MISSING حُذفتا
-  // بالكامل (طلب صريح لاحق من المستخدم: "لا اريد ان يظهر تعذر") — نفس
-  // منطق CRUSHER-RECEPTORS-DATA-MISSING أعلاه: رسالة "تعذّر..." تبقى مربكة
-  // بذاتها حتى كتنبيه، لأنها لا تعرف شيئاً عن مستقبلات OSM المكتشفة توعوياً
-  // في نفس الشاشة. لا يوجد إيقاف أو تنبيه إطلاقاً الآن لغياب إحداثيات محطة
-  // الخلط أو غياب بيانات المستقبلات — فقط BATCHING-DISTANCE-200 يبقى
-  // مفعَّلاً حين تُحسَب مسافة فعلية أقل من الحد.
+  // BATCHING-DISTANCE-MISSING and BATCHING-RECEPTORS-DATA-MISSING were removed
+  // entirely — same logic as CRUSHER-RECEPTORS-DATA-MISSING above: a "could
+  // not verify..." message remains confusing even as an advisory, since it
+  // knows nothing about auto-discovered OSM receptors shown advisorily on the
+  // same screen. There is no stop or advisory at all now for missing batching
+  // plant coordinates or missing receptor data — only BATCHING-DISTANCE-200
+  // stays active when an actual distance below the threshold is computed.
   if (batchingDistance !== null && batchingDistance < CRUSHER_GENERAL_RECEPTOR_DISTANCE_M()) {
     const crusherGeneralReceptorDistanceM = CRUSHER_GENERAL_RECEPTOR_DISTANCE_M();
     hits.push(
@@ -727,33 +729,32 @@ function batchingPlantRules(activity: DustActivityComplianceProfile): DustRuleHi
     );
   }
 
-  // بقية ضوابط محطة الخلط (صيانة الفلاتر، فحص موانع التسرب، حظر الكنس
-  // الجاف/الهواء المضغوط، رطوبة النفايات) تظهر كتنبيهات نصية عامة فقط، بلا
-  // أي تأثير على القرار — قرار حوكمة معتمَد صراحةً (راجع تعليق
-  // earthworksRules أعلاه للسياق الكامل). الحقول الخمسة السابقة + مسافة
-  // المستقبِل الحساس أعلاه تبقى مدخلات حقيقية.
+  // The remaining batching plant controls (filter maintenance, leak
+  // detection checks, dry-cleaning/compressed-air ban, waste moisture) are
+  // shown as general advisory text only, with no effect on the decision —
+  // see the earthworksRules comment above for full context. The five fields
+  // above plus the receptor distance above remain real inputs.
 
   return hits;
 }
 
-// 9.6 قطع الأحجار — cuttingResiduesCleaned/wetCuttingActive/hepaExtractionActive
-// لا تُدخَل عبر الواجهة، تظهر كتنبيه نصي عام فقط، بلا أي تأثير على القرار —
-// قرار حوكمة معتمَد صراحةً (راجع تعليق earthworksRules أعلاه للسياق الكامل).
+// 9.6 Stone cutting — cuttingResiduesCleaned/wetCuttingActive/hepaExtractionActive
+// have no UI input; they render as general advisory text only, with no
+// effect on the decision (see the earthworksRules comment above for full context).
 //
-// خطأ مكتشَف ومُصلَح مرتين (مراجعة كود خارجي، الملاحظة #8 المُعاد فتحها
-// مرتين): المحاولة الأولى استثنت قطع الأحجار من قرار الحوكمة العام
-// (STONECUT-DUST-CONTROL-006، MANDATORY_STOP فعلي) بحجة أن المرجع التنظيمي
-// يصيغ شرط الرش المائي/HEPA بحسم إلزامي غير مسبوق. لكن التطبيق كشف فجوة
-// حقيقية: القاعدة تعتمد حصراً على wetCuttingActive/hepaExtractionActive،
-// وكلاهما كان بلا أي checkbox في DustStep.tsx (نفس فجوة SITE_TRAFFIC
-// المكتشفة لاحقاً) — فكل نشاط قطع أحجار مكشوف كان يُوقَف حتماً بصرف النظر
-// عن الواقع الفعلي. أُضيف checkbox فعلي لسد الفجوة، لكن المستخدم قرر بعدها
-// صراحةً ("لا نريدها تدخل في الايقاف احذف المدخلات و حولها تنبيهات")
-// توحيد المعاملة مع بقية التسع أنشطة نهائياً — لا استثناء لقطع الأحجار
-// بعد الآن. الـcheckboxان حُذفا من DustStep.tsx (راجع GENERAL_ALERTS_AR
-// هناك للنص التوعوي البديل)، وREGULATORY_ACTIVITY_FIELDS_DEFAULTS يبقي
-// الحقلين معرَّفين (توافقاً مع صفوف قديمة محفوظة قد تحمل true فعلياً) لكن
-// بلا أي قراءة لهما هنا.
+// wetCuttingActive/hepaExtractionActive were briefly wired into the general
+// governance decision (STONECUT-DUST-CONTROL-006, an actual MANDATORY_STOP)
+// on the theory that the regulatory reference states the wet-spray/HEPA
+// requirement in unusually mandatory terms. That surfaced a real gap: the
+// rule depended entirely on these two fields, and neither had a checkbox in
+// DustStep.tsx (same gap as SITE_TRAFFIC), so every exposed stone-cutting
+// activity was stopped regardless of actual conditions. A checkbox was added
+// to close the gap, but the decision was then made to remove the inputs and
+// treat this like the other nine activities — no exception for stone cutting.
+// The two checkboxes were removed from DustStep.tsx (see GENERAL_ALERTS_AR
+// there for the replacement advisory text); REGULATORY_ACTIVITY_FIELDS_DEFAULTS
+// still defines both fields (for compatibility with old saved rows that may
+// carry true) but nothing here reads them.
 function stoneCuttingRules(
   activity: DustActivityComplianceProfile,
   windBand: DustWindBand
@@ -762,18 +763,15 @@ function stoneCuttingRules(
 
   const isExposed = !activity.isEnclosedOperation;
 
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قطع الأحجار الخارجي لا يتبع
-  // تسلسل الملحق أ"): كانت STONECUT-WIND-STOP-003 تُطلِق MANDATORY_STOP فوراً
-  // عند FROM_15_TO_25 (15-25 كم/س) — نفس شدة تجاوز 25 تماماً. تسلسل الملحق أ
-  // الحاكم لكل الأنشطة (باستثناء الهدم، الذي له استثناء موثَّق صراحة يوقف عند
-  // 15 كم/س، ولا علاقة له بهذا الإصلاح — DEMO-WIND-STOP-001 منفصل تماماً
-  // بثابته الخاص WIND_GATE_ENHANCED_MIN_KMH ورمز قاعدة مختلف) هو: 15-25 كم/س
-  // تثبيط معزَّز (ALLOW_WITH_CONTROLS)، فوق 25 كم/س فقط إيقاف فعلي
-  // (STOP_AFFECTED_ACTIVITY) — وقطع الأحجار مذكور صراحة ضمن الأنشطة التي
-  // تتوقف فوق 25، لا عند 15. الإصلاح يفصّل النطاقين بدل معاملتهما معاملة
-  // واحدة؛ STONE_CUTTING_WIND_STOP_KMH (25 افتراضياً) يبقى عتبة الإيقاف
-  // الفعلي، وWIND_GATE_ENHANCED_MIN_KMH (15) يبقى عتبة بداية التثبيط المعزَّز
-  // (نفس الثابت العام المستخدَم لتصنيف windBand أصلاً).
+  // Exposed stone cutting follows the same Annex A wind sequence as other
+  // activities (except demolition, which has its own documented 15 km/h
+  // stop via the separate DEMO-WIND-STOP-001/WIND_GATE_ENHANCED_MIN_KMH):
+  // 15-25 km/h means enhanced suppression (ALLOW_WITH_CONTROLS), only above
+  // 25 km/h is an actual stop (STOP_AFFECTED_ACTIVITY) — stone cutting is
+  // explicitly listed among the activities that stop above 25, not at 15.
+  // STONE_CUTTING_WIND_STOP_KMH (25 by default) is the actual stop
+  // threshold; WIND_GATE_ENHANCED_MIN_KMH (15) is the enhanced-suppression
+  // start threshold (the same general constant used to classify windBand).
   if (isExposed && windBand === 'FROM_15_TO_25') {
     const windGateEnhancedMinKmh = getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH;
     hits.push(
@@ -799,9 +797,8 @@ function stoneCuttingRules(
   return hits;
 }
 
-// 9.7 الدخول والخروج — يشمل تفريع طريقة تنظيف الإطارات (وحدة غسيل مقابل
-// غمر بالمياه)، كل فرع بأسئلته الخاصة، حسب تفصيل مستند "تجهيز الموقع
-// وأعمال الحفر.pdf".
+// 9.7 Entry/exit — branches on tire-cleaning method (wheel wash vs. water
+// immersion), each with its own questions, per the site-prep/earthworks reference document.
 function entryExitRules(
   activity: DustActivityComplianceProfile,
   windBand: DustWindBand

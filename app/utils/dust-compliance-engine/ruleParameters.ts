@@ -3,33 +3,28 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // =============================================================
 // Riyadh Dust Compliance Engine — Rule Parameters (Tunable Thresholds)
 // =============================================================
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
-// القواعد الفعلية ثابتة داخل دوال برمجية؛ لا يوجد نظام حقيقي يدعم: إنشاء
-// نسخة قاعدة، النشر الذري، منع تعديل نسخة منشورة، التراجع لنسخة سابقة"):
-// محرك القواعد نفسه (rulebook.ts/engine.ts) يبقى منطقاً برمجياً IF/THEN —
-// قرار المستخدم الصريح تجنّب تحويله لمُفسِّر قواعد ديناميكي (مخاطرة عالية
-// على نظام امتثال تنظيمي). النطاق المُتفَق عليه بدلاً من ذلك: العتبات
-// الرقمية القابلة للضبط فعلياً (مسافات، سرعات رياح، أزمنة، نسب) تُنقَل من
-// ثوابت TypeScript صرفة إلى قيم قابلة للتعديل عبر نظام نسخ حقيقي
-// (rule_parameter_definitions/rule_parameter_versions، migration
-// 202608060003)، بينما تبقى بنية القواعد نفسها (أي قاعدة تُفعَّل، أي شرط
-// IF) كما هي تماماً في الكود — لا يجوز حذف/إضافة قاعدة من لوحة التحكم،
-// فقط ضبط رقم عتبة قاعدة موجودة أصلاً.
+// The rule engine itself (rulebook.ts/engine.ts) stays plain IF/THEN logic —
+// intentionally not a dynamic rule interpreter (too risky for a regulatory
+// compliance system). Instead, only the tunable numeric thresholds
+// (distances, wind speeds, durations, percentages) are moved from plain
+// TypeScript constants to values editable through a real versioning system
+// (rule_parameter_definitions/rule_parameter_versions, migration
+// 202608060003), while the rule structure itself (which rules fire, under
+// which conditions) stays exactly as coded — the admin panel can adjust a
+// threshold on an existing rule, never add or remove a rule.
 //
-// عتبات PM10 (340/250/...) مُستبعَدة صراحةً من هذا النظام — تبقى حصراً من
-// ACTIVE_RULE_BUNDLE (app/utils/rule-bundles)، طلب صريح من المستخدم بعدم
-// المساس بها هنا.
+// PM10 thresholds (340/250/...) are explicitly excluded from this system —
+// they remain exclusively controlled by ACTIVE_RULE_BUNDLE (app/utils/rule-bundles).
 //
-// آلية التطبيق: كل معامل هنا متغيّر وحدة (`let`، لا `const`) يُهيَّأ بقيمة
-// افتراضية تطابق ما كان مكتوباً صراحة في rulebook.ts/engine.ts قبل هذا
-// التغيير بالضبط — fallback آمن يبقي كل سلوك التقييم مطابقاً تماماً للحالة
-// السابقة إن لم يُنشَر أي معامل بعد. refreshRuleParameters (تُستدعى مرة
-// واحدة لكل دورة تقييم في computeDustComplianceResults، بنفس نمط
-// resolveProjectDeviceMap الموجود مسبقاً في dustEvaluation.ts) تجلب كل
-// نسخة PUBLISHED حالياً وتُحدِّث هذه
-// المتغيرات دفعة واحدة قبل أي تقييم جديد. rulebook.ts/engine.ts يبقيان
-// دالتين نقيتين تماماً (بلا I/O) تقرآن هذه المتغيرات كقيم عادية — لا تغيير
-// في تواقيعهما ولا في نمط استدعائهما.
+// Mechanism: each parameter here is a module-level `let` (not `const`)
+// initialized to a default matching what was previously hardcoded in
+// rulebook.ts/engine.ts — a safe fallback that preserves prior behavior
+// exactly until a parameter is published. refreshRuleParameters (called
+// once per evaluation cycle in computeDustComplianceResults) fetches all
+// currently PUBLISHED versions and swaps these variables in one batch
+// before each new evaluation. rulebook.ts/engine.ts remain pure functions
+// (no I/O) that read these variables as plain values — no change to their
+// signatures or call patterns.
 
 export interface RuleParameters {
   CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M: number;
@@ -52,21 +47,20 @@ export interface RuleParameters {
   WIND_GATE_STOP_KMH: number;
   WIND_GUST_SAFETY_THRESHOLD_KMH: number;
   CONFIDENCE_MIN_FOR_ALLOW: number;
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "يمكن نشر معاملات رياح متناقضة"،
-  // البند الثالث: "انقل حدود الرؤية 500/1000 إلى حزمة القواعد حتى تدخل في
-  // replay"): كانتا ثابتين خامين (0.5/1 كم) مباشرة داخل applyMandatoryGates
-  // (dust-engine/engine.ts) — لا أثر لهما في rule_parameter_versions، فلا
-  // تُلتقَط بصمة قيمتهما الفعلية وقت أي تقييم ضمن computeInputSnapshotHash
-  // (dustEvaluation.ts)، ولا يمكن إعادة بناء "ما كانت عليه العتبة وقت هذا
-  // القرار" لاحقاً لو تغيّرت — بخلاف كل عتبة أخرى في هذا الملف. نُقلتا هنا
-  // بنفس آلية بقية المعاملات (fallback افتراضي مطابق للقيمة القديمة تماماً).
+  // Previously raw constants (0.5/1 km) hardcoded directly in
+  // applyMandatoryGates (dust-engine/engine.ts), untracked by
+  // rule_parameter_versions and thus not captured by
+  // computeInputSnapshotHash (dustEvaluation.ts) — unlike every other
+  // threshold in this file, the effective value at decision time could not
+  // be reconstructed later if changed. Moved here using the same mechanism
+  // as the rest (default fallback matches the old value exactly).
   VISIBILITY_MANDATORY_STOP_KM: number;
   VISIBILITY_RESTRICT_SEVERE_KM: number;
 }
 
-// القيم الافتراضية — مطابقة تماماً لما كان مكتوباً صراحةً كثوابت في
-// rulebook.ts/engine.ts قبل هذا التغيير (code_default_value في migration
-// 202608060003 بالضبط). fallback الوحيد قبل أول نشر فعلي لأي معامل.
+// Default values — match exactly what was previously hardcoded as
+// constants in rulebook.ts/engine.ts (code_default_value in migration
+// 202608060003). The only fallback before a parameter's first publish.
 export const DEFAULT_RULE_PARAMETERS: RuleParameters = Object.freeze({
   CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M: 500,
   CRUSHER_GENERAL_RECEPTOR_DISTANCE_M: 200,
@@ -81,11 +75,9 @@ export const DEFAULT_RULE_PARAMETERS: RuleParameters = Object.freeze({
   DEBRIS_PILE_MAX_HEIGHT_M: 3,
   IMMERSION_ZONE_MIN_LENGTH_M: 8,
   WHEEL_WASH_CYCLE_MIN_SEC: 20,
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "قطع الأحجار الخارجي لا يتبع
-  // تسلسل الملحق أ"): كانت 15 كم/س — نفس عتبة بداية التثبيط المعزَّز
-  // (WIND_GATE_ENHANCED_MIN_KMH)، لا عتبة الإيقاف الفعلي التي يجب أن تطابق
-  // بقية الأنشطة (WIND_GATE_STOP_KMH=25) حسب الملحق أ. راجع تعليق
-  // stoneCuttingRules الكامل في rulebook.ts.
+  // Must match WIND_GATE_STOP_KMH (25) per Annex A's wind sequencing, not
+  // WIND_GATE_ENHANCED_MIN_KMH (15, the enhanced-suppression threshold).
+  // See the stoneCuttingRules comment in rulebook.ts.
   STONE_CUTTING_WIND_STOP_KMH: 25,
   BATCHING_PM10_FILTER_MIN_PERCENT: 99,
   IDLE_SURFACE_COVER_INSPECTION_WIND_KMH: 20,
@@ -97,63 +89,65 @@ export const DEFAULT_RULE_PARAMETERS: RuleParameters = Object.freeze({
   VISIBILITY_RESTRICT_SEVERE_KM: 1,
 });
 
-// الحالة الحية الفعلية التي تقرأها rulebook.ts/engine.ts — تبدأ مطابقة
-// للافتراضي تماماً، وتُستبدَل بالكامل (لا دمج جزئي) في كل refreshRuleParameters
-// ناجح. كائن واحد قابل للتبديل الذري (لا حقول مفردة قابلة للتحديث المتزامن
-// الجزئي) — يمنع قراءة توليفة متناقضة من نصف قيم قديمة ونصف جديدة أثناء
-// التحديث نفسه.
+// Live state actually read by rulebook.ts/engine.ts — starts equal to the
+// defaults, fully replaced (never partially merged) on each successful
+// refreshRuleParameters. A single atomically-swappable object (not
+// individually-updatable fields) prevents readers from observing a mix of
+// old and new values mid-update.
 let current: RuleParameters = DEFAULT_RULE_PARAMETERS;
 
-// خطأ مكتشَف (مراجعة تدقيق — "لا تُحفظ معرفات نسخ المعاملات المستخدمة مع
-// القرار"): current أعلاه يحمل أرقاماً خاماً فقط، بلا أي أثر لمصدرها. بصمة
-// مصاحبة منفصلة تماماً — كائن {parameter_code: rule_parameter_versions.id}
-// — عمداً لا حقل إضافي داخل كل رقم في RuleParameters نفسها: rulebook.ts/
-// engine.ts يقرآن getRuleParameters().X كرقم خام مباشرة في مقارنات حسابية
-// (if (windSpeed >= WIND_GATE_STOP_KMH()))؛ تغيير الشكل لـ{value, versionId}
-// يكسر كل موقع استهلاك بلا أي فائدة لمحرك القرار نفسه — provenance معلومة
-// تدقيقية تُلتقَط عند الحفظ فقط (dustEvaluation.ts)، لا عند التقييم.
+// `current` above holds only raw numbers, with no trace of their source.
+// This is a separate companion snapshot — {parameter_code:
+// rule_parameter_versions.id} — deliberately not embedded inside
+// RuleParameters itself: rulebook.ts/engine.ts read getRuleParameters().X as
+// a plain number in comparisons (if (windSpeed >= WIND_GATE_STOP_KMH()));
+// changing the shape to {value, versionId} would break every consumption
+// site for no benefit to the decision engine. Provenance is an audit
+// concern captured only at persistence time (dustEvaluation.ts), not during
+// evaluation.
 export interface RuleParameterVersionSnapshot {
   [parameterCode: string]: string; // parameter_code -> rule_parameter_versions.id
 }
 
-// معامل بلا نسخة PUBLISHED فعلية (يستخدم DEFAULT_RULE_PARAMETERS fallback)
-// غائب من هذه الخريطة عمداً — غياب المفتاح يعني صراحة "لا نسخة تحكم هذا
-// المعامل، القيمة من الكود الافتراضي"، لا "معرّف فارغ" ملتبس.
+// A parameter with no PUBLISHED version (using the DEFAULT_RULE_PARAMETERS
+// fallback) is deliberately absent from this map — a missing key explicitly
+// means "no version controls this parameter, value comes from the code
+// default", rather than an ambiguous empty id.
 let currentVersionIds: RuleParameterVersionSnapshot = {};
 
 export function getRuleParameters(): RuleParameters {
   return current;
 }
 
-// بصمة معرّفات النسخ الفعلية وقت آخر refreshRuleParameters ناجح — تُقرَأ
-// مرة واحدة لكل دورة تقييم (evaluateProject.ts) وتُمرَّر حتى persist_
-// activity_decision_atomic لتُخزَّن في final_decisions.rule_parameter_
-// version_snapshot.
+// Snapshot of the version ids in effect as of the last successful
+// refreshRuleParameters — read once per evaluation cycle (evaluateProject.ts)
+// and passed through to persist_activity_decision_atomic to be stored in
+// final_decisions.rule_parameter_version_snapshot.
 export function getActiveParameterVersionIds(): RuleParameterVersionSnapshot {
   return currentVersionIds;
 }
 
-// للاختبارات فقط — يعيد الحالة للافتراضي الصريح، بمعزل تام عن أي DB حقيقية
-// (لا استيراد Supabase في أي مسار اختبار وحدة لـ rulebook.ts/engine.ts).
+// Test-only — resets state to the explicit default, fully isolated from any
+// real DB (no Supabase import needed in unit tests for rulebook.ts/engine.ts).
 export function resetRuleParametersForTests(): void {
   current = DEFAULT_RULE_PARAMETERS;
   currentVersionIds = {};
 }
 
-// للاختبارات فقط — يضبط معاملاً واحداً أو أكثر مباشرة بلا Supabase، لإثبات
-// أن rulebook.ts/engine.ts يقرآن القيمة الحية فعلياً (لا ثابتاً مجمَّداً)
-// من هذه الوحدة تحديداً — نفس آلية النشر الحقيقية (كائن كامل جديد، لا تحديث
-// جزئي في مكانه).
+// Test-only — sets one or more parameters directly without Supabase, to
+// prove rulebook.ts/engine.ts reads live values from this module (not a
+// frozen constant) — uses the same mechanism as real publishing (a whole
+// new object, never an in-place partial update).
 export function setRuleParametersForTests(overrides: Partial<RuleParameters>): void {
   current = { ...current, ...overrides };
 }
 
-// تُستدعى مرة واحدة في بداية كل دورة computeDustComplianceResults (نفس نمط
-// resolveProjectDeviceMap) — تجلب كل نسخة PUBLISHED حالية دفعة
-// واحدة (استعلام واحد، لا استعلام لكل معامل) وتبني كائناً جديداً كاملاً قبل
-// التبديل الذري. فشل الاستعلام لا يُسقط التقييم (نفس مبدأ resolveFreshProjectDevice)
-// — يُبقي current كما كان (آخر قيم معروفة جيدة)، لا رجوعاً صامتاً للافتراضي
-// الذي قد يختلف عن آخر نسخة منشورة فعلياً.
+// Called once at the start of each computeDustComplianceResults cycle —
+// fetches all currently PUBLISHED versions in a single query (not one query
+// per parameter) and builds a whole new object before the atomic swap.
+// A failed query does not abort evaluation — `current` is left as the last
+// known-good values, never silently reset to defaults that may differ from
+// the actual latest published version.
 export async function refreshRuleParameters(supabaseAdmin: SupabaseClient): Promise<void> {
   try {
     const { data, error } = await supabaseAdmin
@@ -171,50 +165,52 @@ export async function refreshRuleParameters(supabaseAdmin: SupabaseClient): Prom
         nextVersionIds[row.parameter_code] = row.id;
       }
     }
-    // تبديل ذرّي لكليهما معاً — نفس مبدأ current أعلاه (لا دمج جزئي، لا
-    // قراءة توليفة متناقضة من قيمة جديدة مع معرّف نسخة قديم أو العكس).
+    // Atomic swap of both together — same principle as `current` above (no
+    // partial merge, no reading a mix of new value with stale version id or
+    // vice versa).
     current = next;
     currentVersionIds = nextVersionIds;
   } catch {
-    // فشل الاستعلام (شبكة/DB) لا يُسقط التقييم — يبقى current/currentVersionIds كما هما.
+    // Query failure (network/DB) does not abort evaluation — current/currentVersionIds are left unchanged.
   }
 }
 
 // =============================================================
-// قفل زمني صريح (async mutex) — إصلاح سباق تزامن حرج (طلب صريح من
-// المستخدم — "لقطة القواعد قابلة لسباق تزامن، ولقطة المدخلات لا تكفي
-// لإعادة إنتاج القرار تاريخياً"):
+// Explicit async mutex — prevents a concurrency race:
 //
-// current/currentVersionIds أعلاه متغيّرات module-level مشتركة على مستوى
-// الـprocess بأكمله — لا معزولة لكل دورة تقييم. evaluateProject تُستدعى من
-// 3 مصادر مستقلة تماماً (POST /evaluate، devices/ingest عند كل قراءة جهاز،
-// scheduler-worker الدوري)، وبينها قد تتشابك على نفس الـinstance
-// (serverless warm reuse). بين refreshRuleParameters() ولحظة استهلاك
-// getRuleParameters() الفعلي داخل computeDustResults/computeDustComplianceResults
-// (rulebook.ts/dust-engine/engine.ts) يقع عدة await حقيقية (استعلامات DB:
-// evaluation_runs، project_dust_profiles، project_shifts، sensitive_receptors)
-// — نقاط توقف يمكن لـevent loop أن يُشغِّل خلالها دورة evaluateProject
-// أخرى متزامنة، والتي بدورها تستدعي refreshRuleParameters الخاصة بها
-// وتُغيِّر current/currentVersionIds العالميتين *قبل* أن تصل الدورة الأولى
-// فعلياً لاستهلاكهما. النتيجة: rule_parameter_version_snapshot المحفوظة
-// نهائياً في final_decisions قد تشير لمعرّفات نسخ لا تطابق فعلياً القيم
-// التي استُخدمت لحساب dvi/compliance في تلك الدورة بالذات — بصمة كاذبة
-// تُفشل أي محاولة إعادة إنتاج/تدقيق لاحقة.
+// current/currentVersionIds are module-level state shared across the whole
+// process, not isolated per evaluation cycle. evaluateProject is called
+// from 3 independent sources (POST /evaluate, devices/ingest on each device
+// reading, the periodic scheduler-worker), which can interleave on the same
+// instance (serverless warm reuse). Between refreshRuleParameters() and the
+// actual consumption of getRuleParameters() inside
+// computeDustResults/computeDustComplianceResults there are several real
+// awaits (DB queries: evaluation_runs, project_dust_profiles,
+// project_shifts, sensitive_receptors) — suspension points where the event
+// loop can run another concurrent evaluateProject cycle, which calls its
+// own refreshRuleParameters and overwrites the global current/
+// currentVersionIds *before* the first cycle actually consumes them. The
+// result: the rule_parameter_version_snapshot persisted in final_decisions
+// could reference version ids that don't actually match the values used to
+// compute dvi/compliance in that cycle — a false provenance record that
+// breaks later reproduction/audit.
 //
-// الحل: قفل صريح يضمن تنفيذ متسلسل (لا متشابك) لكل القسم الحرج (من
-// refreshRuleParameters حتى نهاية استهلاك القيم/persist) عبر كل دورات
-// evaluateProject المتزامنة — لا حاجة لتمرير RuleParameters صراحةً عبر كل
-// طبقة استدعاء (rulebook.ts/engine.ts/dust-engine تبقى بتوقيعاتها الحالية
-// بلا أي تغيير)؛ يكفي ضمان أن current لا تتبدّل تحت أقدام دورة قيد التنفيذ.
-// runQueue Promise chain بسيط (لا مكتبة خارجية) — كل استدعاء withRuleParametersLock
-// ينتظر دوره في الطابور، لا حجم قفل مشترك معقّد.
+// Fix: an explicit lock guarantees sequential (non-interleaved) execution
+// of the critical section (from refreshRuleParameters through final
+// value consumption/persist) across concurrent evaluateProject cycles,
+// without needing to thread RuleParameters explicitly through every call
+// layer (rulebook.ts/engine.ts/dust-engine keep their current signatures
+// unchanged) — it's enough to guarantee `current` doesn't change under a
+// cycle that's still running. A simple runQueue Promise chain (no external
+// library) — each withRuleParametersLock call waits its turn in the queue.
 let runQueue: Promise<unknown> = Promise.resolve();
 
 export function withRuleParametersLock<T>(fn: () => Promise<T>): Promise<T> {
   const result = runQueue.then(fn, fn);
-  // نتجاهل نتيجة/خطأ هذا الاستدعاء تحديداً عند بناء سلسلة الانتظار التالية
-  // (catch(() => {})) — فشل دورة تقييم واحدة يجب ألا يمنع الدورة التالية في
-  // الطابور من البدء؛ الخطأ نفسه لا يزال يصل للمستدعي عبر result المُرجَعة.
+  // Swallow this call's result/error when building the next wait chain —
+  // one failed evaluation cycle must not block the next cycle in the queue
+  // from starting; the error itself still reaches the caller via the
+  // returned `result`.
   runQueue = result.catch(() => {});
   return result;
 }

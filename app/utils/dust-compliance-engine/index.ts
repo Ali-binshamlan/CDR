@@ -1,8 +1,7 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Public Entry Point
-// أي شاشة تريد عرض قرار الامتثال التنظيمي للغبار يجب أن تستدعي
-// evaluateDustCompliance من هنا، وتُمرِّر له نتيجة DVI الجاهزة —
-// لا يعيد هذا المحرك حساب DVI أبداً.
+// Callers must pass a precomputed DVI result to evaluateDustCompliance —
+// this engine never recomputes DVI itself.
 // =============================================================
 
 export * from './types';

@@ -1,8 +1,9 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Adapters
-// تحويل صف Supabase الخام (project + project_dust_profiles) + نتيجة
-// DVI الجاهزة (DviEvaluationResult) إلى DustComplianceContext موحّد.
-// بنفس نمط buildDustInput في app/lib/craneEvaluation.ts.
+// Converts raw Supabase rows (project + project_dust_profiles) plus a
+// precomputed DVI result (DviEvaluationResult) into a unified
+// DustComplianceContext, following the same pattern as buildDustInput in
+// app/lib/craneEvaluation.ts.
 // =============================================================
 
 import type { DviEvaluationResult, DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
@@ -51,23 +52,17 @@ export function buildProjectComplianceProfile(project: Record<string, unknown> |
 export function buildActivityComplianceProfile(
   row: Record<string, unknown> | null | undefined,
   sensitiveReceptors: SensitiveReceptor[] = [],
-  // اتجاه الرياح الفعلي المُدمَج (بعد أولوية جهاز > طقس > onsite — نفس
-  // الاتجاه المعروض فعلياً للمستخدم في evidence.windDirectionDeg، لا عينة
-  // الطقس الخام قبل الدمج) — يُستخدم لحساب crusherDistanceToDownwindReceptorAutoM
+  // The actual merged wind direction (after device > weather > onsite
+  // priority — the same direction shown to the user in
+  // evidence.windDirectionDeg, not the raw pre-merge weather sample), used
+  // to compute crusherDistanceToDownwindReceptorAutoM
   // (MRQ-RECEPTOR-DOWNWIND-120).
   //
-  // خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — "معايرة الشمال
-  // الحقيقي ونسخة المعايرة لا تُحفظان بالكامل داخل لقطة القرار... هذه
-  // الميزة ملغية، احذفها تماماً"): كان windDirectionDeg يُتجاهَل كلياً إن لم
-  // تُوثَّق معايرة الجهاز (DeviceTrueNorthCalibration، migration
-  // 202608060001) — لكن قيمة المعايرة المُستخدَمة فعلياً وقت اتخاذ القرار
-  // لم تكن تُحفظ ضمن DustComplianceResult المُخزَّنة إطلاقاً (لا حقل يوثّق
-  // documented/deviationDeg في dust_compliance_evaluations/final_decisions)
-  // — تُستهلَك وتُفقَد فوراً، بلا أي أثر قابل لإعادة الحساب لاحقاً (Replay/
-  // تدقيق، مبدأ H-07). ميزة غير مكتملة — حُذفت بالكامل (migration
-  // 202608130005 تحذف الأعمدة السبعة على project_devices والعمود القديم
-  // على projects). windDirectionDeg يُستخدَم الآن مباشرة كما هو، بلا شرط
-  // توثيق معايرة إضافي.
+  // windDirectionDeg is used directly as-is, with no device true-north
+  // calibration requirement — that calibration feature was removed
+  // entirely (migration 202608130005 drops the related columns) because
+  // the calibration value actually used at decision time was never
+  // persisted with the decision, making it unauditable/unreplayable.
   windDirectionDeg: number | null = null
 ): DustActivityComplianceProfile {
   const regulatoryActivity: RegulatoryDustActivity = (row?.regulatory_activity as RegulatoryDustActivity) ?? 'OTHER';
@@ -243,50 +238,51 @@ export function buildActivityComplianceProfile(
 
       debrisPileHeightM: toNullableNumber(row?.debris_pile_height_m),
     },
-    // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — راجع تعليق الحقل الكامل في
-    // types.ts): مشتق من طول المصفوفة العالمية الممرَّرة فعلياً من مصدر
-    // الجلب (sensitive_receptors كاملاً، لا مُصفّاة حسب موقع النشاط بعد —
-    // nearestReceptorDistancesM/nearestDownwindReceptorDistanceM أعلاه هما
-    // من يُصفّيان حسب المسافة). طول صفر هنا يعني "لا يوجد أي مستقبِل حساس
-    // مسجَّل في النظام كله بعد"، لا "لا مستقبِل قريب من هذا الموقع تحديداً".
+    // Derived from the length of the full receptor array as fetched
+    // (all sensitive_receptors, not yet filtered by activity location —
+    // nearestReceptorDistancesM/nearestDownwindReceptorDistanceM above do
+    // that filtering). A length of zero here means "no sensitive receptor
+    // registered in the system at all", not "none near this location".
     sensitiveReceptorsDataAvailable: sensitiveReceptors.length > 0,
   };
 }
 
-// dviResult هو windowEval.worst (DviEvaluationResult) الجاهز من computeDustResults —
-// لا إعادة حساب هنا إطلاقاً، فقط قراءة الحقول المطلوبة.
-// dviResult هو windowEval.worst (DviHourlyEvaluation فعلياً في وقت التشغيل،
-// يحمل rawWeatherSample) — النوع هنا DviEvaluationResult|DviHourlyEvaluation
-// لقبول كليهما (اختبارات الوحدة تبني DviEvaluationResult مباشرة بلا عينة خام).
+// dviResult is windowEval.worst (DviEvaluationResult) from computeDustResults
+// — never recomputed here, only its fields are read. At runtime it is
+// actually a DviHourlyEvaluation (carrying rawWeatherSample); the type here
+// is DviEvaluationResult|DviHourlyEvaluation to accept both (unit tests
+// build a plain DviEvaluationResult with no raw sample).
 export function buildComplianceContext(
   project: Record<string, unknown> | null | undefined,
   activityRow: Record<string, unknown> | null | undefined,
   dviResult: DviEvaluationResult | DviHourlyEvaluation,
   sensitiveReceptors: SensitiveReceptor[] = [],
-  // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
-  // current_dust_compliance_decisions) — يُستخدم لمنع الاستئناف التلقائي
-  // الفوري بعد إيقاف (راجع RESUME_STABILITY_MINUTES في engine.ts). اختياري
-  // ويبقى undefined في أي مسار لا يجلبه (مثل الشبكة الساعية التوقّعية)،
-  // فلا يُطبَّق أي قيد هناك تلقائياً. pending_resume_since منفصل تماماً عن
-  // updated_at — راجع previousPendingResumeSince في types.ts للسبب الكامل.
+  // The last recorded compliance decision for the same activity_group_id
+  // (from current_dust_compliance_decisions) — used to prevent an
+  // immediate automatic resume after a stop (see RESUME_STABILITY_MINUTES
+  // in engine.ts). Optional and left undefined on any path that doesn't
+  // fetch it (e.g. the forecast hourly grid), so no such restriction is
+  // applied there. pending_resume_since is tracked separately from
+  // updated_at — see previousPendingResumeSince in types.ts for why.
   previousDecision?: {
     decision: string;
     updated_at: string;
     pending_resume_since?: string | null;
     deciding_rule_code?: string | null;
-    // خطأ مكتشَف ومُصلَح (راجع تعليق previousEvaluationUpdatedAt الكامل في
-    // types.ts): updated_at أعلاه محمَّل بدلالة "منذ متى بدأ الإيقاف" (stopped_
-    // since ?? updated_at) — raw_updated_at الخام (بلا استبدال) منفصل تماماً،
-    // لاكتشاف فجوة تقييم فقط. اختياري: undefined = لا فحص فجوة (توافقي).
+    // updated_at above carries "how long the stop has been in effect"
+    // semantics (stopped_since ?? updated_at); raw_updated_at is the
+    // unmodified value, used only to detect an evaluation gap. Optional:
+    // undefined = no gap check (backward compatible).
     raw_updated_at?: string | null;
   } | null,
-  // استمرار PM10 عبر الزمن (الكائن الكامل المُرجَع من computeSustainedPm10Status
-  // في dustEvaluation.ts، لا الرقمين المُجرَّدين فقط) — اختياري، undefined
-  // يعني "لا بيانات استمرار" فيسلك المحرك مساره الاحتياطي الآمن (معاملة
-  // القراءة كأنها لحظية فقط). isConfirmedViolation340/isSuspended250For30Min
-  // محسوبتان هناك بكل الأدلة اللازمة (المصدر، حداثة القراءة) — يُمرَّران هنا
-  // كما هما، بلا إعادة اشتقاق في rulebook.ts (راجع pm10ConfirmedViolation340
-  // في types.ts للسبب الكامل).
+  // Sustained PM10 status over time (the full object returned by
+  // computeSustainedPm10Status in dustEvaluation.ts, not just the raw
+  // numbers) — optional; undefined means "no sustained-status data", so the
+  // engine falls back to its safe path (treating the reading as
+  // instantaneous only). isConfirmedViolation340/isSuspended250For30Min are
+  // computed there with all necessary evidence (source, reading freshness)
+  // and passed through as-is, with no re-derivation in rulebook.ts (see
+  // pm10ConfirmedViolation340 in types.ts for the full rationale).
   pm10Sustained?: {
     sustainedMinutesAbove340: number;
     sustainedMinutesAbove250: number;
@@ -294,55 +290,52 @@ export function buildComplianceContext(
     isSuspended250For30Min: boolean;
     evidenceReadingIds?: string[];
   } | null,
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق Pm10EvidenceState
-  // الكامل في types.ts): وقت "الآن" المستخدَم لحساب حداثة قراءة PM10 —
-  // Date.now() افتراضياً (توافقي مع كل الاستدعاءات القديمة)، لكن المستدعي
-  // يجب أن يمرّر نفس اللحظة الممرَّرة لاحقاً لـ evaluateDustCompliance(ctx, now)
-  // صراحة (لا يترك القيمة الافتراضية) حتى يمكن إعادة حساب نفس القرار لاحقاً
-  // (Replay/تدقيق) بنفس النتيجة تماماً — استدعاءان منفصلان لـ Date.now() في
-  // نفس التقييم قد يقعان على جانبين مختلفين من حد 4 دقائق نظرياً.
+  // The "now" instant used to compute PM10 reading freshness — defaults to
+  // Date.now() for backward compatibility, but callers should pass the same
+  // instant later given to evaluateDustCompliance(ctx, now) explicitly (not
+  // rely on the default) so a decision can be replayed with an identical
+  // result — two separate Date.now() calls within the same evaluation could
+  // otherwise land on opposite sides of the freshness threshold.
   evaluatedAtMs: number = Date.now(),
-  // خطأ مكتشَف ومُصلَح (راجع تعليق previousDecisionQueryFailed الكامل في
-  // types.ts): true فقط عندما فشل استعلام current_dust_compliance_decisions
-  // فعلياً (لا "لا صف موجود") — مستقل عن previousDecision نفسه (قد يكون
-  // null في كلتا الحالتين، الفشل هو ما يميّزهما). افتراضي false (توافقي).
+  // True only when the current_dust_compliance_decisions query actually
+  // failed (not "no row found") — independent of previousDecision itself
+  // (which can be null in both cases; the failure flag is what
+  // distinguishes them). Defaults to false for backward compatibility.
   previousDecisionQueryFailed: boolean = false
 ): DustComplianceContext {
-  // القراءة المدموجة فعلياً (بعد أولوية جهاز > طقس > onsite — راجع
-  // mergeDustReading في dust-engine/engine.ts) متوفرة فقط إن كان dviResult
-  // فعلياً DviHourlyEvaluation (الحالة الحقيقية دائماً في مسار التشغيل
-  // الفعلي عبر windowEval.worst).
+  // The actual merged reading (after device > weather > onsite priority —
+  // see mergeDustReading in dust-engine/engine.ts) is only available when
+  // dviResult is actually a DviHourlyEvaluation (always true on the real
+  // runtime path via windowEval.worst).
   //
-  // كل حقول القراءة هنا تُقرأ الآن من mergedReading نفسه الذي حسبه DVI
-  // فعلاً — بدل اشتقاق سلسلة أولوية منفصلة هنا كانت متضاربة معه (بعض
-  // الحقول قديماً كانت تتجاهل الجهاز كلياً، وPM10 كان يُفضِّل onsite على كل
-  // شيء آخر). هذا هو سبب تناقضات "بانر أخضر مقابل بطاقة حمراء" التي أُصلحت
-  // سابقاً — قراءة واحدة موحَّدة بدل مصدرين قد يختلفان.
+  // All reading fields here are read from the same mergedReading that DVI
+  // itself computed, rather than deriving a separate priority chain here
+  // that could disagree with it (some fields used to ignore the device
+  // entirely, and PM10 used to prefer onsite over everything else) — a
+  // single unified reading instead of two sources that could diverge.
   //
-  // خطأ مكتشَف ومُصلَح: كان اتجاه الرياح المستخدَم لحساب المستقبِل باتجاه
-  // الريح (crusherDistanceToDownwindReceptorAutoM أدناه) يُقرأ من rawSample
-  // (عينة الطقس الخام قبل الدمج)، بينما الدليل المعروض فعلياً للمستخدم
-  // (evidence.windDirectionDeg في engine.ts) هو merged.windDirectionDeg —
-  // فحين تكون قراءة الجهاز والطقس متعارضتين باتجاه الرياح (مثال: جهاز=0°،
-  // طقس=180°)، كان الحساب يستخدم اتجاهاً غير الاتجاه المعروض فعلياً على
-  // الشاشة، فقد يُرجع Infinity (لا مستقبِل باتجاه الريح الخاطئ) رغم وجود
-  // مستقبِل حقيقي باتجاه الريح الصحيح المعروض، فتضيع قاعدة
-  // MRQ-RECEPTOR-DOWNWIND-120 بصمت. استخدام merged?.windDirectionDeg هنا
-  // يضمن اتساق الاتجاه المستخدَم في الحساب مع الاتجاه المعروض للمستخدم دائماً.
+  // The wind direction used to compute the downwind receptor distance
+  // (crusherDistanceToDownwindReceptorAutoM below) must come from
+  // merged.windDirectionDeg — the same direction shown to the user as
+  // evidence.windDirectionDeg in engine.ts — not the raw pre-merge weather
+  // sample. Using the raw sample instead of the merged value could return
+  // Infinity (no receptor downwind of the wrong direction) even though a
+  // real receptor sits downwind of the direction actually displayed,
+  // silently missing MRQ-RECEPTOR-DOWNWIND-120.
   const merged = (dviResult as Partial<DviHourlyEvaluation>).mergedReading;
-  // القسم 18.6 من "دليل الإصلاح الجذري لمنظومة مرقاب" — "Forecast قديم:
-  // التخطيط يظهر نتيجة Stale": rawWeatherSample.isForecastStale (weather.ts،
-  // يُضبَط true عند فشل/انقطاع Open-Meteo، راجع fetchJson) لم يكن يصل محرك
-  // الامتثال إطلاقاً من قبل — DustComplianceContext لم يحمل هذا الحقل. لا
-  // معنى له إلا لمسار PLANNING (Live مبني من الجهاز مباشرة، بلا rawWeatherSample
-  // ذات صلة أصلاً — راجع evaluateLiveOperationalDecision).
+  // rawWeatherSample.isForecastStale (weather.ts, set true when Open-Meteo
+  // fails/is unreachable) previously never reached the compliance engine —
+  // DustComplianceContext didn't carry this field. Only meaningful for the
+  // PLANNING path (Live is built directly from the device, with no
+  // relevant rawWeatherSample — see evaluateLiveOperationalDecision).
   const isForecastStale = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample?.isForecastStale === true;
   const mergedWindDirectionDeg = toNullableNumber(merged?.windDirectionDeg);
 
-  // dataSource للعرض فقط: أعلى مصدر فاز فعلياً عبر أي حقل من حقول
-  // mergedReading.sources، بترتيب device > open-meteo > onsite > none. لا
-  // يوجد مصدر واحد "صحيح" لكل الحقول دائماً (مثال: جهاز يرسل رياح فقط،
-  // فالرطوبة تبقى من الطقس رغم وجود جهاز فعلي) — هذا أفضل تلخيص ممكن.
+  // dataSource is for display only: the highest-priority source that
+  // actually won for any field in mergedReading.sources, ordered device >
+  // open-meteo > onsite > none. There isn't always one "correct" source for
+  // every field (e.g. a device sends wind only, so humidity still comes
+  // from weather despite a live device) — this is the best single summary.
   const sourceValues = merged ? Object.values(merged.sources) : [];
   const dataSource: DustComplianceContext['dataSource'] = sourceValues.includes('device')
     ? 'device'
@@ -354,13 +347,13 @@ export function buildComplianceContext(
 
   const pm10RawUgM3 = toNullableNumber(merged?.pm10);
   const pm10SourceValue = merged?.sources.pm10;
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — راجع تعليق Pm10EvidenceState
-  // الكامل في types.ts): البوابة الفعلية المفقودة — pm10ThresholdRule
-  // (rulebook.ts) كان يقارن pm10UgM3 الخام مباشرة بـ340/250 بلا أي شرط
-  // حداثة خاص به (بخلاف الرياح/الرؤية المارّتين عبر freshOrNull في dust-
-  // engine/engine.ts). تُطبَّق فقط على pm10Source='device' — قراءة طقس/يدوية
-  // ليست "قراءة جهاز" لها عمر بنفس المعنى (نفس استثناء dust-engine/engine.ts
-  // بالضبط)، فتُعامَل كطازجة دائماً (FRESH) بصرف النظر عن devicePm10LastReadingAt.
+  // pm10ThresholdRule (rulebook.ts) used to compare the raw pm10UgM3
+  // directly against 340/250 with no freshness gate of its own (unlike
+  // wind/visibility, which pass through freshOrNull in
+  // dust-engine/engine.ts). Applies only to pm10Source='device' — a
+  // weather/manual reading isn't a "device reading" with an age in the same
+  // sense (same exemption as dust-engine/engine.ts), so it is always
+  // treated as fresh (FRESH) regardless of devicePm10LastReadingAt.
   const pm10EvidenceState: Pm10EvidenceState = (() => {
     if (pm10SourceValue !== 'device') return 'FRESH';
     const observedAtIso = merged?.devicePm10LastReadingAt;
@@ -370,10 +363,11 @@ export function buildComplianceContext(
     if (ageMs < 0) return 'FUTURE';
     return ageMs <= LIVE_FIELD_FRESHNESS_MS ? 'FRESH' : 'STALE';
   })();
-  // pm10UgM3 (يدخل pm10ThresholdRule مباشرة) يُصفَّر إلى null عند STALE/
-  // FUTURE/MISSING لقراءة جهاز — لا "بلا بيانات" مموَّهة كصفر ولا قيمة قديمة
-  // تُعامَل كحية. pm10RawUgM3 يبقى دائماً القيمة الخام كاملة، للعرض/التدقيق
-  // فقط (راجع evidence.pm10UgM3 في engine.ts الذي يعرض الخام دائماً).
+  // pm10UgM3 (fed directly into pm10ThresholdRule) is nulled out on
+  // STALE/FUTURE/MISSING for a device reading — never a stale value
+  // masquerading as live, nor "no data" disguised as zero. pm10RawUgM3
+  // always keeps the full raw value, for display/audit only (see
+  // evidence.pm10UgM3 in engine.ts, which always shows the raw value).
   const pm10UgM3ForDecision = pm10EvidenceState === 'FRESH' ? pm10RawUgM3 : null;
 
   return {
@@ -387,29 +381,27 @@ export function buildComplianceContext(
     dviScore: dviResult.score,
     dviDecision: dviResult.decisionCategory,
     dviMandatoryStop: dviResult.mandatoryStop,
-    // true فقط عندما يكون سبب إيقاف DVI الإلزامي الوحيد هو تجاوز PM10≥340
-    // اللحظي — بلا أي خطر فيزيائي فوري آخر (رؤية حرجة/رياح شديدة) مساهم بنفس
-    // اللحظة. يُقرأ الآن من stopBasis/confirmationState (حقول Typed، القسم
-    // 4.4 من "دليل الإصلاح الجذري") بدل مطابقة نص كود قاعدة يدوياً — نفس
-    // الدلالة بالضبط. تُستخدم في GATE-DVI-002 (engine.ts) لمنع قراءة PM10
-    // لحظية واحدة من التحول مباشرة لـMANDATORY_STOP تنظيمي قطعي دون نفس
-    // دليل الاستمرار (>دقيقتين) الذي يشترطه pm10ThresholdRule لعتبة
+    // True only when the sole reason for DVI's mandatory stop is an
+    // instantaneous PM10>=340 exceedance — with no other immediate physical
+    // hazard (critical visibility/severe wind) contributing at the same
+    // moment. Read from stopBasis/confirmationState (typed fields) rather
+    // than matching a rule code string. Used in GATE-DVI-002 (engine.ts) to
+    // prevent a single instantaneous PM10 reading from becoming a
+    // regulatory MANDATORY_STOP without the same persistence evidence
+    // (>2 minutes) that pm10ThresholdRule requires for
     // PM10-VIOLATION-STOP-006.
     dviMandatoryStopIsPm10Only: dviResult.stopBasis === 'PM10' && dviResult.confirmationState === 'PENDING',
-    // راجع تعليق dviVisibilityDataMissing الكامل في types.ts.
+    // See the dviVisibilityDataMissing comment in types.ts.
     dviVisibilityDataMissing: dviResult.visibilityDataMissing === true,
     dviShortReason: dviResult.shortReason ?? null,
     dviConfidenceScore: dviResult.confidenceScore,
-    // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي
-    // يستخدم رقمًا مشتقًا من الهبات"): كان يُمرَّر dviResult.effectiveWindKmh
-    // هنا (max(سرعة، 0.85×هبة)، رقم مخاطر DVI الداخلي) بدل سرعة الرياح
-    // الخام — تعليق سابق هنا كان يصف هذا كـ"استثناء مقصود" ويمنع تعديله،
-    // لكن ذلك التعليق كان تحذيراً وقائياً ضد كسر القواعد أثناء إعادة هيكلة
-    // سابقة، لا قراراً تنظيمياً بأن الهبات تُحسب ضمن "سرعة الرياح" في نص
-    // الملحق أ (الذي لا يذكر الهبات إطلاقاً). راجع تعليق windSpeedKmh في
-    // types.ts للتفصيل الكامل؛ effectiveWindKmh يبقى محصوراً في DVI
-    // (dust-engine/engine.ts) فقط. windGustSafetyRule في rulebook.ts هي
-    // القاعدة الوحيدة الآن التي تقرأ windGustKmh لأي قرار تنظيمي.
+    // Uses the raw wind speed, not dviResult.effectiveWindKmh
+    // (max(speed, 0.85*gust), DVI's internal risk figure) — Annex A's
+    // regulatory wind thresholds are stated in terms of sustained speed and
+    // never mention gusts. See the windSpeedKmh comment in types.ts for
+    // detail; effectiveWindKmh stays confined to DVI (dust-engine/engine.ts).
+    // windGustSafetyRule in rulebook.ts is the only rule that reads
+    // windGustKmh for any regulatory decision.
     windSpeedKmh: merged?.windSpeedKmh ?? null,
     windGustKmh: merged?.windGustKmh ?? null,
     windDirectionDeg: merged?.windDirectionDeg ?? null,
@@ -418,9 +410,10 @@ export function buildComplianceContext(
     relativeHumidityPercent: merged?.relativeHumidityPercent ?? null,
     temperatureC: merged?.temperatureC ?? null,
     visibilityM: merged?.visibilityM ?? null,
-    // undefined صراحةً (لا null) عندما لا يوجد ربط جهاز أصلاً (dataSource
-    // ليس 'device') — يميّز "لا محطة مرتبطة" عن "محطة مرتبطة بلا قراءة
-    // بعد" (null فعلياً)، حتى تعرف الواجهة متى تفعّل تحذير القِدم أصلاً.
+    // Explicitly undefined (not null) when no device is linked at all
+    // (dataSource is not 'device') — distinguishes "no linked station" from
+    // "station linked but no reading yet" (actual null), so the UI knows
+    // when to show a staleness warning at all.
     deviceLastReadingAt: dataSource === 'device' ? merged?.deviceLastReadingAt ?? null : undefined,
     devicePm10LastReadingAt: dataSource === 'device' ? merged?.devicePm10LastReadingAt ?? null : undefined,
     dviCaveatsAr: dviResult.caveatsAr ?? [],

@@ -8,8 +8,8 @@ import {
 import type { SensitiveReceptor } from './types';
 
 // =====================================================================
-// اختبارات MRQ-RECEPTOR-DOWNWIND-120 — تصعيد الاستجابة لمستقبِل حساس يقع
-// فعلياً باتجاه هبوب الرياح، لا مجرد قريب بالمسافة المستقيمة.
+// Tests for MRQ-RECEPTOR-DOWNWIND-120 — a sensitive receptor must be
+// actually downwind, not merely close by straight-line distance.
 // =====================================================================
 
 describe('bearingDegrees', () => {
@@ -47,8 +47,8 @@ describe('angularDifferenceDegrees', () => {
 
 describe('isDownwind', () => {
   it('مستقبِل شمالاً، والرياح قادمة من الجنوب (تهب شمالاً) → باتجاه الريح', () => {
-    // windDirectionFromDeg=180 يعني الرياح قادمة من الجنوب، فتهب نحو الشمال
-    // (اتجاه الهبوب الفعلي = 180+180=0، أي شمالاً) — يطابق موقع المستقبِل.
+    // windDirectionFromDeg=180 means wind comes from the south, blowing north
+    // (actual blow-toward direction = 180+180=0) — matches the receptor's position.
     const result = isDownwind(24.7, 46.7, 24.71, 46.7, 180);
     expect(result).toBe(true);
   });
@@ -59,8 +59,8 @@ describe('isDownwind', () => {
   });
 
   it('يحترم هامش التسامح الزاوي — مستقبِل قريب من حافة القطاع يبقى داخل النطاق', () => {
-    // مستقبِل شمالاً (bearing~0)، رياح تهب نحو 40 درجة (قريبة من الشمال لكن
-    // ليست تماماً) — يجب أن تبقى ضمن هامش 45 درجة الافتراضي.
+    // Receptor to the north (bearing~0), wind blowing toward 40° (near north
+    // but not exact) — should still fall within the default 45° tolerance.
     const result = isDownwind(24.7, 46.7, 24.71, 46.7, 220, 45); // windBlowingToward = 220+180-360=40
     expect(result).toBe(true);
   });
@@ -90,15 +90,16 @@ describe('nearestDownwindReceptorDistanceM', () => {
   it('رياح تهب جنوباً (قادمة من الشمال) → يجد المستقبِل السكني الجنوبي البعيد فقط، لا الشمالي', () => {
     const distance = nearestDownwindReceptorDistanceM(24.7, 46.7, 0, receptors);
     expect(distance).not.toBeNull();
-    // الجنوبي أبعد جغرافياً من الشمالي، لكنه الوحيد باتجاه الريح هنا
+    // The southern receptor is geographically farther than the northern one,
+    // but it is the only one downwind here.
     expect(distance).toBeGreaterThan(1000);
   });
 
   it('رياح تهب شرقاً بعيداً عن كل المستقبِلات السكنية (فقط مستشفى بالاتجاه، غير محسوب لأنه ليس سكنياً)', () => {
-    // ملاحظة: nearestDownwindReceptorDistanceM يفحص فقط الأنواع السكنية
-    // (RESIDENTIAL/SCHOOL/HOSPITAL — لاحظ أن HOSPITAL مدرج فعلياً ضمن
-    // RESIDENTIAL_RECEPTOR_TYPES في geo.ts) — إذاً المستشفى الشرقي يُحسب.
-    const distance = nearestDownwindReceptorDistanceM(24.7, 46.7, 270, receptors); // تهب شرقاً
+    // nearestDownwindReceptorDistanceM only checks residential types
+    // (RESIDENTIAL/SCHOOL/HOSPITAL — HOSPITAL is included in
+    // RESIDENTIAL_RECEPTOR_TYPES in geo.ts), so the eastern hospital counts.
+    const distance = nearestDownwindReceptorDistanceM(24.7, 46.7, 270, receptors); // blowing east
     expect(distance).not.toBeNull();
     expect(distance).toBeLessThan(3000);
   });
@@ -107,7 +108,8 @@ describe('nearestDownwindReceptorDistanceM', () => {
     const onlyFarNorth: SensitiveReceptor[] = [
       { id: 'r1', name: 'بعيد جداً جنوباً', receptorType: 'RESIDENTIAL', lat: 24.5, lng: 46.7 },
     ];
-    // رياح تهب شرقاً (لا جنوباً) — المستقبِل الوحيد المتاح جنوبي، خارج القطاع
+    // Wind blowing east (not south) — the only available receptor is to the
+    // south, outside the sector.
     const distance = nearestDownwindReceptorDistanceM(24.7, 46.7, 270, onlyFarNorth);
     expect(distance).toBe(Infinity);
   });

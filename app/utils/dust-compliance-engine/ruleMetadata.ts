@@ -1,23 +1,23 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Rule Metadata Registry
 //
-// البند 10 من "ما أطلب إصلاحه بالترتيب" (طلب صريح من المستخدم — "طوّر
-// Rule Hit ليحمل metadata المطلوبة بدل الاعتماد على catalog يدوي"): سجل
-// مركزي واحد لكل الحقول التوثيقية (ruleId/ruleVersion/ruleType/
-// indicatorType/activityTypes/conditionPredicate/priority/mandatoryStop/
-// riskLevel/decisionCategory/requiredActions/restartConditions/
-// escalationPolicy/overridePolicy/source/effectiveFrom/effectiveTo/
-// isActive) — راجع تعليق RuleMetadata الكامل في types.ts للسبب المعماري
-// الكامل (استبدال rulesCatalog.ts اليدوي المنفصل الذي كان ينحرف بصمت عن
-// rulebook.ts/engine.ts الفعليين).
+// Single central registry for documentation fields (ruleId/ruleVersion/
+// ruleType/indicatorType/activityTypes/conditionPredicate/priority/
+// mandatoryStop/riskLevel/decisionCategory/requiredActions/
+// restartConditions/escalationPolicy/overridePolicy/source/effectiveFrom/
+// effectiveTo/isActive) attached to each rule hit. See the RuleMetadata
+// comment in types.ts for the full architectural rationale — this replaces
+// the separate hand-maintained rulesCatalog.ts, which could silently drift
+// from the actual rulebook.ts/engine.ts logic.
 //
-// هذا الملف توثيقي بحت — لا يُستخدم في منطق القرار الفعلي
-// (evaluateDustCompliance) إطلاقاً. attachRuleMetadata() تُلحق هذه
-// البيانات بكل DustRuleHit بعد بنائه، لا أثناءه؛ حذف قاعدة من هذا السجل
-// أو تعديل حقل هنا لا يغيّر أي قرار فعلي يصدره المحرك.
+// This file is documentation only — never consumed by the actual decision
+// logic (evaluateDustCompliance). attachRuleMetadata() attaches this data to
+// each DustRuleHit after it is built, not during; editing a field here or
+// removing an entry never changes any decision the engine emits.
 //
-// مصدر priority: DECISION_PRIORITY[decisionCategory] الفعلي من
-// rulebook.ts، مضروباً ×10 — لا رقم مستقل قد ينحرف عنه.
+// priority is derived from DECISION_PRIORITY[decisionCategory] in
+// rulebook.ts, multiplied by 10 — never an independent number that could
+// drift from it.
 // =============================================================
 
 import type { DustRuleHit, RegulatoryDustActivity, RuleMetadata } from './types';
@@ -75,7 +75,7 @@ const RIYADH_ANNEX_A = 'الاستخراج التنظيمي من المرفق (�
 const RIYADH_SECTION_4 = 'الاستخراج التنظيمي من المرفق، القسم الرابع';
 
 export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
-  // ------------------------ بوابات الأولوية القصوى ------------------------
+  // ------------------------ Top-priority gates ------------------------
   'GATE-DMP-001': meta({
     ruleId: 'GATE-DMP-001', ruleType: 'GATE', indicatorType: 'NONE', activityTypes: [],
     conditionPredicate: 'activity.isActiveOrPlanned && project.dmpApprovalStatus NOT IN (APPROVED, NOT_REQUIRED, UNKNOWN)',
@@ -124,7 +124,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ PM10 التنظيمية العامة ------------------------
+  // ------------------------ General regulatory PM10 ------------------------
   'PM10-WARNING-008': meta({
     ruleId: 'PM10-WARNING-008', ruleType: 'GATE', indicatorType: 'PM10', activityTypes: [],
     conditionPredicate: 'pm10UgM3 in [250, 340)',
@@ -157,7 +157,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_SECTION_4, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ الهدم ------------------------
+  // ------------------------ Demolition ------------------------
   'DEMO-WIND-STOP-001': meta({
     ruleId: 'DEMO-WIND-STOP-001', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'WIND', activityTypes: ['DEMOLITION'],
     conditionPredicate: '!isEnclosedOperation && windBand in (FROM_15_TO_25, ABOVE_25)',
@@ -175,7 +175,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ الكسارة ------------------------
+  // ------------------------ Crusher ------------------------
   'CRUSHER-CATEGORY-001': meta({
     ruleId: 'CRUSHER-CATEGORY-001', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'NONE', activityTypes: ['CRUSHER'],
     conditionPredicate: 'riskClass !== CATEGORY_III_HIGH',
@@ -207,7 +207,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ محطة الخلط ------------------------
+  // ------------------------ Batching plant ------------------------
   'BATCHING-SILO-001': meta({
     ruleId: 'BATCHING-SILO-001', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'CONTROL_STATE', activityTypes: ['BATCHING_PLANT'],
     conditionPredicate: 'controls.silosSealed === false',
@@ -255,7 +255,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_SECTION_4, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ قطع الأحجار ------------------------
+  // ------------------------ Stone cutting ------------------------
   'STONECUT-WIND-ENHANCED-004': meta({
     ruleId: 'STONECUT-WIND-ENHANCED-004', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'WIND', activityTypes: ['STONE_CUTTING'],
     conditionPredicate: '!isEnclosedOperation && windBand === FROM_15_TO_25',
@@ -272,7 +272,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ الدخول والخروج (مؤجَّل حذفها — راجع rulebook.ts) ------------------------
+  // ------------------------ Entry/exit (removal deferred — see rulebook.ts) ------------------------
   'ENTRY-WHEELWASH-001': meta({
     ruleId: 'ENTRY-WHEELWASH-001', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'CONTROL_STATE', activityTypes: ['ENTRY_EXIT'],
     conditionPredicate: 'controls.wheelWashOperational === false',
@@ -379,7 +379,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01', isActive: false,
   }),
 
-  // ------------------------ الأكوام والمناولة ------------------------
+  // ------------------------ Stockpiles and handling ------------------------
   'STOCKPILE-DISTANCE-002': meta({
     ruleId: 'STOCKPILE-DISTANCE-002', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'DISTANCE', activityTypes: ['MATERIAL_HANDLING_STOCKPILE'],
     conditionPredicate: 'stockpileDistanceToNearestReceptorM < 200 (تنبيه توعوي فقط)',
@@ -388,7 +388,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ الأسطح غير النشطة ------------------------
+  // ------------------------ Idle surfaces ------------------------
   'IDLE-STABILIZE-001': meta({
     ruleId: 'IDLE-STABILIZE-001', ruleType: 'ACTIVITY_SPECIFIC', indicatorType: 'CONTROL_STATE', activityTypes: ['IDLE_SURFACE'],
     conditionPredicate: 'idleDays > 5 && controls.idleSurfaceStabilized === false',
@@ -411,7 +411,7 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
     source: RIYADH_ANNEX_A, effectiveFrom: '2026-01-01',
   }),
 
-  // ------------------------ طبقة القرار العامة (بعد قواعد الأنشطة) ------------------------
+  // ------------------------ General decision layer (after activity rules) ------------------------
   'GATE-WIND-ABOVE-25-RESUME-HOLD': meta({
     ruleId: 'GATE-WIND-ABOVE-25-RESUME-HOLD', ruleType: 'DECISION_LAYER', indicatorType: 'WIND', activityTypes: [],
     conditionPredicate: 'previousDecidingRuleCode === GATE-WIND-ABOVE-25-004 && windBand !== ABOVE_25 && windSpeedKmh >= WIND_GATE_STOP_KMH',
@@ -470,12 +470,11 @@ export const RULE_METADATA_REGISTRY: Record<string, RuleMetadata> = {
   }),
 };
 
-// attachRuleMetadata: تُلحق metadata من السجل أعلاه بكل DustRuleHit بعد
-// بنائه — لا تُغيّر code/severity/messageAr/actionAr/overridable/
-// regulatoryFinding إطلاقاً (القرار الفعلي يبقى كما بُني تماماً). قاعدة
-// غير مسجَّلة هنا (نظرياً غير ممكن لأي قاعدة حية في rulebook.ts/engine.ts
-// بعد هذا الإصلاح، لكن فشل آمن توثيقي فقط لأي إضافة مستقبلية تُنسى) تبقى
-// بلا metadata (undefined) بدل رمي خطأ يوقف تقييم القرار الفعلي.
+// Attaches metadata from the registry above to each DustRuleHit after it is
+// built; never mutates code/severity/messageAr/actionAr/overridable/
+// regulatoryFinding. A rule missing from the registry (should not happen for
+// any live rule, but fails safe for a future addition) is left without
+// metadata (undefined) rather than throwing and aborting the evaluation.
 export function attachRuleMetadata(hit: DustRuleHit): DustRuleHit {
   const metadata = RULE_METADATA_REGISTRY[hit.code];
   return metadata ? { ...hit, metadata } : hit;

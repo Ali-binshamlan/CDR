@@ -1,8 +1,8 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Geo
-// حساب المسافة بين نقطتين (Haversine) لتحديد بُعد الكسارة عن أقرب
-// مستقبِل حساس تلقائياً بدل سؤال المستخدم مباشرة (طلب صريح في مستند
-// "تجهيز الموقع وأعمال الحفر.pdf" لأسئلة المسافة 200م/500م).
+// Haversine distance between two points, used to auto-compute a crusher's
+// distance to the nearest sensitive receptor instead of relying on manual
+// entry for the 200m/500m distance rules.
 // =============================================================
 
 import type { SensitiveReceptor, SensitiveReceptorType } from './types';
@@ -25,10 +25,10 @@ export function haversineDistanceM(
   return EARTH_RADIUS_M * c;
 }
 
-// اتجاه (bearing) نقطة الوصول من نقطة الأصل، بالدرجات (0-360، 0=شمال حقيقي،
-// 90=شرق...) — يلزم لتحديد هل مستقبِل حساس "باتجاه الريح" فعلياً (راجع
-// MRQ-RECEPTOR-DOWNWIND-120)، لا مجرد قريب بالمسافة المستقيمة بصرف النظر
-// عن الاتجاه.
+// Bearing of the destination point from the origin, in degrees (0-360,
+// 0=true north, 90=east...) — used to determine whether a sensitive
+// receptor is actually downwind (see MRQ-RECEPTOR-DOWNWIND-120), not just
+// close by straight-line distance regardless of direction.
 export function bearingDegrees(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const toDeg = (rad: number) => (rad * 180) / Math.PI;
@@ -41,21 +41,21 @@ export function bearingDegrees(lat1: number, lng1: number, lat2: number, lng2: n
   return (bearing + 360) % 360;
 }
 
-// أصغر فرق زاوية بين اتجاهين (0-180) — يتعامل بشكل صحيح مع دوران360/0
-// (مثال: الفرق بين 350 و10 هو 20، لا 340).
+// Smallest angular difference between two bearings (0-180) — correctly
+// handles wraparound at 360/0 (e.g. the difference between 350 and 10 is 20, not 340).
 export function angularDifferenceDegrees(a: number, b: number): number {
   const diff = Math.abs(a - b) % 360;
   return diff > 180 ? 360 - diff : diff;
 }
 
-// هامش التسامح الزاوي لاعتبار مستقبِل "باتجاه الريح" (downwind) — قطاع
-// ±45° حول اتجاه هبوب الرياح الفعلي (لا اتجاه مصدرها)، يغطي ربع الدائرة
-// تقريباً في اتجاه الريح، وهو نطاق معقول عملياً لا يتطلب محاذاة دقيقة تماماً.
+// Angular tolerance for considering a receptor "downwind" — a ±45° sector
+// around the wind's actual blow-toward direction (not its source), covering
+// roughly a quarter circle rather than requiring exact alignment.
 export const DOWNWIND_TOLERANCE_DEGREES = 45;
 
-// هل نقطة الوصول تقع "باتجاه الريح" (downwind) من نقطة الأصل؟
-// windDirectionDeg يُقاس تقليدياً كـ"الاتجاه القادمة منه الريح" (meteorological
-// convention)، فاتجاه الهبوب الفعلي (نحو أين تذهب) هو windDirectionDeg+180.
+// Is the destination point downwind of the origin?
+// windDirectionDeg follows meteorological convention (direction the wind is
+// coming FROM), so the actual blow-toward direction is windDirectionDeg+180.
 export function isDownwind(
   originLat: number,
   originLng: number,
@@ -71,18 +71,19 @@ export function isDownwind(
 
 const RESIDENTIAL_RECEPTOR_TYPES: SensitiveReceptorType[] = ['RESIDENTIAL', 'SCHOOL', 'HOSPITAL'];
 
-// يُرجع أقرب مسافة (م) لأي مستقبل حساس، وأقرب مسافة لمستقبل
-// سكني/مدرسي/صحي تحديداً (يخضع لحد تنظيمي أشد عند الكسارات).
+// Returns the nearest distance (m) to any sensitive receptor, and the
+// nearest distance to a residential/school/hospital receptor specifically
+// (subject to a stricter regulatory limit for crushers).
 //
-// "لا نعرف الموقع" (lat/lng فارغ) تختلف جوهرياً عن "الموقع معروف وجدول
-// المستقبِلات فارغ فعلياً": الأولى تعني "لا يمكن الحساب إطلاقاً" (null —
-// يُبقي المستدعي على القيمة اليدوية القديمة كاحتياط معقول)، لكن الثانية
-// معلومة حقيقية ("لا يوجد أي مستقبِل معروف قريباً") يجب أن تُترجَم لمسافة
-// آمنة عملياً (Infinity) لا null — وإلا فإن رجوع null هنا كان يجعل قاعدة
-// الكسارة تسقط تلقائياً إلى قيمة يدوية قديمة قد لا تعود صحيحة رغم أن
-// الحساب التلقائي (بلا أي مستقبِل في النظام) لا يعطي أي سبب فعلي للإيقاف —
-// يسبب هذا بالضبط تناقضاً بين قاعدة الإيقاف وقائمة "لا توجد مستقبِلات
-// قريبة" المعروضة للمستخدم في نفس الشاشة.
+// "Location unknown" (null lat/lng) is distinct from "location known but
+// the receptor table is genuinely empty": the former means the distance
+// cannot be computed at all (null — callers fall back to a stale manual
+// value), while the latter is real information ("no known receptor
+// nearby") and must translate to a practically safe distance (Infinity),
+// not null — otherwise the rule would fall back to a stale manual value
+// even though the live computation gives no actual reason to stop,
+// contradicting the "no nearby receptors" list shown to the user on the
+// same screen.
 export function nearestReceptorDistancesM(
   lat: number | null,
   lng: number | null,
@@ -109,11 +110,11 @@ export function nearestReceptorDistancesM(
   return { nearestAnyM, nearestResidentialM };
 }
 
-// أقرب مسافة (م) لمستقبِل حساس (سكني/مدرسي/صحي) يقع فعلياً "باتجاه الريح"
-// من نقطة الأصل — MRQ-RECEPTOR-DOWNWIND-120. يُرجع null إن كان اتجاه
-// الرياح غير متوفر (windDirectionFromDeg=null) أو الموقع غير معروف، أو
-// Infinity إن لم يوجد أي مستقبِل ضمن قطاع اتجاه الريح (لا خطر اتجاهي
-// حالياً، بصرف النظر عن وجود مستقبِلات في اتجاهات أخرى).
+// Nearest distance (m) to a residential/school/hospital receptor that is
+// actually downwind of the origin — MRQ-RECEPTOR-DOWNWIND-120. Returns null
+// if wind direction is unavailable (windDirectionFromDeg=null) or location
+// is unknown, or Infinity if no receptor falls within the downwind sector
+// (no directional risk currently, regardless of receptors in other directions).
 export function nearestDownwindReceptorDistanceM(
   lat: number | null,
   lng: number | null,
@@ -132,11 +133,10 @@ export function nearestDownwindReceptorDistanceM(
   return Math.min(...downwindResidential.map((r) => haversineDistanceM(lat, lng, r.lat, r.lng)));
 }
 
-// نصف قطر عرض المستقبِلات حول وحدة الكسارة/الخلاطة — 500م هو نفس الحد
-// التنظيمي الأشد المطبَّق في قاعدتي CRUSHER-DISTANCE-002 و
-// BATCHING-DISTANCE-002 (راجع rulebook.ts)، فيرى المستخدم بالضبط
-// المستقبِلات التي تُفعِّل تلك القاعدة، لا نطاقاً أوسع أو أضيق يوهمه بأن
-// القرار مبني على شيء آخر.
+// Display radius for receptors around a crusher/batching unit — 500m
+// matches the stricter regulatory limit used by CRUSHER-DISTANCE-002 and
+// BATCHING-DISTANCE-002 (see rulebook.ts), so the user sees exactly the
+// receptors that trigger those rules.
 export const UNIT_RECEPTOR_RADIUS_M = 500;
 
 export interface ReceptorWithinRadius {
@@ -146,9 +146,10 @@ export interface ReceptorWithinRadius {
   distanceM: number;
 }
 
-// يُرجع كل المستقبِلات الحساسة ضمن نصف قطر محدد من نقطة وحدة (كسارة/خلاطة)،
-// مرتبة من الأقرب. يختلف عن nearestReceptorDistancesM التي تُرجع أقرب مسافة
-// فقط: هنا نحتاج القائمة كاملة للعرض، لا رقماً واحداً للقاعدة.
+// Returns all sensitive receptors within a given radius of a unit
+// (crusher/batching plant), sorted nearest-first. Unlike
+// nearestReceptorDistancesM, which returns only the nearest distance, this
+// returns the full list for display purposes.
 export function receptorsWithinRadiusM(
   lat: number | null,
   lng: number | null,

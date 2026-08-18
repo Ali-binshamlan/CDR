@@ -1,20 +1,16 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Rules Catalog (Reference Only)
-// نسخة مرجعية ثابتة (نصوص/عتبات) لكل قواعد rulebook.ts وبوابات
-// engine.ts، لعرضها في صفحة "قواعد الامتثال" الإدارية. هذا الملف لا
-// يُستخدم في منطق القرار الفعلي (evaluateDustCompliance) إطلاقاً —
-// القرار الحقيقي يبقى حصراً من rulebook.ts/engine.ts. أي تعديل على
-// نص أو عتبة قاعدة هناك يجب أن يُعكَس هنا يدوياً.
+// Static reference copy (text/thresholds) of the rulebook.ts rules and
+// engine.ts gates, for display on the admin "compliance rules" page. This
+// file is never consumed by actual decision logic (evaluateDustCompliance)
+// — the real decision comes exclusively from rulebook.ts/engine.ts. Any
+// change to a rule's text or threshold there must be mirrored here manually.
 //
-// البند 10 ("طوّر Rule Hit ليحمل metadata المطلوبة بدل الاعتماد على
-// catalog يدوي"، راجع تعليق RuleMetadata الكامل في types.ts): هذا الملف
-// يبقى منفصلاً عمداً (نصوص عربية منسَّقة لصفحة إدارية حية، لا يستحق مخاطرة
-// إعادة بناء آلية) — لكن الانحراف الصامت السابق (تعديل قاعدة هنا دون
-// rulebook.ts/engine.ts، أو العكس) لم يعد ممكناً بصمت: اختبار حارس في
-// dust-compliance-engine.test.ts ("metadata القواعد (البند 10)") يقارن كل
-// رمز/severity هنا مع RULE_METADATA_REGISTRY (ruleMetadata.ts) ويفشل بناءً
-// عند أي انحراف — بالضبط الفجوة المكتشفة أثناء هذه الجلسة (4 قواعد
-// resume-hold كانت ناقصة من هذا الملف رغم فعاليتها في engine.ts).
+// This file is kept separate on purpose (Arabic text formatted for a live
+// admin page, not worth the risk of rebuilding the mechanism). A guard test
+// in dust-compliance-engine.test.ts compares every code/severity here
+// against RULE_METADATA_REGISTRY (ruleMetadata.ts) and fails the build on
+// any drift between the two.
 // =============================================================
 
 import { RULEBOOK_VERSION } from './rulebook';
@@ -25,7 +21,7 @@ export interface RuleCatalogEntry {
   severity: DustComplianceDecisionCategory;
   messageAr: string;
   actionAr: string;
-  /** ملاحظة سياق اختيارية: عتبة رقمية، مصدر تنظيمي، أو شرط تفعيل مختصر */
+  /** Optional context note: a numeric threshold, regulatory source, or brief activation condition. */
   noteAr?: string;
 }
 
@@ -69,14 +65,10 @@ export const DUST_RULES_CATALOG: RuleCatalogSection[] = [
         severity: 'STOP_AFFECTED_ACTIVITY',
         messageAr: 'إيقاف الأنشطة المولّدة للغبار: سرعة الرياح تتجاوز 25 كم/س — مكشوفة أو مغلقة على حد سواء',
         actionAr: 'أوقف النشاط وأمّن المواد السائبة، وانتظر انخفاض سرعة الرياح إلى ما دون 25 كم/س',
-        // خطأ توثيقي مكتشَف ومُصلَح (طلب صريح من المستخدم — "استثناء الرياح
-        // للنشاط المغلق مختلف بين المحرك والكتالوج التنظيمي"): هذا النص كان
-        // يقول "تُستثنى العمليات المغلقة (isEnclosedOperation)" — عام لأي
-        // نشاط مغلق (هدم مغلق، حفر مغلق، إلخ). المحرك الفعلي (engine.ts،
-        // isEnclosedExemptFromHighWind) لا يعفي isEnclosedOperation الخام
-        // إطلاقاً منذ إصلاح سابق موثَّق هناك — الإعفاء الوحيد مقصور حصراً
-        // على BATCHING_PLANT (بشرطيه معاً: صوامع محكمة الإغلاق + فلتر PM10
-        // ≥99%)، لا سند تنظيمي موثَّق لتعميمه على أي عملية مغلقة أخرى.
+        // The wind-gate exemption in engine.ts (isEnclosedExemptFromHighWind)
+        // does not exempt raw isEnclosedOperation — only BATCHING_PLANT with
+        // both silosSealed and PM10 filter efficiency >=99% qualifies. No
+        // other enclosed activity (demolition, excavation, etc.) is exempt.
         noteAr: 'الإعفاء الوحيد من هذه البوابة (ومن بوابة 15-25 المعززة) هو محطة الخلط (BATCHING_PLANT) تحديداً، بشرطيها معاً: صوامع محكمة الإغلاق (silosSealed) وكفاءة فلتر PM10 ≥ 99% — لا يشمل أي نشاط مغلق آخر (هدم/حفر/إلخ)',
       },
       {
@@ -101,10 +93,9 @@ export const DUST_RULES_CATALOG: RuleCatalogSection[] = [
     descriptionAr: 'مستقلة عن بوابات DVI الفيزيائية — عتبات رسمية من الدليل التنظيمي مباشرة.',
     rules: [
       {
-        // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — توحيد إلى 3 مستويات فقط،
-        // لا 4): PM10-PRECAUTION-009/PM10-RED-RESTRICT-010 حُذفتا — لم تعودا
-        // تُصدَران من pm10ThresholdRule، نطاقهما ابتُلع بالكامل في هذا المستوى
-        // الموحَّد الوحيد [250,340].
+        // PM10 thresholds are consolidated into 3 levels only; the former
+        // PM10-PRECAUTION-009/PM10-RED-RESTRICT-010 ranges are fully absorbed
+        // into this single [250,340] band.
         code: 'PM10-WARNING-008',
         severity: 'ALLOW_WITH_CONTROLS',
         messageAr: 'تحذير: تركيز PM10 بلغ أو تجاوز حد التحذير (250-340 ميكروجرام/م³)',
@@ -136,10 +127,10 @@ export const DUST_RULES_CATALOG: RuleCatalogSection[] = [
   {
     id: 'earthworks',
     titleAr: 'أعمال الحفر والترابية (EARTHWORKS)',
-    // EARTHWORKS-DROP-002/003 حُذفتا (طلب صريح من المستخدم — dropHeightM
-    // بلا أي حقل إدخال في DustStep.tsx، فأُلغي استثناؤها من قرار الحوكمة
-    // العام). لا قواعد فعلية متبقية لهذا النشاط — كل ضوابطه تنبيهات نصية
-    // فقط (راجع GENERAL_ALERTS_AR في AddActivityModal/DustStep.tsx).
+    // EARTHWORKS-DROP-002/003 removed — dropHeightM has no input field in
+    // DustStep.tsx. No active rules remain for this activity; its controls
+    // are text-only advisories (see GENERAL_ALERTS_AR in
+    // AddActivityModal/DustStep.tsx).
     rules: [],
   },
   {
@@ -364,26 +355,24 @@ export const DUST_RULES_CATALOG: RuleCatalogSection[] = [
     id: 'site_traffic',
     titleAr: 'حركة الشاحنات والطرق الداخلية (SITE_TRAFFIC)',
     // TRAFFIC-LOAD-004/TRAFFIC-UNPAVED-002/TRAFFIC-PAVED-003/TRAFFIC-SPILL-005
-    // حُذفت كلها (طلب صريح من المستخدم — "بإستثناء الأحجار أريد البقية
-    // تكون تنبيهات توعوية"، شمل TRAFFIC-LOAD-004 رغم استثنائها سابقاً
-    // بحجة "قاعدة إلزامية صريحة"): لا واحد من حقولها الأربعة كان له input
-    // فعلي في DustStep.tsx. لا قواعد فعلية متبقية لهذا النشاط.
+    // removed — none of their four fields had an actual input in
+    // DustStep.tsx. No active rules remain for this activity.
     rules: [],
   },
   {
     id: 'cd_waste',
     titleAr: 'نقل مخلفات الهدم والبناء (CD_WASTE_TRANSPORT)',
-    // CDWASTE-PILEHEIGHT-003 حُذفت (طلب صريح من المستخدم — نفس فجوة
-    // debrisPileHeightM بلا حقل إدخال). لا قواعد فعلية متبقية لهذا النشاط.
+    // CDWASTE-PILEHEIGHT-003 removed — debrisPileHeightM has no input field.
+    // No active rules remain for this activity.
     rules: [],
   },
   {
     id: 'stockpile',
     titleAr: 'الأكوام والمناولة (MATERIAL_HANDLING_STOCKPILE)',
-    // STOCKPILE-HEIGHT-001/STOCKPILE-DROP-004/STOCKPILE-DROP-005 حُذفت
-    // (طلب صريح من المستخدم — stockpileHeightM/dropHeightM بلا حقل إدخال
-    // فعلي). STOCKPILE-DISTANCE-002 الوحيدة المتبقية، وهي أصلاً تنبيه فقط
-    // (ALLOW_WITH_CONTROLS، لا تؤثر على decisionCategory).
+    // STOCKPILE-HEIGHT-001/STOCKPILE-DROP-004/STOCKPILE-DROP-005 removed —
+    // stockpileHeightM/dropHeightM have no actual input field.
+    // STOCKPILE-DISTANCE-002 is the only rule remaining, and it is already
+    // advisory only (ALLOW_WITH_CONTROLS, does not affect decisionCategory).
     rules: [
       {
         code: 'STOCKPILE-DISTANCE-002',
@@ -444,10 +433,9 @@ export const DUST_RULES_CATALOG: RuleCatalogSection[] = [
         actionAr: 'راجع البيانات الناقصة/غير المؤكدة ميدانياً قبل اعتماد القرار كسماح كامل',
         noteAr: 'تُطبَّق فقط حين يكون القرار المحسوب ALLOW مع ثقة أقل من 70 — لا تُخفِّض قراراً أشد قائماً',
       },
-      // الأربع قواعد التالية كانت مفقودة من هذا الكتالوج رغم كونها فعّالة
-      // منذ إصلاحات سابقة في engine.ts — اكتُشفت الفجوة عبر اختبار حارس
-      // ضد الانحراف (البند 10، dust-compliance-engine.test.ts: "كل قاعدة
-      // نشطة في RULE_METADATA_REGISTRY موجودة في DUST_RULES_CATALOG").
+      // The following four rules are active in engine.ts and must stay in
+      // sync with this catalog; a guard test in dust-compliance-engine.test.ts
+      // verifies every active rule in RULE_METADATA_REGISTRY exists here.
       {
         code: 'PREVIOUS-DECISION-QUERY-FAILED-HOLD',
         severity: 'STOP_AFFECTED_ACTIVITY',

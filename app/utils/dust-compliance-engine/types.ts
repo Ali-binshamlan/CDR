@@ -1,8 +1,8 @@
 // =============================================================
 // Riyadh Dust Compliance Engine — Types
-// طبقة امتثال تنظيمية فوق محرك DVI (app/utils/dust-engine).
-// قاعدة صارمة: هذه الطبقة تستهلك نتيجة DVI الجاهزة (قراءة فقط)
-// ولا تُعيد حسابها أبداً. القرار هنا مستقل تماماً عن DviDecisionCategory.
+// A regulatory compliance layer on top of the DVI engine (app/utils/dust-engine).
+// Strict rule: this layer only consumes a precomputed DVI result (read-only)
+// and never recomputes it. The decision here is fully independent of DviDecisionCategory.
 // =============================================================
 
 import type { DviDecisionCategory } from '@/app/utils/dust-engine/types';
@@ -13,17 +13,9 @@ export type DustRiskClass =
   | 'CATEGORY_III_HIGH'
   | 'UNCLASSIFIED';
 
-// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "PM10 القديم يدخل القرار كأنه قراءة
-// حية"): pm10UgM3 (أدناه) كان يمرَّر خاماً من merged.pm10 (adapters.ts) بلا
-// أي فحص حداثة قبل وصوله pm10ThresholdRule (rulebook.ts) — الرياح/الرؤية
-// تمران عبر freshOrNull (dust-engine/engine.ts)، لكن PM10 كان مستثنى عمداً
-// من تلك الدالة تحديداً (راجع تعليق buildDeviceMergedReading الكامل هناك:
-// قرار مقصود لإبقاء PM10 القديم مؤثراً بدرجة احترازية أضعف في DVI). المشكلة
-// الحقيقية لم تكن في DVI (له آلية دقيقة منفصلة: pm10ReadingIsFreshEnoughFor
-// ImmediateStop) بل في محرك الامتثال التنظيمي — pm10ThresholdRule يقرأ
-// pm10UgM3 مباشرة بلا أي بوابة حداثة خاصة به؛ قراءة جهاز عمرها ساعات، قيمتها
-// >340، كانت تُنتج MRQ-PM10-BLACK-PENDING-104 (STOP_AFFECTED_ACTIVITY حقيقي)
-// فقط لأنها ليست null، رغم كونها بلا أي دليل على استمرار التجاوز الآن.
+// Tracks freshness of a device PM10 reading for pm10ThresholdRule (rulebook.ts),
+// which compares pm10UgM3 directly against the 340/250 thresholds with no
+// freshness gate of its own, unlike wind/visibility.
 export type Pm10EvidenceState = 'FRESH' | 'STALE' | 'MISSING' | 'FUTURE';
 
 export type DustWindBand = 'BELOW_15' | 'FROM_15_TO_25' | 'ABOVE_25' | 'UNKNOWN';
@@ -37,8 +29,9 @@ export type DustComplianceDecisionCategory =
   | 'STOP_AFFECTED_ACTIVITY'
   | 'MANDATORY_STOP';
 
-// نوع نشاط تنظيمي مستقل عن ActivityCategory الهندسي في dust-engine —
-// هذا تصنيف حسب فصول دليل RCRC/NCEC (الباب الثالث)، اختياري على مستوى النشاط.
+// Regulatory activity type, independent of dust-engine's engineering
+// ActivityCategory — this classifies by the RCRC/NCEC guide chapters
+// (Chapter 3), optional at the activity level.
 export type RegulatoryDustActivity =
   | 'EARTHWORKS'
   | 'SITE_TRAFFIC'
@@ -61,8 +54,8 @@ export type DmpApprovalStatus =
   | 'REJECTED'
   | 'UNKNOWN';
 
-// ملف امتثال المشروع — بيانات مستقرة نسبياً على مستوى المشروع ككل،
-// تُستخدم لتصنيف فئة المخاطر (القسم 6) والتزامات الرصد (القسم 10).
+// Project compliance profile — relatively stable project-level data, used
+// for risk category classification (Section 6) and monitoring obligations (Section 10).
 export interface DustProjectComplianceProfile {
   siteAreaM2: number | null;
   dailyTruckMovements: number | null;
@@ -82,7 +75,7 @@ export interface DustProjectComplianceProfile {
   sensitivityMapPrepared: boolean | null;
 }
 
-// أدلة ضوابط التحكم الفعلية المتوفرة فعلياً على النشاط (وليس المطلوبة نظرياً).
+// Evidence of control measures actually in place on the activity (not merely required in theory).
 export interface DustControlEvidence {
   dustSuppressionSystemOperational: boolean | null;
   continuousMisting: boolean | null;
@@ -97,20 +90,20 @@ export interface DustControlEvidence {
   conveyorsEnclosed: boolean | null;
   foggingAvailable: boolean | null;
   idleSurfaceStabilized: boolean | null;
-  // A6 — محطات خلط الخرسانة ونقل الإسمنت (القسم الرابع، الفقرة "ب"،
-  // ومصفوفة الأنشطة A6): إحكام الصوامع، كفاءة الفلاتر، التسرب، التشغيل.
+  // A6 — batching plants and cement transport (Section 4-b, Activity
+  // Matrix A6): silo sealing, filter efficiency, leaks, operation.
   silosSealed: boolean | null;
   pm10FilterEfficiencyPercent: number | null;
   leakDetected: boolean | null;
   dryCleaningMethodUsed: boolean | null;
-  // A4 — الأسطح المكشوفة والمناطق غير النشطة (عنصرا "حالة الأغطية" و"اتجاه
-  // وسرعة الرياح" من مصفوفة الأنشطة A4؛ فحص الأغطية بعد رياح >20 كم/س).
+  // A4 — idle surfaces and inactive areas (cover condition and wind
+  // speed/direction from Activity Matrix A4; cover inspection after wind >20 km/h).
   idleSurfaceCoverIntact: boolean | null;
-  // A1 — رش/ترطيب السطح أثناء الحفر والتحميل والتفريغ (القسم الرابع، ثانياً
-  // — التزامات الفئة الأولى الخاصة، وتنطبق على جميع الفئات فعلياً).
+  // A1 — surface spraying/wetting during excavation, loading, and dumping
+  // (Section 4, Part II — Category I obligations, applied to all categories in practice).
   surfaceWatered: boolean | null;
 
-  // A1 — استكمال أسئلة "تجهيز الموقع وأعمال الحفر.pdf"
+  // A1 — site prep and earthworks fields
   truckRoutesDesignated: boolean | null;
   pathCoverMaterial: 'GRAVEL' | 'RECYCLED_ASPHALT' | 'STABILIZER' | 'OTHER' | 'NONE' | null;
   waterSprayMethod: 'SPRAY' | 'FLOODING' | null;
@@ -120,7 +113,7 @@ export interface DustControlEvidence {
   sprayUsedDuringSoilUnloading: boolean | null;
   workAreaPhased: boolean | null;
 
-  // A2 — النقل داخل الموقع والطرق الخدمية
+  // A2 — on-site traffic and service roads
   unpavedRoadsWateredDaily: boolean | null;
   dustControlMethod: 'WATER_SPRAY' | 'SUPPRESSANT' | 'BOTH' | 'NONE' | null;
   speedLimitSignsPosted: boolean | null;
@@ -138,7 +131,7 @@ export interface DustControlEvidence {
   publicRoadsVacuumSweptDaily: boolean | null;
   waterUsedRoutinelyForCleaning: boolean | null;
 
-  // A3 — الدخول والخروج (تفريع طريقة تنظيف الإطارات)
+  // A3 — entry/exit (branches by tire cleaning method)
   accessRoadPaved: boolean | null;
   tireCleaningMethod: 'WHEEL_WASH' | 'WATER_IMMERSION' | null;
   sandTrapPresent: boolean | null;
@@ -151,7 +144,7 @@ export interface DustControlEvidence {
   collectionBasinPresent: boolean | null;
   truckPathCleanedWithin15Min: boolean | null;
 
-  // A4 — تخفيف تطاير الغبار الناتج عن هبوب الرياح
+  // A4 — mitigating wind-driven dust dispersal
   exposedAreaCurrentlyIdle: boolean | null;
   stabilizationMethod: 'POLYMERS' | 'PROTECTIVE_COVERS' | 'BOTH' | 'OTHER' | null;
   stockpileAreaExists: boolean | null;
@@ -159,7 +152,7 @@ export interface DustControlEvidence {
   windBarriersNearStockpiles: boolean | null;
   constructionScheduledImmediatelyAfterPrep: boolean | null;
 
-  // A5 — تحميل/تنزيل/تخزين المواد
+  // A5 — material loading/unloading/storage
   centralizedStorage: boolean | null;
   distributedAcrossMultipleLocations: boolean | null;
   sprayedImmediatelyAfterUnloading: boolean | null;
@@ -173,7 +166,7 @@ export interface DustControlEvidence {
   windBarriersAlignedWithPrevailingWind: boolean | null;
   barrierDistanceRatioCompliant: boolean | null;
 
-  // مصادر الغبار الأخرى (يشترك مع BATCHING_PLANT)
+  // Other dust sources (shared with BATCHING_PLANT)
   filterMaintenancePerformedRegularly: boolean | null;
   leakPreventionInspectedRegularly: boolean | null;
   suppressionSystemCheckedDaily: boolean | null;
@@ -183,7 +176,7 @@ export interface DustControlEvidence {
   wasteHumidityMaintainedDuringTransport: boolean | null;
   wasteLoadsCovered: boolean | null;
 
-  // الهدم — استكمال
+  // Demolition — additional fields
   sprayCannonRangeBand: 'M20' | 'M30' | 'UNDER_20' | 'UNAVAILABLE' | null;
   crushersCoveredDemolition: boolean | null;
   loadingPointsHaveSprinklers: boolean | null;
@@ -191,7 +184,7 @@ export interface DustControlEvidence {
   sandblastingUsed: boolean | null;
   sandblastingInEnclosedBox: boolean | null;
 
-  // الكسارات — استكمال
+  // Crushers — additional fields
   crusherUnitsFullyCovered: boolean | null;
   loadingPointsHaveSpraySystems: boolean | null;
   sprayCannonsAroundCrusher: boolean | null;
@@ -200,10 +193,10 @@ export interface DustControlEvidence {
   suctionAndFiltrationSystemsPresent: boolean | null;
   criticalScheduleApplies: boolean | null;
 
-  // قطع الأحجار — استكمال
+  // Stone cutting — additional fields
   cuttingResiduesCleanedAfterCompletion: boolean | null;
 
-  // نقل مخلفات الهدم والبناء
+  // Demolition/construction debris transport
   debrisSprayedBeforeLoading: boolean | null;
   centralStorageArea: boolean | null;
   smallPilesDispersedMultipleLocations: boolean | null;
@@ -214,7 +207,7 @@ export interface DustControlEvidence {
   loadExceedsCapacity: boolean | null;
 }
 
-// قياسات ميدانية/تشغيلية مرتبطة بالنشاط التنظيمي المحدد.
+// Field/operational measurements tied to a specific regulatory activity.
 export interface DustActivityMeasurements {
   demolitionActiveAreaM2: number | null;
   crusherDistanceToReceptorM: number | null;
@@ -226,50 +219,51 @@ export interface DustActivityMeasurements {
   unpavedSpeedKmh: number | null;
   pavedSpeedKmh: number | null;
   visibleTrackoutBeyond15m: boolean | null;
-  // A1 — تجهيز الموقع وأعمال الحفر والأعمال الترابية (الحفر، التسوية،
-  // الردم، الخنادق، الدمك): مساحة التربة المكشوفة وحالة رطوبة السطح.
+  // A1 — site prep, excavation, and earthworks (digging, grading,
+  // backfilling, trenching, compaction): exposed soil area and surface moisture.
   exposedSoilAreaM2: number | null;
 
-  // الكسارة — إحداثيات الموقع (Map Picker)، تُستخدم لحساب المسافة تلقائياً
-  // من جدول sensitive_receptors بدل الاعتماد فقط على الإدخال اليدوي.
+  // Crusher — location coordinates (map picker), used to auto-compute
+  // distance from the sensitive_receptors table instead of relying only on manual entry.
   crusherLat: number | null;
   crusherLng: number | null;
-  // المسافة المحسوبة تلقائياً (Haversine) عند توفر إحداثيات — تُملأ من
-  // adapters.ts وليست حقل إدخال مستخدم.
+  // Auto-computed (Haversine) distance when coordinates are available —
+  // populated by adapters.ts, not a user input field.
   crusherDistanceToNearestReceptorAutoM: number | null;
   crusherDistanceToResidentialReceptorAutoM: number | null;
-  // MRQ-RECEPTOR-DOWNWIND-120: أقرب مسافة لمستقبِل سكني/مدرسي/صحي يقع
-  // فعلياً باتجاه هبوب الرياح الحالي من موقع الكسارة — null إن كان اتجاه
-  // الرياح غير متوفر أو الموقع غير معروف؛ Infinity إن لم يوجد أي مستقبِل
-  // باتجاه الريح حالياً.
+  // MRQ-RECEPTOR-DOWNWIND-120: nearest distance to a residential/school/
+  // hospital receptor actually downwind of the crusher's current wind
+  // direction — null if wind direction is unavailable or location is
+  // unknown; Infinity if no receptor is currently downwind.
   crusherDistanceToDownwindReceptorAutoM: number | null;
 
-  // A3 — الدخول والخروج
+  // A3 — entry/exit
   entryPointLat: number | null;
   entryPointLng: number | null;
   exitPointLat: number | null;
   exitPointLng: number | null;
   waterTracesBeyond15mFromGate: boolean | null;
 
-  // A5 — تحميل/تنزيل/تخزين المواد — إحداثيات موقع الأكوام/محطة الخلط
-  // (Map Picker)، تُستخدم لحساب المسافة عن أقرب مستقبل حساس تلقائياً بدل
-  // الاعتماد فقط على إدخال المستخدم اليدوي (نفس مبدأ الكسارة أعلاه — لا
-  // يجوز أن يعتمد قرار المطابقة على تصريح المستخدم وحده لأنه قد يخطئ أو
-  // يتجاهل وجود منشأة حساسة قريبة فعلياً).
+  // A5 — material loading/unloading/storage — stockpile/batching plant
+  // location coordinates (map picker), used to auto-compute distance to
+  // the nearest sensitive receptor instead of relying only on manual entry
+  // (same principle as the crusher above — a compliance decision must not
+  // depend solely on a user's self-report, which could be wrong or omit a
+  // nearby sensitive facility).
   stockpileLat: number | null;
   stockpileLng: number | null;
   stockpileDistanceToNearestReceptorAutoM: number | null;
   stockpileDistanceToResidentialReceptorAutoM: number | null;
   stockpileDistanceUnder200m: boolean | null;
 
-  // A6 — محطة الخلط الخرساني — إحداثيات موقع منفصلة عن موقع الأكوام
-  // المشترك أعلاه (كل صف الآن يمثل خلاطة واحدة، بنفس مبدأ الكسارة).
+  // A6 — batching plant — a separate location from the shared stockpile
+  // location above (each row now represents one batching unit, same principle as the crusher).
   batchingLat: number | null;
   batchingLng: number | null;
   batchingDistanceToNearestReceptorAutoM: number | null;
   batchingDistanceToResidentialReceptorAutoM: number | null;
 
-  // نقل مخلفات الهدم والبناء
+  // Demolition/construction debris transport
   debrisPileHeightM: number | null;
 }
 
@@ -281,24 +275,22 @@ export interface DustActivityComplianceProfile {
   isActiveOrPlanned: boolean;
   controls: DustControlEvidence;
   measurements: DustActivityMeasurements;
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "المستقبلات الحساسة: عند عدم
-  // وجود مستقبلات حساسة، يحوّل النظام المسافة إلى Infinity ويعامل الحالة
-  // كأنها آمنة؛ لكن القائمة الفارغة قد تعني أن بيانات المستقبلات لم تُدخل
-  // أصلاً — يجب التفريق بين 'لا توجد مستقبلات بعد مسح مكتمل' و'لم يتم إدخال
-  // بيانات المستقبلات'"): nearestReceptorDistancesM (geo.ts) تُرجع Infinity
-  // في كلتا الحالتين (لا وسيلة تقنية للتمييز بينهما داخل تلك الدالة نفسها —
-  // تستهلك فقط مصفوفة المستقبِلات، لا تعرف سياق "هل النظام كله فارغ؟").
-  // هذا الحقل يحمل تلك المعلومة صراحة من مصدر الجلب الفعلي (عدد صفوف
-  // sensitive_receptors عالمياً في قاعدة البيانات، لا فقط ضمن نطاق موقع
-  // النشاط) — false يعني "لا يوجد أي مستقبِل حساس مسجَّل في النظام كله بعد"،
-  // فأي Infinity ناتجة حينها لا تصلح دليلاً على أمان فعلي، بل نقص بيانات.
-  // راجع استهلاكها في crusherRules/batchingPlantRules (rulebook.ts).
+  // nearestReceptorDistancesM (geo.ts) returns Infinity both when there are
+  // genuinely no nearby receptors and when the receptor table hasn't been
+  // populated at all — those two cases are indistinguishable inside that
+  // function (it only sees the receptor array, not whether the system-wide
+  // table is empty). This field carries that distinction explicitly, based
+  // on the actual fetch source (total sensitive_receptors row count
+  // system-wide, not just near the activity): false means "no sensitive
+  // receptor registered in the system at all yet", so any resulting
+  // Infinity is not evidence of actual safety, just missing data. See its
+  // use in crusherRules/batchingPlantRules (rulebook.ts).
   sensitiveReceptorsDataAvailable: boolean;
 }
 
-// مستقبِل حساس (مدرسة/مستشفى/سكني/مسجد) بإحداثياته — يُستخدم لحساب مسافة
-// الكسارة تلقائياً بدل سؤال المستخدم عن الإجابة مباشرة (طلب صريح في مستند
-// "تجهيز الموقع وأعمال الحفر.pdf" لسؤالي المسافة 200م/500م).
+// A sensitive receptor (school/hospital/residential/mosque) with
+// coordinates — used to auto-compute crusher distance instead of asking
+// the user directly for the 200m/500m distance answers.
 export type SensitiveReceptorType = 'SCHOOL' | 'HOSPITAL' | 'RESIDENTIAL' | 'MOSQUE' | 'OTHER';
 
 export interface SensitiveReceptor {
@@ -317,151 +309,108 @@ export type DustRuleSeverity =
   | 'STOP_AFFECTED_ACTIVITY'
   | 'MANDATORY_STOP';
 
-// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P0: "regulatoryFinding مصمم
-// حالياً حول PM10 فقط"): كان hasConfirmedRegulatoryViolation (engine.ts)
-// مقيَّداً حرفياً بمطابقة كود قاعدة واحد (PM10-VIOLATION-STOP-006) — أي
-// مخالفة صريحة أخرى موثَّقة في rulebook.ts (سرعة طريق غير مسفلت >10، طريق
-// مسفلت >20، تأخر تنظيف انسكاب >15 دقيقة، حمولة غير مغطاة، صوامع غير محكمة،
-// تسرب صومعة، إلخ) لم تكن تُنتج hasConfirmedRegulatoryViolation=true إطلاقاً
-// رغم كونها تجاوزاً صريحاً لحد رقمي/قانوني موثَّق — يُنتج نظرياً
-// operationalDecision=RESTRICT + regulatoryFinding=COMPLIANT، تناقض مباشر.
-// السبب الجذري: severity (ماذا نفعل تشغيلياً؟) لا يمكن أن يُستنتَج منه هل
-// وقع إخلال تنظيمي — نفس severity (ALLOW_WITH_CONTROLS) قد تعني "حالة
-// تشغيلية بحتة تتطلب تحكماً معززاً، ليست مخالفة" (رياح 15-25 كم/س) أو
-// "مخالفة مؤكَّدة موثَّقة" (PM10>340 مؤكَّد) بحسب القاعدة نفسها، لا شدتها.
-// الإصلاح: كل DustRuleHit يحمل الآن دلالته التنظيمية المستقلة صراحة —
-//   NONE: حالة تشغيلية بحتة، لا تجاوز حد رقمي/قانوني موثَّق (مثال: تثبيط
-//     معزَّز عام عند رياح 15-25، تنبيه توعوي عن مسافة مستقبِل حساس، نقص
-//     بيانات يستوجب تحقق ميداني).
-//   PENDING: تجاوز مرصود لكن لم يكتمل دليل التأكيد بعد (مثال: PM10>340
-//     قبل اكتمال دقيقتي الاستمرار).
-//   VIOLATION: تجاوز حد رقمي/قانوني صريح موثَّق ومؤكَّد الآن (مثال: سرعة
-//     طريق تتجاوز الحد، حمولة غير مغطاة، صوامع غير محكمة، PM10 مؤكَّد).
+// Independent regulatory classification per rule hit, since severity (operational
+// action) cannot by itself indicate whether a documented violation occurred — the
+// same severity can mean either a purely operational precaution or a confirmed breach.
+//   NONE: purely operational state, no documented legal/numeric threshold exceeded.
+//   PENDING: an exceedance observed but confirmation evidence not yet complete
+//     (e.g. PM10>340 before the 2-minute sustain window elapses).
+//   VIOLATION: a documented legal/numeric threshold confirmed exceeded now.
 export type RuleRegulatoryFinding = 'NONE' | 'PENDING' | 'VIOLATION';
 
-// خطأ معماري مكتشَف ومُصلَح (طلب صريح من المستخدم — البند 10 من "ما أطلب
-// إصلاحه بالترتيب": "طوّر Rule Hit ليحمل metadata المطلوبة بدل الاعتماد
-// على catalog يدوي"): rulesCatalog.ts كان مصدراً توثيقياً منفصلاً تماماً
-// عن rulebook.ts/engine.ts (القرار الفعلي) — بلا أي رابط برمجي بينهما، لا
-// شيء يمنع الانحراف الصامت (تعديل قاعدة في rulebook.ts بلا تحديث الكتالوج
-// المقابل — بالضبط ما اكتُشف أثناء هذه الجلسة: rulesCatalog.ts كان يفتقد
-// PREVIOUS-DECISION-QUERY-FAILED-HOLD/VISIBILITY-DATA-MISSING-RESUME-HOLD/
-// WIND-DATA-MISSING-RESUME-HOLD/PM10-DATA-MISSING-RESUME-HOLD رغم كونها
-// قواعد حقيقية فعّالة في engine.ts منذ إصلاحات سابقة). الحل: سجل مركزي
-// واحد (RULE_METADATA_REGISTRY في ruleMetadata.ts) هو مصدر الحقيقة الوحيد
-// لكل الحقول التوثيقية — attachRuleMetadata() تُلحقها تلقائياً بكل
-// DustRuleHit وقت إنشائه (عبر ruleHit() في rulebook.ts، أو مباشرة في
-// engine.ts للقواعد المبنية كـobject literal)، وrulesCatalog.ts (صفحة
-// الإدارة) يُشتق الآن من نفس السجل بدل نسخة يدوية منفصلة — استحالة
-// الانحراف بنيوياً، لا مجرد انضباط يدوي.
+// Structured metadata attached to every rule hit. RULE_METADATA_REGISTRY
+// (ruleMetadata.ts) is the single source of truth for these fields — attachRuleMetadata()
+// applies it automatically at hit-creation time, and rulesCatalog.ts (the admin page)
+// derives its listing from the same registry instead of a hand-maintained copy, so the
+// catalog cannot silently drift from the actual rule logic in rulebook.ts/engine.ts.
 export interface RuleMetadata {
-  // نفس code — تكرار متعمَّد للتوثيق الذاتي عند تمرير الكائن بمعزل عن
-  // DustRuleHit الأصلي (مثال: عرض سجل قاعدة واحدة في صفحة تدقيق مستقلة).
+  // Duplicates DustRuleHit.code for self-documentation when this object is
+  // passed around independently of the original hit (e.g. a single-rule audit view).
   ruleId: string;
-  // نسخة دليل القواعد (RULEBOOK_VERSION، من ACTIVE_RULE_BUNDLE.id) وقت
-  // آخر تعديل موثَّق لهذه القاعدة تحديداً — لا نسخة المحرك الحالية دائماً؛
-  // قاعدة لم تتغيّر منذ نسخة أقدم تحتفظ برقم تلك النسخة حتى تُعدَّل فعلياً.
+  // Rulebook version (RULEBOOK_VERSION, from ACTIVE_RULE_BUNDLE.id) as of the last
+  // documented change to this specific rule — not necessarily the current engine
+  // version; an unchanged rule keeps its older version number until actually edited.
   ruleVersion: string;
-  // GATE: بوابة أولوية قصوى تُفحص بصرف النظر عن النشاط التنظيمي (قسم
-  // "gates" في rulesCatalog سابقاً). ACTIVITY_SPECIFIC: مقصورة على نشاط
-  // تنظيمي واحد أو أكثر محدَّد صراحة. DECISION_LAYER: تُطبَّق بعد حساب
-  // decisionCategory الأولي (استئناف/ثقة)، لا على نشاط بعينه.
+  // GATE: top-priority check applied regardless of regulatory activity.
+  // ACTIVITY_SPECIFIC: scoped to one or more explicit activities.
+  // DECISION_LAYER: applied after the initial decisionCategory (resume/confidence), not activity-specific.
   ruleType: 'GATE' | 'ACTIVITY_SPECIFIC' | 'DECISION_LAYER';
-  // المؤشر الفيزيائي/التشغيلي الذي تعتمد عليه القاعدة أساساً. NONE لقواعد
-  // لا تعتمد على قياس حي (مثال: تصنيف فئة مشروع، حالة موافقة DMP).
+  // Primary physical/operational indicator the rule depends on. NONE for rules
+  // that don't depend on a live measurement (e.g. project classification, DMP approval state).
   indicatorType: 'PM10' | 'WIND' | 'VISIBILITY' | 'DISTANCE' | 'AREA' | 'CONTROL_STATE' | 'CONFIDENCE' | 'NONE';
-  // الأنشطة التنظيمية التي تنطبق عليها — مصفوفة فارغة تعني "كل الأنشطة"
-  // (بوابة عامة، لا نشاط محدَّد).
+  // Regulatory activities this applies to — empty array means "all activities" (a general gate).
   activityTypes: RegulatoryDustActivity[];
-  // وصف نصي مختصر للشرط المنطقي الفعلي المُنفَّذ في rulebook.ts/engine.ts
-  // (توثيقي بحت — لا يُنفَّذ برمجياً، القرار الفعلي يبقى في الكود نفسه).
+  // Short description of the actual logical condition implemented in
+  // rulebook.ts/engine.ts (documentation only — not executed; the real decision stays in code).
   conditionPredicate: string;
-  // ترتيب الأولوية النسبي بين القواعد عند التعادل بنفس severity — أعلى
-  // رقم = أولوية أعلى. مشتق من DECISION_PRIORITY[severity] الفعلي في
-  // engine.ts (لا رقم مستقل قد ينحرف عنه)، مضروباً بمعامل 10 لإتاحة تمايز
-  // دقيق مستقبلي بين قواعد بنفس severity بلا تصادم.
+  // Relative tie-break priority among rules of equal severity — higher wins.
+  // Derived from the real DECISION_PRIORITY[severity] in engine.ts (not an
+  // independent number that could drift), scaled by 10 to leave room for future fine-grained tie-breaks.
   priority: number;
-  // هل هذه القاعدة بذاتها (بصرف النظر عن باقي القواعد المتزامنة) تعني
-  // إيقافاً إلزامياً قطعياً — severity === 'MANDATORY_STOP' حصراً (لا
-  // STOP_AFFECTED_ACTIVITY، وهو إيقاف فعلي لكن قابل للتجاوز الميداني
-  // استثنائياً بحسب overridable لكل حالة).
+  // Whether this rule alone (regardless of other concurrent hits) is an absolute
+  // mandatory stop — true only for severity === 'MANDATORY_STOP' (not
+  // STOP_AFFECTED_ACTIVITY, which is a real stop but exceptionally field-overridable per overridable).
   mandatoryStop: boolean;
-  // تصنيف خطورة عام مستقل عن severity التشغيلي (severity يجيب "ماذا نفعل
-  // الآن؟"، riskLevel يجيب "كم هذا خطير جوهرياً؟" — راجع تعليق
-  // RuleRegulatoryFinding أعلاه لسبب مماثل يفصل الدلالتين).
+  // General risk classification independent of operational severity (severity answers
+  // "what do we do now?", riskLevel answers "how severe is this inherently?").
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-  // نفس severity الفعلي — اسم موحَّد بديل للتوثيق فقط (rulesCatalog.ts
-  // كان يستخدم "severity" وDustRuleHit يستخدم "severity" أيضاً؛ الحقل هنا
-  // يكرر نفس القيمة تحت اسم decisionCategory ليطابق حرفياً تسمية الملاحظة
-  // الأصلية دون كسر أي مستهلك حالي لـseverity).
+  // Mirrors severity under an alternate documentation-only field name, to match
+  // the naming used elsewhere without breaking existing consumers of `severity`.
   decisionCategory: DustRuleSeverity;
-  // قائمة إجراءات مجزَّأة (بديل actionAr كنص حر واحد) — actionAr يبقى
-  // المصدر الوحيد المعروض فعلياً بالواجهة (لا كسر لأي مستهلك)، هذا الحقل
-  // توثيقي إضافي فقط لتفكيك الإجراء لخطوات منفصلة عند الحاجة مستقبلاً.
+  // Itemized action list (an alternative to the free-text actionAr) — actionAr
+  // remains the only field actually rendered in the UI; this is documentation-only,
+  // for breaking the action into discrete steps if ever needed.
   requiredActions: string[];
-  // وصف نصي لشرط الاستئناف بعد إيقاف ناتج عن هذه القاعدة تحديداً — فارغ
-  // ('') لقواعد لا تُوقف نشاطاً أصلاً (severity أخف من STOP_AFFECTED_ACTIVITY).
+  // Description of the resume condition after a stop caused by this specific rule —
+  // empty ('') for rules that don't stop an activity (severity lighter than STOP_AFFECTED_ACTIVITY).
   restartConditions: string;
-  // NONE: لا تصعيد تلقائي. AUTO_ESCALATE_ON_PERSISTENCE: القاعدة تتصاعد
-  // شدة تلقائياً إن استمر الشرط (مثال: MRQ-PM10-BLACK-PENDING-104 →
-  // RCRC-PM10-30M-SUSPENSION-012 بعد 30 دقيقة).
+  // NONE: no automatic escalation. AUTO_ESCALATE_ON_PERSISTENCE: the rule escalates
+  // severity automatically if the condition persists (e.g. MRQ-PM10-BLACK-PENDING-104 →
+  // RCRC-PM10-30M-SUSPENSION-012 after 30 minutes).
   escalationPolicy: 'NONE' | 'AUTO_ESCALATE_ON_PERSISTENCE';
-  // من يملك صلاحية تجاوز هذه القاعدة ميدانياً — مشتق من overridable
-  // الافتراضي لكل severity (راجع ruleHit() في rulebook.ts)، لا حقلاً
-  // مستقلاً قد يتناقض معه.
+  // Field override authority for this rule — derived from the default overridable
+  // per severity (see ruleHit() in rulebook.ts), not an independent field that could contradict it.
   overridePolicy: 'NO_OVERRIDE' | 'FIELD_OVERRIDE_ALLOWED';
-  // المرجع التنظيمي الأصلي (اسم الوثيقة/القسم) — نفس المصدر المذكور في
-  // تعليقات rulebook.ts لهذه القاعدة تحديداً.
+  // Original regulatory reference (document/section name) — matches the source
+  // cited in the rulebook.ts comment for this specific rule.
   source: string;
-  // تاريخ بداية سريان آخر نسخة موثَّقة من هذه القاعدة (YYYY-MM-DD).
+  // Effective start date of the last documented version of this rule (YYYY-MM-DD).
   effectiveFrom: string;
-  // تاريخ نهاية السريان — null لقاعدة لا تزال سارية حالياً (كل القواعد
-  // النشطة اليوم).
+  // Effective end date — null for a rule still in force (all currently active rules).
   effectiveTo: string | null;
-  // هل القاعدة مفعّلة حالياً في منطق القرار الفعلي — false فقط لقاعدة
-  // مُبقاة في الكود لأسباب توافقية (كود ميت موثَّق) لا تزال قابلة للتفعيل
-  // مستقبلاً، كقواعد ENTRY_EXIT (حذفها مؤجَّل صراحةً بطلب المستخدم).
+  // Whether this rule is currently active in the real decision logic — false only
+  // for a rule kept in code for compatibility (documented dead code) that could be
+  // reactivated later, such as the ENTRY_EXIT rules (removal deliberately deferred).
   isActive: boolean;
 }
 
 export interface DustRuleHit {
   code: string;
   severity: DustRuleSeverity;
-  // راجع تعليق RuleRegulatoryFinding الكامل أعلاه. افتراضي 'NONE' لأي قاعدة
-  // لا تحدد الحقل صراحة (فشل آمن نحو "لا مخالفة" لا العكس — لا يجوز افتراض
-  // مخالفة تنظيمية بلا تصنيف صريح متعمَّد لكل قاعدة).
+  // See the RuleRegulatoryFinding doc above. Defaults to 'NONE' for any rule that
+  // doesn't set it explicitly (fail-safe toward "no violation" — a regulatory
+  // violation must never be assumed without an explicit per-rule classification).
   regulatoryFinding?: RuleRegulatoryFinding;
-  // messageAr: وصف المخالفة/الحالة المكتشفة ("لا يوجد رش للتربة...") — يُعرض
-  // تحت "القواعد المفعّلة". actionAr: الإجراء التصحيحي المطلوب لمعالجتها
-  // ("فعّل رش التربة...") — نص مستقل الصياغة يُعرض تحت "الإجراءات المطلوبة".
-  // الفصل بين الحقلين إلزامي: إعادة استخدام messageAr نفسه كإجراء يُنتج
-  // نفس الجملة مرتين في الواجهة (نفس المشكلة معروضة كأنها معلومتان مختلفتان).
+  // messageAr: description of the detected violation/state, shown under "Active
+  // Rules". actionAr: the corrective action required, shown under "Required
+  // Actions". Keeping them separate is required — reusing messageAr as the action
+  // would show the same sentence twice as if it were two different pieces of information.
   messageAr: string;
   actionAr: string;
-  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "الفصل بين القواعد
-  // والقرار النهائي غير مكتمل"): قابلية التجاوز (canOverride في
-  // DustComplianceResult) كانت تُشتق في engine.ts من فئة القرار النهائي
-  // العامة (decisionCategory !== 'MANDATORY_STOP' && !== 'STOP_AFFECTED_ACTIVITY')،
-  // لا من القاعدة الفعلية التي بنت القرار — أي قاعدتين بنفس severity كانتا
-  // تُعامَلان معاملة واحدة حتماً حتى لو كانت إحداهما (فيزيائياً) غير قابلة
-  // للتجاوز إطلاقاً بينما الأخرى قابلة استثنائياً. الآن كل قاعدة تحمل
-  // قابليتها الخاصة صراحة.
+  // Each rule carries its own overridable flag explicitly, rather than canOverride
+  // being derived solely from the final decision's general severity category — two
+  // rules of equal severity are not necessarily equally overridable in practice.
   //
-  // تعليق مُصحَّح (مراجعة كود خارجي — P2، الملاحظة #15): كان هذا التعليق
-  // يصف canOverride النهائي بأنه يُشتق من decidingRule.overridable تحديداً
-  // (قاعدة واحدة مُفضَّلة) — الفعلي في engine.ts هو
-  // topHits.every(hit => hit.overridable !== false): **كل** القواعد الفائزة
-  // بأعلى شدة معاً (لا decidingRule وحدها) يجب أن تكون قابلة للتجاوز حتى
-  // يكون canOverride=true — قاعدة واحدة غير قابلة للتجاوز ضمن topHits تكفي
-  // لمنع التجاوز، حتى لو كانت decidingRule نفسها (المُفضَّلة لعرض النص)
-  // قابلة للتجاوز. افتراضي true (نفس سلوك decisionCategory !== MANDATORY_STOP/
-  // STOP_AFFECTED_ACTIVITY السابق) لأي قاعدة لا تحدد الحقل صراحة — القواعد
-  // الأشد (MANDATORY_STOP) تضبطه false صراحة عبر ruleHit() في rulebook.ts.
+  // The final canOverride is computed in engine.ts as
+  // topHits.every(hit => hit.overridable !== false): **all** rules tied for the
+  // top severity (not just decidingRule) must be overridable for canOverride=true —
+  // one non-overridable rule among topHits blocks override even if decidingRule
+  // (the one chosen for display text) is itself overridable. Defaults to true for
+  // any rule that doesn't set it explicitly; MANDATORY_STOP rules set it false via ruleHit().
   overridable?: boolean;
-  // البند 10 (راجع تعليق RuleMetadata الكامل أعلاه) — اختياري (undefined
-  // لقاعدة لم تُسجَّل بعد في RULE_METADATA_REGISTRY، فشل آمن توثيقي بحت لا
-  // يؤثر على القرار الفعلي إطلاقاً؛ code/severity/messageAr/actionAr/
-  // overridable/regulatoryFinding أعلاه تبقى المصدر الوحيد للقرار دائماً).
+  // Optional — undefined for a rule not yet registered in RULE_METADATA_REGISTRY
+  // (a documentation-only fail-safe with no effect on the actual decision; code/
+  // severity/messageAr/actionAr/overridable/regulatoryFinding remain the sole decision source).
   metadata?: RuleMetadata;
 }
 
@@ -477,22 +426,22 @@ export interface DustComplianceResult {
   engineVersion: string;
   rulebookVersion: string;
 
-  // النشاط التنظيمي المحدد (هدم/كسارة/حركة شاحنات...) الذي بُني عليه القرار
-  // — تُعرض تسميته العربية في بطاقة الامتثال بدل مسمى نشاط DVI الفيزيائي.
+  // The specific regulatory activity (demolition/crushing/truck movement/etc.) the
+  // decision was built on — its Arabic label is shown on the compliance card instead
+  // of the underlying physical DVI activity name.
   regulatoryActivity: RegulatoryDustActivity;
   regulatoryActivityLabelAr: string;
 
   riskClass: DustRiskClass;
   riskClassReasonAr: string;
   windBand: DustWindBand;
-  // حالة الإغلاق للنشاط — تُعرض في الواجهة لتوضيح سبب السماح رغم رياح
-  // شديدة في حالة واحدة محدَّدة فقط: محطة الخلط (BATCHING_PLANT) بصوامع
-  // محكمة الإغلاق وفلتر PM10 كفؤ (راجع isEnclosedExemptFromHighWind في
-  // engine.ts للشرط الكامل). isEnclosedOperation وحدها (خطأ توثيقي سابق
-  // مُصلَح — طلب صريح من المستخدم: "استثناء الرياح للنشاط المغلق مختلف بين
-  // المحرك والكتالوج التنظيمي") لا تُعفي أي نشاط آخر من بوابة إيقاف الرياح
-  // >25 كم/س — نشاط مغلق غير محطة خلط (هدم مغلق، حفر مغلق، إلخ) يبقى
-  // موقوفاً في رياح شديدة كأي نشاط مكشوف تماماً.
+  // Enclosure state of the activity — shown in the UI to explain why activity is
+  // allowed despite high wind in exactly one case: a batching plant (BATCHING_PLANT)
+  // with sealed silos and an effective PM10 filter (see isEnclosedExemptFromHighWind
+  // in engine.ts for the full condition). isEnclosedOperation alone does not exempt
+  // any other activity from the >25 km/h wind stop gate — an enclosed activity that
+  // isn't a batching plant (enclosed demolition, enclosed excavation, etc.) still
+  // stops in high wind like any fully exposed activity.
   isEnclosedOperation: boolean;
 
   decisionCategory: DustComplianceDecisionCategory;
@@ -501,92 +450,59 @@ export interface DustComplianceResult {
   canOverride: boolean;
   shortReasonAr: string;
 
-  // تعليق مُصحَّح (مراجعة كود خارجي — P2، الملاحظة #15: "Drift في التعليقات
-  // والأنواع"): العبارة السابقة هنا ربطت pendingConfirmation=true حصراً
-  // بـdecisionCategory=STOP_AFFECTED_ACTIVITY "المعلَّق" — كانت صحيحة وقت
-  // كتابتها، لكن بعد إصلاحَي الملاحظتين #7/#8 هذه الجلسة (MRQ-PM10-BLACK-
-  // PENDING-104/GATE-DVI-002 المعلَّقتان أصبحتا ALLOW_WITH_CONTROLS، لا
-  // STOP_AFFECTED_ACTIVITY) لم تعد دقيقة — القاعدة (topHits.every(isPendingRuleHit)
-  // أدناه في engine.ts) لا تفحص decisionCategory إطلاقاً، فقط كون كل
-  // القواعد الفائزة بأعلى شدة معلَّقة، بصرف النظر عن تلك الشدة نفسها.
-  //
-  // الدلالة الفعلية: "لم يكتمل بعد دليل التأكيد (دقيقتا الاستمرار) لهذا
-  // القرار" — قد تكون true بينما decisionCategory=ALLOW_WITH_CONTROLS (لا
-  // إيقاف من أي نوع)، وهذه بالتحديد الحالة الشائعة اليوم لنافذة PM10 قبل
-  // 120 ثانية. false دائماً لو decisionCategory من MANDATORY_STOP فعلياً،
-  // أو من قاعدة إيقاف/تقييد مؤكَّدة أخرى غير معلَّقة. تُستخدم في
-  // computeUnifiedActivityDecision/AEI/FinalDecision.pendingConfirmation
-  // لتفادي عرض لغة قطعية على حالة مؤقتة قد تتحول تلقائياً بمجرد التقييم
-  // التالي — لا لتفادي "إيقاف إلزامي نظامي" حصراً كما كان التعليق يوحي.
+  // True when confirmation evidence (the 2-minute sustain window) for this decision
+  // is not yet complete — computed as topHits.every(isPendingRuleHit) in engine.ts,
+  // independent of decisionCategory. Can be true while decisionCategory is
+  // ALLOW_WITH_CONTROLS (no stop at all), which is the common case for a PM10
+  // reading under the 120-second window. Always false when decisionCategory is a
+  // confirmed MANDATORY_STOP or other non-pending stop/restrict rule. Used by
+  // computeUnifiedActivityDecision/AEI/FinalDecision.pendingConfirmation to avoid
+  // showing definitive language for a provisional state that may resolve on the next evaluation.
   pendingConfirmation: boolean;
 
-  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — "المخالفة التنظيمية عند
-  // تأكيد PM10 (2-30 دقيقة) لا تنعكس في regulatoryFinding"): PM10-VIOLATION-
-  // STOP-006 (مخالفة مؤكَّدة موثَّقة، بلا إيقاف فوري — راجع pm10ThresholdRule
-  // في rulebook.ts) تصدر بشدة ALLOW_WITH_CONTROLS عمداً (لا STOP_AFFECTED_
-  // ACTIVITY)، لأن الإيقاف الفعلي يبقى مشروطاً حصراً باكتمال 30 دقيقة. لكن
-  // decisionCategory النهائي (أعلى شدة بين كل القواعد) قد يبقى ALLOW_WITH_
-  // CONTROLS بالكامل إن لم توجد أي مشكلة أخرى — فلا يعكس وحده وجود مخالفة
-  // PM10 مؤكَّدة فعلياً. هذا الحقل مستقل تماماً عن decisionCategory/
-  // mandatoryStop (لا يتأثر بأيهما ولا يؤثر عليهما).
-  //
-  // تعليق مُصحَّح (مراجعة كود خارجي — P0 ثم P2، الملاحظتان #5 و#15): "true
-  // فقط إن كانت PM10-VIOLATION-STOP-006 ضمن triggeredRules" كانت وصفاً
-  // دقيقاً للتطبيق القديم، لكنها كانت *هي نفسها* عيب معماري (الملاحظة #5:
-  // "regulatoryFinding مصمم حالياً حول PM10 فقط") — مخالفات صريحة أخرى
-  // موثَّقة (سرعة طريق، حمولة غير مغطاة، صوامع غير محكمة...) لم تكن تُنتج
-  // true إطلاقاً رغم كونها تجاوزات صريحة مؤكَّدة. الحقل الآن عام لكل
-  // القواعد: true إن كانت أي قاعدة ضمن triggeredRules تحمل
-  // regulatoryFinding==='VIOLATION' (راجع RuleRegulatoryFinding أعلاه)، لا
-  // PM10-VIOLATION-STOP-006 تحديداً — بصرف النظر عن كونها القاعدة الفائزة
-  // بأعلى شدة أم لا. final-decision-engine يقرأه ليضبط
-  // regulatoryFinding='NON_COMPLIANT' حتى لو operationalDecision لم يصل
-  // درجة إيقاف — فصل operationalDecision عن regulatoryFinding، كما يجب.
+  // True if any rule in triggeredRules carries regulatoryFinding === 'VIOLATION'
+  // (see RuleRegulatoryFinding above), regardless of whether that rule is the one
+  // that won the top severity. Independent of decisionCategory/mandatoryStop — a
+  // confirmed PM10 violation (PM10-VIOLATION-STOP-006, see pm10ThresholdRule in
+  // rulebook.ts) can be reported here as true even while decisionCategory stays at
+  // ALLOW_WITH_CONTROLS, since the actual stop is conditioned on a separate 30-minute
+  // window. final-decision-engine reads this to set regulatoryFinding='NON_COMPLIANT'
+  // even when operationalDecision hasn't reached a stop, keeping the two concepts separate.
   hasConfirmedRegulatoryViolation: boolean;
 
-  // كود القاعدة الفعلية التي بنت القرار النهائي (decidingRule.code في
-  // engine.ts) — مثال: 'GATE-WIND-ABOVE-25-004' أو 'MRQ-PM10-BLACK-PENDING-104'.
-  // يُخزَّن في current_dust_compliance_decisions.deciding_rule_code ويُقرأ لاحقاً
-  // كـ previousDecidingRuleCode أدناه، حتى نعرف *سبب* أي إيقاف سابق بدقة
-  // بدل استنتاجه خطأً من decisionCategory وحده (راجع previousDecidingRuleCode
-  // للسبب الكامل). null لو لم توجد أي قاعدة فائزة (decisionCategory=ALLOW
-  // بلا أي ruleHits).
+  // The code of the rule that actually built the final decision (decidingRule.code
+  // in engine.ts), e.g. 'GATE-WIND-ABOVE-25-004' or 'MRQ-PM10-BLACK-PENDING-104'.
+  // Stored as current_dust_compliance_decisions.deciding_rule_code and later read
+  // back as previousDecidingRuleCode below, so a prior stop's exact cause is known
+  // precisely instead of inferred from decisionCategory alone. Null if no rule won
+  // (decisionCategory=ALLOW with no ruleHits).
   decidingRuleCode: string | null;
-  // messageAr الخاص بنفس decidingRule أعلاه — يُخزَّن كـ stop_cause (نص عربي
-  // مختصر لسبب الإيقاف، للعرض/التدقيق المباشر بلا حاجة لترجمة الكود).
+  // messageAr of the same decidingRule above — stored as stop_cause (a short Arabic
+  // description of the stop reason) for direct display/audit without decoding the rule code.
   decidingRuleMessageAr: string | null;
 
-  // استمرار PM10 الفعلي حتى لحظة هذا التقييم (من pm10SustainedMinutesAbove340/
-  // 250 في DustComplianceContext، راجع computeSustainedPm10Status في
-  // dustEvaluation.ts) — يُمرَّر هنا للعرض فقط، حتى تقدر الواجهة تبني عدّاد
-  // تنازلي حي "متبقٍ كذا حتى تتأكد المخالفة/يُفعَّل التعليق" بدل انتظار
-  // التقييم التالي لمعرفة النتيجة. undefined = لا بيانات استمرار متاحة (لا
-  // جهاز/قراءة مرتبطة، أو فشل الاستعلام) — الواجهة تُخفي العدّاد حينها.
+  // Actual PM10 sustain duration as of this evaluation (from
+  // pm10SustainedMinutesAbove340/250 in DustComplianceContext, see
+  // computeSustainedPm10Status in dustEvaluation.ts) — passed through for display
+  // only, so the UI can render a live countdown ("time remaining until confirmed")
+  // instead of waiting for the next evaluation. Undefined = no sustain data
+  // available (no linked device/reading, or query failure) — the UI hides the counter then.
   pm10SustainedMinutesAbove340?: number;
   pm10SustainedMinutesAbove250?: number;
 
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة: القرار
-  // المخزَّن لا يحمل معرّفات القراءات الفعلية التي أثبتت الاستمرار"):
-  // معرّفات صفوف pm10_readings_history (id) المكوِّنة فعلياً لسلسلة
-  // الاستمرار التي بنت isConfirmedViolation340/isSuspended250For30Min —
-  // راجع evidenceReadingIds في Pm10SustainedStatus (dustEvaluation.ts)
-  // للتفصيل الكامل. يُخزَّن هذا الكائن كاملاً بصيغة jsonb في
-  // dust_compliance_evaluations.result، فلا حاجة لعمود قاعدة بيانات جديد؛
-  // القرار المخزَّن يحمل الآن معرّفات الأدلة الدقيقة، لا فقط القيمة
-  // المجمَّعة النهائية. فارغة/undefined إن لم توجد سلسلة استمرار مُثبَتة.
+  // IDs of the pm10_readings_history rows that make up the sustain chain behind
+  // isConfirmedViolation340/isSuspended250For30Min — see evidenceReadingIds in
+  // Pm10SustainedStatus (dustEvaluation.ts). Stored as part of the jsonb result
+  // (no new DB column needed), so a saved decision carries traceable evidence
+  // row IDs, not just the aggregated minute counts. Empty/undefined if no proven sustain chain exists.
   pm10EvidenceReadingIds?: string[];
 
-  // خطأ مكتشَف ومُصلَح (مراجعة مستخدم — "ليش التايمر ينعاد إذا سويت تحديث
-  // للصفحة"): العدّاد التنازلي في Compliancewidgetcard.tsx كان يفترض أن
-  // pm10SustainedMinutesAbove340/250 أعلاه "طازجة تماماً" لحظة عرضها في
-  // المتصفح (snapshotAtMs = Date.now() محلي وقت أول render) — صحيح تقريباً
-  // أثناء التحديث الدوري (polling كل دقيقتين، فارق زمني ضئيل بين حساب
-  // الخادم وعرض المتصفح)، لكن خاطئ عند إعادة تحميل الصفحة يدوياً (المكوّن
-  // يُعاد بناؤه من الصفر، فلحظة "أول عرض" تصبح وقت اكتمال تحميل الصفحة، لا
-  // وقت حساب الخادم الفعلي الذي قد يسبقه بثوانٍ). evaluatedAt هو وقت حساب
-  // الخادم الفعلي لهذا التقييم كاملاً (بما فيه الرقمين أعلاه) — الواجهة
-  // تستخدمه كمرجع asOfMs بدل Date.now() المحلي، فيبقى العدّاد دقيقاً بصرف
-  // النظر عن توقيت إعادة عرضه في المتصفح.
+  // Server-side computation time of this full evaluation (including the two sustain
+  // numbers above). The UI uses this as the asOfMs reference instead of a local
+  // Date.now() snapshot, so the countdown counter in Compliancewidgetcard.tsx stays
+  // accurate regardless of when the page happens to render (a plain client-side
+  // Date.now() at first render is wrong after a manual page reload, since the
+  // component is rebuilt from scratch and "first render" no longer aligns with actual server compute time).
   evaluatedAt: string;
 
   triggeredRules: DustRuleHit[];
@@ -610,254 +526,238 @@ export interface DustComplianceResult {
     pm25UgM3: number | null;
     relativeHumidityPercent: number | null;
     temperatureC: number | null;
-    // للعرض فقط (تنبيهات إعلامية داخل بطاقة الامتثال) — لا تدخل في أي حساب/
-    // عتبة ضمن محرك الامتثال نفسه، تماماً كالرطوبة والحرارة أعلاه.
+    // Display only (informational advisories on the compliance card) — does not
+    // enter any calculation/threshold in the compliance engine itself, same as humidity and temperature above.
     visibilityM: number | null;
-    // آخر وقت إرسال فعلي لمحطة الرصد المرتبطة (ISO) — undefined دائماً
-    // عندما لا يوجد ربط جهاز لهذا النشاط (وضع API)، فيُستخدم وجود الحقل
-    // (بصرف النظر عن قيمته null/string) كإشارة "هذا النشاط مرتبط بجهاز"
-    // في buildStalenessAdvisory (Compliancewidgetcard.tsx). للعرض فقط.
+    // Last actual transmission time from the linked monitoring station (ISO) —
+    // always undefined when no device is linked to this activity (API mode); the
+    // mere presence of the field (regardless of null/string value) signals "this
+    // activity has a linked device" in buildStalenessAdvisory (Compliancewidgetcard.tsx). Display only.
     deviceLastReadingAt?: string | null;
-    // آخر وقت وصول PM10 تحديداً من نفس المحطة (ISO) — منفصل عن
-    // deviceLastReadingAt لأن الأخير يتحدّث عند أي push جزئي حتى بلا PM10
-    // (راجع last_pm10_at في project_devices، وتعليق devicePm10LastReadingAt
-    // في DustEngineInput للسبب الكامل). نفس دلالة undefined/null أعلاه.
-    // للعرض فقط.
+    // Last time PM10 specifically arrived from the same station (ISO) — separate
+    // from deviceLastReadingAt, which updates on any partial push even without PM10
+    // (see last_pm10_at in project_devices and the devicePm10LastReadingAt comment
+    // in DustEngineInput for the full rationale). Same undefined/null semantics as above. Display only.
     devicePm10LastReadingAt?: string | null;
-    // حالة حداثة pm10UgM3 أعلاه وقت القرار — راجع Pm10EvidenceState/
-    // pm10EvidenceState في DustComplianceContext للتفصيل الكامل. undefined
-    // يعني "لم يُحسَب" (استدعاءات قديمة/اختبارات تبني evidence يدوياً).
+    // Freshness state of pm10UgM3 above as of decision time — see Pm10EvidenceState/
+    // pm10EvidenceState in DustComplianceContext for detail. Undefined means "not
+    // computed" (legacy calls/tests building evidence manually).
     pm10EvidenceState?: Pm10EvidenceState;
   };
 
-  // ملاحظات تحذيرية لصحة القراءة (من DVI، راجع DviEvaluationResult.caveatsAr)
-  // — لا تُغيّر decisionCategory/shortReasonAr إطلاقاً، طلب صريح من المستخدم.
+  // Reading-validity advisory notes (from DVI, see DviEvaluationResult.caveatsAr) —
+  // never change decisionCategory/shortReasonAr.
   caveatsAr: string[];
 
-  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
-  // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"): كان
-  // final-decision-engine/engine.ts يستورد PM10_WARNING_UG_M3 من هذا المحرك
-  // ويُعيد حساب isFavorable (PM10 + dvi.decisionCategory معاً) بنفسه من
-  // الصفر لوضع PLANNING فقط — بينما هذا المحرك (buildPlanningForecastResult
-  // أدناه) يحسب نفس isFavorable بالفعل لبناء shortReasonAr. نفس الحد الرقمي
-  // (250) وnفس المنطق مكرَّران في مكانين — لو تغيّر الحد هنا (القاعدة
-  // التنظيمية الفعلية) بلا تزامن مع النسخة المكرَّرة هناك، يفترق القراران.
-  // العقد المعماري صريح: FinalDecisionEngine حَكَم قرارات (Decision Arbiter)
-  // يستقبل نتائج المحركات، لا مُقيِّم قواعد (Rule Evaluator) يعرف أرقام
-  // العتبات بنفسه. الإصلاح: هذا الحقل يحمل النتيجة الجاهزة (محسوبة هنا مرة
-  // واحدة فقط، حيث تُعرَّف القاعدة فعلياً) — undefined خارج PLANNING (لا
-  // معنى له في LIVE_OPERATIONAL، الذي له مساره الكامل الخاص في
-  // final-decision-engine). final-decision-engine يقرأ هذا الحقل مباشرة
-  // بلا أي استيراد لعتبة PM10 أو إعادة حساب.
+  // Ready-computed PLANNING-mode suitability result (computed once here, where the
+  // rule is actually defined) — undefined outside PLANNING (not meaningful for
+  // LIVE_OPERATIONAL, which has its own full path in final-decision-engine).
+  // final-decision-engine reads this field directly rather than importing the PM10
+  // threshold or recomputing isFavorable itself, keeping the threshold defined in exactly one place.
   planningSuitability?: {
     isFavorable: boolean;
-    // سبب عدم الملاءمة عند isFavorable=false — نص جاهز للعرض المباشر (لا
-    // كود يحتاج ترجمة/تفسير إضافي من final-decision-engine).
+    // Reason for unsuitability when isFavorable=false — ready-to-display text (no
+    // code needing further translation/interpretation by final-decision-engine).
     reasonAr: string;
   };
 
-  // true فقط عندما يكون القرار الخام (لو تُرك بلا قيد استئناف) أفضل من
-  // STOP_AFFECTED_ACTIVITY، لكن تم تثبيته عندها احترازياً بسبب عدم مرور
-  // RESUME_STABILITY_MINUTES بعد. يُستخدم في dustEvaluation.ts لتتبّع "منذ
-  // متى أصبحت القراءة جيدة فعلياً" (pendingResumeSince) منفصلاً تماماً عن
-  // stopped_since ("منذ متى بدأ الإيقاف") — الخلط بينهما كان يجعل عداد
-  // الاستئناف يبدأ من بداية الإيقاف نفسه بدل بداية التحسّن، فيسمح باستئناف
-  // فوري إن كانت مدة الإيقاف الكلية (بقراءات سيئة متفرقة) تجاوزت 10 دقائق
-  // ولو لم تتراكم دقيقة واحدة فعلية من القراءة الجيدة بعد.
+  // True only when the raw decision (without a resume hold) would be better than
+  // STOP_AFFECTED_ACTIVITY, but has been pinned as a precaution because
+  // RESUME_STABILITY_MINUTES hasn't elapsed yet. Used in dustEvaluation.ts to track
+  // "since when did the reading actually turn good" (pendingResumeSince),
+  // separately from stopped_since ("since when did the stop begin") — conflating
+  // the two let the resume counter start from the beginning of the stop instead
+  // of the beginning of improvement, allowing an immediate resume once total stop
+  // duration passed 10 minutes even with zero actual minutes of a good reading accumulated.
   resumeHoldApplied: boolean;
 }
 
-// السياق الكامل الذي يُمرَّر لدالة evaluateDustCompliance — يجمع كل ما تحتاجه
-// من المشروع والنشاط ونتيجة DVI الجاهزة، دون أي حساب DVI جديد هنا.
+// Full context passed to evaluateDustCompliance — gathers everything needed from
+// the project, the activity, and the ready-made DVI result, without recomputing DVI here.
 export interface DustComplianceContext {
   project: DustProjectComplianceProfile;
   activity: DustActivityComplianceProfile;
-  // القسم 18.6 من "دليل الإصلاح الجذري لمنظومة مرقاب" — القسم "Forecast
-  // قديم: التخطيط يظهر نتيجة Stale". true فقط عندما فشل/انقطع استدعاء
-  // Open-Meteo فعلياً (راجع isForecastStale في weather.ts) لعينة الطقس
-  // المستخدَمة لبناء هذا السياق. لا معنى له في مسار LIVE_OPERATIONAL
-  // (القرار الحي مبني من الجهاز مباشرة، بلا استدعاء طقس أصلاً — راجع
-  // evaluateLiveOperationalDecision)؛ يُستهلَك حصرياً في buildPlanningForecastResult
-  // أدناه (engine.ts) لعرض تحذير "توقّع مبني على بيانات قديمة" بدل عرض
-  // "الأجواء تصلح/لا تصلح" بثقة كاملة على تقدير طقس غير موثوق أصلاً.
+  // True only when the Open-Meteo call actually failed/was interrupted (see
+  // isForecastStale in weather.ts) for the weather sample used to build this
+  // context. Not meaningful on the LIVE_OPERATIONAL path (the live decision is
+  // built straight from the device, with no weather call at all — see
+  // evaluateLiveOperationalDecision); consumed only by buildPlanningForecastResult
+  // below (engine.ts) to show a "forecast based on stale data" warning instead of
+  // asserting suitability with full confidence on an unreliable weather estimate.
   isForecastStale: boolean;
   dviScore: number;
   dviDecision: DviDecisionCategory;
   dviMandatoryStop: boolean;
-  // true فقط عندما يكون سبب dviMandatoryStop الوحيد هو تجاوز PM10≥340
-  // اللحظي، بلا أي خطر فيزيائي فوري آخر (رؤية حرجة/رياح شديدة) مساهم —
-  // راجع dust-engine/engine.ts (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY)
-  // وGATE-DVI-002 في engine.ts للاستخدام الفعلي. اختياري (undefined =
-  // false توافقياً) حتى لا تنكسر استدعاءات context() القديمة في الاختبارات
-  // التي تبني dviMandatoryStop:true يدوياً بلا هذا الحقل.
+  // True only when the sole reason for dviMandatoryStop is an instantaneous
+  // PM10≥340 exceedance, with no other contributing immediate physical hazard
+  // (critical visibility/high wind) — see dust-engine/engine.ts
+  // (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY) and GATE-DVI-002 in engine.ts for actual
+  // usage. Optional (undefined = false) so legacy test context() calls that build
+  // dviMandatoryStop:true manually without this field don't break.
   dviMandatoryStopIsPm10Only?: boolean;
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "فقد الرؤية قد يؤدي إلى ALLOW أو
-  // يسمح باستكمال نافذة الاستئناف من إيقاف سابق"): من
-  // DviEvaluationResult.visibilityDataMissing — true فقط عندما يوجد جهاز
-  // مرتبط فعلياً لكن قراءة الرؤية غائبة/غير طازجة، فلا تُفعَّل بوابتا الرؤية
-  // في dust-engine (DVI-VISIBILITY-MANDATORY-STOP-001/RED-002) بصمت كأن
-  // الرؤية ممتازة. تُستخدم أدناه لإضافة "الرؤية غير متوفرة" إلى
-  // missingCriticalInputs (يمنع ALLOW واثقاً) ولمنع resumeHoldApplied من
-  // معاملة هذا الغياب كتحسّن فعلي يُنهي إيقافاً سابقاً. اختياري (undefined =
-  // false توافقياً) لنفس سبب dviMandatoryStopIsPm10Only أعلاه.
+  // From DviEvaluationResult.visibilityDataMissing — true only when a device is
+  // actually linked but the visibility reading is missing/stale, so the dust-engine
+  // visibility gates (DVI-VISIBILITY-MANDATORY-STOP-001/RED-002) don't silently
+  // treat it as excellent visibility. Used below to add "visibility unavailable" to
+  // missingCriticalInputs (blocks a confident ALLOW) and to prevent resumeHoldApplied
+  // from treating this absence as genuine improvement ending a prior stop. Optional
+  // (undefined = false) for the same reason as dviMandatoryStopIsPm10Only above.
   dviVisibilityDataMissing?: boolean;
-  // السبب النصي المحدَّد لتوقف DVI (مثال: "PM10 = 1806.8")، من
-  // DviEvaluationResult.shortReason — يُستخدم في رسالة GATE-DVI-002 بدل نص
-  // عام لا يذكر الرقم/السبب الفعلي. اختياري: null/undefined يبقيان الرسالة
-  // العامة كما كانت (فشل آمن، لا كسر لأي مستهلك حالي للسياق).
+  // Specific text reason DVI stopped (e.g. "PM10 = 1806.8"), from
+  // DviEvaluationResult.shortReason — used in the GATE-DVI-002 message instead of a
+  // generic text that omits the actual number/reason. Optional: null/undefined keep
+  // the generic message (fail-safe, no break for existing context consumers).
   dviShortReason?: string | null;
   dviConfidenceScore: number;
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "نطاق الرياح النظامي يستخدم
-  // رقمًا مشتقًا من الهبات"): كان هذا الحقل يحمل dviResult.effectiveWindKmh
-  // (= max(السرعة, 0.85×الهبة))، رقم مخاطر مشتق مصمَّم لدرجة DVI الفيزيائية
-  // الداخلية — لا سرعة الرياح الفعلية التي يعرّفها "بروتوكول الملحق أ"
-  // (classifyWind في rulebook.ts، عتبتا 15/25 كم/س). هبة عابرة واحدة كانت
-  // كافية لرفع هذا الرقم فوق 25 وتُصنَّف كأنها سرعة رياح مستدامة >25 كم/س،
-  // فتُفعِّل GATE-WIND-ABOVE-25-004 (إيقاف تنظيمي) استناداً لخطأ لحظي لا
-  // استمرار فعلي. الآن يحمل سرعة الرياح الخام فقط (merged.windSpeedKmh) —
-  // نفس الرقم الذي يعرّفه النص التنظيمي حرفياً بلا اشتقاق. راجع
-  // windGustKmh أدناه وwindGustSafetyRule في rulebook.ts للهبات تحديداً
-  // (قاعدة سلامة منفصلة، لا جزءاً من بروتوكول الملحق أ).
+  // Holds the raw wind speed only (merged.windSpeedKmh) — the same figure the
+  // regulatory text defines literally with no derivation, not
+  // dviResult.effectiveWindKmh (= max(speed, 0.85×gust)), a derived risk figure
+  // designed for the internal physical DVI score. A single transient gust was
+  // previously enough to push that derived figure above 25 and get misclassified
+  // as a sustained >25 km/h wind speed, firing GATE-WIND-ABOVE-25-004 (a regulatory
+  // stop) based on a momentary spike rather than sustained wind. See windGustKmh
+  // below and windGustSafetyRule in rulebook.ts for gust handling specifically (a
+  // separate safety rule, not part of the Annex A protocol).
   windSpeedKmh: number | null;
   windGustKmh: number | null;
   windDirectionDeg: number | null;
   pm10UgM3: number | null;
   pm25UgM3: number | null;
-  // للعرض فقط في "الطقس المرجعي للقرار" — لا تدخل في أي حساب/عتبة ضمن محرك
-  // الامتثال نفسه.
+  // Display only, in the "reference weather for the decision" panel — does not
+  // feed any calculation/threshold in the compliance engine itself.
   relativeHumidityPercent: number | null;
   temperatureC: number | null;
-  // للعرض فقط (تنبيهات إعلامية داخل بطاقة الامتثال) — لا تدخل في أي حساب/
-  // عتبة ضمن محرك الامتثال نفسه.
+  // Display only (informational advisories on the compliance card) — does not
+  // feed any calculation/threshold in the compliance engine itself.
   visibilityM: number | null;
-  // آخر وقت إرسال فعلي لمحطة الرصد المرتبطة بهذا النشاط (ISO) — null إن
-  // كان النشاط مرتبطاً بمحطة لم ترسل أي قراءة إطلاقاً بعد، undefined إن
-  // لم يكن مرتبطاً بمحطة أصلاً (وضع API). للعرض فقط (تحذير قِدم القراءة).
+  // Last actual transmission time of the monitoring station linked to this
+  // activity (ISO) — null if linked to a station that has never sent a reading,
+  // undefined if not linked to a station at all (API mode). Display only (staleness warning).
   deviceLastReadingAt?: string | null;
-  // آخر وقت وصول PM10 تحديداً من نفس المحطة (ISO) — راجع تعليق
-  // devicePm10LastReadingAt المقابل في evidence أعلى الملف للسبب الكامل.
-  // نفس دلالة undefined/null. للعرض فقط.
+  // Last time PM10 specifically arrived from the same station (ISO) — see the
+  // matching devicePm10LastReadingAt comment in evidence above for the full
+  // rationale. Same undefined/null semantics. Display only.
   devicePm10LastReadingAt?: string | null;
-  // ملاحظات DVI التحذيرية (راجع DviEvaluationResult.caveatsAr) تُمرَّر هنا
-  // كما هي لتظهر في نتيجة الامتثال أيضاً — لا تُغيّر أي قرار.
+  // DVI advisory caveats (see DviEvaluationResult.caveatsAr), passed through
+  // as-is so they also appear in the compliance result — never change any decision.
   dviCaveatsAr?: string[];
-  // مصدر أعلى أولوية فاز فعلياً عبر أي حقل من حقول القراءة (device إن ظهر
-  // بأي حقل، وإلا open-meteo، وإلا onsite) — للعرض العام فقط (مثال: أيقونة
-  // "بيانات من جهاز" في الواجهة). لا يعني أن كل حقل جاء من هذا المصدر
-  // بالضرورة — راجع pm10Source أدناه للمصدر الدقيق لـPM10 تحديداً، وهو ما
-  // يجب استخدامه لأي قرار/تسجيل يعتمد على "هل هذي القراءة من الجهاز".
+  // Highest-priority source that actually won across any reading field (device if
+  // it appears in any field, else open-meteo, else onsite) — general display only
+  // (e.g. a "data from device" icon in the UI). Does not imply every field came
+  // from this source — see pm10Source below for the precise PM10 source, which
+  // must be used for any decision/logging depending on "is this reading actually from the device."
   dataSource: 'device' | 'open-meteo' | 'onsite' | 'project-station' | 'none';
-  // مصدر قراءة PM10 تحديداً (لا التلخيص العام أعلاه) — خطأ مكتشَف ومُصلَح:
-  // كان تسجيل pm10_readings_history يعتمد على dataSource العام، فحين تأتي
-  // الرياح من الجهاز وPM10 من الطقس معاً، dataSource يتحول لـ'device' (يفوز
-  // بأي حقل) فيظن الكود أن PM10 "من الجهاز" (لا يُعاد تسجيله، لأن قراءات
-  // الجهاز تُسجَّل مرة عند الاستقبال لا هنا) بينما فعلياً جاء من الطقس ولم
-  // يُسجَّل في أي مكان — فتنقطع سلسلة إثبات استمرار التجاوز لتلك القراءة
-  // كلياً. undefined = لا معلومة مصدر متاحة (اختبارات/استدعاءات قديمة).
+  // Source of the PM10 reading specifically (not the general summary above).
+  // pm10_readings_history logging previously relied on the general dataSource,
+  // which resolves to 'device' whenever any field came from the device (even if
+  // wind came from the device but PM10 came from weather) — the code would then
+  // wrongly assume PM10 "came from the device" (so skip logging it, since device
+  // readings are logged once on receipt, not here) while it actually came from
+  // weather and was never logged anywhere, breaking the sustained-exceedance
+  // evidence chain for that reading. Undefined = no source info available (legacy tests/calls).
   pm10Source?: 'device' | 'weather' | 'onsite' | 'none';
-  // القيمة الخام كما وصلت (بلا أي بوابة حداثة) — للعرض/التدقيق فقط (evidence.
-  // pm10UgM3 في engine.ts يعرضها دائماً، بصرف النظر عن pm10EvidenceState).
-  // pm10UgM3 أعلاه هو ما يدخل فعلياً pm10ThresholdRule (rulebook.ts)؛
-  // pm10RawUgM3 لا يدخل أي قرار تنظيمي مطلقاً. عندما pm10EvidenceState=FRESH
-  // تكون القيمتان متطابقتين دائماً.
+  // The raw value as received (no freshness gate) — for display/audit only
+  // (evidence.pm10UgM3 in engine.ts always shows it, regardless of
+  // pm10EvidenceState). pm10UgM3 above is what actually feeds pm10ThresholdRule
+  // (rulebook.ts); pm10RawUgM3 never enters any regulatory decision. The two values
+  // are always identical when pm10EvidenceState=FRESH.
   pm10RawUgM3?: number | null;
-  // حالة حداثة قراءة PM10 وقت بناء هذا السياق (evaluatedAtMs، لا Date.now()
-  // وقت القراءة نفسها — راجع evaluatedAtMs في buildComplianceContext
-  // للسبب: يضمن قابلية إعادة حساب نفس القرار لاحقاً بنفس النتيجة تماماً).
-  // MISSING = لا وقت قراءة معروف؛ FUTURE = وقت القراءة بعد evaluatedAtMs
-  // (ساعة جهاز غير متزامنة)؛ STALE = تجاوزت LIVE_FIELD_FRESHNESS_MS. تُطبَّق
-  // فقط على pm10Source='device' — قراءات الطقس/اليدوية تُعامَل كطازجة دائماً
-  // (لا "قراءة" فردية لها عمر بنفس المعنى، نفس مبدأ dust-engine/engine.ts).
+  // Freshness state of the PM10 reading as of context build time (evaluatedAtMs,
+  // not the reading's own timestamp — see evaluatedAtMs in buildComplianceContext:
+  // this guarantees the same decision can be recomputed later with an identical
+  // result). MISSING = no known reading time; FUTURE = reading time after
+  // evaluatedAtMs (unsynced device clock); STALE = exceeded
+  // LIVE_FIELD_FRESHNESS_MS. Applied only to pm10Source='device' — weather/manual
+  // readings are always treated as fresh (no per-reading age concept, same
+  // principle as dust-engine/engine.ts).
   pm10EvidenceState?: Pm10EvidenceState;
   sensitiveReceptors: SensitiveReceptor[];
 
-  // آخر قرار امتثال مسجَّل لنفس activity_group_id (من
-  // current_dust_compliance_decisions) — يُستخدم لتحديد إن كان النشاط
-  // موقِفاً سابقاً (لتفعيل قيد الاستئناف أصلاً). null/undefined تعني "لا
-  // قرار سابق"، فلا قيد يُطبَّق (سلوك المحرك بلا تغيير).
+  // Last recorded compliance decision for the same activity_group_id (from
+  // current_dust_compliance_decisions) — used to determine whether the activity was
+  // previously stopped (to engage the resume hold at all). Null/undefined means "no
+  // prior decision", so no hold is applied (unchanged engine behavior).
   previousDecisionCategory?: DustComplianceDecisionCategory | null;
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل قراءة القرار السابق يُبتلع
-  // ويزيل حماية الاستئناف"): previousDecisionCategory=null طبيعية لنشاط لم
-  // يُقيَّم قط — لكنها أيضاً كانت النتيجة الصامتة لفشل استعلام
-  // current_dust_compliance_decisions فعلياً (شبكة/قاعدة بيانات)، فيُعامَل
-  // نشاط موقوف فعلياً كأنه لم يُوقَف قط، ويفقد حماية RESUME-STABILITY-HOLD
-  // بالكامل. true تعني تحديداً "الاستعلام فشل، لا 'لا قرار سابق' حقيقية" —
-  // يُطبَّق بوابة PREVIOUS-DECISION-QUERY-FAILED-HOLD أدناه (فشل آمن نحو
-  // إيقاف احترازي، لا سماح بلا دليل). false/undefined = الاستعلام نجح
-  // (بصرف النظر عن وجود صف أم لا).
+  // previousDecisionCategory=null is the natural state for an activity never
+  // evaluated, but it was also the silent result of a failed
+  // current_dust_compliance_decisions query (network/database) — treating an
+  // actually-stopped activity as if it had never been stopped, losing
+  // RESUME-STABILITY-HOLD protection entirely. True specifically means "the query
+  // failed, not a genuine 'no prior decision'" — triggers the
+  // PREVIOUS-DECISION-QUERY-FAILED-HOLD gate below (fail-safe toward a
+  // precautionary stop, not an unproven allow). False/undefined = the query
+  // succeeded (regardless of whether a row existed).
   previousDecisionQueryFailed?: boolean;
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "سبب الإيقاف السابق يُستنتج
-  // من فئة القرار فقط"): previousStopWasWindGate في engine.ts كان يفترض أن
-  // أي قرار سابق بفئة STOP_AFFECTED_ACTIVITY سببه بالضرورة بوابة الرياح
-  // (GATE-WIND-ABOVE-25-004) — خطأ، لأن عشرات القواعد الأخرى (PM10 معلَّق،
-  // تسرب صومعة، غسيل إطارات، ارتفاع تفريغ مواد...) تنتج نفس الفئة تماماً.
-  // previousDecidingRuleCode (من current_dust_compliance_decisions.deciding_rule_code)
-  // هو مصدر الحقيقة الدقيق: كود القاعدة الفعلية التي بنت القرار السابق، لا
-  // فئته العامة فقط. null/undefined = لا كود مسجَّل (صفوف قديمة قبل هذه
-  // الإضافة، أو لا قرار سابق) — فشل آمن: لا يُطبَّق أي قيد خاص ببوابة الرياح.
+  // previousStopWasWindGate in engine.ts used to assume any prior
+  // STOP_AFFECTED_ACTIVITY decision was necessarily caused by the wind gate
+  // (GATE-WIND-ABOVE-25-004) — wrong, since dozens of other rules (pending PM10,
+  // silo leak, tire washing, excessive material drop height...) produce the same
+  // category. previousDecidingRuleCode (from
+  // current_dust_compliance_decisions.deciding_rule_code) is the precise source of
+  // truth: the actual rule code that built the prior decision, not just its general
+  // category. Null/undefined = no code recorded (rows predating this addition, or
+  // no prior decision) — fail-safe: no wind-gate-specific hold applied.
   previousDecidingRuleCode?: string | null;
-  // لا تُستخدم لحساب مدة الاستقرار — أُبقيت فقط لتوافق الاستدعاءات القديمة.
-  // راجع previousPendingResumeSince أدناه للحقل الصحيح المستخدم فعلياً.
+  // Not used to compute stability duration — kept only for legacy call
+  // compatibility. See previousPendingResumeSince below for the field actually used.
   previousDecisionUpdatedAt?: string | null;
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "انقطاع البيانات يُحسب ضمن مدة
-  // الاستقرار ويسمح بالاستئناف"، البند الثاني: "فجوة أكبر من 90 ثانية تصفّر
-  // العداد"): previousDecisionUpdatedAt أعلاه مُحمَّل عمداً بدلالة مختلفة
-  // (stopped_since ?? updated_at، "منذ متى بدأ الإيقاف") فلا يصلح لقياس
-  // "منذ متى آخر دورة تقييم فعلية لهذا النشاط" — وهو المطلوب هنا فعلياً.
-  // previousEvaluationUpdatedAt يحمل current_dust_compliance_decisions.
-  // updated_at الخام بلا أي استبدال — يُستخدم فقط لاكتشاف فجوة تقييم (توقّف
-  // cron/فشل شبكة/إلخ) بين آخر دورة محفوظة وهذه الدورة: فجوة أطول من
-  // PENDING_RESUME_GAP_TOLERANCE_MS (90 ثانية، أعلى قليلاً من وتيرة التقييم
-  // الفعلية دقيقة واحدة) تُصفِّر عداد الاستقرار — انقطاع البيانات لا يجوز أن
-  // "يُحتسب" ضمن مدة الاستقرار المطلوبة. null/undefined = لا قرار سابق
-  // (فشل آمن: لا فجوة تُكتشَف، أول تقييم فعلي).
+  // previousDecisionUpdatedAt above is deliberately loaded with a different meaning
+  // (stopped_since ?? updated_at, "since when did the stop begin"), so it can't
+  // measure "since when was this activity actually last evaluated" — which is what
+  // is needed here. previousEvaluationUpdatedAt carries the raw
+  // current_dust_compliance_decisions.updated_at with no substitution — used only
+  // to detect an evaluation gap (cron outage/network failure/etc.) between the last
+  // saved cycle and this one: a gap longer than PENDING_RESUME_GAP_TOLERANCE_MS (90
+  // seconds, slightly above the actual one-minute evaluation cadence) resets the
+  // stability counter — a data gap must never "count toward" the required stability
+  // duration. Null/undefined = no prior decision (fail-safe: no gap detected, first real evaluation).
   previousEvaluationUpdatedAt?: string | null;
-  // منذ متى أصبح القرار الخام (لو تُرك بلا قيد استئناف) جيداً بشكل مستمر،
-  // بينما القرار المخزَّن لا يزال موقِفاً — منفصل تماماً عن "منذ متى بدأ
-  // الإيقاف" (previousDecisionUpdatedAt/stopped_since). الخلط بين الاثنين
-  // كان يجعل عداد الاستئناف يبدأ من بداية الإيقاف نفسه، فيسمح باستئناف فوري
-  // إن تجاوزت مدة الإيقاف الكلية 10 دقائق ولو لم تتراكم دقيقة واحدة فعلية
-  // من القراءة الجيدة بعد (راجع pendingResumeSince في dustEvaluation.ts).
-  // null/undefined = لا يوجد استقرار مسجَّل بعد (فشل آمن: لا استئناف فوري).
+  // Since when the raw decision (absent a resume hold) became continuously good,
+  // while the stored decision is still a stop — kept strictly separate from "since
+  // when did the stop begin" (previousDecisionUpdatedAt/stopped_since). Conflating
+  // the two would let the resume counter start from the beginning of the stop
+  // itself, allowing immediate resume once total stop duration exceeded 10 minutes
+  // even with zero actual minutes of a good reading accumulated (see
+  // pendingResumeSince in dustEvaluation.ts). Null/undefined = no stability
+  // recorded yet (fail-safe: no immediate resume).
   previousPendingResumeSince?: string | null;
 
-  // استمرار PM10 عبر الزمن (من pm10_readings_history، راجع
-  // fetchPm10SustainedStatus في dustEvaluation.ts) — يُستخدم لتمييز
-  // RCRC-PM10-340-VIOLATION-011 (مخالفة مؤكدة بعد أكثر من دقيقتين) عن
-  // MRQ-PM10-BLACK-PENDING-104 (معلَّق، أقل من دقيقتين)، وRCRC-PM10-30M-
-  // SUSPENSION-012 (تعليق بعد 30 دقيقة عند ≥250). 0/undefined يعني "لا
-  // بيانات استمرار متاحة" — فشل آمن نحو معاملة القراءة كأنها لحظية فقط
-  // (السلوك القديم قبل هذه الإضافة، بلا كسر توافقي).
+  // PM10 sustain duration over time (from pm10_readings_history, see
+  // fetchPm10SustainedStatus in dustEvaluation.ts) — used to distinguish
+  // RCRC-PM10-340-VIOLATION-011 (confirmed violation after more than 2 minutes)
+  // from MRQ-PM10-BLACK-PENDING-104 (pending, under 2 minutes), and
+  // RCRC-PM10-30M-SUSPENSION-012 (suspension after 30 minutes at ≥250).
+  // 0/undefined means "no sustain data available" — fail-safe toward treating the
+  // reading as instantaneous only (legacy behavior, no compatibility break).
   //
-  // هذان الرقمان (بالدقائق) يبقيان للعرض/التوعية فقط (مثال: عدّاد "متبقٍ
-  // كذا" بالواجهة) — لا يجوز إعادة اشتقاق قرار "مؤكَّدة"/"معلَّقة" منهما في
-  // rulebook.ts. راجع confirmedViolation340/suspended250For30Min أدناه
-  // للقيمتين اللتين يجب أن يعتمد عليهما القرار الفعلي.
+  // These two figures (in minutes) remain for display/awareness only (e.g. a "time
+  // remaining" counter in the UI) — a confirmed/pending decision must never be
+  // re-derived from them in rulebook.ts. See confirmedViolation340/
+  // suspended250For30Min below for the values the actual decision must rely on.
   pm10SustainedMinutesAbove340?: number;
   pm10SustainedMinutesAbove250?: number;
 
-  // خطأ مكتشَف ومُصلَح (مراجعة كود مدير): كانت pm10ThresholdRule بـrulebook.ts
-  // تستقبل فقط الرقمين أعلاه وتُعيد اشتقاق "مؤكَّدة"/"معلَّقة" بنفسها من
-  // مقارنة بسيطة (sustainedMinutesAbove340 > 2) — فيفقد القرار كل فحوص
-  // computeSustainedPm10Status الحقيقية (مصدر السلسلة device فعلاً؟ آخر
-  // قراءة حديثة أم متوقفة؟). أخطر من ذلك: القراءة الحالية المقارَنة بـ340
-  // (ctx.pm10UgM3) قد تكون من مصدر مختلف تماماً عن السلسلة المستخدَمة لحساب
-  // الدقائق (قراءات جهاز على مستوى المشروع تُدمَج لأي نشاط بلا activity_group_id
-  // خاص بها، راجع fetchPm10SustainedStatus)، فيُقارَن رقمان غير مرتبطين
-  // منطقياً ببعضهما. الإصلاح: القرار المؤكَّد/المعلَّق يُحسب مرة واحدة فقط في
-  // computeSustainedPm10Status (حيث كل الأدلة اللازمة متوفرة معاً)، ويُمرَّر
-  // هنا كحالة جاهزة — rulebook.ts يقرأ القرار، لا يعيد اشتقاقه.
-  // undefined = لا بيانات استمرار متاحة (نفس فشل آمن الحقلين أعلاه).
+  // pm10ThresholdRule in rulebook.ts previously received only the two figures above
+  // and re-derived confirmed/pending itself from a simple comparison
+  // (sustainedMinutesAbove340 > 2), losing all of computeSustainedPm10Status's real
+  // checks (is the series actually device-sourced? is the last reading fresh or
+  // stalled?). Worse, the current reading compared against 340 (ctx.pm10UgM3) could
+  // come from an entirely different source than the series used to compute the
+  // minutes (project-level device readings are merged into any activity without
+  // its own activity_group_id — see fetchPm10SustainedStatus), comparing two
+  // logically unrelated numbers. The confirmed/pending decision is now computed
+  // exactly once in computeSustainedPm10Status (where all the necessary evidence is
+  // available together) and passed here as a ready-made state — rulebook.ts reads
+  // the decision rather than re-deriving it. Undefined = no sustain data available
+  // (same fail-safe as the two fields above).
   pm10ConfirmedViolation340?: boolean;
   pm10Suspended250For30Min?: boolean;
 
-  // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "لا قدرة Replay كاملة: القرار
-  // المخزَّن لا يحمل معرّفات القراءات الفعلية التي أثبتت الاستمرار، فقط
-  // القيم المجمَّعة"): معرّفات صفوف pm10_readings_history المكوِّنة فعلياً
-  // لسلسلة الاستمرار وراء pm10ConfirmedViolation340/pm10Suspended250For30Min
-  // أعلاه — راجع evidenceReadingIds في Pm10SustainedStatus (dustEvaluation.ts)
-  // لمصدرها الفعلي. تُنسَخ كما هي إلى DustComplianceResult.pm10EvidenceReadingIds
-  // (يُخزَّن ضمن jsonb، لا عمود جديد) — القرار المخزَّن يحمل الآن دليلاً
-  // قابلاً للتتبع لصفوف محددة، لا فقط رقماً مجمَّعاً.
+  // IDs of the pm10_readings_history rows that actually make up the sustain chain
+  // behind pm10ConfirmedViolation340/pm10Suspended250For30Min above — see
+  // evidenceReadingIds in Pm10SustainedStatus (dustEvaluation.ts) for their actual
+  // source. Copied as-is into DustComplianceResult.pm10EvidenceReadingIds (stored
+  // in the existing jsonb column, no new column needed) — the stored decision now
+  // carries traceable evidence to specific rows, not just an aggregated number.
   pm10EvidenceReadingIds?: string[];
 }

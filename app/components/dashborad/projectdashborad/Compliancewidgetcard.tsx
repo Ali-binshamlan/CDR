@@ -1051,23 +1051,19 @@ export default function ComplianceWidgetCard({
                     </div>
                   </div>
 
-                  <div>
-                    <div className="text-xs font-bold text-[#061B40]/60 mb-1">السبب المباشر</div>
-                    <div className="text-sm text-[#061B40]">
-                      {isEnded ? 'انقضت نافذة تنفيذ هذا النشاط — لا يوجد قرار تشغيلي حالي بشأنه.' : aei.shortReasonAr}
+                  {isEnded && (
+                    <div>
+                      <div className="text-xs font-bold text-[#061B40]/60 mb-1">السبب المباشر</div>
+                      <div className="text-sm text-[#061B40]">
+                        انقضت نافذة تنفيذ هذا النشاط — لا يوجد قرار تشغيلي حالي بشأنه.
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {!isEnded && (
                     <div>
                       <div className="text-xs font-bold text-[#061B40]/60 mb-1">التوصية النهائية</div>
                       <div className="text-sm text-[#061B40]">{aei.recommendationAr}</div>
-                    </div>
-                  )}
-
-                  {!isEnded && aei.gateReasonAr && (
-                    <div className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg p-2 mt-2">
-                      {aei.gateReasonAr}
                     </div>
                   )}
 
