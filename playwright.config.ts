@@ -4,10 +4,13 @@ import { defineConfig, devices } from '@playwright/test';
 // (package.json script "test:e2e"). تشغّل خادم Next.js حقيقياً (build+start
 // عبر webServer أدناه) وتتصفّح صفحات فعلية بمتصفح حقيقي (Chromium)، لا
 // mock DOM. تُغطّى هنا المسارات العامة القابلة للاختبار بلا حساب مستخدم
-// حقيقي مُعدّ مسبقاً (تسجيل الدخول/التسجيل/التنقّل العام) — تغطية مسارات
-// موثَّقة الدخول (لوحة التحكم الكاملة) تتطلب بيانات اعتماد اختبار حقيقية
-// تُدار خارج هذا الملف (متغيرات بيئة E2E_TEST_EMAIL/E2E_TEST_PASSWORD غير
-// معرَّفة بعد — راجع تعليق auth.setup.ts).
+// حقيقي مُعدّ مسبقاً (تسجيل الدخول/التسجيل/التنقّل العام).
+//
+// مشروع 'setup' (طلب مستخدم صريح — "التحقق النهائي": اختبار PM10/الأجهزة/
+// Downwind الفعلي، كلها خلف لوحة تحكم محمية): auth.setup.ts ينشئ مستخدماً
+// ومشروعاً حقيقيين عبر service_role (يتطلب Supabase محلياً — `supabase
+// start`) ويسجّل الدخول فعلياً، فتعتمد عليه specs الأخرى (pm10-downwind.
+// spec.ts) عبر dependencies — لا تُشغَّل بمعزل عنه أبداً.
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -20,7 +23,8 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'setup', testMatch: /auth\.setup\.ts/ },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] }, dependencies: ['setup'], testIgnore: /auth\.setup\.ts/ },
   ],
   // خادم حقيقي (production build) — لا `next dev` (أبطأ، وسلوك مختلف طفيفاً
   // عن الإنتاج الفعلي). يفترض `npm run build` نُفِّذ مسبقاً في نفس تشغيلة

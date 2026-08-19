@@ -3,8 +3,10 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
+// true_north_* (migration 202608190002) — راجع تعليق DEVICE_LIST_COLUMNS
+// المطابق في ../route.ts للسبب الكامل.
 const DEVICE_SAFE_COLUMNS =
-  'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at';
+  'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url';
 
 // يتحقق أن الجهاز المطلوب فعلاً ينتمي للمشروع في الرابط — دفاع إضافي رخيص
 // فوق verifyProjectOwnership: يمنع مالك مشروع A من التأثير على صف جهاز
@@ -44,6 +46,47 @@ export async function PATCH(
     // الإلغاء يُسجَّل بطابع زمني (revoked_at)؛ إعادة التفعيل تمسحه — يطابق
     // دلالة "متى أُلغي آخر مرة"، لا "هل أُلغي يوماً ما".
     updates.revoked_at = body.is_active ? null : new Date().toISOString();
+  }
+
+  // توثيق الشمال الحقيقي (migration 202608190002) — نفس تحقق POST في
+  // ../route.ts. عند تحويل الحالة إلى غير موثَّقة (documented=false)، تُصفَّر
+  // كل التفاصيل التابعة صراحة — لا يجوز أن تبقى بيانات معايرة قديمة (نوع/
+  // تاريخ/طريقة) توحي بأن الاتجاه لا يزال موثَّقاً بعد تعطيل التوثيق.
+  if (typeof body?.true_north_alignment_documented === 'boolean') {
+    const trueNorthDocumented = body.true_north_alignment_documented;
+    if (
+      trueNorthDocumented &&
+      (
+        body?.true_north_alignment_type !== 'TRUE_NORTH' &&
+        body?.true_north_alignment_type !== 'MAGNETIC_NORTH' ||
+        typeof body?.true_north_verification_method !== 'string' ||
+        !body.true_north_verification_method.trim() ||
+        typeof body?.true_north_verified_by !== 'string' ||
+        !body.true_north_verified_by.trim() ||
+        !body?.true_north_verified_at
+      )
+    ) {
+      return NextResponse.json({ error: 'توثيق الشمال الحقيقي غير مكتمل' }, { status: 400 });
+    }
+
+    updates.true_north_alignment_documented = trueNorthDocumented;
+    if (trueNorthDocumented) {
+      updates.true_north_alignment_type = body.true_north_alignment_type;
+      updates.true_north_verification_method = body.true_north_verification_method.trim();
+      updates.true_north_verified_by = body.true_north_verified_by.trim();
+      updates.true_north_verified_at = body.true_north_verified_at;
+      updates.true_north_deviation_deg =
+        typeof body?.true_north_deviation_deg === 'number' ? body.true_north_deviation_deg : null;
+      updates.true_north_evidence_url =
+        typeof body?.true_north_evidence_url === 'string' ? body.true_north_evidence_url.trim() : null;
+    } else {
+      updates.true_north_alignment_type = null;
+      updates.true_north_verification_method = null;
+      updates.true_north_verified_by = null;
+      updates.true_north_verified_at = null;
+      updates.true_north_deviation_deg = null;
+      updates.true_north_evidence_url = null;
+    }
   }
 
   if (Object.keys(updates).length === 0) {

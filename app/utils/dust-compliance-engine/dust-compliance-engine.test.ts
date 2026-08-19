@@ -12,6 +12,7 @@ import type {
   DustComplianceContext,
   DustProjectComplianceProfile,
   SensitiveReceptor,
+  WindDirectionEvidence,
 } from './types';
 import type { DviMergedReading, DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
 
@@ -1642,6 +1643,234 @@ describe('محرك امتثال الغبار — منع الاستئناف ال�
     });
   });
 
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "فشل
+  // استعلام سلسلة PM10 يتحول إلى سلسلة فارغة"): pm10HistoryQueryFailed=true
+  // يجب أن يصدر FIELD_VERIFICATION_REQUIRED (تحقّق ميداني)، لا COMPLIANT
+  // صامتة — نفس مبدأ previousDecisionQueryFailed أعلاه، مطبَّقاً على سلسلة
+  // PM10 التاريخية بدل القرار السابق.
+  describe('pm10HistoryQueryFailed=true — فشل استعلام سلسلة PM10 يفرض تحقق ميداني، لا COMPLIANT صامتة', () => {
+    it('pm10HistoryQueryFailed=true، بلا أي قاعدة أشد → FIELD_VERIFICATION_REQUIRED صراحة', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+        })
+      );
+      expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+      expect(r.canOverride).toBe(false);
+    });
+
+    // اختبار قبول صريح (طلب المستخدم — "اختبارات القبول لـPM10": "خطأ قاعدة
+    // البيانات → لا يظهر نصه الخام للمستخدم"): messageAr/actionAr المعروضان
+    // فعلياً للمستخدم يجب ألا يحملا أي نص PostgreSQL خام أو اسم جدول داخلي
+    // (pm10_readings_history) أو أي تفصيل تشخيصي — نص عربي ثابت مُقرَّر
+    // مسبقاً فقط. هذا اختبار مختلف عن حماية حمل Telemetry (dustEvaluation.
+    // pm10Sustained.test.ts) — ذاك يثبت عدم تسريب النص للجدول التقني، هذا
+    // يثبت عدم تسريبه للواجهة التي يراها المستخدم مباشرة.
+    it('PM10-HISTORY-QUERY-FAILED-HOLD.messageAr/actionAr لا يحملان أي نص PostgreSQL خام أو اسم جدول داخلي (اسم الجدول الحقيقي pm10_readings_history تحديداً)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+        })
+      );
+      const hit = r.triggeredRules.find((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD');
+      expect(hit).toBeDefined();
+      const displayedText = `${hit?.messageAr ?? ''} ${hit?.actionAr ?? ''}`;
+      expect(displayedText).not.toContain('pm10_readings_history');
+      expect(displayedText).not.toMatch(/postgres|PGRST|relation|column|permission denied/i);
+      // النص المطلوب حرفياً في الملاحظة (المستخدَم فعلياً كـmessageAr).
+      expect(hit?.messageAr).toBe(
+        'تعذر التحقق من استمرارية PM10 بسبب مشكلة مؤقتة في سجل القراءات. لم يعتبر النظام ذلك عدم وجود تجاوز، ويلزم إعادة التقييم.'
+      );
+    });
+
+    it('pm10HistoryQueryFailed=false (الاستعلام نجح، حتى بصفر قراءات) → لا قيد يُطبَّق (سلوك طبيعي)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: false,
+        })
+      );
+      expect(r.decisionCategory).toBe('ALLOW');
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(false);
+    });
+
+    it('فشل استعلام PM10 + قاعدة رياح تفرض إيقافاً (>25 كم/س) → قرار الإيقاف الفعلي يبقى الفائز (الأقوى لا يضيع)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+          windSpeedKmh: 30,
+          activity: activityProfile({ isDustGenerating: true, isEnclosedOperation: false }),
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      // كلا القاعدتين حاضرتان في triggeredRules، لكن قرار الرياح الأقوى هو الفائز.
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+    });
+
+    it('قرار سابق موقوف بسبب PM10 (previousDecidingRuleCode بادئته PM10-) + فشل استعلام PM10 الآن → يبقى الإيقاف محفوظاً (لا استئناف زائف)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousDecidingRuleCode: 'RCRC-PM10-30M-SUSPENSION-012',
+        })
+      );
+      expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-PREVIOUS-STOP-PRESERVED-ON-QUERY-FAILURE')).toBe(true);
+      expect(r.canOverride).toBe(false);
+    });
+
+    it('قرار سابق موقوف لسبب غير PM10 (رياح) + فشل استعلام PM10 الآن → لا تُطبَّق قاعدة حفظ إيقاف PM10 (ليست هي السبب)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+          previousDecisionCategory: 'STOP_AFFECTED_ACTIVITY',
+          previousDecidingRuleCode: 'GATE-WIND-ABOVE-25-004',
+        })
+      );
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-PREVIOUS-STOP-PRESERVED-ON-QUERY-FAILURE')).toBe(false);
+      // FIELD_VERIFICATION_REQUIRED (من فشل استعلام PM10 نفسه) يبقى مُطبَّقاً رغم ذلك.
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+    });
+
+    // اختبار قبول صريح (طلب المستخدم — تقرير المراجعة الخارجي: "ماذا يحدث
+    // إذا توجد قاعدة إيقاف أخرى؟"، الصف الخامس: "فشل PM10 + لا نشاط حي →
+    // يسجل عطلاً تقنياً دون مخالفة تنظيمية"). تحقَّقتُ صراحةً أن
+    // isActiveOrPlanned في السورس الفعلي (adapters.ts/engine.ts) لا يؤثر
+    // إلا على GATE-DMP-001 حصراً (بادئة DMP، لا صلة له بـPM10) — لا يُسقِط
+    // ولا يُسكِت قاعدة PM10-HISTORY-QUERY-FAILED-HOLD بأي شكل. النتيجة إذن
+    // مطابقة تماماً لسيناريو "فشل PM10 فقط" (الصف الأول)، والاختبار هنا
+    // يثبت ذلك صراحةً بدل افتراضه.
+    it('فشل استعلام PM10 + isActiveOrPlanned=false (لا نشاط حي) → يسجل عطلاً تقنياً (FIELD_VERIFICATION_REQUIRED) دون أي مخالفة تنظيمية، isActiveOrPlanned لا يُسكِت القاعدة', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+          activity: activityProfile({ isActiveOrPlanned: false }),
+        })
+      );
+      expect(r.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+      expect(r.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+      // regulatoryFinding على مستوى محرك الامتثال نفسه: hasConfirmedRegulatoryViolation
+      // يجب أن يبقى false — لا مخالفة مؤكَّدة، فقط عطل تقني (regulatoryFinding
+      // للقاعدة نفسها 'NONE' كما مُرِّر صراحةً في engine.ts).
+      expect(r.hasConfirmedRegulatoryViolation).toBe(false);
+    });
+
+    // اختبار قبول صريح (طلب المستخدم — "اختبارات القبول لـPM10": "نجاح
+    // الاستعلام في التقييم التالي → يزول Hold وفق النتيجة الحقيقية").
+    // يحاكي دورتي تقييم متتاليتين فعليتين (كما يستدعيهما computeDustComplianceResults
+    // في dustEvaluation.ts فعلياً كل مرة): الأولى بفشل استعلام (Hold مُفعَّل)،
+    // الثانية بنجاح استعلام (لا فشل، لا سلسلة PM10 خطيرة) — يثبت أن engine.ts
+    // لا يحمل أي حالة داخلية بين الاستدعاءين (pure function حقيقية بمعزل عن
+    // pm10HistoryQueryFailed في كل استدعاء)، فمجرد نجاح الاستعلام في الدورة
+    // التالية يُزيل Hold فوراً دون أي عداد/تبريد إضافي (بخلاف resumeHoldApplied
+    // الخاص بإيقاف فعلي سابق — Hold هنا عطل تقني آني، لا إيقاف تنظيمي).
+    it('دورتا تقييم متتاليتان: الأولى pm10HistoryQueryFailed=true (Hold)، الثانية pm10HistoryQueryFailed=false (نجاح) → Hold يزول فوراً في الدورة الثانية', () => {
+      const firstCycle = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+        })
+      );
+      expect(firstCycle.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+      expect(firstCycle.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+
+      const secondCycle = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: false,
+        })
+      );
+      expect(secondCycle.decisionCategory).toBe('ALLOW');
+      expect(secondCycle.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(false);
+    });
+  });
+
+  // اختبار قبول صريح (طلب المستخدم — تقرير المراجعة الخارجي: "تمرير حالة
+  // الفشل إلى محرك الامتثال"): pm10HistoryFailureCode وevidence.
+  // pm10TemporalEvidenceState يصلان فعلياً إلى DustComplianceResult، لا
+  // فقط pm10HistoryQueryFailed (boolean وحده لا يكفي لتمييز NO_READINGS
+  // عن QUERY_FAILED في العرض/التدقيق).
+  describe('pm10HistoryFailureCode و evidence.pm10TemporalEvidenceState — يصلان إلى DustComplianceResult كاملَين', () => {
+    it('pm10HistoryQueryFailed=true مع pm10HistoryFailureCode محدَّد → كلاهما يظهران على ctx وfailureCode يبقى كما مُرِّر حرفياً', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+          pm10HistoryFailureCode: 'PM10_HISTORY_QUERY_FAILED',
+          pm10TemporalEvidenceState: 'QUERY_FAILED',
+        })
+      );
+      expect(r.evidence.pm10TemporalEvidenceState).toBe('QUERY_FAILED');
+    });
+
+    it('pm10TemporalEvidenceState=AVAILABLE (استعلام ناجح بقراءات فعلية) → يظهر كما هو في evidence، بمعزل عن pm10HistoryQueryFailed=false', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: false,
+          pm10HistoryFailureCode: null,
+          pm10TemporalEvidenceState: 'AVAILABLE',
+        })
+      );
+      expect(r.evidence.pm10TemporalEvidenceState).toBe('AVAILABLE');
+    });
+
+    it('pm10TemporalEvidenceState=NO_READINGS (استعلام ناجح بصفر قراءات) → يظهر كما هو في evidence، يختلف عن QUERY_FAILED رغم تطابق pm10HistoryQueryFailed=false مع AVAILABLE ظاهرياً', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: false,
+          pm10HistoryFailureCode: null,
+          pm10TemporalEvidenceState: 'NO_READINGS',
+        })
+      );
+      expect(r.evidence.pm10TemporalEvidenceState).toBe('NO_READINGS');
+    });
+
+    it('لا تمرير صريح (استدعاءات قديمة) → evidence.pm10TemporalEvidenceState تبقى undefined، لا قيمة مُخمَّنة', () => {
+      const r = evaluateDustCompliance(context({}));
+      expect(r.evidence.pm10TemporalEvidenceState).toBeUndefined();
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — "لقطة القرار والبصمة"):
+  // evidence.pm10TemporalEvidence ({queryState, failureCode, evaluatedAt})
+  // يجب أن يدخل ضمن اللقطة كاملاً، وأهم من ذلك: "استعلام ناجح بلا قراءات"
+  // (NO_READINGS) و"استعلام فاشل" (QUERY_FAILED) يجب ألا يحملا نفس البصمة
+  // — لا عبر queryState وحده (يختلف أصلاً) ولا عبر computeInputSnapshotHash
+  // (dustEvaluation.ts) الذي يهضم compliance بالكامل.
+  describe('evidence.pm10TemporalEvidence — كائن صريح {queryState, failureCode, evaluatedAt} (طلب المستخدم: لقطة القرار والبصمة)', () => {
+    it('pm10HistoryQueryFailed=true → pm10TemporalEvidence.queryState=QUERY_FAILED، failureCode=PM10_HISTORY_QUERY_FAILED، evaluatedAt=وقت التقييم بالضبط', () => {
+      const now = Date.parse('2026-08-18T12:00:00.000Z');
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: true,
+          pm10HistoryFailureCode: 'PM10_HISTORY_QUERY_FAILED',
+          pm10TemporalEvidenceState: 'QUERY_FAILED',
+        }),
+        now
+      );
+      expect(r.evidence.pm10TemporalEvidence).toEqual({
+        queryState: 'QUERY_FAILED',
+        failureCode: 'PM10_HISTORY_QUERY_FAILED',
+        evaluatedAt: new Date(now).toISOString(),
+      });
+    });
+
+    it('استعلام ناجح بصفر قراءات (NO_READINGS) → pm10TemporalEvidence.failureCode=null، queryState=NO_READINGS (لا يُخلَط مع QUERY_FAILED)', () => {
+      const r = evaluateDustCompliance(
+        context({
+          pm10HistoryQueryFailed: false,
+          pm10HistoryFailureCode: null,
+          pm10TemporalEvidenceState: 'NO_READINGS',
+        })
+      );
+      expect(r.evidence.pm10TemporalEvidence?.queryState).toBe('NO_READINGS');
+      expect(r.evidence.pm10TemporalEvidence?.failureCode).toBeNull();
+    });
+
+    it('لا تمرير صريح لـpm10TemporalEvidenceState (استدعاء قديم) → pm10TemporalEvidence يبقى undefined كاملاً، لا كائن جزئي بقيم افتراضية', () => {
+      const r = evaluateDustCompliance(context({}));
+      expect(r.evidence.pm10TemporalEvidence).toBeUndefined();
+    });
+  });
+
   // اختبار قبول صريح: "فجوة أكبر من 90 ثانية تصفر العداد" — previousEvaluationUpdatedAt
   // (آخر دورة تقييم فعلية محفوظة) أقدم من now بأكثر من 90 ثانية يعني توقّف
   // دورة تقييم واحدة أو أكثر فعلياً، فيُعامَل previousPendingResumeSince
@@ -3124,19 +3353,238 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
     };
     const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+    // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي لاحقة — "اتجاه الرياح يُستخدم
+    // دون توثيق الشمال الحقيقي"): بعد هذا الإصلاح، حتى الاتجاه المدموج
+    // الصحيح (180) لا يدخل تحليل الانتشار المكاني بلا توثيق شمال حقيقي
+    // موثَّق فعلياً — windDirectionEvidence هنا يُمرَّر صراحة كـVERIFIED
+    // لإثبات أن الاختبار الأصلي (استخدام الاتجاه المدموج الصحيح، لا الخام
+    // المتعارض) لا يزال صحيحاً *بعد* توفر التوثيق، لا بدلاً عنه.
+    const verifiedEvidence: WindDirectionEvidence = {
+      rawDeg: 180,
+      directionForAnalysisDeg: 180,
+      quality: 'VERIFIED',
+      source: 'DEVICE',
+      deviceId: 'device-1',
+      trueNorthDocumented: true,
+      alignmentType: 'TRUE_NORTH',
+      verifiedAt: '2026-01-01T00:00:00.000Z',
+      verifiedBy: 'مساح مرخَّص',
+      verificationMethod: 'مساحة GPS',
+      deviationDeg: 0,
+      evidenceUrl: null,
+    };
     const ctx = buildComplianceContext(
       {},
       row,
       dviHourly,
       receptorNorthOfCrusher,
       undefined,
-      undefined
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      verifiedEvidence
     );
     // الدليل المعروض يعكس اتجاه الجهاز (180)، ونفس الاتجاه هو ما استُخدم
-    // فعلياً لحساب المستقبِل باتجاه الريح — فيجده (ليس Infinity).
+    // فعلياً لحساب المستقبِل باتجاه الريح — فيجده (ليس Infinity) — الآن
+    // فقط لأن windDirectionEvidence أعلاه موثَّق فعلياً (VERIFIED).
     expect(ctx.windDirectionDeg).toBe(180);
     expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBe(Infinity);
     expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).not.toBeNull();
+  });
+
+  // اختبار قبول صريح جديد (نفس المراجعة أعلاه): نفس السيناريو تماماً، لكن
+  // بلا windDirectionEvidence موثَّق — يجب ألا يُفعَّل تحليل الانتشار
+  // المكاني إطلاقاً رغم توفر اتجاه رياح مدموج صحيح (180)، لأن لا دليل على
+  // معايرة الحساس على الشمال الحقيقي.
+  it('اتجاه رياح مدموج صحيح لكن غير موثَّق (لا windDirectionEvidence) → لا يُفعَّل تحليل الانتشار المكاني (fail-safe)', () => {
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      { id: 'r1', name: 'سكني شمالي', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
+    ];
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
+    };
+    const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+    const ctx = buildComplianceContext({}, row, dviHourly, receptorNorthOfCrusher, undefined, undefined);
+    // الرقم الخام لا يزال يُعرَض (شفافية)، لكنه لا يدخل التحليل المكاني —
+    // nearestDownwindReceptorDistanceM تعيد null صراحة حين تصلها اتجاه
+    // null (لا Infinity، التي تعني تحديداً "بُحث ولم يوجد مستقبِل باتجاه
+    // الريح" — حالة مختلفة تماماً عن "لم يُبحث إطلاقاً لغياب اتجاه موثَّق").
+    expect(ctx.windDirectionDeg).toBe(180);
+    expect(ctx.windDirectionEvidence?.directionForAnalysisDeg).toBeNull();
+    expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
+  });
+
+  // =====================================================================
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي، القسم 5:
+  // "اختبارات القبول لاتجاه الرياح"، الجدول الكامل الثمانية بنود). الأربعة
+  // الأولى مُغطاة أعلاه (270° بلا توثيق، 270° موثَّق TRUE_NORTH). الستة
+  // التالية تُكمل الجدول بالضبط.
+  // =====================================================================
+
+  it('اتجاه غير موثَّق مع PM10 مرتفع (400) → PM10 يعمل طبيعياً (مخالفة/تحذير)؛ الاتجاه فقط مُستبعَد من التحليل المكاني', () => {
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      { id: 'r1', name: 'سكني شمالي', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
+    ];
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({
+        pm10: 400,
+        windDirectionDeg: 180,
+        // pm10 مصدره 'weather' هنا عمداً — تبقى دائماً FRESH بلا حاجة
+        // لطابع زمني منفصل (device يتطلب devicePm10LastReadingAt، راجع
+        // pm10EvidenceState في adapters.ts)؛ لا صلة لهذا بموضوع الاختبار
+        // (استقلال قاعدة PM10 عن توثيق الاتجاه).
+        sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device', pm10: 'weather' },
+      }),
+    };
+    // crusher_lat/lng مُبقاة (لحساب crusherDistanceToDownwindReceptorAutoM
+    // أدناه)، لكن regulatory_activity='OTHER' — يتفادى CRUSHER-CATEGORY-001
+    // (MANDATORY_STOP من تصنيف مشروع غير مكتمل، لا صلة له بهذا الاختبار)
+    // الذي كان يُقصي MRQ-PM10-BLACK-PENDING-104 من triggeredRules المعروضة
+    // (راجع confirmedStopFromOtherRule في engine.ts) رغم بقائه القاعدة
+    // الفائزة فعلياً في القرار الداخلي.
+    const row = { regulatory_activity: 'OTHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+    const ctx = buildComplianceContext({}, row, dviHourly, receptorNorthOfCrusher, undefined, undefined);
+    const r = evaluateDustCompliance(ctx);
+    // PM10=400 > 340 (حد المخالفة) يبقى يُصدر قرار تحذير/مخالفة طبيعياً —
+    // بمعزل تام عن غياب توثيق الاتجاه.
+    expect(r.triggeredRules.some((h) => h.code.includes('PM10'))).toBe(true);
+    // الاتجاه (180، غير موثَّق) لا يزال مستبعَداً من التحليل المكاني.
+    expect(ctx.windDirectionEvidence?.directionForAnalysisDeg).toBeNull();
+    expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
+  });
+
+  it('اتجاه غير موثَّق مع رياح 30 كم/س → قاعدة سرعة الرياح (بوابة >25) تعمل طبيعياً بمعزل عن توثيق الاتجاه', () => {
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      { id: 'r1', name: 'سكني شمالي', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
+    ];
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({
+        windSpeedKmh: 30,
+        windDirectionDeg: 180,
+        sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device', windSpeedKmh: 'device' },
+      }),
+    };
+    // نشاط عام (لا CRUSHER تحديداً) — يتفادى قاعدة CRUSHER-CATEGORY-001
+    // (MANDATORY_STOP، تتطلب تصنيف مشروع فئة ثالثة، لا صلة لها بموضوع هذا
+    // الاختبار) من التغلب على قرار بوابة الرياح في اختيار decisionCategory.
+    const row = {
+      regulatory_activity: 'OTHER',
+      is_dust_generating: true,
+      is_enclosed_operation: false,
+    };
+    const ctx = buildComplianceContext({}, row, dviHourly, receptorNorthOfCrusher, undefined, undefined);
+    const r = evaluateDustCompliance(ctx);
+    // رياح 30 كم/س (> 25، بوابة الإيقاف) تعمل طبيعياً — لا تتأثر بغياب
+    // توثيق الاتجاه إطلاقاً (classifyWind/windGustSafetyRule يقرآن السرعة
+    // فقط، بلا معامل اتجاه).
+    expect(r.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(ctx.windDirectionEvidence?.directionForAnalysisDeg).toBeNull();
+  });
+
+  it('اتجاه غير موثَّق ومستقبِل قريب → المسافة العامة (nearestAnyM/nearestResidentialM) تُحسب طبيعياً، ولا يُصنَّف المستقبِل Downwind', () => {
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      { id: 'r1', name: 'سكني قريب', receptorType: 'RESIDENTIAL', lat: 24.7005, lng: 46.7005 },
+    ];
+    const dviHourly = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
+    };
+    const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+    const ctx = buildComplianceContext({}, row, dviHourly, receptorNorthOfCrusher, undefined, undefined);
+    // المسافة العامة (بلا اعتبار اتجاه) لا تزال تُحسَب طبيعياً — عدد حقيقي
+    // صغير، لا null ولا Infinity — لأن nearestReceptorDistancesM (geo.ts)
+    // مستقلة تماماً عن اتجاه الرياح.
+    expect(ctx.activity.measurements.crusherDistanceToNearestReceptorAutoM).not.toBeNull();
+    expect(ctx.activity.measurements.crusherDistanceToNearestReceptorAutoM).toBeLessThan(1000);
+    // لكن التصنيف الخاص "باتجاه الريح" (Downwind تحديداً) يبقى null — لا
+    // يُصنَّف المستقبِل ضمنه بلا توثيق فعلي، بصرف النظر عن قربه الشديد.
+    expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
+  });
+
+  it('اتجاه غير موثَّق مع توقّع Open-Meteo متاح (rawWeatherSample.windDirectionDeg) → لا يُستبدَل به صامتاً في القرار الحي', () => {
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      { id: 'r1', name: 'سكني شمالي', receptorType: 'RESIDENTIAL', lat: 24.705, lng: 46.7 },
+    ];
+    const dviHourly = {
+      ...baseDviHourly,
+      // توقّع Open-Meteo متاح فعلياً (0°) — لا يضع المستقبِل الشمالي باتجاه
+      // الريح لو اعتُمِد خطأً. القراءة الحية الفعلية (من الجهاز، 180، غير
+      // موثَّقة) هي ما يجب أن تبقى المرجع الوحيد المحتمل، لا Open-Meteo.
+      rawWeatherSample: {
+        ...baseDviHourly.rawWeatherSample,
+        windDirectionDeg: 0,
+        dataSource: 'open-meteo' as const,
+      },
+      mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
+    };
+    const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+    const ctx = buildComplianceContext({}, row, dviHourly, receptorNorthOfCrusher, undefined, undefined);
+    // الرقم الخام المعروض يبقى اتجاه الجهاز (180)، لا توقّع Open-Meteo (0) —
+    // لا خلط بين المصدرين. وبما أن الجهاز غير موثَّق، لا تحليل مكاني يُبنى
+    // من أي منهما (لا استبدال صامت لأحدهما بالآخر).
+    expect(ctx.windDirectionDeg).toBe(180);
+    expect(ctx.windDirectionEvidence?.rawDeg).toBe(180);
+    expect(ctx.windDirectionEvidence?.directionForAnalysisDeg).toBeNull();
+    expect(ctx.activity.measurements.crusherDistanceToDownwindReceptorAutoM).toBeNull();
+  });
+
+  it('MRQ-RECEPTOR-DOWNWIND-120 لا يتفعل إلا مع directionForAnalysisDeg موثَّق فعلياً — نفس المستقبِل، نفس الموقع، فرق التوثيق وحده', () => {
+    // 0.001° فرق عرض ≈ 111م من الكسارة — ضمن حد المستقبل الحساس (500م،
+    // CRUSHER_SENSITIVE_RECEPTOR_DISTANCE_M)، على عكس receptorNorthOfCrusher
+    // في الاختبارات الأخرى أعلاه (0.005° ≈ 555م، خارج الحد عمداً — تلك
+    // الاختبارات تتحقق فقط من عدم وجود Infinity/null، لا من تفعيل هذه
+    // القاعدة تحديداً).
+    const receptorNorthOfCrusher: SensitiveReceptor[] = [
+      { id: 'r1', name: 'سكني شمالي قريب', receptorType: 'RESIDENTIAL', lat: 24.701, lng: 46.7 },
+    ];
+    const row = { regulatory_activity: 'CRUSHER', crusher_lat: 24.7, crusher_lng: 46.7 };
+
+    // بلا توثيق — نفس الاتجاه (180) والمستقبِل بالضبط.
+    const dviUnverified = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
+    };
+    const ctxUnverified = buildComplianceContext({}, row, dviUnverified, receptorNorthOfCrusher, undefined, undefined);
+    const rUnverified = evaluateDustCompliance(ctxUnverified);
+    expect(rUnverified.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(false);
+
+    // موثَّق فعلياً — نفس كل شيء آخر بالضبط، الفرق الوحيد هو التوثيق.
+    const verifiedEvidence: WindDirectionEvidence = {
+      rawDeg: 180,
+      directionForAnalysisDeg: 180,
+      quality: 'VERIFIED',
+      source: 'DEVICE',
+      deviceId: 'device-1',
+      trueNorthDocumented: true,
+      alignmentType: 'TRUE_NORTH',
+      verifiedAt: '2026-01-01T00:00:00.000Z',
+      verifiedBy: 'مساح مرخَّص',
+      verificationMethod: 'مساحة GPS',
+      deviationDeg: 0,
+      evidenceUrl: null,
+    };
+    const dviVerified = {
+      ...baseDviHourly,
+      mergedReading: mergedReadingFixture({ windDirectionDeg: 180, sources: { ...mergedReadingFixture().sources, windDirectionDeg: 'device' } }),
+    };
+    const ctxVerified = buildComplianceContext(
+      {},
+      row,
+      dviVerified,
+      receptorNorthOfCrusher,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      verifiedEvidence
+    );
+    const rVerified = evaluateDustCompliance(ctxVerified);
+    expect(rVerified.triggeredRules.some((h) => h.code === 'MRQ-RECEPTOR-DOWNWIND-120')).toBe(true);
   });
 
   // خطأ مكتشَف ومُصلَح: كان تسجيل pm10_readings_history (في dustEvaluation.ts)

@@ -117,6 +117,13 @@ function calculateMultipliers(activityType: ActivityCategory, site: DustSiteInpu
   const activitySensitivityMultiplier = 0.8 + 0.4 * activitySensitivity;
 
   const receptorSensitivity = RECEPTOR_SENSITIVITY[site.receptorType];
+  // تدقيق مكتشَف (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون توثيق الشمال
+  // الحقيقي"، البند ح): site.receptorIsDownwind تصنيف يدوي/تخطيطي من
+  // المستخدم وقت إنشاء النشاط (project_dust_profiles.receptor_is_downwind)،
+  // لا إقراراً لحظياً بـ"المستقبل باتجاه الرياح الآن"، ولا مشتقاً من قراءة
+  // محطة حية بأي شكل — راجع تعليق receptorIsDownwind الكامل في
+  // dustEvaluation.ts (buildDustInput) لسبب استقلاله التام عن
+  // WindDirectionEvidence (محرك الامتثال المنفصل).
   const downwindAlignment = site.receptorIsDownwind ? 1 : 0;
   const distanceFactor = DISTANCE_FACTOR[site.receptorDistance];
   const receptorImpact = receptorSensitivity * downwindAlignment * distanceFactor;

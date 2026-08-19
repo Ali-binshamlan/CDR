@@ -95,7 +95,10 @@ const IDLE_SURFACE_COVER_INSPECTION_WIND_KMH = () => getRuleParameters().IDLE_SU
 // on the regulatory judgment, not physical DVI alone (see the isFavorable
 // comment there for the full rationale).
 export const PM10_WARNING_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.warningThresholdInclusive;
-const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
+// Exported (not local-only) — also used in alert-outbox-worker/route.ts to
+// build the viewer-facing violation text ("تم تجاوز الحد 340...") without a
+// hardcoded duplicate of the threshold.
+export const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
 
 // -----------------------------------------------------------------------
 // Project risk category classification (Marqab Section 6, Table 1 of the regulatory guide)

@@ -25,6 +25,7 @@ import {
   Scale,
   ShieldQuestion,
   ShieldOff,
+  CircleCheck,
 } from 'lucide-react';
 
 // ============================================================
@@ -45,7 +46,8 @@ type AlertKind =
   | 'BEFORE_2H' | 'BEFORE_1H' | 'BEFORE_START'
   | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH' | 'PROTECTIVE_STOP'
   | 'NO_DECISION_YET' | 'PM10_APPROACHING_LIMIT' | 'FORECAST_WARNING'
-  | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'COMPLIANCE_ADVISORY';
+  | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'COMPLIANCE_ADVISORY'
+  | 'PM10_IMPROVED';
 type Severity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 const timingLabel: Record<AlertTiming, string> = { BEFORE: 'قبل التنفيذ', DURING: 'أثناء التنفيذ' };
@@ -79,6 +81,7 @@ const alertKindIcon: Record<AlertKind, React.ElementType> = {
   NO_DECISION_YET: AlertOctagon,
   PM10_APPROACHING_LIMIT: AlertTriangle,
   FORECAST_WARNING: Clock,
+  PM10_IMPROVED: CircleCheck,
 };
 
 const alertKindLabel: Record<AlertKind, string> = {
@@ -95,6 +98,7 @@ const alertKindLabel: Record<AlertKind, string> = {
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
   FORECAST_WARNING: 'تحذير توقّعي (ساعة قادمة ضمن النافذة)',
+  PM10_IMPROVED: 'تحسّن القراءة (PM10 عاد دون حد المخالفة)',
 };
 
 interface AlertItem {
@@ -177,6 +181,8 @@ function getFallbackRecommendedAction(kind: AlertKind): string {
       return 'فعّل التثبيط المعزز فوراً (رش/تغطية) لتفادي تجاوز الحد التنظيمي والتعرض لغرامة.';
     case 'FORECAST_WARNING':
       return 'توقّع طقس/غبار يشير لخطورة مرتفعة في ساعة قادمة ضمن نافذة تنفيذ النشاط — راجع الجدول وجهّز إجراءً وقائياً مسبقاً قبل وصول تلك الساعة.';
+    case 'PM10_IMPROVED':
+      return 'استمر بمراقبة القراءة — التحسّن لا يعني إغلاق الملف نهائياً إن عاد الارتفاع لاحقاً.';
     default:
       return 'راجع خطة النشاط والتأكد من تجهيزات السلامة قبل البدء أو الاستمرار.';
   }

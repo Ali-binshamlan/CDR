@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { recordWorkerHeartbeat } from '@/app/lib/workerHeartbeat';
+import { PM10_VIOLATION_STOP_UG_M3 } from '@/app/utils/dust-compliance-engine/rulebook';
 
 const WORKER_NAME = 'alert-outbox-worker';
 
@@ -53,9 +54,9 @@ interface OutboxRow {
   project_id: string;
   activity_group_id: string;
   activity_id: string;
-  kind: 'SAFETY_BREACH' | 'PROTECTIVE_STOP' | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION';
+  kind: 'SAFETY_BREACH' | 'PROTECTIVE_STOP' | 'COMPLIANCE_VIOLATION' | 'COMPLIANCE_RESTRICTION' | 'PM10_IMPROVED';
   action: 'OPEN' | 'CLOSE';
-  payload: { shortReasonAr?: string; decisionLabelAr?: string; mandatoryStop?: boolean; level?: string };
+  payload: { shortReasonAr?: string; decisionLabelAr?: string; mandatoryStop?: boolean; level?: string; pm10UgM3?: number | null };
   attempts: number;
 }
 
@@ -63,6 +64,7 @@ interface OutboxRow {
 // التنبيه حصراً من payload المخزَّن مسبقاً في صف الـOutbox.
 function deriveAlertMessage(row: OutboxRow): {
   message: string;
+  viewerMessage: string | null;
   recommendedAction: string;
   metricLabel: string | null;
   metricThreshold: string | null;
@@ -71,6 +73,7 @@ function deriveAlertMessage(row: OutboxRow): {
   if (row.kind === 'SAFETY_BREACH') {
     return {
       message: `تجاوز حد صارم — إيقاف إلزامي: ${reason}`,
+      viewerMessage: null,
       recommendedAction: row.payload?.decisionLabelAr || 'إيقاف إلزامي نظامي',
       metricLabel: 'القرار التشغيلي',
       metricThreshold: 'إيقاف إلزامي',
@@ -84,13 +87,54 @@ function deriveAlertMessage(row: OutboxRow): {
   if (row.kind === 'PROTECTIVE_STOP') {
     return {
       message: `إيقاف احترازي معلَّق (بانتظار تأكيد): ${reason}`,
+      viewerMessage: null,
       recommendedAction: row.payload?.decisionLabelAr || 'إيقاف احترازي — راجع الحالة للتأكد قبل الاستئناف',
       metricLabel: 'القرار التشغيلي',
       metricThreshold: 'إيقاف احترازي معلَّق',
     };
   }
+  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — جهة الرصد تحديداً): نص
+  // shortReasonAr العام يصف "مخالفة تنظيمية مؤكدة ومسجَّلة..." — المستخدم
+  // لا يريد كلمة "مخالفة" في النص الذي تراه جهة الرصد، فقط صيغة "تجاوز"
+  // صريحة مع الرقم اللحظي الفعلي: "تم تجاوز الحد 340، حيث أن PM10 الحالي
+  // [X]". pm10UgM3 يصل من payload (أُضيف في migration 202608190001، مصدره
+  // p_compliance_result->>'pm10UgM3' الخام وقت فتح المخالفة) — null فقط إن
+  // غاب compliance تماماً (لا يحدث عملياً لأن NON_COMPLIANT يستلزمه).
+  if (row.kind === 'COMPLIANCE_VIOLATION') {
+    const pm10Value = row.payload?.pm10UgM3;
+    const viewerText =
+      pm10Value !== null && pm10Value !== undefined
+        ? `تم تجاوز الحد ${PM10_VIOLATION_STOP_UG_M3}، حيث أن PM10 الحالي ${pm10Value}`
+        : `تم تجاوز الحد ${PM10_VIOLATION_STOP_UG_M3}`;
+    return {
+      message: reason,
+      viewerMessage: viewerText,
+      recommendedAction: reason,
+      metricLabel: 'PM10',
+      metricThreshold: `${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³`,
+    };
+  }
+  // جديد (202608190001، طلب صريح من المستخدم): تحسّن القراءة بعد مخالفة
+  // مؤكَّدة وقبل دخول الإيقاف الفعلي — الشرط (لا إيقاف حدث منذ فتح المخالفة)
+  // محسوب بالكامل في persist_activity_decision_atomic قبل إدراج هذه النية؛
+  // هنا نص العرض فقط.
+  if (row.kind === 'PM10_IMPROVED') {
+    const pm10Value = row.payload?.pm10UgM3;
+    const viewerText =
+      pm10Value !== null && pm10Value !== undefined
+        ? `تحسّنت القراءة: تركيز PM10 الحالي ${pm10Value} — أصبح دون حد المخالفة ${PM10_VIOLATION_STOP_UG_M3}`
+        : `تحسّنت القراءة: تركيز PM10 أصبح دون حد المخالفة ${PM10_VIOLATION_STOP_UG_M3}`;
+    return {
+      message: viewerText,
+      viewerMessage: viewerText,
+      recommendedAction: 'استمر بمراقبة القراءة — التحسّن لا يعني إغلاق الملف نهائياً إن عاد الارتفاع لاحقاً.',
+      metricLabel: 'PM10',
+      metricThreshold: `${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³`,
+    };
+  }
   return {
     message: reason,
+    viewerMessage: null,
     recommendedAction: reason,
     metricLabel: null,
     metricThreshold: null,
@@ -149,16 +193,21 @@ export async function GET(request: Request) {
         if (rpcError) throw new Error(rpcError.message);
         alertId = (data as string | null) ?? null;
       } else {
-        const { message, recommendedAction, metricLabel, metricThreshold } = deriveAlertMessage(row);
+        const { message, viewerMessage, recommendedAction, metricLabel, metricThreshold } = deriveAlertMessage(row);
+        const pm10Value = row.payload?.pm10UgM3;
+        const metricActual =
+          (row.kind === 'COMPLIANCE_VIOLATION' || row.kind === 'PM10_IMPROVED') && pm10Value !== null && pm10Value !== undefined
+            ? `${pm10Value} ميكروجرام/م³`
+            : null;
         const { data, error: rpcError } = await supabaseAdmin.rpc('create_alert_atomic', {
           p_project_id: row.project_id,
           p_activity_id: row.activity_id,
           p_timing: 'DURING',
           p_kind: row.kind,
           p_message: message,
-          p_viewer_message: row.kind === 'COMPLIANCE_VIOLATION' ? message : null,
+          p_viewer_message: viewerMessage,
           p_metric_label: metricLabel,
-          p_metric_actual: null,
+          p_metric_actual: metricActual,
           p_metric_threshold: metricThreshold,
           p_recommended_action: recommendedAction,
           p_opened_by_final_decision_id: row.final_decision_id,

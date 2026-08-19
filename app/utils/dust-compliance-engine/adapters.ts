@@ -16,6 +16,7 @@ import type {
   RegulatoryDustActivity,
   SensitiveReceptor,
   SensitiveReceptorType,
+  WindDirectionEvidence,
 } from './types';
 import { nearestReceptorDistancesM, nearestDownwindReceptorDistanceM } from './geo';
 import { LIVE_FIELD_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
@@ -52,25 +53,25 @@ export function buildProjectComplianceProfile(project: Record<string, unknown> |
 export function buildActivityComplianceProfile(
   row: Record<string, unknown> | null | undefined,
   sensitiveReceptors: SensitiveReceptor[] = [],
-  // The actual merged wind direction (after device > weather > onsite
-  // priority — the same direction shown to the user in
-  // evidence.windDirectionDeg, not the raw pre-merge weather sample), used
-  // to compute crusherDistanceToDownwindReceptorAutoM
-  // (MRQ-RECEPTOR-DOWNWIND-120).
-  //
-  // windDirectionDeg is used directly as-is, with no device true-north
-  // calibration requirement — that calibration feature was removed
-  // entirely (migration 202608130005 drops the related columns) because
-  // the calibration value actually used at decision time was never
-  // persisted with the decision, making it unauditable/unreplayable.
-  windDirectionDeg: number | null = null
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+  // توثيق الشمال الحقيقي"): كانت هذه المعاملة رقماً خاماً (windDirectionDeg)
+  // يُستخدَم مباشرة بلا أي اشتراط أن يكون الحساس معايَراً على الشمال
+  // الحقيقي — انحراف تركيب غير موثَّق كان يُنتج تصنيف مستقبلات خاطئاً
+  // بصمت. الآن تستقبل الكائن الكامل (WindDirectionEvidence، من
+  // resolveWindDirectionEvidence في dustEvaluation.ts) وتقرأ
+  // directionForAnalysisDeg تحديداً — يبقى null إلا حين تكون المحاذاة
+  // موثَّقة فعلياً (TRUE_NORTH موثَّق ومطبَّق)، فلا حاجة لتغيير المعادلة
+  // الجغرافية نفسها في geo.ts؛ فقط منع إدخال اتجاه غير موثَّق إليها.
+  // undefined (توافقي) = لا دليل توثيق أصلاً، يُعامَل كغياب اتجاه تماماً.
+  windDirectionEvidence?: WindDirectionEvidence
 ): DustActivityComplianceProfile {
   const regulatoryActivity: RegulatoryDustActivity = (row?.regulatory_activity as RegulatoryDustActivity) ?? 'OTHER';
 
+  const directionForAnalysisDeg = windDirectionEvidence?.directionForAnalysisDeg ?? null;
   const crusherLat = toNullableNumber(row?.crusher_lat);
   const crusherLng = toNullableNumber(row?.crusher_lng);
   const { nearestAnyM, nearestResidentialM } = nearestReceptorDistancesM(crusherLat, crusherLng, sensitiveReceptors);
-  const crusherDownwindM = nearestDownwindReceptorDistanceM(crusherLat, crusherLng, windDirectionDeg, sensitiveReceptors);
+  const crusherDownwindM = nearestDownwindReceptorDistanceM(crusherLat, crusherLng, directionForAnalysisDeg, sensitiveReceptors);
 
   const stockpileLat = toNullableNumber(row?.stockpile_lat);
   const stockpileLng = toNullableNumber(row?.stockpile_lng);
@@ -301,7 +302,33 @@ export function buildComplianceContext(
   // failed (not "no row found") — independent of previousDecision itself
   // (which can be null in both cases; the failure flag is what
   // distinguishes them). Defaults to false for backward compatibility.
-  previousDecisionQueryFailed: boolean = false
+  previousDecisionQueryFailed: boolean = false,
+  // True only when the pm10_readings_history query actually failed (see
+  // Pm10SustainedFetchResult in dustEvaluation.ts) — independent of
+  // pm10Sustained itself (which stays null on both a real failure and "no
+  // rows found"; the failure flag is what distinguishes them). Same
+  // fail-safe principle as previousDecisionQueryFailed above, applied to
+  // the PM10 sustain history instead of the prior decision. Defaults to
+  // false for backward compatibility.
+  pm10HistoryQueryFailed: boolean = false,
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+  // توثيق الشمال الحقيقي"): يُبنى من resolveWindDirectionEvidence
+  // (dustEvaluation.ts، يحتاج بيانات معايرة الجهاز غير المتوفرة هنا) —
+  // يُستهلَك مباشرة (لا مجرد رقم خام) في buildActivityComplianceProfile
+  // أدناه، ويُخزَّن كاملاً في evidence.windDirection لدخول input_snapshot/
+  // evidence_hash (راجع تعليق windDirection في types.ts). undefined
+  // (توافقي) = المستدعي لم يمرره بعد؛ يُبنى fallback محلي من merged
+  // مباشرة أدناه، بنفس دلالة "غير موثَّق" دائماً (لا معايرة معروفة هنا).
+  windDirectionEvidenceParam?: WindDirectionEvidence,
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — تفصيل تنفيذ
+  // pm10HistoryFailureCode/pm10TemporalEvidenceState): كود الفشل الفعلي من
+  // Pm10SustainedFetchResult.failureCode — منسوخ كما هو، لا مُعاد اشتقاقه.
+  pm10HistoryFailureCode: 'PM10_HISTORY_QUERY_FAILED' | null = null,
+  // تشخيص صريح لحالة سلسلة PM10 التاريخية — راجع تعليقه الكامل في
+  // DustComplianceResult.evidence.pm10TemporalEvidenceState (types.ts).
+  // الافتراضي 'NO_READINGS' يطابق دلالة pm10HistoryQueryFailed=false
+  // الافتراضية (نجاح ضمني بلا قراءات) لاستدعاءات لا تمرره صراحة.
+  pm10TemporalEvidenceState: 'AVAILABLE' | 'NO_READINGS' | 'QUERY_FAILED' = 'NO_READINGS'
 ): DustComplianceContext {
   // The actual merged reading (after device > weather > onsite priority —
   // see mergeDustReading in dust-engine/engine.ts) is only available when
@@ -329,7 +356,24 @@ export function buildComplianceContext(
   // PLANNING path (Live is built directly from the device, with no
   // relevant rawWeatherSample — see evaluateLiveOperationalDecision).
   const isForecastStale = (dviResult as Partial<DviHourlyEvaluation>).rawWeatherSample?.isForecastStale === true;
-  const mergedWindDirectionDeg = toNullableNumber(merged?.windDirectionDeg);
+  // fallback: مستدعٍ لا يمرر windDirectionEvidenceParam (استدعاءات
+  // قديمة/اختبارات) — نفس دلالة "غير موثَّق دائماً" (لا معلومات معايرة
+  // متوفرة على هذا المستوى، فشل آمن نحو UNVERIFIED/UNAVAILABLE فقط).
+  const windDirectionEvidence: WindDirectionEvidence =
+    windDirectionEvidenceParam ?? {
+      rawDeg: toNullableNumber(merged?.windDirectionDeg),
+      directionForAnalysisDeg: null,
+      quality: merged?.windDirectionDeg != null ? 'UNVERIFIED' : 'UNAVAILABLE',
+      source: 'NONE',
+      deviceId: null,
+      trueNorthDocumented: false,
+      alignmentType: null,
+      verifiedAt: null,
+      verifiedBy: null,
+      verificationMethod: null,
+      deviationDeg: null,
+      evidenceUrl: null,
+    };
 
   // dataSource is for display only: the highest-priority source that
   // actually won for any field in mergedReading.sources, ordered device >
@@ -375,7 +419,7 @@ export function buildComplianceContext(
     activity: buildActivityComplianceProfile(
       activityRow,
       sensitiveReceptors,
-      mergedWindDirectionDeg
+      windDirectionEvidence
     ),
     isForecastStale,
     dviScore: dviResult.score,
@@ -405,6 +449,7 @@ export function buildComplianceContext(
     windSpeedKmh: merged?.windSpeedKmh ?? null,
     windGustKmh: merged?.windGustKmh ?? null,
     windDirectionDeg: merged?.windDirectionDeg ?? null,
+    windDirectionEvidence,
     pm10UgM3: pm10UgM3ForDecision,
     pm25UgM3: merged?.pm25 ?? null,
     relativeHumidityPercent: merged?.relativeHumidityPercent ?? null,
@@ -433,6 +478,9 @@ export function buildComplianceContext(
     pm10ConfirmedViolation340: pm10Sustained?.isConfirmedViolation340,
     pm10Suspended250For30Min: pm10Sustained?.isSuspended250For30Min,
     pm10EvidenceReadingIds: pm10Sustained?.evidenceReadingIds,
+    pm10HistoryQueryFailed,
+    pm10HistoryFailureCode,
+    pm10TemporalEvidenceState,
   };
 }
 

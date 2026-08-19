@@ -17,7 +17,7 @@ import { LIVE_FIELD_FRESHNESS_MS, DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/u
 import { receptorsWithinRadiusM, UNIT_RECEPTOR_RADIUS_M } from '@/app/utils/dust-compliance-engine/geo';
 import type { ReceptorWithinRadius } from '@/app/utils/dust-compliance-engine/geo';
 import type { SensitiveReceptor } from '@/app/utils/dust-compliance-engine/types';
-import type { DustComplianceResult } from '@/app/utils/dust-compliance-engine/types';
+import type { DustComplianceResult, WindDirectionEvidence } from '@/app/utils/dust-compliance-engine/types';
 import { decideFinal, buildFinalDecisionInput } from '@/app/utils/final-decision-engine';
 import type { FinalDecision } from '@/app/utils/final-decision-engine';
 import type { DviEvaluationResult, DviHourlyEvaluation } from '@/app/utils/dust-engine/types';
@@ -301,6 +301,25 @@ function buildEngineShifts(project: ProjectRow): { startTime: string; endTime: s
 // قراءة جهاز حديثة يجهّزها resolveFreshProjectDevice أدناه — شكل مبسّط
 // (الحقول last_* المهمة فقط) يُمرَّر لـ buildDustInput.
 export interface FreshDeviceReading {
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+  // توثيق الشمال الحقيقي"): معرّف الجهاز نفسه، مطلوب لبناء
+  // WindDirectionEvidence (resolveWindDirectionEvidence أدناه) — يحتاج
+  // معرفة أي جهاز بالذات أنتج last_wind_direction_deg ليقرأ توثيق معايرته
+  // الخاص (true_north_* على project_devices)، لا مجرد القيمة الخام بمعزل
+  // عن مصدرها.
+  deviceId: string;
+  // توثيق معايرة الشمال الحقيقي لهذا الجهاز تحديداً (migration
+  // 202608190002) — يُقرأ من project_devices مباشرة، لا من device_metric_
+  // latest (القيم التالية ثابتة على الجهاز، لا مقياساً متغيراً بمرور
+  // الوقت). undefined فقط لاستدعاءات قديمة/اختبارات لا تمرر هذه الحقول
+  // (توافقي — resolveWindDirectionEvidence تُعامله كـUNVERIFIED، فشل آمن).
+  trueNorthAlignmentDocumented?: boolean | null;
+  trueNorthAlignmentType?: 'TRUE_NORTH' | 'MAGNETIC_NORTH' | null;
+  trueNorthVerificationMethod?: string | null;
+  trueNorthVerifiedBy?: string | null;
+  trueNorthVerifiedAt?: string | null;
+  trueNorthDeviationDeg?: number | null;
+  trueNorthEvidenceUrl?: string | null;
   last_wind_speed_kmh: number | null;
   last_wind_gust_kmh: number | null;
   last_wind_direction_deg: number | null;
@@ -335,6 +354,73 @@ export interface FreshDeviceReading {
   last_temperature_at: string | null;
 }
 
+// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+// توثيق الشمال الحقيقي"): يبني WindDirectionEvidence من الجهاز المرتبط
+// (إن وُجد) واتجاه الرياح الخام المدموج (merged.windDirectionDeg) — يفصل
+// صراحة "القيمة الخام كما وردت" عن "القيمة المستخدَمة فعلياً في تحليل
+// الانتشار المكاني"، التي تبقى null إلا حين تكون المحاذاة موثَّقة فعلياً
+// (TRUE_NORTH موثَّق ومطبَّق، لا مجرد "موجود"). لا تستبدل اتجاهاً غير موثَّق
+// تلقائياً بتقدير Open-Meteo أو أي مصدر آخر — تعيد null صراحة، فتُعطِّل
+// nearestDownwindReceptorDistanceM (geo.ts) تفعيل قاعدة المستقبل باتجاه
+// الرياح بدل تفعيلها بقيمة قد تكون خاطئة.
+function normalizeDirectionDeg(value: number): number {
+  return ((value % 360) + 360) % 360;
+}
+
+export function resolveWindDirectionEvidence(
+  device: FreshDeviceReading | null,
+  rawDeg: number | null,
+  // مصدر الاتجاه الفعلي كما دمجه mergeDustReading (dust-engine/engine.ts:
+  // merged.sources.windDirectionDeg) — 'device' فقط يعني أن هذا الجهاز
+  // تحديداً هو من أنتج rawDeg، فتوثيقه ذو صلة. مصدر آخر (weather/onsite) لا
+  // علاقة له بمعايرة أي جهاز إطلاقاً، حتى لو وُجد جهاز مرتبط بالنشاط.
+  source: 'device' | 'weather' | 'onsite' | 'none' = 'none'
+): WindDirectionEvidence {
+  if (rawDeg === null) {
+    return {
+      rawDeg: null,
+      directionForAnalysisDeg: null,
+      quality: 'UNAVAILABLE',
+      source: 'NONE',
+      deviceId: null,
+      trueNorthDocumented: false,
+      alignmentType: null,
+      verifiedAt: null,
+      verifiedBy: null,
+      verificationMethod: null,
+      deviationDeg: null,
+      evidenceUrl: null,
+    };
+  }
+
+  const isFromDevice = source === 'device';
+  const verified =
+    isFromDevice &&
+    device?.trueNorthAlignmentDocumented === true &&
+    device?.trueNorthAlignmentType === 'TRUE_NORTH' &&
+    typeof device?.trueNorthVerifiedAt === 'string';
+
+  const evidenceSource: WindDirectionEvidence['source'] =
+    source === 'device' ? 'DEVICE' : source === 'weather' ? 'FORECAST' : source === 'onsite' ? 'MANUAL' : 'NONE';
+
+  return {
+    rawDeg: normalizeDirectionDeg(rawDeg),
+    directionForAnalysisDeg: verified ? normalizeDirectionDeg(rawDeg) : null,
+    quality: verified ? 'VERIFIED' : 'UNVERIFIED',
+    source: evidenceSource,
+    deviceId: isFromDevice ? device?.deviceId ?? null : null,
+    trueNorthDocumented: verified,
+    alignmentType: isFromDevice && (device?.trueNorthAlignmentType === 'TRUE_NORTH' || device?.trueNorthAlignmentType === 'MAGNETIC_NORTH')
+      ? device.trueNorthAlignmentType
+      : null,
+    verifiedAt: isFromDevice ? device?.trueNorthVerifiedAt ?? null : null,
+    verifiedBy: isFromDevice ? device?.trueNorthVerifiedBy ?? null : null,
+    verificationMethod: isFromDevice ? device?.trueNorthVerificationMethod ?? null : null,
+    deviationDeg: isFromDevice ? device?.trueNorthDeviationDeg ?? null : null,
+    evidenceUrl: isFromDevice ? device?.trueNorthEvidenceUrl ?? null : null,
+  };
+}
+
 export function buildDustInput(row: DustActivityRow, project: ProjectRow, freshDevice?: FreshDeviceReading | null): DustEngineInput {
   return {
     activityType: row.activity_type as DustEngineInput['activityType'],
@@ -359,6 +445,21 @@ export function buildDustInput(row: DustActivityRow, project: ProjectRow, freshD
       fieldMonitoringAvailable: !!row.field_monitoring_available,
       receptorType: row.receptor_type as DustEngineInput['site']['receptorType'],
       receptorDistance: row.receptor_distance as DustEngineInput['site']['receptorDistance'],
+      // تدقيق مكتشَف (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون توثيق
+      // الشمال الحقيقي"، البند ح): row.receptor_is_downwind تصنيف يدوي/
+      // تخطيطي بحت — إقرار ثابت وحيد من المستخدم وقت إنشاء النشاط (حقل
+      // project_dust_profiles.receptor_is_downwind، لا حساب حي)، وليس
+      // إقراراً بأن "المستقبل باتجاه الرياح الآن" بالمعنى اللحظي. لا صلة له
+      // إطلاقاً بـWindDirectionEvidence/resolveWindDirectionEvidence (محرك
+      // الامتثال، dust-compliance-engine) — الأخير مستقل تماماً ويُقيَّد
+      // فعلاً بجودة التوثيق (VERIFIED/UNVERIFIED). هذا الحقل يُمرَّر إلى DVI
+      // فقط (مضاعف حساسية المستقبل + نص أسباب الخطر، dust-engine/engine.ts)
+      // ولا يُشتَق أو يُحدَّث تلقائياً من last_wind_direction_deg أي محطة —
+      // لا خطر حالياً أن "يتسرب" اتجاه غير موثَّق إليه. تحذير لأي تعديل
+      // مستقبلي: إن رُبط هذا الحقل يوماً بقراءة محطة حية بدل الإدخال اليدوي،
+      // يجب حينها ضبطه صراحة إلى false عند quality!=='VERIFIED' (راجع
+      // WindDirectionEvidence في dust-compliance-engine/types.ts) — لا يجوز
+      // لاتجاه محطة غير موثَّق أن يُنتج receptorIsDownwind=true أبداً.
       receptorIsDownwind: !!row.receptor_is_downwind,
       visibleDustPlumeReported: !!row.visible_dust_plume_reported,
       openConcretePour: !!row.open_concrete_pour,
@@ -496,7 +597,9 @@ export async function resolveFreshProjectDevice(
 ): Promise<FreshDeviceReading | null> {
   let query = supabaseAdmin
     .from('project_devices')
-    .select('id, last_reading_at')
+    .select(
+      'id, last_reading_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url'
+    )
     .eq('project_id', projectId)
     .eq('is_active', true)
     .not('last_reading_at', 'is', null);
@@ -512,6 +615,14 @@ export async function resolveFreshProjectDevice(
   const metricLatest = await fetchDeviceMetricLatest(supabaseAdmin, projectId, data.id);
 
   return {
+    deviceId: data.id,
+    trueNorthAlignmentDocumented: data.true_north_alignment_documented ?? null,
+    trueNorthAlignmentType: data.true_north_alignment_type ?? null,
+    trueNorthVerificationMethod: data.true_north_verification_method ?? null,
+    trueNorthVerifiedBy: data.true_north_verified_by ?? null,
+    trueNorthVerifiedAt: data.true_north_verified_at ?? null,
+    trueNorthDeviationDeg: data.true_north_deviation_deg ?? null,
+    trueNorthEvidenceUrl: data.true_north_evidence_url ?? null,
     last_wind_speed_kmh: metricLatest.last_wind_speed_kmh ?? null,
     last_wind_gust_kmh: metricLatest.last_wind_gust_kmh ?? null,
     last_wind_direction_deg: metricLatest.last_wind_direction_deg ?? null,
@@ -862,23 +973,110 @@ export function computeSustainedPm10Status(
 // كان الخطأ الأصلي — الحد الأعلى هو ما يجعل "إعادة البناء كما كانت" ذات
 // معنى فعلياً، لا مجرد تمرير رقم مختلف لدالة حساب بلا تغيير فعلي في البيانات
 // المُستعلَمة.
+// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل استعلام سلسلة PM10 يتحول
+// إلى سلسلة فارغة"): كانت هذه الدالة تُرجع Pm10SustainedStatus مباشرة —
+// `const { data } = await ...` بلا قراءة error، فحين يفشل الاستعلام فعلياً
+// (RLS/timeout/شبكة، Supabase لا يرمي استثناءً على هذه الأخطاء، يُعيد
+// {data: null, error: {...}} بصمت — نفس النمط الموثَّق أعلى previousDecision
+// QueryFailed في هذا الملف) كانت (data as ...) || [] تتحول لمصفوفة فارغة،
+// فتنتج بالضبط نفس النتيجة (sustainedMinutesAbove340=0،
+// isConfirmedViolation340=false، isSuspended250For30Min=false) كحالة "لا
+// توجد قراءات فعلاً" — رغم اختلاف السببين جذرياً: الأول يعني "لا مخالفة"،
+// الثاني يعني "لا نعرف". فشل عابر لقاعدة البيانات كان يمكن أن يُسقط صمتاً
+// تسجيل مخالفة مؤكَّدة (120 ثانية) أو إيقاف نشاط مستحق (30 دقيقة).
+//
+// الإصلاح: عقد جديد (Pm10SustainedFetchResult) يفصل الحالتين صراحة —
+// queryFailed=true فقط عند فشل استعلام حقيقي (error من Supabase، أو
+// استثناء JS)، لا عند نجاح الاستعلام بصفر صفوف. المستدعي (أدناه في هذا
+// الملف) يمرر queryFailed لمحرك الامتثال (pm10HistoryQueryFailed في
+// DustComplianceContext)، الذي يصدر FIELD_VERIFICATION_REQUIRED صريحاً
+// بدل COMPLIANT صامت عند الفشل — نفس مبدأ previousDecisionQueryFailed
+// الموثَّق أعلاه بالضبط، مطبَّقاً هنا على سلسلة PM10 التاريخية.
+export interface Pm10SustainedFetchResult {
+  status: Pm10SustainedStatus | null;
+  queryFailed: boolean;
+  failureCode: 'PM10_HISTORY_QUERY_FAILED' | null;
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — تفصيل تنفيذ
+  // pm10TemporalEvidenceState في DustComplianceResult.evidence، types.ts):
+  // عدد الصفوف الفعلية (بعد فلترة is_late/device_id) التي وجدها هذا
+  // الاستعلام — التمييز الوحيد الدقيق بين "الاستعلام نجح بصفر صفوف"
+  // (NO_READINGS) و"وُجدت قراءات فعلية" (AVAILABLE). status وحده (Pm10Sustained
+  // Status) لا يكفي: currentReadingUgM3 يبقى null أيضاً حتى لو وُجدت قراءات
+  // حقيقية دون 250، فلا يميّز "صفر قراءات" عن "قراءات موجودة لكن منخفضة".
+  // 0 عند queryFailed=true (لا معنى للعدّ حينها).
+  readingCount: number;
+}
+
+// طلب مستخدم صريح ("سجل الأعطال والتدقيق"): فشل استعلام سلسلة PM10
+// التاريخية يجب أن يُنشئ حدث Telemetry حقيقي (جدول technical_fault_events،
+// راجع الهجرة 202608190003)، لا الاكتفاء بـconsole.error. لا نمرر نص خطأ
+// Supabase/PostgreSQL نفسه ولا Stack trace ولا بيانات اتصال قاعدة البيانات
+// إلى هذا الجدول أو لاحقاً للواجهة — فقط الحقول المُقرَّرة صراحة (النوع،
+// المشروع، النشاط، الجهاز، معرّف التقييم إن وُجد، وقت التقييم، عدد
+// المحاولات). أي تفصيل تشخيصي أعمق من "فشل الاستعلام" يبقى في سجلات
+// الخادم (console.error، غير مقروء من الواجهة) فقط.
+//
+// idempotency: dedupe_key مستقر لكل (project_id, activity_group_id) ضمن
+// دقيقة واحدة — نفس مبدأ project_evaluation_jobs.dedupe_key الموثَّق في
+// evaluateProject.ts:enqueueEvaluationRetryJob بالضبط (حادثة إنتاج سابقة:
+// مفتاح فريد لكل استدعاء لا يمنع شيئاً عملياً تحت فشل متكرر كل دقيقة).
+// القيد الفريد على الجدول (project_id, dedupe_key) يرفض الإدراج المكرر
+// بصمت لنفس العطل غير المتغيّر ضمن نفس الدقيقة، فلا يتراكم حدث Telemetry
+// جديد كل دورة تقييم إذا كان الفشل مستمراً بلا تغيّر.
+async function logPm10HistoryQueryFailureTelemetry(
+  supabaseAdmin: SupabaseClient,
+  projectId: string,
+  activityGroupId: string,
+  deviceId: string | null,
+  evaluatedAtMs: number,
+  retryCount: number = 0
+): Promise<void> {
+  try {
+    const minuteBucket = Math.floor(evaluatedAtMs / 60_000);
+    await supabaseAdmin.from('technical_fault_events').insert({
+      event_type: 'PM10_HISTORY_QUERY_FAILED',
+      project_id: projectId,
+      activity_group_id: activityGroupId,
+      device_id: deviceId,
+      evaluation_id: null,
+      retry_count: retryCount,
+      evaluated_at: new Date(evaluatedAtMs).toISOString(),
+      dedupe_key: `pm10-history-query-failed:${activityGroupId}:${minuteBucket}`,
+    });
+  } catch (err) {
+    // فشل تسجيل حدث Telemetry نفسه لا يجوز أن يُسقط تقييم الامتثال الأصلي
+    // (نفس مبدأ enqueueEvaluationRetryJob) — يُسجَّل فقط في سجلات الخادم.
+    console.error(`logPm10HistoryQueryFailureTelemetry: فشل تسجيل حدث تقني لمشروع ${projectId}:`, err);
+  }
+}
+
 export async function fetchPm10SustainedStatus(
   supabaseAdmin: SupabaseClient,
   projectId: string,
   activityGroupId: string,
   deviceId?: string | null,
   nowMs: number = Date.now()
-): Promise<Pm10SustainedStatus> {
+): Promise<Pm10SustainedFetchResult> {
   const sinceIso = new Date(nowMs - (PM10_SUSPENSION_MINUTES + 10) * 60000).toISOString();
   const untilIso = new Date(nowMs).toISOString();
   try {
-    const { data } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('pm10_readings_history')
       .select('id, pm10_ug_m3, recorded_at, activity_group_id, source, device_id, is_late, is_snapshot_only')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
       .lte('recorded_at', untilIso)
       .order('recorded_at', { ascending: false });
+
+    // خطأ مكتشَف ومُصلَح: Supabase (postgrest-js) لا يرمي استثناءً عند فشل
+    // الاستعلام على مستوى القاعدة (RLS/شبكة/timeout) — يُعيد {data: null,
+    // error: {...}} بصمت، فيمر عبر try بلا الدخول لـcatch إطلاقاً. الفحص
+    // الصريح لـerror هنا هو ما يكتشف الفشل فعلياً، لا بنية try/catch وحدها
+    // (نفس النمط الموثَّق في previousDecisionQueryFailed أعلاه).
+    if (error) {
+      await logPm10HistoryQueryFailureTelemetry(supabaseAdmin, projectId, activityGroupId, deviceId ?? null, nowMs);
+      return { status: null, queryFailed: true, failureCode: 'PM10_HISTORY_QUERY_FAILED', readingCount: 0 };
+    }
 
     type Pm10HistoryRow = {
       id: string;
@@ -910,10 +1108,12 @@ export async function fetchPm10SustainedStatus(
       id: row.id,
       isSnapshotOnly: row.is_snapshot_only ?? false,
     }));
-    return computeSustainedPm10Status(readings, nowMs);
+    return { status: computeSustainedPm10Status(readings, nowMs), queryFailed: false, failureCode: null, readingCount: readings.length };
   } catch {
-    // فشل الاستعلام لا يُسقط التقييم — نفس مبدأ resolveFreshProjectDevice.
-    return computeSustainedPm10Status([], nowMs);
+    // استثناء JS فعلي (شبكة معطوبة تماماً، لا مجرد error من Supabase) —
+    // نفس معاملة الفشل أعلاه: queryFailed=true، لا سلسلة فارغة صامتة.
+    await logPm10HistoryQueryFailureTelemetry(supabaseAdmin, projectId, activityGroupId, deviceId ?? null, nowMs);
+    return { status: null, queryFailed: true, failureCode: 'PM10_HISTORY_QUERY_FAILED', readingCount: 0 };
   }
 }
 
@@ -930,12 +1130,25 @@ async function resolveProjectDeviceMap(
   const map = new Map<string, FreshDeviceReading | null>();
   const { data } = await supabaseAdmin
     .from('project_devices')
-    .select('id, last_reading_at')
+    .select(
+      'id, last_reading_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url'
+    )
     .eq('project_id', projectId)
     .eq('is_active', true);
 
-  type ProjectDeviceRow = { id: string; last_reading_at: string | null };
-  const activeDeviceIds = ((data as ProjectDeviceRow[]) || []).filter((d) => d.last_reading_at).map((d) => d.id);
+  type ProjectDeviceRow = {
+    id: string;
+    last_reading_at: string | null;
+    true_north_alignment_documented: boolean | null;
+    true_north_alignment_type: 'TRUE_NORTH' | 'MAGNETIC_NORTH' | null;
+    true_north_verification_method: string | null;
+    true_north_verified_by: string | null;
+    true_north_verified_at: string | null;
+    true_north_deviation_deg: number | null;
+    true_north_evidence_url: string | null;
+  };
+  const deviceRows = (data as ProjectDeviceRow[]) || [];
+  const activeDeviceIds = deviceRows.filter((d) => d.last_reading_at).map((d) => d.id);
   if (activeDeviceIds.length === 0) return map;
 
   // استعلام واحد لكل مقاييس كل الأجهزة النشطة معاً (بدل استعلام منفصل لكل
@@ -956,10 +1169,18 @@ async function resolveProjectDeviceMap(
     metricsByDevice.set(row.device_id, bucket);
   }
 
-  for (const d of data || []) {
+  for (const d of deviceRows) {
     if (!d.last_reading_at) continue;
     const metricLatest = metricsByDevice.get(d.id) ?? {};
     map.set(d.id, {
+      deviceId: d.id,
+      trueNorthAlignmentDocumented: d.true_north_alignment_documented ?? null,
+      trueNorthAlignmentType: d.true_north_alignment_type ?? null,
+      trueNorthVerificationMethod: d.true_north_verification_method ?? null,
+      trueNorthVerifiedBy: d.true_north_verified_by ?? null,
+      trueNorthVerifiedAt: d.true_north_verified_at ?? null,
+      trueNorthDeviationDeg: d.true_north_deviation_deg ?? null,
+      trueNorthEvidenceUrl: d.true_north_evidence_url ?? null,
       last_wind_speed_kmh: metricLatest.last_wind_speed_kmh ?? null,
       last_wind_gust_kmh: metricLatest.last_wind_gust_kmh ?? null,
       last_wind_direction_deg: metricLatest.last_wind_direction_deg ?? null,
@@ -1544,12 +1765,34 @@ export async function computeDustComplianceResults(
     }
   }
 
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+  // توثيق الشمال الحقيقي"): جلب مجمَّع لتوثيق معايرة كل جهاز نشط بالمشروع —
+  // نفس مبدأ previousDecisionsByGroup أعلاه (نداء واحد بدل نداء لكل نشاط).
+  // يُستخدَم أدناه لبناء WindDirectionEvidence لكل نشاط عبر
+  // resolveWindDirectionEvidence — راجع تعليقها الكامل لسبب عدم استخدام
+  // last_wind_direction_deg الخام مباشرة في تحليل الانتشار المكاني بلا هذا
+  // التوثيق. فشل الاستعلام (catch داخل resolveProjectDeviceMap نفسها غير
+  // موجود — تعتمد على استعلامين منفصلين بلا try/catch) يعني ببساطة خريطة
+  // فارغة، فتُعامَل كل الأجهزة كـUNVERIFIED (فشل آمن: لا اتجاه يدخل التحليل
+  // المكاني بلا توثيق مؤكَّد).
+  const deviceTrueNorthMap = supabaseAdmin && project?.id
+    ? await resolveProjectDeviceMap(supabaseAdmin, project.id).catch(() => new Map<string, FreshDeviceReading | null>())
+    : new Map<string, FreshDeviceReading | null>();
+
   const results = await Promise.all(
     (dustResults || []).map(async (r) => {
       try {
         const row = rowsById.get(r.activityId);
         const dviResult = r.windowEval?.worst;
         if (!row || !dviResult) return null;
+
+        const linkedDevice = row.device_id ? deviceTrueNorthMap.get(row.device_id) ?? null : null;
+        const mergedForWindSource = (dviResult as Partial<DviHourlyEvaluation>).mergedReading;
+        const windDirectionEvidence = resolveWindDirectionEvidence(
+          linkedDevice,
+          mergedForWindSource?.windDirectionDeg ?? null,
+          mergedForWindSource?.sources.windDirectionDeg ?? 'none'
+        );
 
         // لحظة تقييم واحدة موحَّدة لكل هذا النشاط — تُمرَّر صراحة لكل من
         // buildComplianceContext (بوابة حداثة PM10) وevaluateDustCompliance
@@ -1593,7 +1836,18 @@ export async function computeDustComplianceResults(
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
-        const preliminaryCtx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, null, evaluatedAtMs, activityQueryFailed);
+        const preliminaryCtx = buildComplianceContext(
+          project,
+          row,
+          dviResult,
+          sensitiveReceptors,
+          previousDecision,
+          null,
+          evaluatedAtMs,
+          activityQueryFailed,
+          false,
+          windDirectionEvidence
+        );
 
         // تسجيل قراءة PM10 — يُستخدم لحساب استمرار القراءة (دقيقتين/30
         // دقيقة). قراءات الأجهزة تُسجَّل مرة واحدة عند الاستقبال
@@ -1634,6 +1888,18 @@ export async function computeDustComplianceResults(
         // تلك الأدلة. النوع الكامل الآن يبقى سليماً من fetchPm10SustainedStatus
         // حتى buildComplianceContext.
         let pm10Sustained: Pm10SustainedStatus | null = null;
+        // خطأ حرج مكتشَف ومُصلَح (راجع تعليق Pm10SustainedFetchResult الكامل
+        // أعلى fetchPm10SustainedStatus): queryFailed=true فقط عند فشل
+        // استعلام حقيقي، لا عند نجاحه بصفر صفوف — يُمرَّر لمحرك الامتثال
+        // ليصدر FIELD_VERIFICATION_REQUIRED صراحة بدل معاملة الفشل كـ"لا
+        // مخالفة".
+        let pm10HistoryQueryFailed = false;
+        // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — تفصيل تنفيذ
+        // pm10HistoryFailureCode/pm10TemporalEvidenceState في types.ts):
+        // يُبنيان معاً أدناه من pm10Fetch نفسه — نفس مصدر الحقيقة الوحيد
+        // (لا اشتقاق مستقل).
+        let pm10HistoryFailureCode: 'PM10_HISTORY_QUERY_FAILED' | null = null;
+        let pm10TemporalEvidenceState: 'AVAILABLE' | 'NO_READINGS' | 'QUERY_FAILED' = 'NO_READINGS';
         if (supabaseAdmin && r.activityGroupId && project?.id) {
           // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "المسار القديم للتنبيهات
           // ينافس Outbox ويصنع قراءات PM10 وهمية"): كان الفرع 'onsite' هنا
@@ -1672,16 +1938,37 @@ export async function computeDustComplianceResults(
               }
             }
           }
-          pm10Sustained = await fetchPm10SustainedStatus(
+          const pm10Fetch = await fetchPm10SustainedStatus(
             supabaseAdmin,
             project.id,
             r.activityGroupId,
             row.device_id ?? null,
             pm10SustainedLookupMs
           );
+          pm10Sustained = pm10Fetch.status;
+          pm10HistoryQueryFailed = pm10Fetch.queryFailed;
+          pm10HistoryFailureCode = pm10Fetch.failureCode;
+          pm10TemporalEvidenceState = pm10Fetch.queryFailed
+            ? 'QUERY_FAILED'
+            : pm10Fetch.readingCount > 0
+            ? 'AVAILABLE'
+            : 'NO_READINGS';
         }
 
-        const ctx = buildComplianceContext(project, row, dviResult, sensitiveReceptors, previousDecision, pm10Sustained, evaluatedAtMs, activityQueryFailed);
+        const ctx = buildComplianceContext(
+          project,
+          row,
+          dviResult,
+          sensitiveReceptors,
+          previousDecision,
+          pm10Sustained,
+          evaluatedAtMs,
+          activityQueryFailed,
+          pm10HistoryQueryFailed,
+          windDirectionEvidence,
+          pm10HistoryFailureCode,
+          pm10TemporalEvidenceState
+        );
         // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
         // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
         // تصلح" (راجع buildPlanningForecastResult في engine.ts).

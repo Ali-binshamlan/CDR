@@ -218,9 +218,18 @@ function runFullChain(opts: {
   pm10AgeSeconds?: number;
   windSpeedKmh?: number;
   activityRowOverrides?: Record<string, unknown>;
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "ماذا يحدث إذا توجد قاعدة
+  // إيقاف أخرى؟"): يحاكي فشل استعلام pm10_readings_history الفعلي (لا
+  // "صفر قراءات" — راجع Pm10SustainedFetchResult في dustEvaluation.ts) —
+  // يُمرَّر مباشرة إلى buildComplianceContext كما لو أن fetchPm10SustainedStatus
+  // أعادت queryFailed=true. sustained يبقى محسوباً من buildDenseReadings
+  // (يُمرَّر لبناء dvi.mergedReading نفسه بصرف النظر) لكن compliance context
+  // لا يستقبله عند true (نفس سلوك المسار الحي الفعلي: pm10Sustained=null
+  // حين queryFailed=true في dustEvaluation.ts).
+  pm10HistoryQueryFailed?: boolean;
 }) {
   const nowMs = Date.now();
-  const { pm10UgM3 = 20, pm10AgeSeconds = 0, windSpeedKmh = 10, activityRowOverrides = {} } = opts;
+  const { pm10UgM3 = 20, pm10AgeSeconds = 0, windSpeedKmh = 10, activityRowOverrides = {}, pm10HistoryQueryFailed = false } = opts;
 
   const readings = buildDenseReadings(pm10UgM3, pm10AgeSeconds, nowMs);
   const sustained = computeSustainedPm10Status(readings, nowMs);
@@ -241,9 +250,12 @@ function runFullChain(opts: {
     dvi,
     [],
     null,
-    sustained,
+    // نفس دلالة dustEvaluation.ts الحية: pm10Fetch.status=null عند
+    // queryFailed=true — لا pm10Sustained حقيقياً يصل السياق في تلك الحالة.
+    pm10HistoryQueryFailed ? null : sustained,
     nowMs,
-    false
+    false,
+    pm10HistoryQueryFailed
   );
   const compliance = evaluateDustCompliance(ctx, nowMs);
 
@@ -694,5 +706,85 @@ describe('Cross-Engine Invariant — القواعد النشاطية المعت�
     expect(compliance.triggeredRules.some((h) => h.code === 'DEMO-AREA-002')).toBe(false);
     expect(compliance.decisionCategory).not.toBe('MANDATORY_STOP');
     expect(compliance.decisionCategory).not.toBe('STOP_AFFECTED_ACTIVITY');
+  });
+});
+
+// =====================================================================
+// اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "ماذا يحدث
+// إذا توجد قاعدة إيقاف أخرى؟"، جدول الترتيب الكامل الخمسة صفوف). الصف
+// الأول (فشل PM10 فقط → HOLD_FOR_VERIFICATION) والرابع (قرار PM10 سابق
+// موقوف محفوظ) مُختبَران بالفعل على مستوى dust-compliance-engine.test.ts
+// (context() الاصطناعي). الصفوف الثلاثة أدناه (2، 3، 5) تحتاج تحديداً
+// السلسلة الحقيقية الثلاثية الكاملة (لا compliance اصطناعي) لأنها تختبر
+// بالضبط ترتيب decideFinal (OPERATION_RANK) الذي لا يظهر إلا بعد تحويل
+// STOP_AFFECTED_ACTIVITY/MANDATORY_STOP من محرك الامتثال إلى
+// operationalDecision النهائي.
+// =====================================================================
+describe('Cross-Engine Invariant — فشل استعلام PM10 التاريخي مع قاعدة إيقاف أخرى (ترتيب الأولوية الكامل)', () => {
+  // الصف الثاني من جدول التقرير: فشل PM10 + رياح تفرض إيقافاً (>25 كم/س)
+  // → يبقى MANDATORY_STOP بسبب الرياح، لا HOLD_FOR_VERIFICATION رغم فشل
+  // استعلام PM10 المتزامن. OPERATION_RANK يضع MANDATORY_STOP (5) أعلى من
+  // HOLD_FOR_VERIFICATION (3، الناتج عن FIELD_VERIFICATION_REQUIRED).
+  it('فشل استعلام PM10 + رياح 30 كم/س (بوابة الإيقاف) → operationalDecision=MANDATORY_STOP (الرياح تفوز)، لا HOLD_FOR_VERIFICATION', () => {
+    const { compliance, final } = runFullChain({
+      windSpeedKmh: 30,
+      pm10HistoryQueryFailed: true,
+    });
+
+    // على مستوى محرك الامتثال: كلا القاعدتين حاضرتان، GATE-WIND-ABOVE-25-004
+    // (STOP_AFFECTED_ACTIVITY) تفوز على PM10-HISTORY-QUERY-FAILED-HOLD
+    // (FIELD_VERIFICATION_REQUIRED).
+    expect(compliance.decisionCategory).toBe('STOP_AFFECTED_ACTIVITY');
+    expect(compliance.triggeredRules.some((h) => h.code === 'GATE-WIND-ABOVE-25-004')).toBe(true);
+    expect(compliance.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+
+    // على مستوى القرار النهائي: STOP_AFFECTED_ACTIVITY (pendingConfirmation
+    // غير مفعَّلة لبوابة الرياح) → confirmedAffectedStop=true → MANDATORY_STOP.
+    // هذا هو التحقق الفعلي المطلوب في التقرير — لا يكفي إثبات فوز الرياح
+    // على مستوى الامتثال وحده، بل يجب إثبات وصول MANDATORY_STOP فعلياً
+    // للقرار النهائي المعروض للمستخدم.
+    expect(final.operationalDecision).toBe('MANDATORY_STOP');
+    expect(final.mandatoryStop).toBe(true);
+  });
+
+  // الصف الثالث: فشل PM10 + تعطل نظام التثبيط (dustSuppressionSystemOperational
+  // =false على نشاط مولّد للغبار) → يبقى قرار الإيقاف الفعلي (MANDATORY_STOP)،
+  // لا HOLD_FOR_VERIFICATION.
+  it('فشل استعلام PM10 + تعطل نظام التثبيط (نشاط مولّد للغبار) → operationalDecision=MANDATORY_STOP (تعطل التثبيط يفوز)، لا HOLD_FOR_VERIFICATION', () => {
+    const { compliance, final } = runFullChain({
+      pm10HistoryQueryFailed: true,
+      activityRowOverrides: {
+        is_dust_generating: true,
+        dust_suppression_system_operational: false,
+      },
+    });
+
+    expect(compliance.decisionCategory).toBe('MANDATORY_STOP');
+    expect(compliance.triggeredRules.some((h) => h.code === 'PM10-HISTORY-QUERY-FAILED-HOLD')).toBe(true);
+
+    expect(final.operationalDecision).toBe('MANDATORY_STOP');
+    expect(final.mandatoryStop).toBe(true);
+  });
+
+  // الصف الخامس: فشل PM10 + isActiveOrPlanned=false ("لا نشاط حي") → يسجل
+  // عطلاً تقنياً (HOLD_FOR_VERIFICATION) دون أي مخالفة تنظيمية —
+  // isActiveOrPlanned لا يُسكِت قاعدة PM10-HISTORY-QUERY-FAILED-HOLD (تحقَّقنا
+  // أنها تؤثر حصراً على GATE-DMP-001، لا صلة لها بـPM10). السلسلة الكاملة
+  // هنا تثبت أن regulatoryFinding النهائي أيضاً NOT_DETERMINABLE، لا
+  // NON_COMPLIANT ولا COMPLIANT.
+  it('فشل استعلام PM10 + isActiveOrPlanned=false (لا نشاط حي) → operationalDecision=HOLD_FOR_VERIFICATION، regulatoryFinding=NOT_DETERMINABLE (عطل تقني، لا مخالفة)', () => {
+    const { compliance, final } = runFullChain({
+      pm10HistoryQueryFailed: true,
+      activityRowOverrides: {
+        is_active_or_planned: false,
+      },
+    });
+
+    expect(compliance.decisionCategory).toBe('FIELD_VERIFICATION_REQUIRED');
+    expect(compliance.hasConfirmedRegulatoryViolation).toBe(false);
+
+    expect(final.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+    expect(final.mandatoryStop).toBe(false);
+    expect(final.regulatoryFinding).toBe('NOT_DETERMINABLE');
   });
 });

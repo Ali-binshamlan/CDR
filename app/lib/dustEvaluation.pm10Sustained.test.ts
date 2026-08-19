@@ -697,10 +697,12 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     // computeSustainedPm10Status الافتراضية — نستخدم توقيتاً قريباً بما فيه
     // الكفاية من NOW أعلاه بحيث تبقى القراءات ضمن نافذة الجلب الزمنية.)
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      expect(r.queryFailed).toBe(false);
+      const status = r.status!;
       // القراءتان الفعليتان من A فقط (12:00 و12:02) بينهما فجوة 2 دقيقة —
       // ضمن هامش التحمّل، لكن قراءة B الوسيطة لا تدخل السلسلة إطلاقاً لأن
       // مصدرها device-B لا device-A، فلا تُحسَب "قراءة متناوبة تُثبت شيئاً".
-      expect(r.currentReadingUgM3).toBe(360); // آخر قراءة من A تحديداً، لا 355 (B)
+      expect(status.currentReadingUgM3).toBe(360); // آخر قراءة من A تحديداً، لا 355 (B)
     });
   });
 
@@ -712,9 +714,10 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
-      expect(r.currentReadingUgM3).toBeNull();
-      expect(r.isConfirmedViolation340).toBe(false);
-      expect(r.isPendingViolation340).toBe(false);
+      const status = r.status!;
+      expect(status.currentReadingUgM3).toBeNull();
+      expect(status.isConfirmedViolation340).toBe(false);
+      expect(status.isPendingViolation340).toBe(false);
     });
   });
 
@@ -726,7 +729,7 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', null).then((r) => {
-      expect(r.currentReadingUgM3).toBeNull();
+      expect(r.status!.currentReadingUgM3).toBeNull();
     });
   });
 
@@ -744,8 +747,9 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
-      expect(r.isConfirmedViolation340).toBe(true);
-      expect(r.evidenceReadingIds.sort()).toEqual(['db-id-1', 'db-id-2', 'db-id-3', 'db-id-4'].sort());
+      const status = r.status!;
+      expect(status.isConfirmedViolation340).toBe(true);
+      expect(status.evidenceReadingIds.sort()).toEqual(['db-id-1', 'db-id-2', 'db-id-3', 'db-id-4'].sort());
     });
   });
 
@@ -758,11 +762,12 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      const status = r.status!;
       // 3 قراءات فعلية من A (3، 1.5، 0 دقائق) بفجوة أقصاها 1.5 دقيقة بينها —
       // ضمن هامش التحمّل الفعلي (90 ثانية، ACTIVE_RULE_BUNDLE.pm10.evidence.
       // maxContinuityGapMs)، فتُحسب سلسلة متصلة بمعزل عن B.
-      expect(r.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
-      expect(r.isConfirmedViolation340).toBe(true);
+      expect(status.sustainedMinutesAbove340).toBeGreaterThanOrEqual(2);
+      expect(status.isConfirmedViolation340).toBe(true);
     });
   });
 
@@ -779,10 +784,11 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      const status = r.status!;
       // القراءة المتأخرة استُبعدت تماماً — الاستمرار يُحسب فقط من القراءات
       // الثلاث غير المتأخرة (3، 1.5، 0 دقائق)، لا من كل الأربع.
-      expect(r.currentReadingUgM3).toBe(342);
-      expect(r.isConfirmedViolation340).toBe(true);
+      expect(status.currentReadingUgM3).toBe(342);
+      expect(status.isConfirmedViolation340).toBe(true);
     });
   });
 
@@ -794,9 +800,10 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
-      expect(r.currentReadingUgM3).toBeNull();
-      expect(r.isConfirmedViolation340).toBe(false);
-      expect(r.isPendingViolation340).toBe(false);
+      const status = r.status!;
+      expect(status.currentReadingUgM3).toBeNull();
+      expect(status.isConfirmedViolation340).toBe(false);
+      expect(status.isPendingViolation340).toBe(false);
     });
   });
 
@@ -813,10 +820,11 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+      const status = r.status!;
       // الأحدث (snapshot-only) هي نقطة الانطلاق، تقطع الحلقة فوراً بعدها —
       // لا يمكن أن تُثبت مؤكَّدة رغم وجود قراءتين حقيقيتين أقدم منها.
-      expect(r.isConfirmedViolation340).toBe(false);
-      expect(r.isPendingViolation340).toBe(true);
+      expect(status.isConfirmedViolation340).toBe(false);
+      expect(status.isPendingViolation340).toBe(true);
     });
   });
 
@@ -828,7 +836,7 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     ];
     const supabase = mockSupabase(rows);
     return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
-      expect(r.isConfirmedViolation340).toBe(true);
+      expect(r.status!.isConfirmedViolation340).toBe(true);
     });
   });
 
@@ -871,9 +879,10 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       // الذي يحمل القراءة الآمنة اللاحقة) — نفس ما يبنيه telemetry-worker
       // الآن (نهاية دقيقة رصد كل قراءة، لا دقيقة معالجة الدفعة).
       return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A', spikeEndMs).then((r) => {
-        expect(r.currentReadingUgM3).toBe(360);
-        expect(r.isConfirmedViolation340).toBe(true);
-        expect(r.evidenceReadingIds.sort()).toEqual(['spike-1', 'spike-2', 'spike-2b', 'spike-3'].sort());
+        const status = r.status!;
+        expect(status.currentReadingUgM3).toBe(360);
+        expect(status.isConfirmedViolation340).toBe(true);
+        expect(status.evidenceReadingIds.sort()).toEqual(['spike-1', 'spike-2', 'spike-2b', 'spike-3'].sort());
       });
     });
 
@@ -893,12 +902,13 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       const supabase = mockSupabase(rows);
 
       return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A').then((r) => {
+        const status = r.status!;
         // هذا هو السلوك القديم (بلا evaluation_at) — يبقى صحيحاً حين لا
         // توجد لحظة رصد محدَّدة يُطلَب إعادة البناء عندها (مهام scheduler-
         // tick الدورية مثلاً)؛ الفرق أن telemetry-worker الآن *يُمرِّر*
         // evaluation_at فعلياً بدل ترك هذا المسار الافتراضي يُخفي الذروة.
-        expect(r.currentReadingUgM3).toBe(100);
-        expect(r.isConfirmedViolation340).toBe(false);
+        expect(status.currentReadingUgM3).toBe(100);
+        expect(status.isConfirmedViolation340).toBe(false);
       });
     });
 
@@ -929,6 +939,208 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
       // أنها أقدم من nowMs فعلياً (لا القيمة الحرفية، لتفادي تكرار الثابت
       // الداخلي هنا).
       expect(new Date(gteCall!.value).getTime()).toBeLessThan(nowMs);
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "فشل
+  // استعلام PM10 يتحول إلى سلسلة فارغة"): يميّزان صراحة "الاستعلام نجح بصفر
+  // صفوف" (queryFailed=false، status.currentReadingUgM3=null، حالة طبيعية)
+  // عن "الاستعلام فشل فعلياً" (queryFailed=true، status=null) — قبل هذا
+  // الإصلاح كانت النتيجتان متطابقتين تماماً.
+  describe('fetchPm10SustainedStatus — فشل الاستعلام يُميَّز صراحة عن نجاحه بصفر صفوف', () => {
+    it('Supabase يُعيد {data: null, error: {...}} (فشل RLS/timeout نموذجي، بلا استثناء) → queryFailed=true، status=null', async () => {
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: () => chain,
+        gte: () => chain,
+        lte: () => chain,
+        order: async () => ({ data: null, error: { message: 'permission denied for table pm10_readings_history' } }),
+      };
+      const supabase = { from: () => chain } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+
+      const r = await fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A');
+      expect(r.queryFailed).toBe(true);
+      expect(r.status).toBeNull();
+      expect(r.failureCode).toBe('PM10_HISTORY_QUERY_FAILED');
+      // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — تفصيل تنفيذ
+      // pm10TemporalEvidenceState في DustComplianceResult.evidence): readingCount
+      // لا معنى له عند فشل الاستعلام — يبقى 0 دائماً (لا يُخلَط مع "0 قراءات
+      // فعلية بعد استعلام ناجح").
+      expect(r.readingCount).toBe(0);
+    });
+
+    it('الاستعلام ينجح بصفر صفوف فعلياً (لا خطأ) → queryFailed=false، status غير null بقيم فارغة طبيعية، readingCount=0', async () => {
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: () => chain,
+        gte: () => chain,
+        lte: () => chain,
+        order: async () => ({ data: [], error: null }),
+      };
+      const supabase = { from: () => chain } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+
+      const r = await fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A');
+      expect(r.queryFailed).toBe(false);
+      expect(r.failureCode).toBeNull();
+      expect(r.status).not.toBeNull();
+      expect(r.status!.currentReadingUgM3).toBeNull();
+      expect(r.status!.isConfirmedViolation340).toBe(false);
+      // خطأ حرج مكتشَف ومُصلَح (نفس المراجعة أعلاه): readingCount=0 هنا يعني
+      // فعلياً "لا قراءات" (NO_READINGS) — يختلف جوهرياً عن الاختبار أعلاه
+      // (فشل الاستعلام نفسه، QUERY_FAILED) رغم تطابق queryFailed=false مع
+      // النتيجة الظاهرية (status غير null بقيم فارغة) في كلا الحالتين على
+      // مستوى status وحده.
+      expect(r.readingCount).toBe(0);
+    });
+
+    it('الاستعلام ينجح بقراءات فعلية (readingCount > 0) — يميّز AVAILABLE عن NO_READINGS/QUERY_FAILED', async () => {
+      const now = Date.now();
+      const rows = [
+        {
+          id: 'r1',
+          pm10_ug_m3: 200,
+          recorded_at: new Date(now).toISOString(),
+          activity_group_id: 'group-1',
+          source: 'device',
+          device_id: 'device-A',
+          is_late: false,
+          is_snapshot_only: false,
+        },
+      ];
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: () => chain,
+        gte: () => chain,
+        lte: () => chain,
+        order: async () => ({ data: rows, error: null }),
+      };
+      const supabase = { from: () => chain } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+
+      const r = await fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A');
+      expect(r.queryFailed).toBe(false);
+      expect(r.readingCount).toBe(1);
+    });
+
+    it('استعلام يرمي استثناءً فعلياً (شبكة معطوبة تماماً، لا مجرد error من Supabase) → queryFailed=true، status=null', async () => {
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: () => chain,
+        gte: () => chain,
+        lte: () => {
+          throw new Error('network unreachable');
+        },
+      };
+      const supabase = { from: () => chain } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+
+      const r = await fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A');
+      expect(r.queryFailed).toBe(true);
+      expect(r.status).toBeNull();
+      expect(r.failureCode).toBe('PM10_HISTORY_QUERY_FAILED');
+    });
+  });
+
+  // اختبارات قبول صريحة (طلب المستخدم — "سجل الأعطال والتدقيق"): فشل
+  // استعلام سلسلة PM10 يجب أن يُنشئ حدث Telemetry حقيقي في
+  // technical_fault_events (لا الاكتفاء بـconsole.error)، بحقول مُقرَّرة
+  // صراحة فقط (لا نص PostgreSQL/Stack trace/بيانات اتصال قاعدة بيانات)،
+  // ومفتاح idempotency مستقر لكل دقيقة كي لا يتكرر نفس الحدث كل دورة تقييم.
+  describe('fetchPm10SustainedStatus — تسجيل حدث Telemetry عند فشل الاستعلام (technical_fault_events)', () => {
+    function mockSupabaseWithInsertSpy(queryError: { message: string } | null, throwOnQuery = false) {
+      const insertSpy = vi.fn(async (_payload: Record<string, unknown>) => ({ data: null, error: null }));
+      const fromSpy = vi.fn((table: string) => {
+        if (table === 'technical_fault_events') {
+          return { insert: insertSpy };
+        }
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          gte: () => chain,
+          lte: () => {
+            if (throwOnQuery) throw new Error('network unreachable');
+            return chain;
+          },
+          order: async () => ({ data: null, error: queryError }),
+        };
+        return chain;
+      });
+      const supabase = { from: fromSpy } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+      return { supabase, insertSpy, fromSpy };
+    }
+
+    it('فشل الاستعلام (Supabase error) → يُدرج حدث PM10_HISTORY_QUERY_FAILED بحقول مُقرَّرة فقط، بلا نص PostgreSQL/Stack trace/بيانات اتصال', async () => {
+      const { supabase, insertSpy } = mockSupabaseWithInsertSpy({ message: 'permission denied for table pm10_readings_history: connection string postgres://user:pass@host' });
+      const nowMs = Date.parse('2026-08-19T10:15:30.000Z');
+
+      await fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-A', nowMs);
+
+      expect(insertSpy).toHaveBeenCalledTimes(1);
+      const payload = insertSpy.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload).toEqual({
+        event_type: 'PM10_HISTORY_QUERY_FAILED',
+        project_id: 'project-1',
+        activity_group_id: 'group-1',
+        device_id: 'device-A',
+        evaluation_id: null,
+        retry_count: 0,
+        evaluated_at: new Date(nowMs).toISOString(),
+        dedupe_key: `pm10-history-query-failed:group-1:${Math.floor(nowMs / 60_000)}`,
+      });
+      // لا حقل واحد في هذا الحمل يحمل نص خطأ Supabase الخام (postgres://,
+      // permission denied for table...) — فقط الحقول المُقرَّرة أعلاه.
+      const serialized = JSON.stringify(payload);
+      expect(serialized).not.toContain('postgres://');
+      expect(serialized).not.toContain('permission denied');
+    });
+
+    it('استثناء JS فعلي أثناء الاستعلام → يُدرج نفس حدث Telemetry (queryFailed=true عبر catch)', async () => {
+      const { supabase, insertSpy } = mockSupabaseWithInsertSpy(null, true);
+
+      await fetchPm10SustainedStatus(supabase, 'project-2', 'group-2', null);
+
+      expect(insertSpy).toHaveBeenCalledTimes(1);
+      const payload = insertSpy.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.event_type).toBe('PM10_HISTORY_QUERY_FAILED');
+      expect(payload.project_id).toBe('project-2');
+      expect(payload.activity_group_id).toBe('group-2');
+      expect(payload.device_id).toBeNull();
+    });
+
+    it('الاستعلام ينجح (لا فشل) → لا يُدرج أي حدث Telemetry إطلاقاً', async () => {
+      const insertSpy = vi.fn(async (_payload: Record<string, unknown>) => ({ data: null, error: null }));
+      const fromSpy = vi.fn((table: string) => {
+        if (table === 'technical_fault_events') return { insert: insertSpy };
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          gte: () => chain,
+          lte: () => chain,
+          order: async () => ({ data: [], error: null }),
+        };
+        return chain;
+      });
+      const supabase = { from: fromSpy } as unknown as Parameters<typeof fetchPm10SustainedStatus>[0];
+
+      const r = await fetchPm10SustainedStatus(supabase, 'project-3', 'group-3', 'device-A');
+
+      expect(r.queryFailed).toBe(false);
+      expect(insertSpy).not.toHaveBeenCalled();
+    });
+
+    it('مفتاح idempotency (dedupe_key) مستقر لنفس (activity_group_id، الدقيقة) عبر فشلين متتاليين ضمن نفس الدقيقة، ويختلف بين نشاطين مختلفين', async () => {
+      const nowMs = Date.parse('2026-08-19T10:15:45.000Z');
+      const { supabase: supabaseA, insertSpy: insertSpyA } = mockSupabaseWithInsertSpy({ message: 'err' });
+      const { supabase: supabaseB, insertSpy: insertSpyB } = mockSupabaseWithInsertSpy({ message: 'err' });
+
+      await fetchPm10SustainedStatus(supabaseA, 'project-1', 'group-1', 'device-A', nowMs);
+      await fetchPm10SustainedStatus(supabaseA, 'project-1', 'group-1', 'device-A', nowMs + 5000); // نفس الدقيقة
+      await fetchPm10SustainedStatus(supabaseB, 'project-1', 'group-2', 'device-A', nowMs); // نشاط آخر
+
+      const keyCall1 = (insertSpyA.mock.calls[0][0] as Record<string, unknown>).dedupe_key;
+      const keyCall2 = (insertSpyA.mock.calls[1][0] as Record<string, unknown>).dedupe_key;
+      const keyCallB = (insertSpyB.mock.calls[0][0] as Record<string, unknown>).dedupe_key;
+
+      expect(keyCall1).toBe(keyCall2); // نفس النشاط، نفس الدقيقة → نفس المفتاح (القيد الفريد على الجدول يرفض التكرار الفعلي)
+      expect(keyCall1).not.toBe(keyCallB); // نشاط مختلف → مفتاح مختلف
     });
   });
 });

@@ -1825,3 +1825,210 @@ describe('Outbox Queue — استعادة صف بعد انتهاء Lease (الق
     expect(claimedIds).not.toContain(outboxRow!.id);
   });
 });
+
+// =====================================================================
+// PM10 المخالفة المؤكَّدة وتنبيه "تحسّن القراءة" — migration
+// 202608190001 (طلب صريح من المستخدم، شاشة المشاهد/جهة الرصد).
+// =====================================================================
+function baseComplianceResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    decisionCategory: 'ALLOW_WITH_CONTROLS',
+    triggeredRules: [],
+    shortReasonAr: 'مخالفة تنظيمية مؤكدة ومسجَّلة: تركيز PM10 تجاوز حد المخالفة',
+    rulebookVersion: 'test',
+    ...overrides,
+  };
+}
+
+function baseFinalDecisionWithFinding(
+  operationalDecision: string,
+  regulatoryFinding: string
+): Record<string, unknown> {
+  return {
+    ...baseFinalDecision(operationalDecision),
+    regulatoryFinding,
+  };
+}
+
+describe('COMPLIANCE_VIOLATION payload يحمل pm10UgM3 صراحةً', () => {
+  it('فتح مخالفة مؤكَّدة (NON_COMPLIANT) يُدرِج نية OPEN بـpayload.pm10UgM3 مطابقة لـcompliance_result.pm10UgM3', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    const { error: persistError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: baseComplianceResult({ pm10UgM3: 355.4 }),
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecisionWithFinding('ALLOW', 'NON_COMPLIANT'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(persistError).toBeNull();
+
+    const { data: outboxRow, error: outboxError } = await admin
+      .from('decision_alert_outbox')
+      .select('kind, action, payload')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .eq('kind', 'COMPLIANCE_VIOLATION')
+      .eq('action', 'OPEN')
+      .single();
+
+    expect(outboxError).toBeNull();
+    expect(outboxRow!.kind).toBe('COMPLIANCE_VIOLATION');
+    expect((outboxRow!.payload as Record<string, unknown>).pm10UgM3).toBe(355.4);
+  });
+});
+
+describe('PM10_IMPROVED — تحسّن القراءة بعد مخالفة مؤكَّدة وقبل الإيقاف الفعلي', () => {
+  it('إغلاق COMPLIANCE_VIOLATION بلا أي MANDATORY_STOP سابق لنفس النشاط يُصدِر نية PM10_IMPROVED مغلَقة فوراً', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    // 1) فتح مخالفة مؤكَّدة (PM10=355، NON_COMPLIANT، بلا إيقاف فعلي — ALLOW).
+    const { error: openError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: baseComplianceResult({ pm10UgM3: 355 }),
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecisionWithFinding('ALLOW', 'NON_COMPLIANT'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(openError).toBeNull();
+
+    // 2) تحسّنت القراءة (PM10=200، COMPLIANT) — لم يحدث أي MANDATORY_STOP
+    //    بينهما، فيجب أن يُصدِر PM10_IMPROVED (OPEN ثم CLOSE مقرونان).
+    const { error: improveError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: baseComplianceResult({ decisionCategory: 'ALLOW', pm10UgM3: 200 }),
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecisionWithFinding('ALLOW', 'COMPLIANT'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(improveError).toBeNull();
+
+    const { data: improvedRows, error: improvedError } = await admin
+      .from('decision_alert_outbox')
+      .select('action, payload')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .eq('kind', 'PM10_IMPROVED')
+      .order('sequence_no', { ascending: true });
+
+    expect(improvedError).toBeNull();
+    expect(improvedRows).toHaveLength(2);
+    expect(improvedRows![0].action).toBe('OPEN');
+    expect((improvedRows![0].payload as Record<string, unknown>).pm10UgM3).toBe(200);
+    expect(improvedRows![1].action).toBe('CLOSE');
+  });
+
+  it('إغلاق COMPLIANCE_VIOLATION بعد MANDATORY_STOP فعلي (تعليق 30 دقيقة) لا يُصدِر PM10_IMPROVED', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    // 1) فتح مخالفة مؤكَّدة (PM10=355، NON_COMPLIANT، بلا إيقاف بعد).
+    const { error: openError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: baseComplianceResult({ pm10UgM3: 355 }),
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecisionWithFinding('ALLOW', 'NON_COMPLIANT'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(openError).toBeNull();
+
+    // 2) تصعيد إلى إيقاف فعلي (30 دقيقة متواصلة فوق 340) — MANDATORY_STOP
+    //    حقيقي، لا يزال NON_COMPLIANT (نفس kind='COMPLIANCE_VIOLATION' يبقى
+    //    v_required_alert_kind، لا انتقال outbox هنا — لكن mandatory_stop=true
+    //    يُسجَّل الآن في final_decisions، وهذا ما يفحصه الاستعلام لاحقاً).
+    const { error: stopError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: baseComplianceResult({ decisionCategory: 'STOP_AFFECTED_ACTIVITY', pm10UgM3: 400 }),
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: new Date().toISOString(),
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecisionWithFinding('MANDATORY_STOP', 'NON_COMPLIANT'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(stopError).toBeNull();
+
+    // 3) تحسّنت القراءة أخيراً (PM10=200، COMPLIANT) — بعد إيقاف فعلي سابق،
+    //    فلا يجوز أن يُصدَر PM10_IMPROVED (الإيقاف نفسه هو الحدث ذو الصلة).
+    const { error: improveError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: null,
+      p_dvi_triggered_by: null,
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: baseComplianceResult({ decisionCategory: 'ALLOW', pm10UgM3: 200 }),
+      p_compliance_rulebook_version: 'test',
+      p_compliance_triggered_by: 'user_refresh',
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: baseFinalDecisionWithFinding('ALLOW', 'COMPLIANT'),
+      p_final_evaluated_at: new Date().toISOString(),
+    });
+    expect(improveError).toBeNull();
+
+    const { data: improvedRows, error: improvedError } = await admin
+      .from('decision_alert_outbox')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('activity_group_id', groupId)
+      .eq('kind', 'PM10_IMPROVED');
+
+    expect(improvedError).toBeNull();
+    expect(improvedRows).toHaveLength(0);
+  });
+});

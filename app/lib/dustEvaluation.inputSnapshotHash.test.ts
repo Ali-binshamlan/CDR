@@ -239,4 +239,155 @@ describe('computeInputSnapshotHash', () => {
       resetRuleParametersForTests();
     });
   });
+
+  // اختبار قبول صريح (طلب المستخدم — تقرير المراجعة الخارجي، القسم 5،
+  // البند "تعديل توثيق الجهاز بعد قرار قديم → Replay القرار القديم لا
+  // يتغيّر"): evidence.windDirection (WindDirectionEvidence، migration
+  // 202608190002) هو الآن جزء من compliance المُجزَّأ هنا — نفس مبدأ aei/
+  // evidenceQuality أعلاه بالضبط: تغيّره الفعلي يجب أن يغيّر البصمة (يثبت
+  // أنه جزء حقيقي من الالتزام)، لكن الأهم: نسخة compliance المخزَّنة فعلياً
+  // مع قرار قديم تبقى ثابتة إلى الأبد بصرف النظر عن أي تعديل لاحق على
+  // توثيق الجهاز الحي في project_devices — لأن هذه الدالة (ولقطة القرار
+  // المخزَّنة عموماً) لا تقرأ أبداً من project_devices مباشرة وقت إعادة
+  // البناء، فقط من evidence.windDirection المجمَّدة داخل compliance نفسها.
+  describe('evidence.windDirection يؤثر على البصمة، والقرار القديم لا يتأثر بتعديل توثيق لاحق (Replay)', () => {
+    it('compliance بـevidence.windDirection موثَّق (VERIFIED) مقابل غير موثَّق (UNVERIFIED)، بقية الحقول مطابقة تماماً → بصمة مختلفة', () => {
+      const dvi = minimalDvi();
+      const unverified = {
+        decisionCategory: 'ALLOW',
+        evidence: {
+          windDirection: {
+            rawDeg: 270,
+            directionForAnalysisDeg: null,
+            quality: 'UNVERIFIED',
+            source: 'DEVICE',
+            deviceId: 'device-1',
+            trueNorthDocumented: false,
+            alignmentType: null,
+            verifiedAt: null,
+            verifiedBy: null,
+            verificationMethod: null,
+            deviationDeg: null,
+            evidenceUrl: null,
+          },
+        },
+      } as unknown as DustComplianceResult;
+      const verified = {
+        decisionCategory: 'ALLOW',
+        evidence: {
+          windDirection: {
+            rawDeg: 270,
+            directionForAnalysisDeg: 270,
+            quality: 'VERIFIED',
+            source: 'DEVICE',
+            deviceId: 'device-1',
+            trueNorthDocumented: true,
+            alignmentType: 'TRUE_NORTH',
+            verifiedAt: '2026-01-01T00:00:00.000Z',
+            verifiedBy: 'مساح مرخَّص',
+            verificationMethod: 'مساحة GPS',
+            deviationDeg: 0,
+            evidenceUrl: null,
+          },
+        },
+      } as unknown as DustComplianceResult;
+      const a = computeInputSnapshotHash(dvi, unverified, 'LIVE_OPERATIONAL');
+      const b = computeInputSnapshotHash(dvi, verified, 'LIVE_OPERATIONAL');
+      expect(a).not.toBe(b);
+    });
+
+    it('Replay: نفس كائن compliance المخزَّن فعلياً مع قرار قديم (evidence.windDirection مجمَّدة وقت الحفظ) يُعيد إنتاج نفس البصمة تماماً، بصرف النظر عن أي تغيّر لاحق في توثيق الجهاز الحي — الدالة لا تقرأ project_devices إطلاقاً', () => {
+      const dvi = minimalDvi();
+      // compliance كما خُزِّن فعلياً وقت صدور القرار — الجهاز كان غير موثَّق
+      // حينها (rawDeg=270، quality=UNVERIFIED، directionForAnalysisDeg=null).
+      const complianceAsStoredAtDecisionTime = {
+        decisionCategory: 'ALLOW',
+        evidence: {
+          windDirection: {
+            rawDeg: 270,
+            directionForAnalysisDeg: null,
+            quality: 'UNVERIFIED',
+            source: 'DEVICE',
+            deviceId: 'device-1',
+            trueNorthDocumented: false,
+            alignmentType: null,
+            verifiedAt: null,
+            verifiedBy: null,
+            verificationMethod: null,
+            deviationDeg: null,
+            evidenceUrl: null,
+          },
+        },
+      } as unknown as DustComplianceResult;
+
+      const hashAtDecisionTime = computeInputSnapshotHash(dvi, complianceAsStoredAtDecisionTime, 'LIVE_OPERATIONAL');
+
+      // أسبوع لاحق: تغيَّر توثيق الجهاز نفسه في project_devices (أصبح
+      // موثَّقاً TRUE_NORTH) — لكن Replay يُعيد بناء البصمة من نفس الصف
+      // المخزَّن (compliance القديم كما هو)، لا من حالة الجهاز الحية
+      // الحالية. النتيجة يجب أن تبقى مطابقة تماماً — القرار القديم "لا
+      // يتغيّر" لمجرد أن الجهاز أصبح موثَّقاً لاحقاً.
+      const hashOnReplayAWeekLater = computeInputSnapshotHash(dvi, complianceAsStoredAtDecisionTime, 'LIVE_OPERATIONAL');
+
+      expect(hashOnReplayAWeekLater).toBe(hashAtDecisionTime);
+    });
+  });
+
+  // اختبار قبول صريح (طلب المستخدم — "لقطة القرار والبصمة"): evidence.
+  // pm10TemporalEvidence ({queryState, failureCode, evaluatedAt}) يجب أن
+  // يدخل ضمن اللقطة/البصمة، تحديداً كي لا تحمل "استعلام ناجح بلا قراءات"
+  // (NO_READINGS) و"استعلام فاشل" (QUERY_FAILED) نفس البصمة — الشاهد
+  // المباشر لطلب المستخدم بالنص.
+  describe('evidence.pm10TemporalEvidence يؤثر على البصمة — NO_READINGS مقابل QUERY_FAILED لا يحملان نفس input_snapshot_hash', () => {
+    it('نفس كل الحقول الأخرى، فرق واحد فقط هو pm10TemporalEvidence (NO_READINGS مقابل QUERY_FAILED) → بصمة مختلفة', () => {
+      const dvi = minimalDvi();
+      const noReadings = {
+        decisionCategory: 'ALLOW',
+        evidence: {
+          pm10TemporalEvidenceState: 'NO_READINGS',
+          pm10TemporalEvidence: {
+            queryState: 'NO_READINGS',
+            failureCode: null,
+            evaluatedAt: '2026-08-18T09:30:00.000Z',
+          },
+        },
+      } as unknown as DustComplianceResult;
+      const queryFailed = {
+        decisionCategory: 'ALLOW',
+        evidence: {
+          pm10TemporalEvidenceState: 'QUERY_FAILED',
+          pm10TemporalEvidence: {
+            queryState: 'QUERY_FAILED',
+            failureCode: 'PM10_HISTORY_QUERY_FAILED',
+            evaluatedAt: '2026-08-18T09:30:00.000Z',
+          },
+        },
+      } as unknown as DustComplianceResult;
+
+      const hashNoReadings = computeInputSnapshotHash(dvi, noReadings, 'LIVE_OPERATIONAL');
+      const hashQueryFailed = computeInputSnapshotHash(dvi, queryFailed, 'LIVE_OPERATIONAL');
+
+      expect(hashNoReadings).not.toBe(hashQueryFailed);
+    });
+
+    it('Replay: نفس compliance المخزَّن (pm10TemporalEvidence مجمَّدة وقت الحفظ) يُعيد نفس البصمة تماماً بلا اعتماد على أي حالة حية لاحقة', () => {
+      const dvi = minimalDvi();
+      const complianceAsStoredAtDecisionTime = {
+        decisionCategory: 'FIELD_VERIFICATION_REQUIRED',
+        evidence: {
+          pm10TemporalEvidenceState: 'QUERY_FAILED',
+          pm10TemporalEvidence: {
+            queryState: 'QUERY_FAILED',
+            failureCode: 'PM10_HISTORY_QUERY_FAILED',
+            evaluatedAt: '2026-08-18T09:30:00.000Z',
+          },
+        },
+      } as unknown as DustComplianceResult;
+
+      const hashAtDecisionTime = computeInputSnapshotHash(dvi, complianceAsStoredAtDecisionTime, 'LIVE_OPERATIONAL');
+      const hashOnReplay = computeInputSnapshotHash(dvi, complianceAsStoredAtDecisionTime, 'LIVE_OPERATIONAL');
+
+      expect(hashOnReplay).toBe(hashAtDecisionTime);
+    });
+  });
 });

@@ -18,6 +18,19 @@ export type DustRiskClass =
 // freshness gate of its own, unlike wind/visibility.
 export type Pm10EvidenceState = 'FRESH' | 'STALE' | 'MISSING' | 'FUTURE';
 
+// طلب مستخدم صريح ("لقطة القرار والبصمة"): كائن مستقل موازٍ لـ
+// pm10TemporalEvidenceState (السلسلة المسطَّحة أدناه في evidence) — يحمل
+// نفس الحالة لكن بشكل صريح يضم رمز الفشل ووقت التقييم معاً في بنية واحدة،
+// كي يدخل input_snapshot_hash/evidence_hash ككائن واضح قابل للفحص المباشر
+// من أي أداة تدقيق تقرأ اللقطة، لا فقط كسلسلة نصية مبعثرة بين حقول evidence
+// الأخرى. queryState يطابق pm10TemporalEvidenceState حرفياً (مصدر الحقيقة
+// نفسه، لا اشتقاق مستقل) — الحقلان يتحركان معاً دائماً.
+export interface Pm10TemporalEvidenceSnapshot {
+  queryState: 'AVAILABLE' | 'NO_READINGS' | 'QUERY_FAILED';
+  failureCode: 'PM10_HISTORY_QUERY_FAILED' | null;
+  evaluatedAt: string;
+}
+
 export type DustWindBand = 'BELOW_15' | 'FROM_15_TO_25' | 'ABOVE_25' | 'UNKNOWN';
 
 export type DustComplianceDecisionCategory =
@@ -265,6 +278,39 @@ export interface DustActivityMeasurements {
 
   // Demolition/construction debris transport
   debrisPileHeightM: number | null;
+}
+
+// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+// توثيق الشمال الحقيقي"): يميّز صراحة بين اتجاه رياح موثَّق فعلياً على
+// الشمال الحقيقي (VERIFIED) واتجاه خام غير موثَّق (UNVERIFIED) وغياب أي
+// اتجاه إطلاقاً (UNAVAILABLE) — بدل استخدام last_wind_direction_deg الخام
+// مباشرة في تحليل الانتشار المكاني (nearestDownwindReceptorDistanceM) بلا
+// أي ضمان أن الحساس معايَر فعلياً. راجع resolveWindDirectionEvidence في
+// dustEvaluation.ts للمنطق الكامل، وmigration 202608190002 لحقول التوثيق
+// المصدر (project_devices.true_north_*).
+export type WindDirectionQuality = 'VERIFIED' | 'UNVERIFIED' | 'UNAVAILABLE';
+
+export interface WindDirectionEvidence {
+  // القيمة الخام كما وردت من الجهاز/التقدير — تُعرض دائماً للمستخدم (شفافية
+  // كاملة)، بصرف النظر عن حالة التوثيق، لكنها لا تدخل تحليل الانتشار المكاني
+  // إلا حين quality='VERIFIED' (راجع directionForAnalysisDeg أدناه).
+  rawDeg: number | null;
+  // القيمة الفعلية المستخدَمة في nearestDownwindReceptorDistanceM — null إلا
+  // حين تكون المحاذاة موثَّقة فعلياً (TRUE_NORTH موثَّق ومطبَّق). لا يُستبدَل
+  // تلقائياً باتجاه Open-Meteo التقديري عند غياب التوثيق — يبقى null صراحة،
+  // فتُعيد nearestDownwindReceptorDistanceM نتيجة null (لا تفعيل لقاعدة
+  // المستقبل باتجاه الرياح)، لا قيمة مضلِّلة مبنية على تقدير مختلف تماماً.
+  directionForAnalysisDeg: number | null;
+  quality: WindDirectionQuality;
+  source: 'DEVICE' | 'FORECAST' | 'MANUAL' | 'NONE';
+  deviceId: string | null;
+  trueNorthDocumented: boolean;
+  alignmentType: 'TRUE_NORTH' | 'MAGNETIC_NORTH' | null;
+  verifiedAt: string | null;
+  verifiedBy: string | null;
+  verificationMethod: string | null;
+  deviationDeg: number | null;
+  evidenceUrl: string | null;
 }
 
 export interface DustActivityComplianceProfile {
@@ -557,6 +603,36 @@ export interface DustComplianceResult {
     // pm10EvidenceState in DustComplianceContext for detail. Undefined means "not
     // computed" (legacy calls/tests building evidence manually).
     pm10EvidenceState?: Pm10EvidenceState;
+    // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل استعلام سلسلة PM10 يتحول
+    // إلى سلسلة فارغة"): تشخيص صريح لحالة سلسلة PM10 التاريخية وقت هذا
+    // القرار — مستقل تماماً عن pm10EvidenceState أعلاه (ذاك يقيس حداثة
+    // القراءة اللحظية الواحدة، هذا يقيس نجاح/فشل استعلام السلسلة الزمنية
+    // كاملةً، fetchPm10SustainedStatus في dustEvaluation.ts):
+    //   AVAILABLE  = الاستعلام نجح ووُجدت قراءات فعلية ضمن النافذة الزمنية.
+    //   NO_READINGS = الاستعلام نجح لكن بصفر صفوف (حالة طبيعية: لا قراءات
+    //     بعد لهذا النشاط/الجهاز، لا خطأ).
+    //   QUERY_FAILED = الاستعلام فشل فعلياً (pm10HistoryQueryFailed=true) —
+    //     لا يجوز الخلط بينها وبين NO_READINGS رغم أن كلتيهما تُنتجان
+    //     sustainedMinutesAbove340=0/isConfirmedViolation340=false ظاهرياً.
+    // Undefined = لم يُبنَ بعد (استدعاءات قديمة/اختبارات تبني evidence يدوياً).
+    pm10TemporalEvidenceState?: 'AVAILABLE' | 'NO_READINGS' | 'QUERY_FAILED';
+    // طلب مستخدم صريح ("لقطة القرار والبصمة"): نفس حالة pm10TemporalEvidenceState
+    // أعلاه، لكن ككائن صريح ({queryState, failureCode, evaluatedAt}) بدل
+    // سلسلة نصية مفردة — يضمن أن "استعلام ناجح بلا قراءات" (NO_READINGS)
+    // و"استعلام فاشل" (QUERY_FAILED) لا يحملان أبداً نفس البصمة (input_
+    // snapshot_hash/evidence_hash)، لأن evaluatedAt وfailureCode يختلفان
+    // أيضاً بينهما، لا queryState وحده. Undefined = لم يُبنَ بعد (استدعاءات
+    // قديمة/اختبارات تبني evidence يدوياً) — نفس دلالة الحقل المسطَّح أعلاه.
+    pm10TemporalEvidence?: Pm10TemporalEvidenceSnapshot;
+    // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+    // توثيق الشمال الحقيقي"): نسخة التوثيق المستخدمة فعلياً وقت هذا القرار
+    // بالضبط — تدخل input_snapshot/input_snapshot_hash/evidence_hash تلقائياً
+    // (نفس أي حقل آخر هنا)، فلو تغيّر توثيق الجهاز لاحقاً (إعادة معايرة)،
+    // يبقى القرار القديم قابلاً لإعادة البناء بالقيمة التي كانت مستخدمة فعلاً
+    // وقت صدوره (بخلاف ميزة المعايرة القديمة المحذوفة في migration
+    // 202608130005، التي فقدت هذا الأثر تماماً). Undefined = لم يُبنَ بعد
+    // (استدعاءات قديمة/اختبارات تبني evidence يدوياً).
+    windDirection?: WindDirectionEvidence;
   };
 
   // Reading-validity advisory notes (from DVI, see DviEvaluationResult.caveatsAr) —
@@ -635,6 +711,12 @@ export interface DustComplianceContext {
   windSpeedKmh: number | null;
   windGustKmh: number | null;
   windDirectionDeg: number | null;
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون
+  // توثيق الشمال الحقيقي"): الدليل الكامل (raw + الجودة + التوثيق) الذي
+  // بُني منه windDirectionDeg أعلاه — يُنسَخ كما هو إلى DustComplianceResult.
+  // evidence.windDirection (engine.ts) ليدخل input_snapshot/evidence_hash.
+  // undefined = لم يُبنَ (استدعاءات context() قديمة في الاختبارات).
+  windDirectionEvidence?: WindDirectionEvidence;
   pm10UgM3: number | null;
   pm25UgM3: number | null;
   // Display only, in the "reference weather for the decision" panel — does not
@@ -774,4 +856,25 @@ export interface DustComplianceContext {
   // in the existing jsonb column, no new column needed) — the stored decision now
   // carries traceable evidence to specific rows, not just an aggregated number.
   pm10EvidenceReadingIds?: string[];
+
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل استعلام سلسلة PM10 يتحول
+  // إلى سلسلة فارغة"): true فقط عندما فشل استعلام pm10_readings_history
+  // فعلياً (fetchPm10SustainedStatus في dustEvaluation.ts) — لا عند نجاحه
+  // بصفر صفوف (تلك حالة طبيعية: "لا قراءات بعد"، pm10ConfirmedViolation340
+  // تبقى false بحق). نفس مبدأ previousDecisionQueryFailed أعلاه بالضبط،
+  // مطبَّقاً هنا على سلسلة PM10 التاريخية بدل القرار السابق. يُستهلَك في
+  // engine.ts لإصدار FIELD_VERIFICATION_REQUIRED صراحة بدل معاملة الفشل
+  // كـ"لا مخالفة" صامتة. False/undefined = الاستعلام نجح (بصرف النظر عن
+  // عدد الصفوف).
+  pm10HistoryQueryFailed?: boolean;
+  // كود الفشل نفسه من Pm10SustainedFetchResult.failureCode (dustEvaluation.ts)
+  // — منسوخ كما هو، لا مُعاد اشتقاقه. null دائماً حين pm10HistoryQueryFailed
+  // ليست true (توافقي مع أي مصدر مستقبلي لأكواد فشل إضافية بلا كسر هذا
+  // الحقل). undefined = استدعاء قديم لا يمرره (نفس دلالة null عملياً).
+  pm10HistoryFailureCode?: 'PM10_HISTORY_QUERY_FAILED' | null;
+  // يُنسَخ إلى DustComplianceResult.evidence.pm10TemporalEvidenceState
+  // (engine.ts) — راجع تعليقه الكامل هناك للفرق الدقيق عن pm10EvidenceState.
+  // undefined = استدعاء قديم لا يمرره (evidence.pm10TemporalEvidenceState
+  // يبقى undefined أيضاً حينها، لا قيمة افتراضية مُخمَّنة).
+  pm10TemporalEvidenceState?: 'AVAILABLE' | 'NO_READINGS' | 'QUERY_FAILED';
 }

@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/app/lib/apiClient';
 import type { ProjectPoint } from './ProjectsMap';
-import { decisionMeta, alertKindToDecision, dviLevelToDecision } from '@/app/lib/decisionMeta';
+import { decisionMeta, alertKindToDecision, alertKindLabelAr, dviLevelToDecision } from '@/app/lib/decisionMeta';
 import { displayActivityLabel } from '@/app/lib/activityLabels';
 import {
   Loader2, Map as MapIcon, FolderKanban, Activity, Bell,
@@ -283,7 +283,7 @@ export default function IntegratedDashboard() {
                         <span className="font-bold text-sm text-[#061B40] truncate">{projectNameById.get(a.project_id) || '—'}</span>
                       </div>
                       <span className={`px-2.5 py-1 rounded-full text-[11px] font-black shrink-0 ${meta.bg} ${meta.text} border ${meta.border}`}>
-                        {meta.label}
+                        {alertKindLabelAr[a.kind] || meta.label}
                       </span>
                     </Link>
                   );

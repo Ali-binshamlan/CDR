@@ -75,6 +75,8 @@ export function alertKindToDecision(kind: string): Decision {
     case 'NO_DECISION_YET': return 'caution';
     case 'FORECAST_WARNING': return 'caution';
     case 'BEFORE_START': return 'caution';
+    // تحسّن القراءة — خبر إيجابي صراحة، لا يرفع حالة الخطر إطلاقاً.
+    case 'PM10_IMPROVED': return 'safe';
     default: return 'safe'; // BEFORE_1H / BEFORE_2H — تذكير بحت، لا يرفع حالة الخطر
   }
 }
@@ -100,6 +102,9 @@ export const alertKindLabelAr: Record<string, string> = {
   NO_DECISION_YET: 'نشاط جارٍ بلا قرار موثّق',
   PM10_APPROACHING_LIMIT: 'اقتراب من حد PM10 التنظيمي',
   FORECAST_WARNING: 'تحذير توقّعي (ساعة قادمة ضمن النافذة)',
+  // جديد (202608190001، طلب صريح من المستخدم): تحسّن القراءة بعد مخالفة
+  // مؤكَّدة وقبل دخول الإيقاف الفعلي — راجع alert-outbox-worker/route.ts.
+  PM10_IMPROVED: 'تحسّن القراءة (PM10 عاد دون حد المخالفة)',
 };
 
 // يحوّل مستوى DVI الحي (DviLevel: GREEN..BLACK، محرك dust-engine) إلى نفس

@@ -29,15 +29,16 @@ export async function GET(request: NextRequest) {
     query = query.eq('projects.user_id', auth.userId);
   } else {
     // جهة الرصد تُقصَر على المخالفات التنظيمية الفعلية فقط
-    // (COMPLIANCE_VIOLATION) — نفس القيد المطبَّق في app/api/admin/alerts/
-    // route.ts، حتى يطابق عداد الشارة عدد الصفوف المعروضة فعلياً في جدول
-    // التنبيهات (AllAlertsTable)، لا كل الأنواع.
+    // (COMPLIANCE_VIOLATION) وتنبيه "تحسّن القراءة" المرتبط بها
+    // (PM10_IMPROVED) — نفس القيد المطبَّق في app/api/admin/alerts/route.ts،
+    // حتى يطابق عداد الشارة عدد الصفوف المعروضة فعلياً في جدول التنبيهات
+    // (AllAlertsTable)، لا كل الأنواع.
     //
     // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
     // والاحترازي"، راجع migration 202608110020 الكامل): هذا الفلتر صحيح
     // منطقياً دائماً — الإصلاح الفعلي كان في persist_activity_decision_atomic
     // (لم تكن تُنتج kind='COMPLIANCE_VIOLATION' إطلاقاً)، لا هنا.
-    query = query.eq('kind', 'COMPLIANCE_VIOLATION');
+    query = query.in('kind', ['COMPLIANCE_VIOLATION', 'PM10_IMPROVED']);
   }
   const { count, error } = await query;
 

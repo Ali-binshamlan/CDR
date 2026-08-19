@@ -20,9 +20,12 @@ export async function GET(request: NextRequest) {
   const isViewerCaller = auth.role === 'viewer';
 
   // جهة الرصد تحديداً تُقصَر على المخالفات التنظيمية الفعلية فقط
-  // (COMPLIANCE_VIOLATION) — طلب صريح من المستخدم: لا تريد كل أنواع
-  // التنبيهات (استعداد/بدء نشاط/بلا قرار/تقييد/تنبيه استباقي) ظاهرة لها،
-  // فقط المخالفة المؤكَّدة. السوبر أدمن يبقى يرى كل الأنواع كالمعتاد.
+  // (COMPLIANCE_VIOLATION)، بالإضافة إلى تنبيه "تحسّن القراءة" المرتبط بها
+  // (PM10_IMPROVED — طلب صريح من المستخدم: إن تحسّنت القراءة بعد مخالفة
+  // مؤكَّدة وقبل دخول الإيقاف الفعلي، تصلها إشعاراً بالتحسّن أيضاً، لا فقط
+  // نص المخالفة الأصلي). لا تريد كل أنواع التنبيهات الأخرى (استعداد/بدء
+  // نشاط/بلا قرار/تقييد/تنبيه استباقي) ظاهرة لها. السوبر أدمن يبقى يرى كل
+  // الأنواع كالمعتاد.
   //
   // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
   // والاحترازي"): هذا الفلتر كان صحيحاً منطقياً دائماً، لكن persist_activity_
@@ -37,7 +40,7 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false })
     .limit(200);
   if (isViewerCaller) {
-    alertsQuery = alertsQuery.eq('kind', 'COMPLIANCE_VIOLATION');
+    alertsQuery = alertsQuery.in('kind', ['COMPLIANCE_VIOLATION', 'PM10_IMPROVED']);
   }
   const { data: alerts, error: alertsError } = await alertsQuery;
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'admin/alerts fetch failed') }, { status: 500 });
@@ -69,8 +72,9 @@ export async function GET(request: NextRequest) {
       ...alert,
       // جهة الرصد تحديداً تُعرَض لها viewer_message (النص الرسمي) بدل
       // message التقني الموجَّه لصاحب المشروع، فقط عندما تكون موجودة فعلاً
-      // (اليوم: COMPLIANCE_VIOLATION فقط — راجع alerts/generate/route.ts) —
-      // غير ذلك يبقى message كما هو (فشل آمن، لا كسر لأي تنبيه بلا viewer_message).
+      // (اليوم: COMPLIANCE_VIOLATION وPM10_IMPROVED — راجع deriveAlertMessage
+      // في alert-outbox-worker/route.ts) — غير ذلك يبقى message كما هو (فشل
+      // آمن، لا كسر لأي تنبيه بلا viewer_message).
       message: isViewerCaller && alert.viewer_message ? alert.viewer_message : alert.message,
       projectName: alert.projects?.name || null,
       projectCity: alert.projects?.city || null,

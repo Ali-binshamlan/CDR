@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'react-hot-toast';
-import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar, Wifi } from 'lucide-react';
+import { ArrowRight, Trash2, Save, AlertTriangle, Gauge, Radar, Wifi, X, Compass } from 'lucide-react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { useNow } from '@/app/lib/useNow';
@@ -117,9 +117,25 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     is_active: boolean;
     last_reading_at: string | null;
     last_wind_speed_kmh: number | null;
+    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — القسم د: "لا توجد قراءة اتجاه"
+    // تصنيف ثالث منفصل عن موثق/غير موثق): كان الحقل مفقوداً من الواجهة رغم
+    // وجوده في DEVICE_LIST_COLUMNS فعلياً — لا كان ممكناً التمييز بين "غير
+    // موثَّق لكن يرسل اتجاهاً" و"لا يرسل اتجاهاً إطلاقاً".
+    last_wind_direction_deg: number | null;
     last_pm10: number | null;
     last_pm25: number | null;
     last_visibility_m: number | null;
+    // توثيق الشمال الحقيقي (migration 202608190002) — راجع تعليق
+    // WindDirectionEvidence الكامل في dust-compliance-engine/types.ts
+    // للسبب الكامل: اتجاه رياح جهاز غير موثَّق لا يدخل تحليل الانتشار
+    // المكاني (قاعدة المستقبل باتجاه الرياح)، يبقى قراءة خام للعرض فقط.
+    true_north_alignment_documented: boolean | null;
+    true_north_alignment_type: 'TRUE_NORTH' | 'MAGNETIC_NORTH' | null;
+    true_north_verification_method: string | null;
+    true_north_verified_by: string | null;
+    true_north_verified_at: string | null;
+    true_north_deviation_deg: number | null;
+    true_north_evidence_url: string | null;
   }
   const [devices, setDevices] = useState<ProjectDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(true);
@@ -246,6 +262,73 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
       toast.success('تم حذف الجهاز');
     } catch (error) {
       toast.error(getApiErrorMessage(error) || 'فشل حذف الجهاز');
+    }
+  };
+
+  // توثيق الشمال الحقيقي (migration 202608190002) — نافذة تحرير منفصلة لكل
+  // جهاز على حدة (لا تُجمَّع مع نموذج المشروع الرئيسي، نفس مبدأ بقية إدارة
+  // الأجهزة في هذا الملف). trueNorthDraft يحمل حالة النموذج مؤقتاً أثناء
+  // التحرير فقط، لا يُستهلَك في أي مكان آخر.
+  const [trueNorthModalDeviceId, setTrueNorthModalDeviceId] = useState<string | null>(null);
+  const [trueNorthDraft, setTrueNorthDraft] = useState<{
+    documented: boolean;
+    alignmentType: 'TRUE_NORTH' | 'MAGNETIC_NORTH';
+    verificationMethod: string;
+    verifiedBy: string;
+    verifiedAt: string;
+    deviationDeg: string;
+    evidenceUrl: string;
+  }>({
+    documented: false,
+    alignmentType: 'TRUE_NORTH',
+    verificationMethod: '',
+    verifiedBy: '',
+    verifiedAt: '',
+    deviationDeg: '',
+    evidenceUrl: '',
+  });
+  const [savingTrueNorth, setSavingTrueNorth] = useState(false);
+
+  const openTrueNorthModal = (device: ProjectDevice) => {
+    setTrueNorthDraft({
+      documented: device.true_north_alignment_documented === true,
+      alignmentType: device.true_north_alignment_type ?? 'TRUE_NORTH',
+      verificationMethod: device.true_north_verification_method ?? '',
+      verifiedBy: device.true_north_verified_by ?? '',
+      verifiedAt: device.true_north_verified_at ? device.true_north_verified_at.slice(0, 10) : '',
+      deviationDeg: device.true_north_deviation_deg != null ? String(device.true_north_deviation_deg) : '',
+      evidenceUrl: device.true_north_evidence_url ?? '',
+    });
+    setTrueNorthModalDeviceId(device.id);
+  };
+
+  const handleSaveTrueNorth = async () => {
+    if (!trueNorthModalDeviceId) return;
+    if (
+      trueNorthDraft.documented &&
+      (!trueNorthDraft.verificationMethod.trim() || !trueNorthDraft.verifiedBy.trim() || !trueNorthDraft.verifiedAt)
+    ) {
+      toast.error('توثيق الشمال الحقيقي غير مكتمل — طريقة التحقق ومن قام به وتاريخه مطلوبة جميعاً');
+      return;
+    }
+    setSavingTrueNorth(true);
+    try {
+      await apiClient.patch(`/projects/${projectId}/devices/${trueNorthModalDeviceId}`, {
+        true_north_alignment_documented: trueNorthDraft.documented,
+        true_north_alignment_type: trueNorthDraft.alignmentType,
+        true_north_verification_method: trueNorthDraft.verificationMethod,
+        true_north_verified_by: trueNorthDraft.verifiedBy,
+        true_north_verified_at: trueNorthDraft.verifiedAt ? new Date(trueNorthDraft.verifiedAt).toISOString() : null,
+        true_north_deviation_deg: trueNorthDraft.deviationDeg.trim() ? Number(trueNorthDraft.deviationDeg) : null,
+        true_north_evidence_url: trueNorthDraft.evidenceUrl,
+      });
+      await fetchDevices();
+      setTrueNorthModalDeviceId(null);
+      toast.success('تم تحديث توثيق الشمال الحقيقي');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل تحديث التوثيق');
+    } finally {
+      setSavingTrueNorth(false);
     }
   };
 
@@ -1202,8 +1285,28 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                         {device.last_wind_speed_kmh != null && <div>رياح: {device.last_wind_speed_kmh} كم/س</div>}
                         {device.last_pm10 != null && <div>PM10: {device.last_pm10}</div>}
                         {device.last_pm25 != null && <div>PM2.5: {device.last_pm25}</div>}
+                        {/* توثيق الشمال الحقيقي (migration 202608190002) — راجع
+                            resolveWindDirectionEvidence في dustEvaluation.ts.
+                            ثلاث حالات منفصلة (لا اثنتان): لا توجد قراءة اتجاه
+                            إطلاقاً (لا معنى للتوثيق بلا قراءة أصلاً) — تختلف
+                            عن "يرسل اتجاهاً لكن غير موثَّق" (القراءة موجودة،
+                            لكن لن تدخل تحليل الانتشار حتى يُوثَّق الجهاز). */}
+                        {device.last_wind_direction_deg == null ? (
+                          <div className="text-slate-400">لا توجد قراءة اتجاه</div>
+                        ) : device.true_north_alignment_documented === true ? (
+                          <div className="text-emerald-600">✓ موثق للشمال الحقيقي</div>
+                        ) : (
+                          <div className="text-amber-600">⚠ غير موثق — لن يُستخدم اتجاه الرياح في تحليل الانتشار</div>
+                        )}
                       </div>
                       <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+                        <button
+                          type="button"
+                          onClick={() => openTrueNorthModal(device)}
+                          className="text-[11px] font-bold text-[#3995FF] hover:underline px-2 py-1"
+                        >
+                          توثيق الشمال الحقيقي
+                        </button>
                         <button
                           type="button"
                           onClick={() => setConnectModalDeviceId(device.id)}
@@ -1241,6 +1344,141 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               onClose={() => setConnectModalDeviceId(null)}
               onConnected={fetchDevices}
             />
+          )}
+
+          {/* توثيق الشمال الحقيقي (migration 202608190002) — راجع تعليق
+              WindDirectionEvidence الكامل في dust-compliance-engine/types.ts.
+              اتجاه رياح غير موثَّق لا يدخل تحليل الانتشار المكاني إطلاقاً؛
+              هذه النافذة هي الطريقة الوحيدة لتوثيقه لكل جهاز على حدة. */}
+          {trueNorthModalDeviceId && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" dir="rtl">
+              <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-[#061B40] flex items-center gap-2">
+                    <Compass className="w-5 h-5 text-[#3995FF]" /> توثيق الشمال الحقيقي
+                  </h3>
+                  <button type="button" onClick={() => setTrueNorthModalDeviceId(null)} className="text-[#061B40]/40 hover:text-[#061B40]">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <p className="text-[12px] font-bold text-[#061B40]/70 mb-2">
+                  هل تم توجيه حساس اتجاه الرياح إلى الشمال الحقيقي؟
+                </p>
+
+                {/* القائمة التفصيلية مطابقة لتوصية التقرير حرفياً — عدم
+                    التوثيق لا يعطل الجهاز، ولا يمنع أي قراءة أخرى؛ يعطل فقط
+                    التحليل المعتمد على اتجاه الرياح تحديداً. */}
+                <p className="text-[11px] font-bold text-[#061B40]/50 mb-1">
+                  عدم التوثيق لا يعطل الجهاز، ولا يمنع:
+                </p>
+                <ul className="text-[11px] font-bold text-[#061B40]/50 mb-3 space-y-0.5 pr-4 list-disc">
+                  <li>قراءة PM10.</li>
+                  <li>سرعة الرياح.</li>
+                  <li>الهبات.</li>
+                  <li>الرؤية.</li>
+                  <li>الحرارة والرطوبة.</li>
+                </ul>
+                <p className="text-[11px] font-bold text-amber-600 mb-4 leading-relaxed">
+                  بل يعطل فقط التحليل المعتمد على اتجاه الرياح (قاعدة المستقبل باتجاه الرياح — MRQ-RECEPTOR-DOWNWIND-120).
+                </p>
+
+                <div className="space-y-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={trueNorthDraft.documented}
+                      onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, documented: e.target.checked }))}
+                      className="w-4 h-4 accent-[#3995FF]"
+                    />
+                    <span className="text-sm font-bold text-[#061B40]">موثَّق للشمال الحقيقي</span>
+                  </label>
+
+                  {trueNorthDraft.documented && (
+                    <>
+                      <div>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">نوع المرجع</label>
+                        <select
+                          value={trueNorthDraft.alignmentType}
+                          onChange={(e) =>
+                            setTrueNorthDraft((prev) => ({ ...prev, alignmentType: e.target.value as 'TRUE_NORTH' | 'MAGNETIC_NORTH' }))
+                          }
+                          className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
+                        >
+                          <option value="TRUE_NORTH">الشمال الحقيقي</option>
+                          <option value="MAGNETIC_NORTH">الشمال المغناطيسي</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">طريقة التحقق</label>
+                        <input
+                          type="text"
+                          value={trueNorthDraft.verificationMethod}
+                          onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, verificationMethod: e.target.value }))}
+                          placeholder="مثال: مساحة GPS، بوصلة معايَرة"
+                          className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">من قام بالتحقق</label>
+                        <input
+                          type="text"
+                          value={trueNorthDraft.verifiedBy}
+                          onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, verifiedBy: e.target.value }))}
+                          className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">تاريخ التحقق</label>
+                        <input
+                          type="date"
+                          value={trueNorthDraft.verifiedAt}
+                          onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, verifiedAt: e.target.value }))}
+                          className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">الانحراف المطبق (بالدرجات، اختياري)</label>
+                        <input
+                          type="number"
+                          value={trueNorthDraft.deviationDeg}
+                          onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, deviationDeg: e.target.value }))}
+                          className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">مرجع أو صورة الإثبات (رابط، اختياري)</label>
+                        <input
+                          type="text"
+                          value={trueNorthDraft.evidenceUrl}
+                          onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, evidenceUrl: e.target.value }))}
+                          className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex gap-3 mt-6">
+                  <button
+                    type="button"
+                    onClick={handleSaveTrueNorth}
+                    disabled={savingTrueNorth}
+                    className="flex-1 bg-[#3995FF] hover:bg-[#3995FF]/90 disabled:bg-gray-300 text-white font-bold py-2.5 rounded-lg text-sm transition-all"
+                  >
+                    {savingTrueNorth ? 'جارٍ الحفظ...' : 'حفظ'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTrueNorthModalDeviceId(null)}
+                    disabled={savingTrueNorth}
+                    className="flex-1 bg-white border border-[#061B40]/15 text-[#061B40] font-bold py-2.5 rounded-lg text-sm transition-all"
+                  >
+                    إلغاء
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
             {/* إقرار المستخدم بصحة البيانات وتحمّل المسؤولية الكاملة عنها —

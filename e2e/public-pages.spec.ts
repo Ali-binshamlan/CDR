@@ -38,6 +38,14 @@ test.describe('صفحة تسجيل الدخول', () => {
 test.describe('صفحة إنشاء حساب', () => {
   test('تعرض نموذج التسجيل', async ({ page }) => {
     await page.goto('/signup');
+    // الخطوة 1 من 3 (بيانات الشركة) — لا يوجد حقل بريد/كلمة مرور هنا؛ يجب
+    // اجتياز التحقق (companyName/username/phoneNumber) والانتقال للخطوة 2
+    // حيث تُعرَض حقول الحساب فعلياً.
+    await page.getByPlaceholder('مثال: شركة المقاولات المتحدة').fill('شركة الاختبار');
+    await page.getByPlaceholder('مثال: mohammed.alharbi').fill('test.user');
+    await page.getByPlaceholder('مثال: 0501234567').fill('0501234567');
+    await page.getByRole('button', { name: 'التالي' }).click();
+
     await expect(page.locator('input[type="email"]').first()).toBeVisible();
     await expect(page.locator('input[type="password"]').first()).toBeVisible();
   });

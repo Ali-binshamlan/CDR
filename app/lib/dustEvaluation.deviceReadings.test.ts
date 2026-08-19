@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildDustInput, resolveFreshProjectDevice, type FreshDeviceReading } from './dustEvaluation';
+import { buildDustInput, resolveFreshProjectDevice, resolveWindDirectionEvidence, type FreshDeviceReading } from './dustEvaluation';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // =====================================================================
@@ -38,6 +38,7 @@ const baseProject = { id: 'project-1', latitude: 24.7136, longitude: 46.6753 };
 
 function freshDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceReading {
   return {
+    deviceId: 'device-1',
     last_wind_speed_kmh: 22,
     last_wind_gust_kmh: 30,
     last_wind_direction_deg: 180,
@@ -198,6 +199,14 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
     );
     const result = await resolveFreshProjectDevice(supabase, 'project-1');
     expect(result).toEqual({
+      deviceId: 'device-1',
+      trueNorthAlignmentDocumented: null,
+      trueNorthAlignmentType: null,
+      trueNorthVerificationMethod: null,
+      trueNorthVerifiedBy: null,
+      trueNorthVerifiedAt: null,
+      trueNorthDeviationDeg: null,
+      trueNorthEvidenceUrl: null,
       last_wind_speed_kmh: 18,
       last_wind_gust_kmh: 25,
       last_wind_direction_deg: 90,
@@ -252,5 +261,88 @@ describe('resolveFreshProjectDevice — اختيار أحدث قراءة جها�
     await resolveFreshProjectDevice(supabase, 'project-1', null);
     const idCalls = supabase._eqCalls.filter((args: unknown[]) => args[0] === 'id');
     expect(idCalls.length).toBe(0);
+  });
+});
+
+// =====================================================================
+// اختبارات قبول صريحة (طلب المستخدم — تقرير المراجعة الخارجي: "اتجاه
+// الرياح يُستخدم دون توثيق الشمال الحقيقي"، القسم 5): يحققان بالضبط
+// السيناريوهات المطلوبة صراحة — اتجاه موثَّق يُستخدَم في التحليل، اتجاه
+// غير موثَّق يُعرَض كقراءة خام فقط.
+// =====================================================================
+describe('resolveWindDirectionEvidence — يميّز الاتجاه الموثَّق عن غير الموثَّق', () => {
+  function verifiedDevice(overrides: Partial<FreshDeviceReading> = {}): FreshDeviceReading {
+    return {
+      deviceId: 'device-1',
+      trueNorthAlignmentDocumented: true,
+      trueNorthAlignmentType: 'TRUE_NORTH',
+      trueNorthVerificationMethod: 'مساحة GPS',
+      trueNorthVerifiedBy: 'مساح مرخَّص',
+      trueNorthVerifiedAt: '2026-01-01T00:00:00.000Z',
+      trueNorthDeviationDeg: 0,
+      trueNorthEvidenceUrl: null,
+      last_wind_speed_kmh: null,
+      last_wind_gust_kmh: null,
+      last_wind_direction_deg: null,
+      last_pm10: null,
+      last_pm25: null,
+      last_visibility_m: null,
+      last_relative_humidity_percent: null,
+      last_temperature_c: null,
+      last_reading_at: '2026-01-01T00:00:00.000Z',
+      last_pm10_at: null,
+      last_wind_speed_at: null,
+      last_wind_gust_at: null,
+      last_wind_direction_at: null,
+      last_visibility_at: null,
+      last_pm25_at: null,
+      last_relative_humidity_at: null,
+      last_temperature_at: null,
+      ...overrides,
+    };
+  }
+
+  it('اتجاه 270° بلا أي توثيق → quality=UNVERIFIED، rawDeg=270 يُعرَض، directionForAnalysisDeg=null (لا يدخل التحليل)', () => {
+    const r = resolveWindDirectionEvidence(null, 270, 'device');
+    expect(r.rawDeg).toBe(270);
+    expect(r.quality).toBe('UNVERIFIED');
+    expect(r.directionForAnalysisDeg).toBeNull();
+    expect(r.trueNorthDocumented).toBe(false);
+  });
+
+  it('اتجاه 270° موثَّق TRUE_NORTH فعلياً → quality=VERIFIED، directionForAnalysisDeg=270 (يُستخدَم في التحليل)', () => {
+    const r = resolveWindDirectionEvidence(verifiedDevice(), 270, 'device');
+    expect(r.rawDeg).toBe(270);
+    expect(r.quality).toBe('VERIFIED');
+    expect(r.directionForAnalysisDeg).toBe(270);
+    expect(r.trueNorthDocumented).toBe(true);
+    expect(r.deviceId).toBe('device-1');
+  });
+
+  it('جهاز موثَّق لكن المصدر الفعلي weather لا device → لا صلة لتوثيق الجهاز، quality=UNVERIFIED (المصدر ليس هذا الجهاز أصلاً)', () => {
+    const r = resolveWindDirectionEvidence(verifiedDevice(), 270, 'weather');
+    expect(r.quality).toBe('UNVERIFIED');
+    expect(r.directionForAnalysisDeg).toBeNull();
+    expect(r.source).toBe('FORECAST');
+    expect(r.deviceId).toBeNull();
+  });
+
+  it('جهاز موثَّق لكن النوع MAGNETIC_NORTH لا TRUE_NORTH → لا يُعتبَر VERIFIED (يتطلب TRUE_NORTH تحديداً)', () => {
+    const r = resolveWindDirectionEvidence(verifiedDevice({ trueNorthAlignmentType: 'MAGNETIC_NORTH' }), 270, 'device');
+    expect(r.quality).toBe('UNVERIFIED');
+    expect(r.directionForAnalysisDeg).toBeNull();
+  });
+
+  it('لا اتجاه إطلاقاً (rawDeg=null) → quality=UNAVAILABLE، بصرف النظر عن توثيق الجهاز', () => {
+    const r = resolveWindDirectionEvidence(verifiedDevice(), null, 'device');
+    expect(r.quality).toBe('UNAVAILABLE');
+    expect(r.rawDeg).toBeNull();
+    expect(r.source).toBe('NONE');
+  });
+
+  it('اتجاه خام خارج المدى الطبيعي (400°) → يُطبَّع إلى [0, 360) قبل التخزين والعرض', () => {
+    const r = resolveWindDirectionEvidence(verifiedDevice(), 400, 'device');
+    expect(r.rawDeg).toBe(40);
+    expect(r.directionForAnalysisDeg).toBe(40);
   });
 });

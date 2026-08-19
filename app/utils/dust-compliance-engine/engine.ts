@@ -30,6 +30,7 @@ import type {
   DustMonitoringObligation,
   DustRiskClass,
   DustRuleHit,
+  Pm10TemporalEvidenceSnapshot,
 } from './types';
 
 const ENGINE_VERSION = '1.0.0';
@@ -77,6 +78,25 @@ function shortReasonFor(
 // يوضّح للمستخدم هل الأجواء المتوقعة تصلح للنشاط أم لا، حسب dviDecision
 // الجاهز فعلاً (ALLOW/ALLOW_WITH_MONITORING = تصلح، أي فئة أخرى = لا تصلح).
 const DVI_FORECAST_FAVORABLE: ReadonlySet<string> = new Set(['ALLOW', 'ALLOW_WITH_MONITORING']);
+
+// طلب مستخدم صريح ("لقطة القرار والبصمة"): يبني evidence.pm10TemporalEvidence
+// من نفس حقول ctx التي تبني evidence.pm10TemporalEvidenceState المسطَّحة —
+// مصدر الحقيقة الوحيد نفسه (pm10TemporalEvidenceState/pm10HistoryFailureCode
+// في DustComplianceContext)، لا اشتقاق مستقل. Undefined حين
+// pm10TemporalEvidenceState نفسه غير محدَّد (استدعاءات قديمة/اختبارات تبني
+// evidence يدوياً) — نفس دلالة undefined للحقل المسطَّح تماماً، بلا كائن
+// جزئي مضلِّل بقيم افتراضية وهمية.
+function buildPm10TemporalEvidenceSnapshot(
+  ctx: DustComplianceContext,
+  now: number
+): Pm10TemporalEvidenceSnapshot | undefined {
+  if (!ctx.pm10TemporalEvidenceState) return undefined;
+  return {
+    queryState: ctx.pm10TemporalEvidenceState,
+    failureCode: ctx.pm10HistoryFailureCode ?? null,
+    evaluatedAt: new Date(now).toISOString(),
+  };
+}
 
 function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): DustComplianceResult {
   const { riskClass, reasonAr: riskClassReasonAr } = classifyProject(ctx.project);
@@ -173,6 +193,7 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
       windSpeedKmh: ctx.windSpeedKmh,
       windGustKmh: ctx.windGustKmh,
       windDirectionDeg: ctx.windDirectionDeg,
+      windDirection: ctx.windDirectionEvidence,
       // خطأ مكتشَف ومُصلَح (راجع تعليق pm10RawUgM3/pm10EvidenceState الكامل
       // في types.ts): ctx.pm10UgM3 قد يكون null الآن بسبب بوابة الحداثة
       // (قراءة جهاز قديمة) رغم وجود قيمة خام فعلية — العرض هنا يجب أن يبقى
@@ -187,6 +208,8 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
       deviceLastReadingAt: ctx.deviceLastReadingAt,
       devicePm10LastReadingAt: ctx.devicePm10LastReadingAt,
       pm10EvidenceState: ctx.pm10EvidenceState,
+      pm10TemporalEvidenceState: ctx.pm10TemporalEvidenceState,
+      pm10TemporalEvidence: buildPm10TemporalEvidenceSnapshot(ctx, now),
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
     planningSuitability,
@@ -695,6 +718,70 @@ export function evaluateDustCompliance(
     decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
   }
 
+  // خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "فشل استعلام سلسلة PM10 يتحول
+  // إلى سلسلة فارغة"): pm10HistoryQueryFailed=true يعني تعذّر معرفة استمرار
+  // PM10 فعلياً (فشل استعلام pm10_readings_history، لا "لا قراءات" — راجع
+  // تعليق Pm10SustainedFetchResult الكامل في dustEvaluation.ts). ليست تسجيل
+  // مخالفة (regulatoryFinding لا يصبح VIOLATION — لم نُثبت تجاوزاً)، وليست
+  // امتثالاً مثبتاً أيضاً (لا NONE بمعنى "متوافق تماماً") — تحقّق ميداني
+  // مطلوب صراحة، أقل حدة من STOP_AFFECTED_ACTIVITY (لا يجوز افتراض إيقاف
+  // مستحق بلا دليل)، لكن أعلى من PRECAUTION العادية (لا يجوز إخفاء فشل قاعدة
+  // البيانات خلف احتراز عابر).
+  if (ctx.pm10HistoryQueryFailed === true) {
+    // طلب مستخدم صريح ("سجل الأعطال والتدقيق"): نص messageAr/actionAr هنا
+    // هو بالضبط ما تعرضه الواجهة للمستخدم النهائي — يجب أن يبقى خالياً من
+    // أي تفصيل تقني داخلي (نص PostgreSQL، اسم الجدول pm10_readings_history،
+    // Stack trace، بيانات اتصال قاعدة البيانات). التفاصيل التشخيصية الكاملة
+    // تُسجَّل بدلاً من ذلك في جدول technical_fault_events عبر
+    // logPm10HistoryQueryFailureTelemetry (dustEvaluation.ts) — مسار منفصل
+    // تماماً لا تقرأ منه هذه الواجهة.
+    ruleHits.push(
+      ruleHit(
+        'PM10-HISTORY-QUERY-FAILED-HOLD',
+        'FIELD_VERIFICATION_REQUIRED',
+        'تعذر التحقق من استمرارية PM10 بسبب مشكلة مؤقتة في سجل القراءات. لم يعتبر النظام ذلك عدم وجود تجاوز، ويلزم إعادة التقييم.',
+        'أعد التقييم ميدانياً بعد استعادة القراءة الطبيعية لسجل PM10',
+        false,
+        'NONE'
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+  }
+
+  // خطأ حرج مكتشَف ومُصلَح (نفس المراجعة أعلاه، الخطوة 6): فشل استعلام سلسلة
+  // PM10 لا يجوز أن يُزيل إيقافاً سابقاً كان سببه PM10 تحديداً — نفس مبدأ
+  // previousDecisionQueryFailed أعلاه (فشل استعلام القرار السابق يُبقي
+  // النشاط موقوفاً احترازياً)، مطبَّقاً هنا حين يكون سبب الإيقاف السابق نفسه
+  // (previousDecidingRuleCode) قاعدة PM10. previousDecisionQueryFailed=true
+  // (فشل قراءة القرار السابق نفسه) يُغطّى بالفعل بقاعدة أخرى أعلاه، فهذه
+  // القاعدة تُطبَّق فقط حين نجح قراءة القرار السابق (نعرف أنه كان PM10-STOP)
+  // لكن فشل تحديث سلسلة PM10 الحية اللاحقة.
+  //
+  // خطأ مكتشَف ومُصلَح أثناء كتابة الاختبار: بادئة الكود وحدها ('PM10-')
+  // كانت ستفوّت القاعدة الوحيدة التي تُنتج STOP_AFFECTED_ACTIVITY فعلياً —
+  // RCRC-PM10-30M-SUSPENSION-012 (تعليق 30 دقيقة، الكود الفعلي المخزَّن في
+  // previousDecidingRuleCode لأي إيقاف PM10 حقيقي سابق) لا تبدأ بـ'PM10-'.
+  // القواعد الثلاث الأخرى المرتبطة بـPM10 (PM10-VIOLATION-STOP-006/MRQ-PM10-
+  // BLACK-PENDING-104/PM10-WARNING-008) كلها ALLOW_WITH_CONTROLS — لا تُنتج
+  // STOP_AFFECTED_ACTIVITY إطلاقاً، فلا يمكن أصلاً أن تكون previousDecidingRuleCode
+  // لقرار موقوف سابقاً. المطابقة الصحيحة إذن هي الكود الفعلي حصراً، لا بادئة.
+  const previousWasPm10Stop =
+    (ctx.previousDecisionCategory === 'MANDATORY_STOP' || ctx.previousDecisionCategory === 'STOP_AFFECTED_ACTIVITY') &&
+    ctx.previousDecidingRuleCode === 'RCRC-PM10-30M-SUSPENSION-012';
+  if (ctx.pm10HistoryQueryFailed === true && previousWasPm10Stop) {
+    ruleHits.push(
+      ruleHit(
+        'PM10-PREVIOUS-STOP-PRESERVED-ON-QUERY-FAILURE',
+        'STOP_AFFECTED_ACTIVITY',
+        'تعذّر التحقق من زوال سبب إيقاف PM10 السابق؛ يبقى النشاط موقوفاً حتى نجاح إعادة التقييم',
+        'استعد سجل PM10 وأعد التقييم قبل الاستئناف',
+        false,
+        'NONE'
+      )
+    );
+    decisionCategory = decisionFromRules(ruleHits, missingCriticalInputs);
+  }
+
   if (previousWasStopped && DECISION_PRIORITY[decisionCategory] < DECISION_PRIORITY.STOP_AFFECTED_ACTIVITY) {
     const minutesSinceGoodReadingBegan =
       ctx.previousPendingResumeSince && !evaluationGapDetected
@@ -1077,6 +1164,7 @@ export function evaluateDustCompliance(
       windSpeedKmh: ctx.windSpeedKmh,
       windGustKmh: ctx.windGustKmh,
       windDirectionDeg: ctx.windDirectionDeg,
+      windDirection: ctx.windDirectionEvidence,
       // خطأ مكتشَف ومُصلَح (راجع تعليق pm10RawUgM3/pm10EvidenceState الكامل
       // في types.ts): ctx.pm10UgM3 قد يكون null الآن بسبب بوابة الحداثة
       // (قراءة جهاز قديمة) رغم وجود قيمة خام فعلية — العرض هنا يجب أن يبقى
@@ -1091,6 +1179,8 @@ export function evaluateDustCompliance(
       deviceLastReadingAt: ctx.deviceLastReadingAt,
       devicePm10LastReadingAt: ctx.devicePm10LastReadingAt,
       pm10EvidenceState: ctx.pm10EvidenceState,
+      pm10TemporalEvidenceState: ctx.pm10TemporalEvidenceState,
+      pm10TemporalEvidence: buildPm10TemporalEvidenceSnapshot(ctx, now),
     },
     caveatsAr: ctx.dviCaveatsAr ?? [],
   };
