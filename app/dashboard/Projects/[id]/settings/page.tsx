@@ -1351,8 +1351,25 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
               اتجاه رياح غير موثَّق لا يدخل تحليل الانتشار المكاني إطلاقاً؛
               هذه النافذة هي الطريقة الوحيدة لتوثيقه لكل جهاز على حدة. */}
           {trueNorthModalDeviceId && (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" dir="rtl">
-              <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            // طلب مستخدم صريح: يملأ الشاشة بالكامل (inset-0 بلا p-4/items-
+            // center الذي كان يحصر البطاقة في المنتصف بمساحة محدودة). كما
+            // أن الحاوية الخارجية للمودال تقع فعلياً داخل شجرة <form
+            // onSubmit={handleSubmit}> الصفحة (السطر ~805) في DOM — بلا
+            // onKeyDown هنا، الضغط على Enter داخل أي حقل نصي بالمودال كان
+            // يُطلق submit الفورم الخارجي بالكامل ("حفظ التعديلات") بدل زر
+            // "حفظ" الخاص بالمودال، لأن Enter في حقل نصي داخل form يُطلق
+            // submit أقرب form أصل له في DOM بصرف النظر عن الترتيب البصري
+            // (z-index/position لا علاقة له بهذا السلوك، فقط شجرة DOM).
+            // preventDefault هنا يوقف ذلك الالتقاط قبل وصوله للفورم الخارجي؛
+            // لا يمنع أي تعامل طبيعي آخر مع لوحة المفاتيح داخل المودال.
+            <div
+              className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+              dir="rtl"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.preventDefault();
+              }}
+            >
+              <div className="bg-white w-full h-full overflow-y-auto p-6 sm:rounded-2xl sm:p-8 sm:max-w-lg sm:h-auto sm:max-h-[90vh] shadow-2xl">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-bold text-[#061B40] flex items-center gap-2">
                     <Compass className="w-5 h-5 text-[#3995FF]" /> توثيق الشمال الحقيقي
@@ -1366,9 +1383,12 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                   هل تم توجيه حساس اتجاه الرياح إلى الشمال الحقيقي؟
                 </p>
 
-                {/* القائمة التفصيلية مطابقة لتوصية التقرير حرفياً — عدم
-                    التوثيق لا يعطل الجهاز، ولا يمنع أي قراءة أخرى؛ يعطل فقط
-                    التحليل المعتمد على اتجاه الرياح تحديداً. */}
+                {/* طلب مستخدم صريح: إزالة كود القاعدة التقني الداخلي
+                    (MRQ-RECEPTOR-DOWNWIND-120) من النص الظاهر للمستخدم —
+                    لا فائدة له لمستخدم لا يعرف أكواد القواعد الداخلية،
+                    الشرح بلغة مفهومة يكفي. عدم التوثيق لا يعطل الجهاز، ولا
+                    يمنع أي قراءة أخرى؛ يعطل فقط التحليل المعتمد على اتجاه
+                    الرياح تحديداً. */}
                 <p className="text-[11px] font-bold text-[#061B40]/50 mb-1">
                   عدم التوثيق لا يعطل الجهاز، ولا يمنع:
                 </p>
@@ -1380,7 +1400,7 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                   <li>الحرارة والرطوبة.</li>
                 </ul>
                 <p className="text-[11px] font-bold text-amber-600 mb-4 leading-relaxed">
-                  بل يعطل فقط التحليل المعتمد على اتجاه الرياح (قاعدة المستقبل باتجاه الرياح — MRQ-RECEPTOR-DOWNWIND-120).
+                  بل يعطل فقط تحليل هل يقع مستقبِل حساس (سكني/مدرسي/صحي) فعلياً باتجاه هبوب الرياح.
                 </p>
 
                 <div className="space-y-3">
