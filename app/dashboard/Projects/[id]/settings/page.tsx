@@ -288,6 +288,28 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
     evidenceUrl: '',
   });
   const [savingTrueNorth, setSavingTrueNorth] = useState(false);
+  // طلب مستخدم صريح: حقل "مرجع أو صورة الإثبات" كان نص رابط بلا أي آلية
+  // رفع فعلية — uploadingEvidence يعطّل حقل الرفع أثناء الطلب لمنع نقرات
+  // متكررة، لا علاقة له بـsavingTrueNorth (حفظ التوثيق نفسه عملية منفصلة).
+  const [uploadingEvidence, setUploadingEvidence] = useState(false);
+
+  const handleUploadEvidence = async (deviceId: string, file: File) => {
+    setUploadingEvidence(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const { data } = await apiClient.post<{ url: string }>(
+        `/projects/${projectId}/devices/${deviceId}/evidence-upload`,
+        formData
+      );
+      setTrueNorthDraft((prev) => ({ ...prev, evidenceUrl: data.url }));
+      toast.success('تم رفع الملف بنجاح');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'فشل رفع الملف');
+    } finally {
+      setUploadingEvidence(false);
+    }
+  };
 
   const openTrueNorthModal = (device: ProjectDevice) => {
     setTrueNorthDraft({
@@ -1467,13 +1489,46 @@ export default function ProjectSettingsPage({ params }: SettingsPageProps) {
                         />
                       </div>
                       <div>
-                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">مرجع أو صورة الإثبات (رابط، اختياري)</label>
+                        <label className="text-[11px] font-bold text-[#061B40]/60 block mb-1">مرجع أو صورة الإثبات (اختياري)</label>
+                        {/* طلب مستخدم صريح: رفع ملف فعلي بدل الاكتفاء برابط
+                            نصي بلا آلية توفّره — يستدعي POST .../evidence-
+                            upload (multipart/form-data)، يخزّن في bucket
+                            device-evidence خاص (migration 202608190004)،
+                            ويملأ حقل الرابط تلقائياً برابط موقَّع صالح 7
+                            أيام. حقل النص أدناه يبقى قابلاً للتعديل اليدوي
+                            (رابط خارجي جاهز يبقى مدعوماً أيضاً). */}
+                        <label className={`w-full flex items-center justify-center gap-2 bg-[#F4F7FB] hover:bg-[#e8eef7] text-[#061B40] text-xs font-bold px-3 py-2.5 rounded-lg border border-dashed border-[#061B40]/20 cursor-pointer transition-colors mb-2 ${uploadingEvidence ? 'opacity-60 pointer-events-none' : ''}`}>
+                          <span className="text-[#3995FF]">📁</span>
+                          {uploadingEvidence ? 'جارٍ الرفع...' : 'رفع صورة أو ملف PDF'}
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,application/pdf"
+                            disabled={uploadingEvidence}
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              e.target.value = '';
+                              if (file && trueNorthModalDeviceId) handleUploadEvidence(trueNorthModalDeviceId, file);
+                            }}
+                          />
+                        </label>
                         <input
                           type="text"
                           value={trueNorthDraft.evidenceUrl}
                           onChange={(e) => setTrueNorthDraft((prev) => ({ ...prev, evidenceUrl: e.target.value }))}
+                          placeholder="أو الصق رابطاً خارجياً جاهزاً"
                           className="w-full border border-[#061B40]/15 rounded-lg px-3 py-2 text-sm font-bold"
                         />
+                        {trueNorthDraft.evidenceUrl && (
+                          <a
+                            href={trueNorthDraft.evidenceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] font-bold text-[#3995FF] hover:underline mt-1 inline-block"
+                          >
+                            عرض الملف المرفوع
+                          </a>
+                        )}
                       </div>
                     </>
                   )}
