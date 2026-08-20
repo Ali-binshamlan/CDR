@@ -912,11 +912,46 @@ describe('decideFinal — PLANNING + isLiveForDevice: جهاز حي داخل ه�
     expect(r.mandatoryStop).toBe(false);
   });
 
-  it('isLiveForDevice=true + evidenceQuality=OK (قراءة جهاز طازجة) → يبقى نص PLANNING العام (الجهاز حي فعلاً، لا نقص أدلة)', () => {
+  // خطأ إعادة إنتاج ثانٍ (بلاغ مباشر: "كيف توقعات طقس وانا استلم قراءات من
+  // الجهاز الآن؟" — نشاط يبدأ خلال دقيقة، حقول حية فعلية معروضة PM10=226
+  // إلخ، لكن shortReasonAr قال "توقّعات طقس... لا قراءة جهاز حية"). النص
+  // الآن يفرّق: isLiveForDevice=true + evidenceQuality=OK يعني قراءة جهاز
+  // حقيقية طازجة، لا تقدير طقس — shortReasonAr يجب ألا يقول "توقّعات طقس"
+  // ولا "سيتم تفعيل جهاز الرصد" (الجهاز مفعَّل فعلاً ويرسل الآن).
+  it('isLiveForDevice=true + evidenceQuality=OK (قراءة جهاز طازجة) → نص "قراءة جهاز حية فعلية"، لا "توقّعات طقس"', () => {
     const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
     const r = decideFinal(input({ mode: 'PLANNING', dvi, evidenceQuality: 'OK', isLiveForDevice: true }));
     expect(r.operationalDecision).toBe('ALLOW');
     expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+    expect(r.shortReasonAr).toContain('قراءة جهاز رصد حية فعلية');
+    expect(r.shortReasonAr).not.toContain('توقّعات طقس');
+    expect(r.shortReasonAr).not.toContain('سيتم تفعيل جهاز الرصد');
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.mode).toBe('PLANNING');
+  });
+
+  it('isLiveForDevice=true + evidenceQuality=OK + planningSuitability.isFavorable=false → نص "لا تصلح" يتضمن سبب compliance، لا "توقّعات طقس"', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const compliance = baseCompliance({
+      planningSuitability: { isFavorable: false, reasonAr: 'رياح حالية 45 كم/س تتجاوز الحد الآمن.' },
+    });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance, evidenceQuality: 'OK', isLiveForDevice: true }));
+    expect(r.operationalDecision).toBe('MONITOR');
+    expect(r.shortReasonAr).toContain('قراءة جهاز رصد حية فعلية');
+    expect(r.shortReasonAr).toContain('رياح حالية 45 كم/س');
+    expect(r.shortReasonAr).not.toContain('توقّعات طقس');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('isLiveForDevice=false (خارج هامش الساعتين) + evidenceQuality=OK → يبقى نص "توقّعات طقس" العام (لا جهاز فعلياً بعد رغم evidenceQuality)', () => {
+    const r = decideFinal(input({ mode: 'PLANNING', evidenceQuality: 'OK', isLiveForDevice: false }));
+    expect(r.shortReasonAr).toContain('توقّعات طقس');
+    expect(r.shortReasonAr).toContain('سيتم تفعيل جهاز الرصد');
+  });
+
+  it('isLiveForDevice غائب (undefined، توافقي) + evidenceQuality=OK → يبقى نص "توقّعات طقس" العام (السلوك القديم بلا تغيير)', () => {
+    const r = decideFinal(input({ mode: 'PLANNING', evidenceQuality: 'OK' }));
+    expect(r.shortReasonAr).toContain('توقّعات طقس');
   });
 
   it('isLiveForDevice=false (خارج هامش الساعتين) + evidenceQuality=STALE → يبقى نص PLANNING العام (لا HOLD_FOR_VERIFICATION، لا جهاز فعلياً بعد)', () => {
