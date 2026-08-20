@@ -6,12 +6,17 @@ import { determineFinalDecisionMode } from './dustEvaluation';
 // خبير خارجي — C-06: "توقّع مستقبلي قد يُحفظ بصفة LIVE"): persistFinalDecisions
 // كانت تحفظ كل قرار final_decisions بوضع LIVE_OPERATIONAL دائماً، حتى لو
 // كان windowEval.worst المستخدَم فعلياً توقّع طقس مستقبلي (نشاط لم يبدأ
-// بعد بأكثر من الهامش) لا قراءة جهاز حية. نفس هامش ACTIVITY_LIVE_MARGIN_MS
-// المستخدَم في dust-engine/engine.ts (isActivityLiveNow) يُطبَّق هنا لتحديد
-// mode الصحيح عند الحفظ.
+// بعد) لا قراءة جهاز حية.
 //
-// الهامش كان 30 دقيقة، أصبح ساعتان (طلب مستخدم صريح لاحق — "جهاز الرصد
-// يتفعّل قبل ساعتين من بداية النشاط")، راجع نفس الثابت في dust-engine/engine.ts.
+// طلب مستخدم صريح لاحق (بلاغ مباشر: "لا تسجيل مخالفة قبل بدء النشاط
+// فعلياً" — "تسجيل المخالفات للأنشطة الجارية فقط"): هامش الساعتين
+// (ACTIVITY_LIVE_MARGIN_MS، أُضيف سابقاً بطلب صريح آخر — "جهاز الرصد
+// يتفعّل قبل ساعتين") أُزيل من هذه الدالة تحديداً — كان يسمح بتسجيل
+// مخالفات تنظيمية حقيقية لنشاط لم يبدأ بعد (حتى ساعتين قبل planned_time).
+// الهامش نفسه يبقى مطبَّقاً فقط في نطاق منفصل تماماً: عرض القراءات الحية
+// بالرسوم البيانية (WINDOW_START_MARGIN_MS في device-readings-history/
+// pm10-history routes) — عرض قراءة مبكرة لا يساوي تسجيل مخالفة مبكرة.
+// PLANNING يسري الآن حتى اللحظة الفعلية لـplanned_time بالضبط، بلا هامش.
 // =====================================================================
 
 describe('determineFinalDecisionMode', () => {
@@ -20,17 +25,17 @@ describe('determineFinalDecisionMode', () => {
     expect(determineFinalDecisionMode(startIso)).toBe('LIVE_OPERATIONAL');
   });
 
-  it('نشاط سيبدأ خلال 10 دقائق (ضمن الهامش الحي ساعتان) → LIVE_OPERATIONAL', () => {
+  it('نشاط سيبدأ خلال 10 دقائق (لم يبدأ بعد بالضبط) → PLANNING', () => {
     const startIso = new Date(Date.now() + 10 * 60000).toISOString();
-    expect(determineFinalDecisionMode(startIso)).toBe('LIVE_OPERATIONAL');
+    expect(determineFinalDecisionMode(startIso)).toBe('PLANNING');
   });
 
-  it('نشاط سيبدأ خلال 119 دقيقة (لا يزال ضمن الهامش) → LIVE_OPERATIONAL', () => {
+  it('نشاط سيبدأ خلال 119 دقيقة → PLANNING (لا هامش ساعتين بعد الآن)', () => {
     const startIso = new Date(Date.now() + 119 * 60000).toISOString();
-    expect(determineFinalDecisionMode(startIso)).toBe('LIVE_OPERATIONAL');
+    expect(determineFinalDecisionMode(startIso)).toBe('PLANNING');
   });
 
-  it('نشاط سيبدأ خلال 121 دقيقة (تجاوز الهامش) → PLANNING', () => {
+  it('نشاط سيبدأ خلال 121 دقيقة → PLANNING', () => {
     const startIso = new Date(Date.now() + 121 * 60000).toISOString();
     expect(determineFinalDecisionMode(startIso)).toBe('PLANNING');
   });
@@ -53,6 +58,10 @@ describe('determineFinalDecisionMode', () => {
     const fixedNow = new Date('2026-01-01T12:00:00.000Z').getTime();
     const startInThreeHours = new Date(fixedNow + 3 * 3600000).toISOString();
     expect(determineFinalDecisionMode(startInThreeHours, fixedNow)).toBe('PLANNING');
-    expect(determineFinalDecisionMode(startInThreeHours, fixedNow + 65 * 60000)).toBe('LIVE_OPERATIONAL');
+    // اللحظة نفسها لبداية النشاط بالضبط (nowMs === startMs) → LIVE_OPERATIONAL
+    // (الشرط nowMs < startMs، لا <=) — النشاط بدأ فعلياً هذه اللحظة.
+    expect(determineFinalDecisionMode(startInThreeHours, fixedNow + 3 * 3600000)).toBe('LIVE_OPERATIONAL');
+    // دقيقة واحدة قبل البداية بالضبط → لا يزال PLANNING (بلا أي هامش الآن).
+    expect(determineFinalDecisionMode(startInThreeHours, fixedNow + 3 * 3600000 - 60000)).toBe('PLANNING');
   });
 });

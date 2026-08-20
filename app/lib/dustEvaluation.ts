@@ -2476,13 +2476,24 @@ export function computePendingResumeSince(
 // دالة نقية مستقلة (تقبل nowMs صراحة، لا Date.now() ضمنياً — نفس مبدأ H-07
 // في dust-compliance-engine/engine.ts) لتبقى قابلة للاختبار بمعزل عن أي
 // اتصال قاعدة بيانات.
+//
+// طلب مستخدم صريح (بلاغ مباشر: "لا تسجيل مخالفة قبل بدء النشاط فعلياً"):
+// كان هامش ساعتين (ACTIVITY_LIVE_MARGIN_MS) يُطبَّق هنا أيضاً — بمعنى نشاط
+// سيبدأ خلال ساعتين يُعامَل LIVE_OPERATIONAL فعلياً (مخالفات حقيقية ممكن
+// تُسجَّل في final_decisions/current_dust_compliance_decisions)، رغم أنه
+// لم يبدأ بعد. هذا الهامش (سبب وجوده أصلاً: "جهاز الرصد يتفعّل قبل ساعتين
+// من بداية النشاط") يبقى مناسباً لعرض القراءات الحية في الرسوم البيانية
+// (device-readings-history/pm10-history routes، WINDOW_START_MARGIN_MS)،
+// لكنه غير مناسب هنا: قراءة سيئة تصل قبل البداية بساعتين لا يجوز أن تُنتج
+// "مخالفة تنظيمية" رسمية لنشاط لم يبدأ. الإصلاح: PLANNING يبقى سارياً حتى
+// اللحظة الفعلية لـplanned_time بالضبط (بلا هامش)، لا قبلها بساعتين —
+// تسجيل المخالفات مقصور الآن على الأنشطة الجارية فعلياً فقط.
 export function determineFinalDecisionMode(
   startIso: string | null | undefined,
   nowMs: number = Date.now()
 ): 'LIVE_OPERATIONAL' | 'PLANNING' {
-  const ACTIVITY_LIVE_MARGIN_MS = 120 * 60000;
   const startMs = startIso ? new Date(startIso).getTime() : NaN;
-  return !Number.isNaN(startMs) && nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS ? 'PLANNING' : 'LIVE_OPERATIONAL';
+  return !Number.isNaN(startMs) && nowMs < startMs ? 'PLANNING' : 'LIVE_OPERATIONAL';
 }
 
 // =========================================================================
