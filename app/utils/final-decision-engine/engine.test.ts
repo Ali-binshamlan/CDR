@@ -46,8 +46,6 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
       distanceFactor: 1,
       receptorImpact: 0,
       receptorSensitivityMultiplier: 1,
-      mitigationScore: 0,
-      mitigationReductionFactor: 1,
     },
     visibilityKm: 5,
     effectiveWindKmh: 10,
@@ -939,7 +937,7 @@ describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظي
       level: 'RED',
       decisionLabelAr: 'تقييد شديد — رؤية حرجة',
       mandatoryStop: false,
-      shortReason: 'رؤية حرجة (أقل من 1 كم) — منع بدء رفع جديد ومنع الرفع المعقد',
+      shortReason: 'رؤية حرجة (أقل من 1 كم) — منع بدء عمليات جديدة وتقليل وتيرة العمل الحالي',
     });
     const r = decideFinal(input({ dvi, compliance }));
 

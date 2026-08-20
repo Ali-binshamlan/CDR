@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { Wind, Plus, Trash2, AlertTriangle } from 'lucide-react';
-import { DUST_FORM_DEFAULTS, getInputClass, labelClass, sectionTitleClass, REGULATORY_ACTIVITY_LABEL_AR, GENERAL_ALERTS_AR } from './constants';
+import { getInputClass, labelClass, sectionTitleClass, REGULATORY_ACTIVITY_LABEL_AR, GENERAL_ALERTS_AR } from './constants';
 import type { BatchingUnit, IdleSurfaceUnit, CrusherUnit, RegulatoryActivityFields, RegulatoryActivityItem } from './constants';
 import type { ProjectLite, ProjectDeviceLite } from './types';
 import { MultiActivityMapPicker, buildMapPoints } from './MultiActivityMapPicker';
@@ -10,13 +10,9 @@ import type { MapPoint } from './MultiActivityMapPicker';
 import { buildProjectZoneFromRow, haversineDistanceM } from '@/app/utils/geo/zone';
 import type { PlacementPrecheck } from './index';
 
-type DustForm = typeof DUST_FORM_DEFAULTS;
-
 interface DustStepProps {
   project: ProjectLite;
   isMounted: boolean;
-  dustForm: DustForm;
-  updateDustField: <K extends keyof DustForm>(field: K, value: DustForm[K]) => void;
   dustLoading: boolean;
   onSubmit: (e: React.FormEvent) => void;
   // طلب صريح من المستخدم — إزالة آلية "أكثر من نشاط في نفس الجلسة": نشاط
@@ -53,20 +49,11 @@ interface DustStepProps {
   precheckPending: boolean;
 }
 
-// ملاحظة: من بين الحقول ضمن DUST_CONTROL_CHECKBOXES، dustScreensAvailable فقط
-// تُستخدم فعلياً في قواعد الامتثال التنظيمي (rulebook.ts).
-const DUST_CONTROL_CHECKBOXES: { key: keyof DustForm; label: string }[] = [
-  { key: 'wateringAvailable', label: 'رش الطرق متوفر' },
-  { key: 'stockpilesCovered', label: 'الأكوام مغطاة' },
-  { key: 'speedLimitApplied', label: 'تحديد سرعة داخلي' },
-  { key: 'wheelWashAvailable', label: 'مغسلة إطارات متوفرة' },
-  { key: 'dustScreensAvailable', label: 'شاشات غبار متوفرة' },
-  { key: 'fieldMonitoringAvailable', label: 'مراقبة ميدانية فعّالة' },
-];
-const COMPLIANCE_RELEVANT_CONTROL_KEYS = new Set<keyof DustForm>(['dustScreensAvailable']);
-// مخفي مؤقتاً: هذه الحقول تؤثر فقط على محرك DVI الفيزيائي (mitigationScore
-// في dust-engine/engine.ts)، ولا علاقة لها بمحرك الامتثال التنظيمي إطلاقاً.
-const SHOW_CONTROL_MEASURES_SECTION = false;
+// طلب مستخدم صريح: قسم "إجراءات التحكم المتوفرة" (6 checkboxes) حُذف نهائياً
+// — كان مخفياً بالكامل (SHOW_CONTROL_MEASURES_SECTION=false سابقاً) بلا أي
+// مسار واجهة فعلي، وmitigationReductionFactor في dust-engine/engine.ts الذي
+// كان يستهلكها حُذف معه بنفس القرار (كان ثابتاً 1.0 دائماً، بلا أي تخفيض
+// فعلي على أي سكور — راجع تعليق computeScoreAndBaseDecision في engine.ts).
 
 // خطأ واجهة مكتشَف ومُصلَح (طلب صريح من المستخدم — "الزر ما فيه فايدة
 // أصلاً"): checkbox "عملية مغلقة" (isEnclosedOperation) كان يُعرَض لكل
@@ -80,7 +67,7 @@ const SHOW_CONTROL_MEASURES_SECTION = false;
 
 export function DustStep({
   project, isMounted,
-  dustForm, updateDustField, dustLoading, onSubmit,
+  dustLoading, onSubmit,
   regulatoryActivity,
   updateRegulatoryActivityField, updateRegulatoryActivityLocation, updateRegulatoryActivityTiming, updateRegulatoryActivityTimingMode, updateRegulatoryActivityShift,
   projectDevices,
@@ -786,20 +773,6 @@ export function DustStep({
             );
           })()}
         </div>
-
-        {SHOW_CONTROL_MEASURES_SECTION && (
-        <div className="space-y-3 border-t border-[#061B40]/10 pt-4">
-          <h3 className={sectionTitleClass}>إجراءات التحكم المتوفرة</h3>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {DUST_CONTROL_CHECKBOXES.filter((item) => COMPLIANCE_RELEVANT_CONTROL_KEYS.has(item.key)).map((item) => (
-              <label key={item.key} className="flex items-center gap-2 text-sm text-[#061B40] bg-[#F4F7FB]/50 rounded-lg border border-[#061B40]/10 p-2 cursor-pointer hover:bg-gray-50">
-                <input type="checkbox" checked={dustForm[item.key] as boolean} onChange={(e) => updateDustField(item.key, e.target.checked)} className="w-4 h-4 accent-orange-500" />
-                {item.label}
-              </label>
-            ))}
-          </div>
-        </div>
-        )}
 
         <div className="flex gap-3 pt-2">
           <button

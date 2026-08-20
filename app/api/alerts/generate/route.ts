@@ -60,9 +60,8 @@ import { createClient } from '@supabase/supabase-js';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { evaluateDustVisibilityWindow } from '@/app/utils/dust-engine';
 import type { DustEngineInput, ReceptorType, DistanceBand } from '@/app/utils/dust-engine/types';
-import { translateActivityType } from '@/app/lib/activityLabels';
-import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
-import { resolveFreshProjectDevice, fetchLatestFinalDecisions, fetchLatestStoredCompliance, activityDecisionKey, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
+import { displayActivityLabel } from '@/app/lib/activityLabels';
+import { resolveFreshProjectDevice, fetchLatestFinalDecisions, fetchLatestStoredCompliance, activityDecisionKey, deriveInternalDustSourceFromActivity, type FreshDeviceReading } from '@/app/lib/dustEvaluation';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
 // عميل Supabase بصلاحية Service Role: هذا المسار يعمل دون جلسة مستخدم
@@ -77,20 +76,12 @@ const supabaseAdmin = createClient(
 // نفس الصف الخام المُستعلَم في checkDustActivities أدناه (profiles!inner
 // أضافت أيضاً projects، غير مستخدَمة هنا).
 interface DustProfileRow {
-  activity_type?: string | null;
+  regulatory_activity?: string | null;
   has_earthworks?: boolean | null;
   internal_dirt_roads?: boolean | null;
   heavy_equipment_movement?: boolean | null;
   loose_materials?: boolean | null;
-  large_exposed_area?: boolean | null;
-  dry_surface?: boolean | null;
   surface_wet?: boolean | null;
-  watering_available?: boolean | null;
-  stockpiles_covered?: boolean | null;
-  speed_limit_applied?: boolean | null;
-  wheel_wash_available?: boolean | null;
-  dust_screens_available?: boolean | null;
-  field_monitoring_available?: boolean | null;
   receptor_type?: ReceptorType | null;
   receptor_distance?: DistanceBand | null;
   receptor_is_downwind?: boolean | null;
@@ -110,24 +101,23 @@ function buildDustEngineInputSrv(
   lon: number,
   freshDevice?: FreshDeviceReading | null
 ): DustEngineInput {
+  const regulatoryActivity = dbProfile.regulatory_activity as DustEngineInput['regulatoryActivity'];
+  const {
+    hasEarthworksFromActivity,
+    internalDirtRoadsFromActivity,
+    looseMaterialsFromActivity,
+    heavyEquipmentMovementFromActivity,
+  } = deriveInternalDustSourceFromActivity(regulatoryActivity);
   return {
-    activityType: (dbProfile.activity_type as DustEngineInput['activityType']) || 'GENERAL_OUTDOOR_WORK',
+    regulatoryActivity,
     latitude: lat,
     longitude: lon,
     site: {
-      hasEarthworks: Boolean(dbProfile.has_earthworks),
-      internalDirtRoads: Boolean(dbProfile.internal_dirt_roads),
-      heavyEquipmentMovement: Boolean(dbProfile.heavy_equipment_movement),
-      looseMaterials: Boolean(dbProfile.loose_materials),
-      largeExposedArea: Boolean(dbProfile.large_exposed_area),
-      drySurface: Boolean(dbProfile.dry_surface),
+      hasEarthworks: Boolean(dbProfile.has_earthworks) || hasEarthworksFromActivity,
+      internalDirtRoads: Boolean(dbProfile.internal_dirt_roads) || internalDirtRoadsFromActivity,
+      heavyEquipmentMovement: Boolean(dbProfile.heavy_equipment_movement) || heavyEquipmentMovementFromActivity,
+      looseMaterials: Boolean(dbProfile.loose_materials) || looseMaterialsFromActivity,
       surfaceWet: Boolean(dbProfile.surface_wet),
-      wateringAvailable: Boolean(dbProfile.watering_available),
-      stockpilesCovered: Boolean(dbProfile.stockpiles_covered),
-      speedLimitApplied: Boolean(dbProfile.speed_limit_applied),
-      wheelWashAvailable: Boolean(dbProfile.wheel_wash_available),
-      dustScreensAvailable: Boolean(dbProfile.dust_screens_available),
-      fieldMonitoringAvailable: Boolean(dbProfile.field_monitoring_available),
       receptorType: dbProfile.receptor_type || 'NONE_NEARBY',
       receptorDistance: dbProfile.receptor_distance || 'OVER_500M',
       receptorIsDownwind: Boolean(dbProfile.receptor_is_downwind),
@@ -379,16 +369,10 @@ export async function checkDustActivities(projectIds?: string[]) {
       typeof profile.activity_lng === 'number' ? profile.activity_lng : profile.projects?.longitude;
     const durationMinutes = Number(profile.duration_hours) ? Number(profile.duration_hours) * 60 : (profile.duration_minutes || 60);
     const { startIso, endIso } = computeWindow(profile.planned_date, profile.planned_time, durationMinutes);
-    // النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) لا التصنيف الفيزيائي
-    // الداخلي (activity_type) المستخدم فقط لتغذية حساب حساسية محرك DVI —
-    // هذا النص يُخزَّن حرفياً في alerts.message/recommended_action، فيلزم أن
-    // يعرض ما اختاره المستخدم فعلاً من الشاشة.
-    const label =
-      (profile.regulatory_activity && profile.regulatory_activity !== 'OTHER'
-        ? REGULATORY_ACTIVITY_LABEL_AR[profile.regulatory_activity]
-        : null) ??
-      translateActivityType(profile.activity_type) ??
-      'نشاط غبار';
+    // النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) — هذا النص يُخزَّن
+    // حرفياً في alerts.message/recommended_action، فيلزم أن يعرض ما اختاره
+    // المستخدم فعلاً من الشاشة.
+    const label = displayActivityLabel(profile);
 
     await checkBeforeAlerts(profile.project_id, 'dust', profile.id, label, startIso);
 

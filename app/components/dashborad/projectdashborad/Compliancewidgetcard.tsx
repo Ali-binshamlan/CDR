@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import type { DustComplianceResult, DustComplianceDecisionCategory, SensitiveReceptorType } from '@/app/utils/dust-compliance-engine/types';
 import type { AeiEvaluationResult, AeiColor } from '@/app/utils/aei-engine/types';
-import { ACTIVITY_LABEL_AR } from '@/app/utils/dust-engine/tables';
+import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 import { DEVICE_CONNECTION_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 import { GENERAL_ALERTS_AR } from '@/app/components/AddActivityModal/constants';
 import ActivityReadingsCharts from './ActivityReadingsCharts';
@@ -53,7 +53,7 @@ interface UnitReceptorGroup {
 }
 
 interface ComplianceWidgetCardProps {
-  activityType: string;
+  regulatoryActivity: string;
   /** قد يحمل النشاط الواحد أكثر من صف امتثال عند تعدد وحداته الفعلية (عدة
    * محطات خلط/كسارات/أسطح ضمن نفس النشاط التنظيمي) — كل عنصر له قرار
    * امتثال مستقل تماماً. لا علاقة له بتعدد أنواع الأنشطة (نظام إضافة نشاط
@@ -400,17 +400,8 @@ const getAeiStyle = (color: AeiColor) => {
   }
 };
 
-const EXTENDED_ACTIVITY_LABEL: Record<string, string> = {
-  'COATING': 'أعمال طلاء وعزل', 'ROAD_WORKS': 'أعمال طرق ومسارات', 'WELDING': 'أعمال لحام',
-  'SCAFFOLDING': 'أعمال سقالات', 'CRANE_LIFTING': 'عمليات رفع', 'CONCRETE_POURING': 'صب خرسانة',
-  'ASPHALT_PAVING': 'سفلتة', 'EXCAVATION': 'حفر وردم', 'GRADING': 'أعمال ترابية',
-  'WORK_AT_HEIGHT': 'أعمال على ارتفاع', 'GENERAL_OUTDOOR_WORK': 'أعمال خارجية عامة',
-  'EXTERNAL_PAINTING': 'دهانات وعزل خارجي', 'MATERIAL_TRANSPORT': 'نقل مواد',
-  'HEAVY_EQUIPMENT_MOVEMENT': 'حركة معدات ثقيلة', 'MEP_EXTERNAL_WORK': 'أعمال ميكانيكية/كهربائية'
-};
-
 export default function ComplianceWidgetCard({
-  activityType,
+  regulatoryActivity,
   complianceList,
   complianceHourly,
   aei,
@@ -459,19 +450,16 @@ export default function ComplianceWidgetCard({
   const style = isEnded ? endedStyle : aeiStyle ?? (worst ? COMPLIANCE_DECISION_STYLE[worst.decisionCategory] : COMPLIANCE_DECISION_STYLE.ALLOW);
   const hourlyEntries = (complianceHourly ?? []).filter((h) => !!h?.result);
 
-  // العنوان الفرعي = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...) من قرار
-  // الامتثال، لا التصنيف الفيزيائي العام (حركة معدات ثقيلة). نجمع كل الأنشطة
-  // التنظيمية المميّزة في البطاقة (قد تضم أكثر من واحد) ونرجع للفيزيائي فقط
-  // إن غابت كلها.
-  const physicalActivityLabel = (ACTIVITY_LABEL_AR as Record<string, string>)[activityType] ?? EXTENDED_ACTIVITY_LABEL[activityType] ?? activityType;
+  // العنوان الفرعي = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...). نجمع كل
+  // الأنشطة التنظيمية المميّزة في البطاقة (قد تضم أكثر من واحد)، ونرجع
+  // للمفتاح الخام (regulatoryActivity المُمرَّر من الأب) إن غابت كلها.
   const regulatoryLabels = Array.from(
-    new Set(
-      complianceEntries
-        .map((c) => c.regulatoryActivityLabelAr)
-        .filter((l): l is string => !!l && l !== 'نشاط غبار عام')
-    )
+    new Set(complianceEntries.map((c) => c.regulatoryActivityLabelAr).filter((l): l is string => !!l))
   );
-  const activityLabel = regulatoryLabels.length > 0 ? regulatoryLabels.join(' + ') : physicalActivityLabel;
+  const activityLabel =
+    regulatoryLabels.length > 0
+      ? regulatoryLabels.join(' + ')
+      : REGULATORY_ACTIVITY_LABEL_AR[regulatoryActivity] ?? regulatoryActivity;
 
   // لحظة حساب الخادم الفعلية لـsustainedMinutes أعلاه — لا Date.now() محلي.
   //

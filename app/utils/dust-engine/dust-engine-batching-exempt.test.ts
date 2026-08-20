@@ -29,28 +29,20 @@ const EXCELLENT_WEATHER: DustWeatherSample = {
 
 function buildInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   return {
-    activityType: 'CONCRETE_POURING',
+    regulatoryActivity: 'BATCHING_PLANT',
     latitude: 24.7,
     longitude: 46.7,
     site: {
       // خصائص موقع نمطية لمحطة خلط مكشوفة فعلياً بلا إجراءات تحكم — كل
-      // عوامل توليد الغبار الستة مفعَّلة حتى يرتفع internalDustHazard بما
-      // يكفي فعلياً فوق حد GREEN (25) رغم طقس ممتاز، وهو الفارق الذي يُثبت
+      // عوامل توليد الغبار الأربعة الحالية مفعَّلة حتى يرتفع internalDustHazard
+      // بما يكفي فعلياً فوق حد GREEN (25) رغم طقس ممتاز، وهو الفارق الذي يُثبت
       // أن isEnclosedDustExempt يُصفِّره صراحة (لا يعتمد الاختبار على
       // الطقس وحده لإثبات المشكلة).
       hasEarthworks: true,
       internalDirtRoads: true,
       heavyEquipmentMovement: true,
       looseMaterials: true,
-      largeExposedArea: true,
-      drySurface: true,
       surfaceWet: false,
-      wateringAvailable: false,
-      stockpilesCovered: false,
-      speedLimitApplied: false,
-      wheelWashAvailable: false,
-      dustScreensAvailable: false,
-      fieldMonitoringAvailable: false,
       // أسوأ حالة جوار ممكنة — مستقبِل حساس (مدرسة/مستشفى) قريب جداً باتجاه الريح
       receptorType: 'HOSPITAL_SCHOOL_NURSERY_RESIDENTIAL_ADJACENT',
       receptorDistance: 'UNDER_50M',

@@ -46,7 +46,7 @@ function baseWeather(overrides: Partial<DustWeatherSample> = {}): DustWeatherSam
 
 function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   return {
-    activityType: 'EXCAVATION',
+    regulatoryActivity: 'EARTHWORKS',
     latitude: 24.7,
     longitude: 46.7,
     site: {
@@ -54,15 +54,7 @@ function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
       internalDirtRoads: false,
       heavyEquipmentMovement: false,
       looseMaterials: false,
-      largeExposedArea: false,
-      drySurface: false,
       surfaceWet: false,
-      wateringAvailable: true,
-      stockpilesCovered: true,
-      speedLimitApplied: true,
-      wheelWashAvailable: true,
-      dustScreensAvailable: true,
-      fieldMonitoringAvailable: true,
       receptorType: 'NONE_NEARBY',
       receptorDistance: 'OVER_500M',
       receptorIsDownwind: false,
@@ -166,8 +158,6 @@ function buildDviWithDeviceReading(
       distanceFactor: 1,
       receptorImpact: 1,
       receptorSensitivityMultiplier: 1,
-      mitigationScore: 1,
-      mitigationReductionFactor: 1,
     },
     visibilityKm: 10,
     effectiveWindKmh: deviceOverrides.deviceWindSpeedKmh ?? 10,

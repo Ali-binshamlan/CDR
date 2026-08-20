@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+﻿import { describe, it, expect } from 'vitest';
 import { computeDviResult } from './engine';
 import type { DustEngineInput, DustWeatherSample, DustSiteInputs } from './types';
 
@@ -33,15 +33,7 @@ function site(overrides: Partial<DustSiteInputs> = {}): DustSiteInputs {
     internalDirtRoads: false,
     heavyEquipmentMovement: false,
     looseMaterials: false,
-    largeExposedArea: false,
-    drySurface: false,
     surfaceWet: false,
-    wateringAvailable: true,
-    stockpilesCovered: true,
-    speedLimitApplied: true,
-    wheelWashAvailable: true,
-    dustScreensAvailable: true,
-    fieldMonitoringAvailable: true,
     receptorType: 'NONE_NEARBY',
     receptorDistance: 'OVER_500M',
     receptorIsDownwind: false,
@@ -53,7 +45,7 @@ function site(overrides: Partial<DustSiteInputs> = {}): DustSiteInputs {
 
 function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   return {
-    activityType: 'GENERAL_OUTDOOR_WORK',
+    regulatoryActivity: 'IDLE_SURFACE',
     latitude: 24.7,
     longitude: 46.7,
     site: site(),
@@ -71,7 +63,7 @@ function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
 describe('DVI تكامل — بوابات الرؤية الحرجة', () => {
   it('رؤية أقل من 500 متر لنشاط معتمد على الرؤية (رفع بالرافعة) → إيقاف إلزامي', () => {
     const r = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING' }),
+      input({ regulatoryActivity: 'CRUSHER' }),
       weather({ visibilityM: 400, weatherSymbol: 'SANDSTORM' })
     );
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
@@ -82,7 +74,7 @@ describe('DVI تكامل — بوابات الرؤية الحرجة', () => {
 
   it('رؤية أقل من 500 متر لنشاط غير معتمد على الرؤية → تقييد شديد (لا إيقاف إلزامي كامل)', () => {
     const r = computeDviResult(
-      input({ activityType: 'CONCRETE_POURING' }),
+      input({ regulatoryActivity: 'BATCHING_PLANT' }),
       weather({ visibilityM: 400, weatherSymbol: 'SANDSTORM' })
     );
     expect(r.decisionCategory).toBe('RESTRICT_SEVERE');
@@ -106,55 +98,45 @@ describe('DVI تكامل — بوابات الغبار والجسيمات', () =
   // على عتبة 340 بذاتها.
   it('PM10 ≥ 500 مع نشاط مثير للغبار (حفر)، بلا خطر فيزيائي آخر → لا إيقاف من DVI (القرار التنظيمي لـPM10 يأتي حصراً من محرك الامتثال)', () => {
     const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      input({ regulatoryActivity: 'EARTHWORKS', site: site({ hasEarthworks: true }) }),
       weather({ pm10: 550 })
     );
     expect(r.decisionCategory).not.toBe('STOP_DUST_GENERATING_ACTIVITIES');
     expect(r.mandatoryStop).toBe(false);
-    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
   });
 
-  it('رياح ≥55 كم/س + مواد سائبة مكشوفة لنشاط مولّد للغبار → إيقاف إلزامي وoverridable=false', () => {
+  // طلب مستخدم صريح (اكتشاف تناقض أوسع): DVI-WIND-LOOSE-MATERIAL-005 حُذفت
+  // بالكامل، لا فقط مسار الإيقاف الإلزامي عند 55 كم/س — شرط تفعيلها الأساسي
+  // نفسه (effectiveWindKmh>=30) كان فوق حد الـ25 كم/س الذي يوقف عنده محرك
+  // الامتثال (GATE-WIND-ABOVE-25-004) أي نشاط من التسعة أصلاً (isDustGenerating
+  // مُشتَقة true دائماً)، فحتى التنبيه الأساسي ("غطّوا المواد السائبة") كان
+  // ميتاً عملياً — العمل يكون متوقفاً من محرك الامتثال قبل وصول الرياح
+  // لعتبة تفعيل هذه القاعدة بخمس نقاط كاملة.
+  it('رياح ≥30 كم/س + مواد سائبة مكشوفة → لا DVI-WIND-LOOSE-MATERIAL-005 (القاعدة محذوفة بالكامل، الحماية الفعلية من محرك الامتثال عند 25 كم/س)', () => {
     const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ looseMaterials: true }) }),
+      input({ regulatoryActivity: 'EARTHWORKS', site: site({ looseMaterials: true }) }),
       weather({ windSpeedKmh: 60, windGustKmh: 60, pm10: 20, visibilityM: 10000 })
     );
-    expect(r.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
-    expect(r.mandatoryStop).toBe(true);
-    expect(r.triggeredRules).toContain('DVI-WIND-LOOSE-MATERIAL-005');
-    expect(r.overridable).toBe(false);
-  });
-
-  // خطأ معماري مكتشَف ومُصلَح (الملاحظة #9، راجع dust-compliance-engine/
-  // engine.ts GATE-DVI-002 وpm10ThresholdRule لموقع القرار التنظيمي الفعلي
-  // لـPM10 الآن): DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY/PM10-STALE حُذفتا
-  // بالكامل — لم يعد لـPM10 وحده (بأي قيمة، بأي عمر قراءة) أي مسار لتفعيل
-  // DVI-DUST-ACTIVITY-STOP-004 إطلاقاً.
-  it('PM10>340 وحده (بلا رؤية حرجة/رياح شديدة مساهمة)، أياً كانت القيمة → DVI-DUST-ACTIVITY-STOP-004 لا يُفعَّل إطلاقاً', () => {
-    const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
-      weather({ pm10: 350, visibilityM: 10000, windSpeedKmh: 10, windGustKmh: 15 })
-    );
-    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
+    expect(r.triggeredRules).not.toContain('DVI-WIND-LOOSE-MATERIAL-005');
     expect(r.mandatoryStop).toBe(false);
+    expect(r.decisionCategory).not.toBe('STOP_DUST_GENERATING_ACTIVITIES');
   });
 
-  it('رؤية<1كم + حفريات + رياح>40 (بلا PM10 مرتفع) → DVI-DUST-ACTIVITY-STOP-004 يُفعَّل (خطر فيزيائي مستقل تماماً عن PM10)', () => {
+  // طلب مستخدم صريح (اكتشاف تناقض ثالث بنفس النمط): DVI-DUST-ACTIVITY-
+  // STOP-004 (رؤية<1كم + حفريات + رياح>40 → إيقاف إلزامي) حُذفت بالكامل —
+  // GATE-WIND-ABOVE-25-004 في dust-compliance-engine يوقف EARTHWORKS (النشاط
+  // الوحيد الذي يملك hasEarthworks=true فعلياً، عبر deriveInternalDustSource
+  // FromActivity) عند رياح >25 كم/س، أي قبل وصول شرط هذه القاعدة (رياح>40)
+  // بخمسة عشر نقطة كاملة — القاعدة لا تصل لتفعيلها الفعلي أبداً في الواقع.
+  // بخلاف DVI-WIND-LOOSE-MATERIAL-005، لم يكن لهذه القاعدة أي مسار تنبيه
+  // منفصل عن الإيقاف — الإيقاف الإلزامي كان محتواها الوحيد، فحُذفت القاعدة
+  // بأكملها (لا كودها ولا نصها يُفعَّلان بعد الآن).
+  it('رؤية<1كم + حفريات + رياح>40 → لا DVI-DUST-ACTIVITY-STOP-004 (القاعدة محذوفة، الحماية الفعلية من محرك الامتثال عند 25 كم/س)', () => {
     const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+      input({ regulatoryActivity: 'EARTHWORKS', site: site({ hasEarthworks: true }) }),
       weather({ pm10: 20, visibilityM: 800, windSpeedKmh: 45, windGustKmh: 45 })
     );
-    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
-    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
-  });
-
-  it('رؤية حرجة+رياح شديدة+حفريات (خطر فيزيائي حقيقي مستقل)، مع PM10>340 مساهماً بالتوازي → يبقى إيقافاً فورياً صحيحاً (لا يتأثر بإلغاء عتبة PM10 المستقلة)', () => {
-    const r = computeDviResult(
-      input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
-      weather({ pm10: 350, visibilityM: 800, windSpeedKmh: 45, windGustKmh: 45 })
-    );
-    expect(r.triggeredRules).toContain('DVI-DUST-ACTIVITY-STOP-004');
-    expect(r.mandatoryStop).toBe(true);
+    expect(r.triggeredRules).not.toContain('DVI-DUST-ACTIVITY-STOP-004');
   });
 
   // طلب صريح من المستخدم: نص RESTRICT العام ("تقييد العمل: وجود فجوة في
@@ -178,14 +160,11 @@ describe('DVI تكامل — بوابات الغبار والجسيمات', () =
     }
   });
 
-  it('رياح فعالة عالية جداً (≥55) مع مواد سائبة ونشاط نقل مواد → إيقاف', () => {
-    const r = computeDviResult(
-      input({ activityType: 'MATERIAL_TRANSPORT', site: site({ looseMaterials: true }) }),
-      weather({ windSpeedKmh: 60, windGustKmh: 70 })
-    );
-    expect(r.triggeredRules).toContain('DVI-WIND-LOOSE-MATERIAL-005');
-    expect(r.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
-  });
+  // طلب مستخدم صريح (اكتشاف تناقض ثانٍ بنفس القاعدة، حُذفت القاعدة بأكملها):
+  // DVI-WIND-LOOSE-MATERIAL-005 لم تعد تُفعَّل إطلاقاً لأي نشاط من التسعة —
+  // راجع الاختبار أعلاه ("لا DVI-WIND-LOOSE-MATERIAL-005... القاعدة محذوفة
+  // بالكامل") الذي يثبت هذا مباشرة؛ لا حاجة لاختبار EARTHWORKS مقابل
+  // BATCHING_PLANT بعد الآن — كلاهما ينتج نفس النتيجة (لا قاعدة تُفعَّل أصلاً).
 });
 
 describe('DVI تكامل — الحالة الآمنة والقرار الأخضر', () => {
@@ -198,7 +177,7 @@ describe('DVI تكامل — الحالة الآمنة والقرار الأخض
 
   it('shortReason يطابق القرار الفعلي (لا تناقض بين النص والقرار)', () => {
     const stopResult = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING' }),
+      input({ regulatoryActivity: 'CRUSHER' }),
       weather({ visibilityM: 300 })
     );
     // قرار إيقاف → النص يذكر الإيقاف، وليس "بيئة آمنة"
@@ -300,11 +279,11 @@ describe('DVI تكامل — caveatsAr (ملاحظات تحذيرية لا تُ�
     it('نفس السيناريو عند PM10 يتجاوز 340 (لا إيقاف من DVI وحده) → الحرارة/الرطوبة المرتفعتان لا تُلغيان ولا تخفّفان القرار الأساسي', () => {
       const highPm10 = 1500;
       const baseline = computeDviResult(
-        input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+        input({ regulatoryActivity: 'EARTHWORKS', site: site({ hasEarthworks: true }) }),
         weather({ pm10: highPm10, temperatureC: 30, relativeHumidityPercent: 40 })
       );
       const r = computeDviResult(
-        input({ activityType: 'EXCAVATION', site: site({ hasEarthworks: true }) }),
+        input({ regulatoryActivity: 'EARTHWORKS', site: site({ hasEarthworks: true }) }),
         weather({ pm10: highPm10, temperatureC: 55, relativeHumidityPercent: 90 })
       );
       expect(r.caveatsAr).toHaveLength(2);
@@ -319,24 +298,21 @@ describe('DVI تكامل — تصعيد المستقبِلات الحساسة', 
   it('قرب مستشفى/سكن باتجاه الرياح مع درجة خطر معتبرة يرفع التقييد', () => {
     const near = computeDviResult(
       input({
-        activityType: 'EXCAVATION',
+        regulatoryActivity: 'EARTHWORKS',
         site: site({
           hasEarthworks: true,
           looseMaterials: true,
-          drySurface: true,
           receptorType: 'HOSPITAL_SCHOOL_NURSERY_RESIDENTIAL_ADJACENT',
           receptorDistance: 'UNDER_50M',
           receptorIsDownwind: true,
-          wateringAvailable: false,
-          stockpilesCovered: false,
         }),
       }),
       weather({ pm10: 180, windSpeedKmh: 25 })
     );
     const far = computeDviResult(
       input({
-        activityType: 'EXCAVATION',
-        site: site({ hasEarthworks: true, looseMaterials: true, drySurface: true }),
+        regulatoryActivity: 'EARTHWORKS',
+        site: site({ hasEarthworks: true, looseMaterials: true }),
       }),
       weather({ pm10: 180, windSpeedKmh: 25 })
     );
@@ -354,7 +330,7 @@ describe('DVI تكامل — تصعيد المستقبِلات الحساسة', 
 describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في أي من الوضعين', () => {
   it('وضع API (hasDeviceLink=false): onsiteVisibilityM لا يُستخدم حتى لو غابت قيمة الطقس تماماً', () => {
     const r = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300, hasDeviceLink: false }),
+      input({ regulatoryActivity: 'CRUSHER', onsiteVisibilityM: 300, hasDeviceLink: false }),
       weather({ visibilityM: null })
     );
     // لا رؤية من الطقس ولا تعويض من onsite — visibilityM تبقى null فعلياً
@@ -364,7 +340,7 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
 
   it('وضع API: توقعات الطقس هي المصدر الوحيد — قيمة onsite السيئة لا تفسد قراراً جيداً من الطقس', () => {
     const r = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300, hasDeviceLink: false }),
+      input({ regulatoryActivity: 'CRUSHER', onsiteVisibilityM: 300, hasDeviceLink: false }),
       weather({ visibilityM: 10000 })
     );
     expect(r.mandatoryVisibilityStop).toBe(false);
@@ -373,7 +349,7 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
 
   it('وضع الجهاز (hasDeviceLink=true): قيمة الطقس الجيدة لا تُستخدم إطلاقاً — بلا deviceVisibilityM، الرؤية تبقى null', () => {
     const r = computeDviResult(
-      input({ activityType: 'CRANE_LIFTING', onsiteVisibilityM: 300, hasDeviceLink: true }),
+      input({ regulatoryActivity: 'CRUSHER', onsiteVisibilityM: 300, hasDeviceLink: true }),
       weather({ visibilityM: 10000 })
     );
     // الجهاز لم يرسل deviceVisibilityM، والوضع لا يسمح بالرجوع للطقس ولا
@@ -387,7 +363,7 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
   it('وضع الجهاز: قراءة رؤية سيئة وحديثة من الجهاز نفسه تُفعّل بوابة الإيقاف كالمعتاد', () => {
     const r = computeDviResult(
       input({
-        activityType: 'CRANE_LIFTING',
+        regulatoryActivity: 'CRUSHER',
         hasDeviceLink: true,
         deviceVisibilityM: 300,
         deviceVisibilityAt: new Date().toISOString(),
@@ -411,21 +387,16 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
 // mandatoryStop=true فعلياً، بلا استثناء نوع نشاط أو تركيبة خطر واحدة.
 // =====================================================================
 describe('DVI تكامل — invariant: لا يجوز أن يكون التوقف الإلزامي قابلاً للتجاوز', () => {
-  const ALL_ACTIVITY_TYPES: DustEngineInput['activityType'][] = [
-    'GENERAL_OUTDOOR_WORK',
-    'CRANE_LIFTING',
-    'WORK_AT_HEIGHT',
-    'STEEL_ERECTION',
-    'FACADE_INSTALLATION',
-    'HEAVY_EQUIPMENT_MOVEMENT',
-    'EXCAVATION',
-    'BACKFILLING',
-    'GRADING',
-    'SOIL_TRANSPORT',
-    'COMPACTION',
-    'ROAD_WORKS',
-    'CONCRETE_POURING',
-    'MATERIAL_TRANSPORT',
+  const ALL_ACTIVITY_TYPES: DustEngineInput['regulatoryActivity'][] = [
+    'EARTHWORKS',
+    'SITE_TRAFFIC',
+    'MATERIAL_HANDLING_STOCKPILE',
+    'DEMOLITION',
+    'CRUSHER',
+    'BATCHING_PLANT',
+    'STONE_CUTTING',
+    'CD_WASTE_TRANSPORT',
+    'IDLE_SURFACE',
   ];
 
   const HAZARD_COMBINATIONS: {
@@ -442,11 +413,11 @@ describe('DVI تكامل — invariant: لا يجوز أن يكون التوقف
     { label: 'كل المخاطر معاً (أسوأ سيناريو ممكن)', weatherOverrides: { visibilityM: 100, pm10: 2000, windSpeedKmh: 70, windGustKmh: 80, weatherSymbol: 'SANDSTORM' }, siteOverrides: { hasEarthworks: true, looseMaterials: true, internalDirtRoads: true } },
   ];
 
-  for (const activityType of ALL_ACTIVITY_TYPES) {
+  for (const regulatoryActivity of ALL_ACTIVITY_TYPES) {
     for (const hazard of HAZARD_COMBINATIONS) {
-      it(`${activityType} + ${hazard.label} → !(mandatoryStop && overridable)`, () => {
+      it(`${regulatoryActivity} + ${hazard.label} → !(mandatoryStop && overridable)`, () => {
         const r = computeDviResult(
-          input({ activityType, site: site(hazard.siteOverrides) }),
+          input({ regulatoryActivity, site: site(hazard.siteOverrides) }),
           weather(hazard.weatherOverrides)
         );
         expect(r.mandatoryStop && r.overridable).toBe(false);

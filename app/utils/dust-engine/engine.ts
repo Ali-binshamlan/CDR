@@ -5,7 +5,6 @@
 // =============================================================
 
 import {
-  ActivityCategory,
   CauseClassification,
   DustEngineInput,
   DustSiteInputs,
@@ -17,6 +16,7 @@ import {
   DviRiskChannels,
   DviMultipliers,
   DustWindowEvaluation,
+  RegulatoryDustActivityKey,
 } from './types';
 import {
   ACTIVITY_SENSITIVITY,
@@ -90,16 +90,24 @@ export function classifyCause(sample: DustWeatherSample, pm10: number | null): C
 // -------------------------------------------------------------
 // حساب SiteDustGenerationRisk + التخفيف بالمطر/الرطوبة
 // -------------------------------------------------------------
+// طلب مستخدم صريح (اكتشاف فجوة مشابهة): largeExposedArea/drySurface (كانتا
+// 10%+10% من الوزن) حُذفتا نهائياً من هذه المعادلة — خصائص موقع فيزيائية
+// بحتة (مساحة كبيرة/سطح جاف) لا علاقة لها بنوع النشاط منطقياً (أي نشاط من
+// التسعة ممكن يكون بموقع صغير أو كبير، رطب أو جاف)، بخلاف hasEarthworks/
+// internalDirtRoads/heavyEquipmentMovement/looseMaterials أدناه (كل واحد
+// منها تعريفه *هو* طبيعة نشاط تنظيمي محدد بالضبط، فالاشتقاق التلقائي من
+// regulatoryActivity منطقي وصادق). لم يكن لهما مسار واجهة إطلاقاً أصلاً (لا
+// خانة اختيار في DustStep.tsx)، وربطهما بـtrue ثابتة لكل الأنشطة كان سيرفع
+// كل الدرجات بمقدار ثابت بلا أي معلومة حقيقية مضافة — أسوأ من حذفهما. الوزن
+// (20% مجتمعة) أُعيد توزيعه نسبياً على الأربعة الباقية (×1.25 لكل وزن أصلي).
 function calculateSiteDustGeneration(site: DustSiteInputs, rainfallLast24hMm: number | null) {
   const b = (v: boolean) => (v ? 1 : 0);
   const siteDustGenerationRisk =
     100 *
-    (0.25 * b(site.hasEarthworks) +
-      0.2 * b(site.internalDirtRoads) +
-      0.2 * b(site.heavyEquipmentMovement) +
-      0.15 * b(site.looseMaterials) +
-      0.1 * b(site.largeExposedArea) +
-      0.1 * b(site.drySurface));
+    (0.3125 * b(site.hasEarthworks) +
+      0.25 * b(site.internalDirtRoads) +
+      0.25 * b(site.heavyEquipmentMovement) +
+      0.1875 * b(site.looseMaterials));
 
   let dampeningFactor = 1 - Math.min(0.6, 0.12 * (rainfallLast24hMm ?? 0));
   if (site.surfaceWet) dampeningFactor = Math.min(dampeningFactor, 0.4);
@@ -112,8 +120,13 @@ function calculateSiteDustGeneration(site: DustSiteInputs, rainfallLast24hMm: nu
 // -------------------------------------------------------------
 // حساب المضاعفات الثلاثة (النشاط، الجوار، إجراءات التحكم)
 // -------------------------------------------------------------
-function calculateMultipliers(activityType: ActivityCategory, site: DustSiteInputs) {
-  const activitySensitivity = ACTIVITY_SENSITIVITY[activityType];
+function calculateMultipliers(
+  site: DustSiteInputs,
+  regulatoryActivity: RegulatoryDustActivityKey
+) {
+  // رقم حساسية مستقل لكل من الأنشطة التنظيمية التسعة الفعلية — راجع تعليق
+  // ACTIVITY_SENSITIVITY الكامل في tables.ts للقيم والمبررات.
+  const activitySensitivity = ACTIVITY_SENSITIVITY[regulatoryActivity];
   const activitySensitivityMultiplier = 0.8 + 0.4 * activitySensitivity;
 
   const receptorSensitivity = RECEPTOR_SENSITIVITY[site.receptorType];
@@ -129,16 +142,6 @@ function calculateMultipliers(activityType: ActivityCategory, site: DustSiteInpu
   const receptorImpact = receptorSensitivity * downwindAlignment * distanceFactor;
   const receptorSensitivityMultiplier = 1 + 0.2 * receptorImpact;
 
-  const b = (v: boolean) => (v ? 1 : 0);
-  const mitigationScore =
-    0.25 * b(site.wateringAvailable) +
-    0.2 * b(site.stockpilesCovered) +
-    0.15 * b(site.speedLimitApplied) +
-    0.15 * b(site.wheelWashAvailable) +
-    0.15 * b(site.dustScreensAvailable) +
-    0.1 * b(site.fieldMonitoringAvailable);
-  const mitigationReductionFactor = 1 - Math.min(0.25, 0.25 * mitigationScore);
-
   return {
     activitySensitivity,
     activitySensitivityMultiplier,
@@ -147,15 +150,16 @@ function calculateMultipliers(activityType: ActivityCategory, site: DustSiteInpu
     distanceFactor,
     receptorImpact,
     receptorSensitivityMultiplier,
-    mitigationScore,
-    mitigationReductionFactor,
   };
 }
 
 // -------------------------------------------------------------
 // القرار الأساسي من المستوى (قبل تطبيق البوابات)
 // -------------------------------------------------------------
-function baseDecisionFromLevel(level: DviLevel, activityType: ActivityCategory): DviDecisionCategory {
+function baseDecisionFromLevel(
+  level: DviLevel,
+  regulatoryActivity: RegulatoryDustActivityKey
+): DviDecisionCategory {
   if (level === 'GREEN') return 'ALLOW';
   // ORANGE لم يعد يُنتج RESTRICT — طلب صريح من المستخدم: رسالة "تقييد
   // العمل: وجود فجوة في إجراءات التحكم الميدانية" لا يجوز أن تظهر كقرار
@@ -164,8 +168,11 @@ function baseDecisionFromLevel(level: DviLevel, activityType: ActivityCategory):
   // RESTRICT_SEVERE أو أي إيقاف إلزامي — تلك تبقى كما هي تماماً.
   if (level === 'YELLOW' || level === 'ORANGE') return 'ALLOW_WITH_MONITORING';
 
-  if (VISIBILITY_DEPENDENT_ACTIVITIES.includes(activityType)) return 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES';
-  if (DUST_GENERATING_ACTIVITIES.includes(activityType)) return 'STOP_DUST_GENERATING_ACTIVITIES';
+  const isVisibilityDependent = VISIBILITY_DEPENDENT_ACTIVITIES.includes(regulatoryActivity);
+  const isDustGenerating = DUST_GENERATING_ACTIVITIES.includes(regulatoryActivity);
+
+  if (isVisibilityDependent) return 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES';
+  if (isDustGenerating) return 'STOP_DUST_GENERATING_ACTIVITIES';
   return 'RESTRICT_SEVERE';
 }
 
@@ -198,10 +205,7 @@ function applyMandatoryGates(
   input: DustEngineInput,
   visibilityKm: number | null,
   pm10: number | null,
-  effectiveWindKmh: number | null,
   dustForecastRisk: number,
-  receptorImpact: number,
-  score: number,
   weatherSymbol: DustWeatherSample['weatherSymbol'],
   baseDecision: DviDecisionCategory
 ): GateOutcome {
@@ -210,13 +214,17 @@ function applyMandatoryGates(
   let decision = baseDecision;
   let mandatoryStop = false;
   let overridable = true;
-  const isVisibilityActivity = VISIBILITY_DEPENDENT_ACTIVITIES.includes(input.activityType);
-  const isDustActivity = DUST_GENERATING_ACTIVITIES.includes(input.activityType);
+  const isVisibilityActivity = VISIBILITY_DEPENDENT_ACTIVITIES.includes(input.regulatoryActivity);
   const { VISIBILITY_MANDATORY_STOP_KM, VISIBILITY_RESTRICT_SEVERE_KM } = getRuleParameters();
 
   if (visibilityKm !== null && visibilityKm < VISIBILITY_MANDATORY_STOP_KM) {
     rules.push('DVI-VISIBILITY-MANDATORY-STOP-001');
-    actions.push('إيقاف الرفع والحركة غير الضرورية والعمل على ارتفاع فورًا');
+    // طلب مستخدم صريح: النص القديم ("إيقاف الرفع... والعمل على ارتفاع")
+    // موروث من نطاق مرقاب العام (رافعات/عمل على ارتفاع) — لا ينطبق على أي
+    // من التسعة أنشطة التنظيمية الفعلية هنا (هذي القاعدة تُفعَّل فقط لـ
+    // CRUSHER/DEMOLITION/STONE_CUTTING عبر isVisibilityActivity، لا رفع أو
+    // ارتفاع في أي منها). نص عام يغطي الثلاثة بلا ذكر معدات غير موجودة.
+    actions.push('إيقاف كل الأنشطة المعتمدة على الرؤية فوراً (كسارة/هدم/قطع أحجار)');
     actions.push('تأمين المعدات ومنع دخول الشاحنات إلا للضرورة');
     actions.push('إعادة التقييم فور تحسن الرؤية');
     if (isVisibilityActivity) {
@@ -229,7 +237,9 @@ function applyMandatoryGates(
   }
   else if (visibilityKm !== null && visibilityKm < VISIBILITY_RESTRICT_SEVERE_KM) {
     rules.push('DVI-VISIBILITY-RED-002');
-    actions.push('منع بدء رفع جديد ومنع الرفع المعقد');
+    // نفس التصحيح أعلاه (DVI-VISIBILITY-MANDATORY-STOP-001) — لا رفع في
+    // الأنشطة الثلاثة المعتمدة على الرؤية.
+    actions.push('منع بدء عمليات جديدة وتقليل وتيرة العمل الحالي');
     actions.push('تفعيل سرعة داخلية منخفضة واستخدام موجهين ميدانيين');
     if (isVisibilityActivity) decision = 'RESTRICT_SEVERE';
   }
@@ -268,37 +278,42 @@ function applyMandatoryGates(
   // عتبة ثنائية) — اللون/الدرجة يعكسان ارتفاع PM10 كما هي، فقط لا قرار
   // إيقاف/إلزام مستقل مبني على عتبة 340 تحديداً.
   //
-  // combinedVisibilityWindTriggered (رؤية<1كم + حفريات + رياح>40) يبقى
-  // كما هو — خطر فيزيائي فوري حقيقي (رؤية حرجة + رياح شديدة معاً في موقع
-  // حفر) لا علاقة له بعتبة PM10 التنظيمية إطلاقاً، ضمن اختصاص DVI الأصيل.
-  const combinedVisibilityWindTriggered =
-    visibilityKm !== null && visibilityKm < VISIBILITY_RESTRICT_SEVERE_KM && input.site.hasEarthworks && (effectiveWindKmh ?? 0) > 40;
-  if (combinedVisibilityWindTriggered && isDustActivity) {
-    rules.push('DVI-DUST-ACTIVITY-STOP-004');
-    actions.push('إيقاف مؤقت للأعمال المثيرة للغبار (حفر/ردم/دمك/تسوية/نقل تربة) حتى تحسن الظروف');
-    decision = 'STOP_DUST_GENERATING_ACTIVITIES';
-    mandatoryStop = true;
-  }
-
-  if (effectiveWindKmh !== null && effectiveWindKmh >= 30 && input.site.looseMaterials) {
-    rules.push('DVI-WIND-LOOSE-MATERIAL-005');
-    actions.push('تغطية وتأمين المواد السائبة فورًا');
-    if (effectiveWindKmh >= 55) {
-      actions.push('إيقاف مناولة المواد السائبة المكشوفة');
-      if (isDustActivity || input.activityType === 'MATERIAL_TRANSPORT') {
-        decision = 'STOP_DUST_GENERATING_ACTIVITIES';
-        mandatoryStop = true;
-      }
-    }
-  }
-
-  if (receptorImpact >= 0.6 && score >= 45) {
-    rules.push('DVI-RECEPTOR-ESCALATION-006');
-    actions.push('زيادة الرش ومراقبة حدود الموقع باتجاه الرياح');
-    actions.push('تقليل الأعمال المثيرة للغبار وتوثيق الحالة وإبلاغ HSE');
-    if (decision === 'ALLOW_WITH_MONITORING') decision = 'RESTRICT';
-    else if (decision === 'RESTRICT') decision = 'RESTRICT_SEVERE';
-  }
+  // طلب مستخدم صريح لاحق (اكتشاف تناقض مماثل): DVI-DUST-ACTIVITY-STOP-004
+  // (كانت هنا: رؤية<1كم + حفريات + رياح>40 → إيقاف إلزامي) حُذفت بالكامل —
+  // نفس منطق حذف DVI-WIND-LOOSE-MATERIAL-005 بالكامل أدناه (كانت هنا
+  // سابقاً): GATE-WIND-ABOVE-25-004 في dust-compliance-engine يوقف أي نشاط
+  // من التسعة عند رياح >25 كم/س (isDustGenerating مُشتَقة true دائماً)، أي
+  // قبل وصول شرط هذه القاعدة (رياح>40) بخمسة عشر نقطة كاملة — فالقاعدة لم
+  // تكن تصل لتفعيلها الفعلي أبداً، النشاط يكون متوقفاً أصلاً من محرك
+  // الامتثال قبل أن تبلغ الرياح 40 كم/س. الإيقاف الإلزامي كان محتواها
+  // الوحيد بالكامل — حذف الإيقاف يعني حذف القاعدة نفسها، لا تبسيطها.
+  //
+  // طلب مستخدم صريح ثانٍ (اكتشاف تناقض أوسع بنفس الجلسة): DVI-WIND-LOOSE-
+  // MATERIAL-005 حُذفت هي الأخرى بالكامل — شرط تفعيلها الأساسي نفسه كان
+  // effectiveWindKmh >= 30، وهذا فوق حد الـ25 كم/س الذي يوقف عنده محرك
+  // الامتثال أي نشاط من التسعة أصلاً (لا فقط عتبة الإيقاف الإلزامي عند 55
+  // كم/س المحذوفة سابقاً). يعني حتى التنبيه الأساسي ("غطّوا المواد السائبة")
+  // كان ميتاً عملياً — العمل يكون متوقفاً من محرك الامتثال قبل وصول الرياح
+  // لعتبة تفعيل هذه القاعدة بخمس نقاط كاملة، لأي نشاط من التسعة بلا استثناء.
+  //
+  // طلب مستخدم صريح (اكتشاف تناقض رابع بنفس الجلسة): DVI-RECEPTOR-
+  // ESCALATION-006 حُذفت بالكامل — كانت تعتمد على receptorImpact
+  // (receptorType×receptorIsDownwind×receptorDistance في calculateMultipliers
+  // أعلاه)، وهذه الحقول الثلاثة (site.receptorType/receptorDistance/
+  // receptorIsDownwind) لا مسار واجهة فعلي يملأها (نفس علة hasEarthworks/
+  // looseMaterials المُصلَحة سابقاً في dustEvaluation.ts) — القيم الافتراضية
+  // الثابتة في AddActivityModal/constants.ts (receptorType='NONE_NEARBY'،
+  // receptorDistance='OVER_500M') كلتاهما تُقيَّمان 0.0 في RECEPTOR_SENSITIVITY/
+  // DISTANCE_FACTOR (tables.ts)، فـreceptorImpact = 0.0×X×0.0 = 0 ثابتاً
+  // رياضياً لكل نشاط — الشرط (>=0.6) مستحيل التحقق فعلياً. بخلاف hasEarthworks/
+  // looseMaterials، لا اشتقاق منطقي ممكن من regulatoryActivity هنا (قرب
+  // مستقبِل حساس خاصية موقع جغرافي، لا خاصية نوع نشاط) — المشروع يملك أصلاً
+  // نظام مستقبِلات حساسة حقيقي (جدول sensitive_receptors + nearestReceptorDistancesM/
+  // nearestDownwindReceptorDistanceM في dust-compliance-engine/geo.ts، يعتمد
+  // إحداثيات فعلية واتجاه رياح حقيقي) يستخدمه محرك الامتثال بالفعل لتنبيهات
+  // الكسارة التوعوية — القاعدة هنا كانت تعيد اختراع نفس المفهوم بحقول يدوية
+  // ميتة بدل الاعتماد على المصدر الحقيقي الموجود أصلاً. حُذفت بدل ربطها
+  // بنظام مختلف عن الغرض المباشر لهذه الجلسة (توحيد الأنشطة التسعة).
 
   if (weatherSymbol === 'SANDSTORM' || dustForecastRisk >= 75) {
     // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي): الرمز كان يحمل "NCM" رغم
@@ -329,30 +344,27 @@ function deriveStopBasisAndConfirmation(
     return { stopBasis: 'NONE', confirmationState: 'NOT_APPLICABLE' };
   }
 
+  // طلب مستخدم صريح (توحيد كامل بنفس الجلسة): hasWind (DVI-WIND-LOOSE-
+  // MATERIAL-005) وhasPm10Only (DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY) كلاهما
+  // كود ميت الآن — القاعدتان المصدر لهذين الكودين حُذفتا بالكامل من
+  // applyMandatoryGates أعلاه (لا مسار مطلقاً يدفع أي منهما إلى triggeredRules
+  // بعد الآن)، فـ'WIND'/'MIXED' (تقاطع مع hasPm10Only) لم يعودا نتيجتين
+  // ممكنتين فعلياً لـstopBasis — يبقى 'VISIBILITY' (من DVI-VISIBILITY-
+  // MANDATORY-STOP-001، المصدر الوحيد المتبقي لـmandatoryStop=true) أو
+  // 'NONE' نظرياً فقط (لا يصل هنا أصلاً لأن الدالة تُستدعى فقط عند
+  // mandatoryStop=true). النوع DviEvaluationResult['stopBasis'] يبقى كما هو
+  // (WIND/PM10/MIXED غير محذوفة من النوع نفسه — تبقى قيماً صالحة نظرياً لأي
+  // مصدر مستقبلي، فقط لا مسار حي ينتجها من هذا الملف الآن).
   const hasVisibility = triggeredRules.some((r) => r.startsWith('DVI-VISIBILITY-'));
-  const hasWind = triggeredRules.includes('DVI-WIND-LOOSE-MATERIAL-005');
-  const hasPm10Only = triggeredRules.includes('DVI-DUST-ACTIVITY-STOP-004-PM10-ONLY');
-  // خطر فيزيائي فوري (رؤية حرجة/رياح شديدة+مواد سائبة) مساهم بنفس اللحظة —
-  // بمعزل عن كون PM10 اللحظي مساهماً أيضاً أم لا.
-  const hasPhysicalHazard = hasVisibility || hasWind;
 
-  const stopBasis: DviEvaluationResult['stopBasis'] = hasPhysicalHazard && hasPm10Only
-    ? 'MIXED'
-    : hasVisibility
-      ? 'VISIBILITY'
-      : hasWind
-        ? 'WIND'
-        : hasPm10Only
-          ? 'PM10'
-          : 'NONE';
+  const stopBasis: DviEvaluationResult['stopBasis'] = hasVisibility ? 'VISIBILITY' : 'NONE';
 
-  // معلَّق (PENDING) فقط إن كان السبب PM10 لحظي فقط بلا أي خطر فيزيائي حقيقي
-  // مساهم — نفس شرط dviMandatoryStopIsPm10Only القديم بالضبط (قسم "الإصلاح"
-  // في final-decision-engine/engine.ts).
-  const confirmationState: DviEvaluationResult['confirmationState'] =
-    stopBasis === 'PM10' ? 'PENDING' : 'CONFIRMED';
-
-  return { stopBasis, confirmationState };
+  // PENDING كان مخصَّصاً لحالة stopBasis==='PM10' (DVI-DUST-ACTIVITY-STOP-
+  // 004-PM10-ONLY) — مسار ميت الآن (راجع تعليق stopBasis أعلاه)، فـ
+  // confirmationState تبقى دائماً CONFIRMED هنا (الدالة لا تصل لهذه النقطة
+  // أصلاً إلا عند mandatoryStop=true، والمصدر الوحيد المتبقي له هو رؤية
+  // حرجة حقيقية مؤكَّدة، لا قراءة PM10 معلَّقة تحتاج تأكيداً لاحقاً).
+  return { stopBasis, confirmationState: 'CONFIRMED' };
 }
 
 function hasMeaningfulSiteData(site: DustSiteInputs): boolean {
@@ -361,15 +373,7 @@ function hasMeaningfulSiteData(site: DustSiteInputs): boolean {
     site.internalDirtRoads ||
     site.heavyEquipmentMovement ||
     site.looseMaterials ||
-    site.largeExposedArea ||
-    site.drySurface ||
     site.surfaceWet ||
-    site.wateringAvailable ||
-    site.stockpilesCovered ||
-    site.speedLimitApplied ||
-    site.wheelWashAvailable ||
-    site.dustScreensAvailable ||
-    site.fieldMonitoringAvailable ||
     site.visibleDustPlumeReported ||
     site.openConcretePour
   );
@@ -419,11 +423,11 @@ function buildRiskDriversAndReducers(
   if (input.site.receptorIsDownwind && input.site.receptorType !== 'NONE_NEARBY') drivers.push('وجود مستقبلات بيئية حساسة باتجاه هبوب الرياح.');
   if (cause === 'FOG') drivers.push('تدني الرؤية ناتج عن تشكل الضباب وليس الغبار.');
 
-  if (input.site.wateringAvailable) reducers.push('أنظمة رش الطرق مفعّلة بالموقع');
-  if (input.site.stockpilesCovered) reducers.push('تغطية وحماية الأكوام الترابية مطبقة');
-  if (input.site.speedLimitApplied) reducers.push('التزام الشاحنات بحدود السرعة الداخلية منخفضة');
-  if (input.site.dustScreensAvailable) reducers.push('شاشات ومصدات الغبار متوفرة محيطياً');
-
+  // طلب مستخدم صريح: مصادر reducers الأربعة (wateringAvailable/
+  // stockpilesCovered/speedLimitApplied/dustScreensAvailable) حُذفت مع
+  // mitigationReductionFactor أعلاه — كانت دائماً false (قسم إجراءات التحكم
+  // مخفي بالكامل بالواجهة)، فـreducers كانت فارغة دائماً فعلياً. الحذف بلا
+  // أثر على أي نتيجة سابقة.
   return { drivers: drivers.slice(0, 3), reducers: reducers.slice(0, 3) };
 }
 
@@ -659,18 +663,12 @@ export function mergeDustReading(
 }
 
 // -------------------------------------------------------------
-// الحساب الأساسي وحل التناقضات اللفظية
+// خطوة 1 من computeDviResult: قنوات المخاطر الفيزيائية (VR/PR/WTR/DFR) +
+// دمجها في externalHazard/internalDustHazard/dviBase. استُخرجت من
+// computeDviResult (كانت الخطوة الأولى ضمن 191 سطراً متتالياً) بلا أي
+// تغيير سلوكي — نفس الترتيب، نفس الصيغ الحسابية حرفياً.
 // -------------------------------------------------------------
-export function computeDviResult(
-  input: DustEngineInput,
-  weather: DustWeatherSample,
-  sampleTimeIso?: string,
-  // راجع تعليق treatAsForecast الكامل في mergeDustReading أعلاه — يُمرَّر
-  // كما هو لضمان أن شبكة التوقعات لا تستخدم الجهاز إطلاقاً حتى في حساب DVI
-  // نفسه (لا فقط في mergedReading المعروض)، والقرار الحي يبقى بمنطقه الخاص.
-  treatAsForecast: boolean = false
-): DviEvaluationResult {
-  const merged = mergeDustReading(input, weather, sampleTimeIso, treatAsForecast);
+function buildRiskChannels(input: DustEngineInput, weather: DustWeatherSample, merged: DviMergedReading) {
   const visibilityM = merged.visibilityM;
   const visibilityKm = visibilityM !== null ? visibilityM / 1000 : null;
 
@@ -705,61 +703,91 @@ export function computeDviResult(
 
   const dviBase = 0.7 * externalHazard + 0.3 * internalDustHazard;
 
-  const mult = calculateMultipliers(input.activityType, input.site);
-  const siteExposureMultiplier = 1.0;
+  return {
+    visibilityKm,
+    pm10,
+    pm25,
+    effectiveWindKmh,
+    relativeHumidityPercent,
+    temperatureC,
+    VR,
+    PR,
+    WTR,
+    DFR,
+    externalHazard,
+    siteDustGenerationRisk,
+    adjustedSiteDustGenerationRisk,
+    internalDustHazard,
+    dviBase,
+  };
+}
 
+// -------------------------------------------------------------
+// خطوة 2 من computeDviResult: الدرجة النهائية (score) والمستوى والقرار
+// الأساسي قبل البوابات الإلزامية. نفس صيغة dviActivityRaw/score الأصلية
+// حرفياً.
+// -------------------------------------------------------------
+function computeScoreAndBaseDecision(
+  dviBase: number,
+  mult: DviMultipliers,
+  isEnclosedDustExempt: boolean | undefined,
+  regulatoryActivity: RegulatoryDustActivityKey
+) {
   // نفس الاستثناء: مضاعفا حساسية النشاط والمستقبِل يُسقَطان لقيمة 1 (بلا
   // أي تضخيم) — النشاط لا يُصدر غباراً فعلياً، فلا معنى لتضخيم تأثير طقس
   // خارجي بحساسية نشاط/قرب مستقبِل لا علاقة لهما بمصدر غبار غير موجود أصلاً.
-  const activitySensitivityMultiplier = input.isEnclosedDustExempt ? 1 : mult.activitySensitivityMultiplier;
-  const receptorSensitivityMultiplier = input.isEnclosedDustExempt ? 1 : mult.receptorSensitivityMultiplier;
+  const activitySensitivityMultiplier = isEnclosedDustExempt ? 1 : mult.activitySensitivityMultiplier;
+  const receptorSensitivityMultiplier = isEnclosedDustExempt ? 1 : mult.receptorSensitivityMultiplier;
 
-  const dviActivityRaw =
-    dviBase * activitySensitivityMultiplier * receptorSensitivityMultiplier * siteExposureMultiplier * mult.mitigationReductionFactor;
+  // طلب مستخدم صريح: siteExposureMultiplier حُذف نهائياً — كان ثابتاً 1.0
+  // منذ أول commit في المشروع بلا أي حقل أو منطق حساب خلفه إطلاقاً (بخلاف
+  // largeExposedArea/drySurface، لم يكن له حتى تعريف نوع)، ولا توجد بيانات
+  // "تعرّض موقع" حقيقية غير مستخدَمة يمكن ربطه بها — أي تفسير منطقي له
+  // (قرب مستقبِل، حجم موقع) يتداخل مع receptorSensitivityMultiplier/
+  // activitySensitivityMultiplier الموجودين فعلاً. الضرب في 1.0 لا يغيّر
+  // النتيجة، فحذفه لا أثر رياضي له.
+  //
+  // طلب مستخدم صريح (نفس الفجوة): mitigationReductionFactor (وحقوله الستة
+  // wateringAvailable/stockpilesCovered/speedLimitApplied/wheelWashAvailable/
+  // dustScreensAvailable/fieldMonitoringAvailable) حُذف بالكامل أيضاً — قسم
+  // "إجراءات التحكم" في DustStep.tsx كان مخفياً بالكامل
+  // (SHOW_CONTROL_MEASURES_SECTION=false)، فكانت كل الحقول false ثابتة دائماً
+  // ⇒ mitigationScore=0 ⇒ mitigationReductionFactor=1.0 ثابتة (بلا أي تخفيض
+  // فعلي) في كل نتيجة موجودة حتى الآن. الحذف بلا أثر رياضي على أي سكور سابق
+  // لنفس سبب حذف siteExposureMultiplier أعلاه.
+  const dviActivityRaw = dviBase * activitySensitivityMultiplier * receptorSensitivityMultiplier;
   const score = Math.round(Math.min(100, Math.max(0, dviActivityRaw)) * 10) / 10;
 
   const level = dviLevelFromScore(score);
-  const baseDecision = baseDecisionFromLevel(level, input.activityType);
-  const dustForecastRisk = DFR;
+  const baseDecision = baseDecisionFromLevel(level, regulatoryActivity);
 
-  const gates = applyMandatoryGates(
-    input,
-    visibilityKm,
-    pm10,
-    effectiveWindKmh,
-    dustForecastRisk,
-    mult.receptorImpact,
-    score,
-    weather.weatherSymbol,
-    baseDecision
-  );
+  return { score, level, baseDecision };
+}
 
-  const siteDataProvided = hasMeaningfulSiteData(input.site);
-  const cause = classifyCause(weather, pm10);
-  const { drivers, reducers } = buildRiskDriversAndReducers(input, visibilityKm, pm10, effectiveWindKmh, cause, siteDataProvided);
-  const requiredActions = Array.from(new Set([...baseRequiredActions(gates.decision), ...gates.extraActions]));
-  const confidenceScore = calculateConfidence(merged, weather, siteDataProvided);
-
-  const dustExposureHigh = cause === 'DUST' && score >= 45;
-  const outdoorWorkRestriction =
-    gates.decision === 'MANDATORY_STOP' ||
-    gates.decision === 'STOP_DUST_GENERATING_ACTIVITIES' ||
-    gates.decision === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES' ||
-    gates.decision === 'RESTRICT_SEVERE';
-
+// -------------------------------------------------------------
+// خطوة 3 من computeDviResult: النص القصير المرتبط ديناميكياً بالقرار
+// الفعلي، وتنبيهات صحة القراءة (caveatsAr) — نص/عرض بحت، لا يؤثر على
+// level/decisionCategory. نفس النص الحرفي الأصلي.
+// -------------------------------------------------------------
+function buildShortReasonAndCaveats(
+  decision: DviDecisionCategory,
+  visibilityKm: number | null,
+  relativeHumidityPercent: number | null,
+  temperatureC: number | null
+) {
   // --- ربط النص القصير بالقرار الفعلي ديناميكياً لمنع التناقض ---
   const shortReason =
-    gates.decision === 'MANDATORY_STOP'
+    decision === 'MANDATORY_STOP'
       ? `إيقاف إلزامي: انخفاض حرج في الرؤية الأفقية الميدانية لمستويات دون الأمان (${visibilityKm?.toFixed(2)} كم).`
-      : gates.decision === 'STOP_DUST_GENERATING_ACTIVITIES'
+      : decision === 'STOP_DUST_GENERATING_ACTIVITIES'
       ? `إيقاف أعمال الغبار: رؤية أفقية حرجة (${visibilityKm?.toFixed(2)} كم) مع نشاط رياح عالٍ وأعمال حفر وتربة مكشوفة.`
-      : gates.decision === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES'
+      : decision === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES'
       ? `إيقاف مؤقت: طبيعة هذا النشاط تعتمد كلياً على جودة الرؤية العالية، والظروف الحالية غير ملائمة.`
-      : gates.decision === 'RESTRICT_SEVERE'
+      : decision === 'RESTRICT_SEVERE'
       ? 'تقييد شديد: تداخل مؤشرات الغبار والرياح بشكل يتطلب خفض العمليات الميدانية لأدنى مستوياتها.'
-      : gates.decision === 'RESTRICT'
+      : decision === 'RESTRICT'
       ? 'تقييد العمل: وجود فجوة في إجراءات التحكم الميدانية (مثل غياب رش المياه أو مصدات الغبار).'
-      : gates.decision === 'ALLOW_WITH_MONITORING'
+      : decision === 'ALLOW_WITH_MONITORING'
       ? 'تشغيل مع المراقبة: رصد ارتفاع طفيف في الجسيمات العالقة أو اقتراب هبات الرياح من حافة التقييد.'
       : 'بيئة تشغيلية آمنة: الرؤية الأفقية ممتازة ومؤشرات الغبار تقع بالكامل ضمن النطاق المسموح للنشاط.';
 
@@ -780,20 +808,74 @@ export function computeDviResult(
     );
   }
 
+  return { shortReason, caveatsAr };
+}
+
+// -------------------------------------------------------------
+// الحساب الأساسي وحل التناقضات اللفظية
+// -------------------------------------------------------------
+export function computeDviResult(
+  input: DustEngineInput,
+  weather: DustWeatherSample,
+  sampleTimeIso?: string,
+  // راجع تعليق treatAsForecast الكامل في mergeDustReading أعلاه — يُمرَّر
+  // كما هو لضمان أن شبكة التوقعات لا تستخدم الجهاز إطلاقاً حتى في حساب DVI
+  // نفسه (لا فقط في mergedReading المعروض)، والقرار الحي يبقى بمنطقه الخاص.
+  treatAsForecast: boolean = false
+): DviEvaluationResult {
+  const merged = mergeDustReading(input, weather, sampleTimeIso, treatAsForecast);
+  const risk = buildRiskChannels(input, weather, merged);
+
+  const mult = calculateMultipliers(input.site, input.regulatoryActivity);
+  const { score, level, baseDecision } = computeScoreAndBaseDecision(
+    risk.dviBase,
+    mult,
+    input.isEnclosedDustExempt,
+    input.regulatoryActivity
+  );
+
+  const gates = applyMandatoryGates(
+    input,
+    risk.visibilityKm,
+    risk.pm10,
+    risk.DFR,
+    weather.weatherSymbol,
+    baseDecision
+  );
+
+  const siteDataProvided = hasMeaningfulSiteData(input.site);
+  const cause = classifyCause(weather, risk.pm10);
+  const { drivers, reducers } = buildRiskDriversAndReducers(input, risk.visibilityKm, risk.pm10, risk.effectiveWindKmh, cause, siteDataProvided);
+  const requiredActions = Array.from(new Set([...baseRequiredActions(gates.decision), ...gates.extraActions]));
+  const confidenceScore = calculateConfidence(merged, weather, siteDataProvided);
+
+  const dustExposureHigh = cause === 'DUST' && score >= 45;
+  const outdoorWorkRestriction =
+    gates.decision === 'MANDATORY_STOP' ||
+    gates.decision === 'STOP_DUST_GENERATING_ACTIVITIES' ||
+    gates.decision === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES' ||
+    gates.decision === 'RESTRICT_SEVERE';
+
+  const { shortReason, caveatsAr } = buildShortReasonAndCaveats(
+    gates.decision,
+    risk.visibilityKm,
+    risk.relativeHumidityPercent,
+    risk.temperatureC
+  );
+
   // خطأ مكتشَف ومُصلَح (مراجعة كود خبير خارجي — "التوقف الإلزامي يمكن أن
   // يكون قابلاً للتجاوز"): كان شرط overridable في النتيجة النهائية يقصر
   // المنع على decision === 'MANDATORY_STOP' تحديداً — لكن applyMandatoryGates
-  // أعلاه يضبط mandatoryStop=true من فرعين آخرين أيضاً بقرار STOP_DUST_
-  // GENERATING_ACTIVITIES (DVI-DUST-ACTIVITY-STOP-004 عند PM10≥340 أو رؤية
-  // حرجة+رياح، وDVI-WIND-LOOSE-MATERIAL-005 عند رياح≥55 مع مواد سائبة) بلا
-  // ضبط overridable=false في أي منهما — يعتمدان على أن overridable يبدأ
-  // true ولا يُغيَّر، فتصل نتيجة متناقضة منطقياً (mandatoryStop=true
-  // وoverridable=true معاً) لمستهلكين فعليين (Dustwidgetcard.tsx: بانر
-  // "توصية إلزامية" لا يظهر رغم إيقاف فعلي). الإصلاح: القاعدة الآن مطلقة
-  // بلا استثناء لأي قرار — mandatoryStop=true يفرض overridable=false دائماً،
-  // بصرف النظر عن أي فرع ضبطه لاحقاً أو نسيه. assertMandatoryStopInvariant
-  // يفرض هذا كـinvariant وقت التشغيل أيضاً، لا الاعتماد على التزام كل فرع
-  // مستقبلي في applyMandatoryGates بهذا الشرط يدوياً.
+  // أعلاه كان يضبط mandatoryStop=true من فروع أخرى أيضاً (DVI-DUST-ACTIVITY-
+  // STOP-004 وDVI-WIND-LOOSE-MATERIAL-005، كلاهما محذوف بالكامل الآن) بلا
+  // ضبط overridable=false فيها — تعتمد على أن overridable يبدأ true ولا
+  // يُغيَّر، فتصل نتيجة متناقضة منطقياً (mandatoryStop=true وoverridable=
+  // true معاً) لمستهلكين فعليين (Dustwidgetcard.tsx: بانر "توصية إلزامية"
+  // لا يظهر رغم إيقاف فعلي). الإصلاح: القاعدة الآن مطلقة بلا استثناء لأي
+  // قرار — mandatoryStop=true يفرض overridable=false دائماً، بصرف النظر عن
+  // أي فرع ضبطه لاحقاً أو نسيه (بما في ذلك أي قاعدة مستقبلية جديدة تُضاف).
+  // assertMandatoryStopInvariant يفرض هذا كـinvariant وقت التشغيل أيضاً، لا
+  // الاعتماد على التزام كل فرع مستقبلي في applyMandatoryGates بهذا الشرط يدوياً.
   const finalMandatoryStop = gates.mandatoryStop;
   const finalOverridable = !gates.mandatoryStop && gates.overridable;
   assertMandatoryStopInvariant({ mandatoryStop: finalMandatoryStop, overridable: finalOverridable });
@@ -801,7 +883,7 @@ export function computeDviResult(
 
   return {
     indicatorType: 'DVI',
-    dviBase: Math.round(dviBase * 10) / 10,
+    dviBase: Math.round(risk.dviBase * 10) / 10,
     score,
     level,
     causeClassification: cause,
@@ -814,28 +896,28 @@ export function computeDviResult(
     confirmationState,
 
     channels: {
-      visibilityRisk: VR,
-      particulateRisk: PR,
-      windTransportRisk: WTR,
-      dustForecastRisk: DFR,
-      siteDustGenerationRisk: Math.round(siteDustGenerationRisk * 10) / 10,
-      adjustedSiteDustGenerationRisk: Math.round(adjustedSiteDustGenerationRisk * 10) / 10,
-      externalHazard: Math.round(externalHazard * 10) / 10,
-      internalDustHazard: Math.round(internalDustHazard * 10) / 10,
+      visibilityRisk: risk.VR,
+      particulateRisk: risk.PR,
+      windTransportRisk: risk.WTR,
+      dustForecastRisk: risk.DFR,
+      siteDustGenerationRisk: Math.round(risk.siteDustGenerationRisk * 10) / 10,
+      adjustedSiteDustGenerationRisk: Math.round(risk.adjustedSiteDustGenerationRisk * 10) / 10,
+      externalHazard: Math.round(risk.externalHazard * 10) / 10,
+      internalDustHazard: Math.round(risk.internalDustHazard * 10) / 10,
     },
     multipliers: mult,
 
-    visibilityKm,
-    effectiveWindKmh,
+    visibilityKm: risk.visibilityKm,
+    effectiveWindKmh: risk.effectiveWindKmh,
 
     // راجع تعليق visibilityDataMissing الكامل في types.ts. hasDeviceLink
     // يحصر هذا العلم على مسار الجهاز الحي فقط — طقس تقديري (hasDeviceLink=
     // false) لا "يفتقد" قراءة رؤية بنفس المعنى، فيبقى false دائماً هناك.
-    visibilityDataMissing: input.hasDeviceLink && visibilityKm === null,
+    visibilityDataMissing: input.hasDeviceLink && risk.visibilityKm === null,
 
-    visibilityConstraint: visibilityKm !== null && visibilityKm < getRuleParameters().VISIBILITY_RESTRICT_SEVERE_KM,
-    mandatoryVisibilityStop: visibilityKm !== null && visibilityKm < getRuleParameters().VISIBILITY_MANDATORY_STOP_KM,
-    respiratoryPPERequired: PR >= 45 || dustExposureHigh,
+    visibilityConstraint: risk.visibilityKm !== null && risk.visibilityKm < getRuleParameters().VISIBILITY_RESTRICT_SEVERE_KM,
+    mandatoryVisibilityStop: risk.visibilityKm !== null && risk.visibilityKm < getRuleParameters().VISIBILITY_MANDATORY_STOP_KM,
+    respiratoryPPERequired: risk.PR >= 45 || dustExposureHigh,
     dustExposureHigh,
     outdoorWorkRestriction,
 
@@ -1096,8 +1178,6 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
       distanceFactor: 0,
       receptorImpact: 0,
       receptorSensitivityMultiplier: 0,
-      mitigationScore: 0,
-      mitigationReductionFactor: 0,
     } as DviMultipliers,
     visibilityKm: null,
     effectiveWindKmh: null,

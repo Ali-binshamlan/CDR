@@ -78,18 +78,18 @@ describe('ruleParameters', () => {
   it('استبدال كامل (لا دمج جزئي) — كل نداء refresh يبني كائناً جديداً من الافتراضي + المنشور الحالي فقط', async () => {
     const first = mockSupabase([
       { parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 },
-      { parameter_code: 'UNPAVED_SPEED_LIMIT_KMH', value: 8 },
+      { parameter_code: 'WIND_GATE_ENHANCED_MIN_KMH', value: 8 },
     ]);
     await refreshRuleParameters(first);
     expect(getRuleParameters().STONE_CUTTING_WIND_STOP_KMH).toBe(12);
-    expect(getRuleParameters().UNPAVED_SPEED_LIMIT_KMH).toBe(8);
+    expect(getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH).toBe(8);
 
     // A second refresh returns only one published parameter now (the other
-    // reverted to unpublished) — UNPAVED_SPEED_LIMIT_KMH must fall back to
+    // reverted to unpublished) — WIND_GATE_ENHANCED_MIN_KMH must fall back to
     // the default, not stay stuck on the first refresh's value.
     const second = mockSupabase([{ parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 }]);
     await refreshRuleParameters(second);
-    expect(getRuleParameters().UNPAVED_SPEED_LIMIT_KMH).toBe(DEFAULT_RULE_PARAMETERS.UNPAVED_SPEED_LIMIT_KMH);
+    expect(getRuleParameters().WIND_GATE_ENHANCED_MIN_KMH).toBe(DEFAULT_RULE_PARAMETERS.WIND_GATE_ENHANCED_MIN_KMH);
   });
 
   // getActiveParameterVersionIds is captured after refresh and passed through
@@ -102,12 +102,12 @@ describe('ruleParameters', () => {
     it('تمتلئ بمعرّف النسخة لكل معامل منشور بعد refresh ناجح', async () => {
       const supabase = mockSupabase([
         { id: 'v-1', parameter_code: 'STONE_CUTTING_WIND_STOP_KMH', value: 12 },
-        { id: 'v-2', parameter_code: 'UNPAVED_SPEED_LIMIT_KMH', value: 8 },
+        { id: 'v-2', parameter_code: 'WIND_GATE_ENHANCED_MIN_KMH', value: 8 },
       ]);
       await refreshRuleParameters(supabase);
       expect(getActiveParameterVersionIds()).toEqual({
         STONE_CUTTING_WIND_STOP_KMH: 'v-1',
-        UNPAVED_SPEED_LIMIT_KMH: 'v-2',
+        WIND_GATE_ENHANCED_MIN_KMH: 'v-2',
       });
     });
 
@@ -116,7 +116,7 @@ describe('ruleParameters', () => {
       await refreshRuleParameters(supabase);
       const versionIds = getActiveParameterVersionIds();
       expect(versionIds.STONE_CUTTING_WIND_STOP_KMH).toBe('v-1');
-      expect('UNPAVED_SPEED_LIMIT_KMH' in versionIds).toBe(false);
+      expect('WIND_GATE_ENHANCED_MIN_KMH' in versionIds).toBe(false);
     });
 
     it('فشل الاستعلام لا يغيّر بصمة المعرّفات — تبقى آخر حالة معروفة جيدة', async () => {

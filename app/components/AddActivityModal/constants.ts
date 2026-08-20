@@ -1,4 +1,4 @@
-import type { ActivityCategory, ReceptorType, DistanceBand } from '@/app/utils/dust-engine/types';
+import type { ReceptorType, DistanceBand } from '@/app/utils/dust-engine/types';
 import type { IndicatorTab } from './types';
 
 export const labelClass = 'block text-xs font-semibold text-[#061B40]/70 mb-1';
@@ -13,7 +13,6 @@ export const getInputClass = (isDisabled: boolean = false) =>
   }`;
 
 export const DUST_FORM_DEFAULTS = {
-  activityType: 'GENERAL_OUTDOOR_WORK' as ActivityCategory,
   plannedDate: new Date().toISOString().slice(0, 10),
   plannedTime: new Date().toTimeString().slice(0, 5),
   durationHours: 3,
@@ -21,15 +20,7 @@ export const DUST_FORM_DEFAULTS = {
   internalDirtRoads: false,
   heavyEquipmentMovement: false,
   looseMaterials: false,
-  largeExposedArea: false,
-  drySurface: false,
   surfaceWet: false,
-  wateringAvailable: false,
-  stockpilesCovered: false,
-  speedLimitApplied: false,
-  wheelWashAvailable: false,
-  dustScreensAvailable: false,
-  fieldMonitoringAvailable: false,
   receptorType: 'NONE_NEARBY' as ReceptorType,
   receptorDistance: 'OVER_500M' as DistanceBand,
   receptorIsDownwind: false,
@@ -106,12 +97,15 @@ export type IdleSurfaceUnit = typeof IDLE_SURFACE_UNIT_DEFAULTS;
 // نشاط تنظيمي" واحدة ضمن قائمة يمكن للمستخدم إضافة عدة بطاقات منها قبل
 // الحفظ دفعة واحدة (بدل تكرار فتح نافذة "إضافة أنشطة" لكل نشاط تنظيمي).
 export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
-  // ENTRY_EXIT محذوف من هذا الاتحاد (راجع تعليق REGULATORY_ACTIVITY_OPTIONS
-  // أدناه) — الواجهة لا يمكنها إنشاء هذا النوع بعد الآن، لكنه يبقى في
-  // RegulatoryDustActivity (محرك الامتثال) للتوافق مع صفوف قديمة محفوظة.
-  regulatoryActivity: 'OTHER' as
+  // طلب مستخدم صريح (توحيد كامل): ENTRY_EXIT/OTHER حُذفا من RegulatoryDustActivity
+  // بالكامل، فلا قيمة افتراضية "عامة" ممكنة بعد الآن — هذا الحقل يُستبدَل
+  // فوراً دائماً بـactivityKey الفعلي المختار (راجع السطر الذي يستهلك هذا
+  // الكائن في index.tsx: `{ ...REGULATORY_ACTIVITY_FIELDS_DEFAULTS,
+  // regulatoryActivity: activityKey }`)، فالقيمة هنا مجرد إسكات للنوع قبل
+  // الاختيار الفعلي، لا تُقرأ عملياً أبداً.
+  regulatoryActivity: 'EARTHWORKS' as
     | 'EARTHWORKS' | 'SITE_TRAFFIC' | 'MATERIAL_HANDLING_STOCKPILE'
-    | 'DEMOLITION' | 'CRUSHER' | 'BATCHING_PLANT' | 'STONE_CUTTING' | 'CD_WASTE_TRANSPORT' | 'IDLE_SURFACE' | 'OTHER',
+    | 'DEMOLITION' | 'CRUSHER' | 'BATCHING_PLANT' | 'STONE_CUTTING' | 'CD_WASTE_TRANSPORT' | 'IDLE_SURFACE',
   isEnclosedOperation: false,
   demolitionActiveAreaM2: '' as string | number,
   continuousMisting: false,
@@ -280,31 +274,29 @@ export interface RegulatoryActivityItem {
 export type RegulatoryActivityKey = RegulatoryActivityFields['regulatoryActivity'];
 
 // خيارات أنشطة الامتثال التنظيمي (Riyadh Dust Compliance) المعروضة في شاشة
-// اختيار النشاط — كل نشاط تنظيمي مرتبط بـ dviCategory مناسب لمحرك DVI
-// الفيزيائي (نفس فئات ActivityCategory)، ويُفعّل مؤشر الغبار (DCR لا يحسب
-// إلا الغبار/AEI — لا حرارة ولا رافعات). label بالعربي مصدر موحّد يُستخدم
-// في شاشة الاختيار وفي DustStep (خريطة الترجمة) معاً.
+// اختيار النشاط، ويُفعّل مؤشر الغبار (DCR لا يحسب إلا الغبار/AEI — لا حرارة
+// ولا رافعات). label بالعربي مصدر موحّد يُستخدم في شاشة الاختيار وفي
+// DustStep (خريطة الترجمة) معاً.
+//
+// طلب مستخدم صريح (توحيد كامل): dviCategory حُذف — كان يربط كل نشاط تنظيمي
+// بفئة ActivityCategory الهندسية العامة (النظام القديم، المحذوف بالكامل من
+// dust-engine الآن). key وحده كافٍ ويُغذّي DustEngineInput.regulatoryActivity
+// مباشرة بلا وسيط.
 export interface RegulatoryActivityOption {
   key: RegulatoryActivityKey;
   label: string;
-  dviCategory: ActivityCategory;
 }
 
-// ENTRY_EXIT (منطقة دخول وخروج المشروع) حُذف عمداً من هذه القائمة — لا يعود
-// بالإمكان إنشاء نشاط جديد بهذا النوع من الواجهة. النوع نفسه (RegulatoryActivityKey)
-// وقواعده في dust-compliance-engine/rulebook.ts (entryExitRules) يبقيان بلا
-// تغيير حتى تستمر صفوف project_dust_profiles القديمة بهذا النوع بالتقييم
-// الصحيح عبر نفس محرك الامتثال — الحذف هنا مقصور على مسار إنشاء نشاط جديد فقط.
 export const REGULATORY_ACTIVITY_OPTIONS: RegulatoryActivityOption[] = [
-  { key: 'EARTHWORKS', label: 'أعمال ترابية عامة', dviCategory: 'GRADING' },
-  { key: 'SITE_TRAFFIC', label: 'حركة طرق/نقل داخل الموقع', dviCategory: 'ROAD_WORKS' },
-  { key: 'MATERIAL_HANDLING_STOCKPILE', label: 'تحميل/تنزيل/تخزين مواد (أكوام)', dviCategory: 'MATERIAL_TRANSPORT' },
-  { key: 'DEMOLITION', label: 'هدم', dviCategory: 'HEAVY_EQUIPMENT_MOVEMENT' },
-  { key: 'CRUSHER', label: 'كسارة', dviCategory: 'HEAVY_EQUIPMENT_MOVEMENT' },
-  { key: 'BATCHING_PLANT', label: 'محطة خلط خرسانة / نقل إسمنت', dviCategory: 'CONCRETE_POURING' },
-  { key: 'STONE_CUTTING', label: 'قطع أحجار', dviCategory: 'HEAVY_EQUIPMENT_MOVEMENT' },
-  { key: 'CD_WASTE_TRANSPORT', label: 'نقل مخلفات هدم وبناء', dviCategory: 'MATERIAL_TRANSPORT' },
-  { key: 'IDLE_SURFACE', label: 'سطح غير نشط', dviCategory: 'GENERAL_OUTDOOR_WORK' },
+  { key: 'EARTHWORKS', label: 'أعمال ترابية عامة' },
+  { key: 'SITE_TRAFFIC', label: 'حركة طرق/نقل داخل الموقع' },
+  { key: 'MATERIAL_HANDLING_STOCKPILE', label: 'تحميل/تنزيل/تخزين مواد (أكوام)' },
+  { key: 'DEMOLITION', label: 'هدم' },
+  { key: 'CRUSHER', label: 'كسارة' },
+  { key: 'BATCHING_PLANT', label: 'محطة خلط خرسانة / نقل إسمنت' },
+  { key: 'STONE_CUTTING', label: 'قطع أحجار' },
+  { key: 'CD_WASTE_TRANSPORT', label: 'نقل مخلفات هدم وبناء' },
+  { key: 'IDLE_SURFACE', label: 'سطح غير نشط' },
 ];
 
 // خريطة key النشاط التنظيمي إلى تسميته العربية الكاملة — إعادة تصدير من

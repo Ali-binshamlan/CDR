@@ -27,7 +27,6 @@ export const RULEBOOK_VERSION = ACTIVE_RULE_BUNDLE.id;
 export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = {
   EARTHWORKS: 'أعمال الحفر والترابية',
   SITE_TRAFFIC: 'حركة الشاحنات والطرق الداخلية',
-  ENTRY_EXIT: 'نقاط الدخول والخروج',
   MATERIAL_HANDLING_STOCKPILE: 'مناولة وتخزين المواد والأكوام',
   DEMOLITION: 'الهدم والترميم',
   CRUSHER: 'الكسارة',
@@ -35,7 +34,6 @@ export const REGULATORY_ACTIVITY_LABEL_AR: Record<string, string> = {
   STONE_CUTTING: 'قطع الأحجار والصخور',
   CD_WASTE_TRANSPORT: 'نقل مخلفات الهدم والبناء',
   IDLE_SURFACE: 'الأسطح المكشوفة غير النشطة',
-  OTHER: 'نشاط غبار عام',
 };
 
 // Crusher-to-sensitive-receptor distance: the regulatory guide cites 200m in
@@ -62,13 +60,14 @@ const CATEGORY_I_MAX_AREA_M2 = 2000;
 const STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M = () => getRuleParameters().STOCKPILE_SENSITIVE_RECEPTOR_DISTANCE_M;
 const DEMOLITION_MAX_AREA_M2 = () => getRuleParameters().DEMOLITION_MAX_AREA_M2;
 const IDLE_SURFACE_MAX_DAYS = () => getRuleParameters().IDLE_SURFACE_MAX_DAYS;
-// UNPAVED_SPEED_LIMIT_KMH/PAVED_SPEED_LIMIT_KMH/SPILL_CLEANUP_LIMIT_MIN
-// (SITE_TRAFFIC), DROP_HEIGHT_NORMAL_LIMIT_M/DROP_HEIGHT_HIGH_WIND_LIMIT_M
-// (EARTHWORKS/MATERIAL_HANDLING_STOCKPILE), and DEBRIS_PILE_MAX_HEIGHT_M
-// (CD_WASTE_TRANSPORT) were removed along with the only rules that used them —
-// see the siteTrafficRules/earthworksRules/stockpileRules/cdWasteTransportRules comments.
-const IMMERSION_ZONE_MIN_LENGTH_M = () => getRuleParameters().IMMERSION_ZONE_MIN_LENGTH_M;
-const WHEEL_WASH_CYCLE_MIN_SEC = () => getRuleParameters().WHEEL_WASH_CYCLE_MIN_SEC;
+// UNPAVED_SPEED_LIMIT_KMH/PAVED_SPEED_LIMIT_KMH/SPILL_CLEANUP_LIMIT_MIN/
+// DROP_HEIGHT_NORMAL_LIMIT_M/DROP_HEIGHT_HIGH_WIND_LIMIT_M/
+// DEBRIS_PILE_MAX_HEIGHT_M/IMMERSION_ZONE_MIN_LENGTH_M/WHEEL_WASH_CYCLE_
+// MIN_SEC local getters were removed along with the only rules that used
+// them (see the siteTrafficRules/earthworksRules/stockpileRules/
+// cdWasteTransportRules comments) — the now-orphaned fields themselves were
+// also removed from RuleParameters/DEFAULT_RULE_PARAMETERS (ruleParameters.ts)
+// in a later full-project dead-code sweep (explicit user request).
 const STONE_CUTTING_WIND_STOP_KMH = () => getRuleParameters().STONE_CUTTING_WIND_STOP_KMH;
 // A6 — minimum PM10 filter efficiency for sealed silos and enclosed batching
 // plants (Section 4-b; the annex regulatory extraction, Section 6 — the
@@ -836,77 +835,6 @@ function stoneCuttingRules(
   return hits;
 }
 
-// 9.7 Entry/exit — branches on tire-cleaning method (wheel wash vs. water
-// immersion), each with its own questions, per the site-prep/earthworks reference document.
-function entryExitRules(
-  activity: DustActivityComplianceProfile,
-  windBand: DustWindBand
-): DustRuleHit[] {
-  const hits: DustRuleHit[] = [];
-
-  if (activity.controls.wheelWashOperational === false) {
-    hits.push(ruleHit('ENTRY-WHEELWASH-001', 'STOP_AFFECTED_ACTIVITY', 'وحدة غسيل الإطارات غير متوفرة أو غير عاملة', 'شغّل وحدة غسيل الإطارات أو وفّر بديلاً عاملاً قبل السماح بخروج الشاحنات', undefined, 'VIOLATION'));
-  }
-
-  if (activity.measurements.visibleTrackoutBeyond15m === true) {
-    hits.push(ruleHit('ENTRY-TRACKOUT-002', 'STOP_AFFECTED_ACTIVITY', 'أتربة منقولة مرئية تتجاوز 15 متراً من بوابة الخروج', 'نظّف الأتربة المنقولة خارج البوابة فوراً وعالج سبب انتقالها', undefined, 'VIOLATION'));
-  }
-
-  if (windBand === 'FROM_15_TO_25' && activity.controls.hourlyInspectionRecorded === false) {
-    hits.push(ruleHit('ENTRY-INSPECTION-003', 'RESTRICT_ACTIVITY', 'لم يُسجَّل فحص وحدة غسيل الإطارات كل ساعة أثناء الرياح 15-25 كم/س', 'سجّل فحصاً موثقاً لوحدة غسيل الإطارات كل ساعة طوال فترة الرياح 15-25 كم/س', undefined, 'VIOLATION'));
-  }
-
-  if (activity.measurements.entryPointLat === null || activity.measurements.entryPointLng === null) {
-    hits.push(ruleHit('ENTRY-POINT-MISSING-004', 'FIELD_VERIFICATION_REQUIRED', 'لم يتم تحديد نقطة دخول المشروع على الخريطة', 'حدّد نقطة دخول المشروع على الخريطة في بيانات النشاط', undefined, 'NONE'));
-  }
-  if (activity.measurements.exitPointLat === null || activity.measurements.exitPointLng === null) {
-    hits.push(ruleHit('ENTRY-EXITPOINT-MISSING-005', 'FIELD_VERIFICATION_REQUIRED', 'لم يتم تحديد نقطة خروج المشروع على الخريطة', 'حدّد نقطة خروج المشروع على الخريطة في بيانات النشاط', undefined, 'NONE'));
-  }
-  if (activity.controls.accessRoadPaved === false) {
-    hits.push(ruleHit('ENTRY-ROADPAVED-006', 'RESTRICT_ACTIVITY', 'الطريق المؤدي للمدخل غير مسفلت أو غير ممهد', 'اسفلت الطريق المؤدي للمدخل أو مهّده بمادة تمنع تطاير الغبار', undefined, 'VIOLATION'));
-  }
-
-  // فرع وحدة غسيل الإطارات
-  if (activity.controls.tireCleaningMethod === 'WHEEL_WASH') {
-    if (activity.controls.sandTrapPresent === false) {
-      hits.push(ruleHit('ENTRY-SANDTRAP-007', 'RESTRICT_ACTIVITY', 'لا توجد مصيدة رمال في وحدة غسيل الإطارات', 'ركّب مصيدة رمال في وحدة غسيل الإطارات', undefined, 'VIOLATION'));
-    }
-    if (activity.controls.oilSeparatorPresent === false) {
-      hits.push(ruleHit('ENTRY-OILSEP-008', 'RESTRICT_ACTIVITY', 'لا يوجد فاصل زيوت في وحدة غسيل الإطارات', 'ركّب فاصل زيوت في وحدة غسيل الإطارات', undefined, 'VIOLATION'));
-    }
-    if (activity.controls.washCycleDurationAdequate === false) {
-      const wheelWashCycleMinSec = WHEEL_WASH_CYCLE_MIN_SEC();
-      hits.push(ruleHit('ENTRY-WASHCYCLE-009', 'RESTRICT_ACTIVITY', `مدة دورة غسيل الإطارات أقل من ${wheelWashCycleMinSec} ثانية لكل محور`, `اضبط مدة دورة الغسيل على ${wheelWashCycleMinSec} ثانية على الأقل لكل محور`, undefined, 'VIOLATION'));
-    }
-    if (activity.controls.washWaterReused === false) {
-      hits.push(ruleHit('ENTRY-WASHREUSE-010', 'ALLOW_WITH_CONTROLS', 'يُفضَّل إعادة استخدام مياه غسيل الإطارات', 'أضف نظام إعادة استخدام لمياه غسيل الإطارات', undefined, 'NONE'));
-    }
-  }
-
-  // فرع غمر الإطارات بالمياه
-  if (activity.controls.tireCleaningMethod === 'WATER_IMMERSION') {
-    if (activity.controls.antiSlipMeshPresent === false) {
-      hits.push(ruleHit('ENTRY-IMMERSION-MESH-011', 'RESTRICT_ACTIVITY', 'لا توجد شبكة مانعة للانزلاق في منطقة غمر الإطارات', 'ركّب شبكة مانعة للانزلاق في منطقة غمر الإطارات', undefined, 'VIOLATION'));
-    }
-    if (activity.controls.immersionZoneLengthAdequate === false) {
-      const immersionZoneMinLengthM = IMMERSION_ZONE_MIN_LENGTH_M();
-      hits.push(ruleHit('ENTRY-IMMERSION-LENGTH-012', 'RESTRICT_ACTIVITY', `طول منطقة غمر الإطارات أقل من ${immersionZoneMinLengthM} أمتار`, `وسّع منطقة غمر الإطارات إلى ${immersionZoneMinLengthM} أمتار على الأقل`, undefined, 'VIOLATION'));
-    }
-    if (activity.controls.collectionBasinPresent === false) {
-      hits.push(ruleHit('ENTRY-BASIN-013', 'RESTRICT_ACTIVITY', 'لا يوجد حوض سفلي لتجميع مخلفات غمر الإطارات', 'أنشئ حوضاً سفلياً لتجميع مخلفات غمر الإطارات', undefined, 'VIOLATION'));
-    }
-  }
-
-  if (activity.controls.truckPathCleanedWithin15Min === false) {
-    hits.push(ruleHit('ENTRY-PATHCLEAN-014', 'RESTRICT_ACTIVITY', 'لم يتم تنظيف مسار الشاحنات خلال 15 دقيقة', 'نظّف مسار الشاحنات خلال 15 دقيقة من كل عملية عبور', undefined, 'VIOLATION'));
-  }
-  if (activity.measurements.waterTracesBeyond15mFromGate === true) {
-    hits.push(ruleHit('ENTRY-WATERTRACE-015', 'RESTRICT_ACTIVITY', 'آثار مياه أو مخلفات ظاهرة على بعد 15 متراً من البوابة', 'أزل آثار المياه والمخلفات حول البوابة وقلّل كمية المياه المستخدمة في الغسيل', undefined, 'VIOLATION'));
-  }
-
-  return hits;
-}
-
 // 9.8 الطرق والنقل (A2 — النقل داخل الموقع والطرق الخدمية) — كل ضوابط هذا
 // النشاط (تغطية الحمولة، سرعة الطرق المسفلتة/غير المسفلتة، زمن تنظيف
 // الانسكاب، الرش/اللافتات/الكنس/غسيل الإطارات) أصبحت تنبيهات نصية عامة
@@ -1067,6 +995,15 @@ export function applyActivityRules(
   activity: DustActivityComplianceProfile,
   windSpeedKmh: number | null = null
 ): DustRuleHit[] {
+  // طلب مستخدم صريح (توحيد كامل): ENTRY_EXIT/OTHER حُذفا من RegulatoryDustActivity
+  // بالكامل — ENTRY_EXIT كان كوداً ميتاً مؤكَّداً (entryExitRules المحذوفة
+  // أعلاه)، OTHER كان يُرجع مصفوفة فارغة بلا قواعد فعلية. الـswitch شامل
+  // (exhaustive) على التسعة قيم من ناحية النوع الثابت (TypeScript)، لكن
+  // default دفاعي يبقى ضرورياً هنا: activity.regulatoryActivity قيمة قادمة
+  // فعلياً من صف قاعدة بيانات في وقت التشغيل (row?.regulatory_activity في
+  // adapters.ts)، فقد تصل undefined/نص غير متوقَّع رغم أن النوع الساكن
+  // يستبعد ذلك نظرياً — بلا هذا الفرع كانت applyActivityRules ترجع undefined
+  // بصمت، فينهار `[...applyActivityRules(...)]` في engine.ts فوراً.
   switch (activity.regulatoryActivity) {
     case 'DEMOLITION':
       return demolitionRules(activity, windBand);
@@ -1076,14 +1013,6 @@ export function applyActivityRules(
       return batchingPlantRules(activity);
     case 'STONE_CUTTING':
       return stoneCuttingRules(activity, windBand);
-    // ENTRY_EXIT: قرار حذف نهائي مؤجَّل صراحةً (المستخدم: "لا ناجل الحذف
-    // الى وقت لاحق") — entryExitRules() كود ميت عملياً بالفعل (ENTRY_EXIT
-    // محذوف من REGULATORY_ACTIVITY_OPTIONS في AddActivityModal/constants.ts
-    // فلا يمكن للمستخدم إنشاء هذا النوع من الواجهة)، فإبقاء هذا الفرع هنا
-    // لا يؤثر على أي قرار فعلي — لا تُحذف هذه الحالة قبل تعليمات لاحقة
-    // صريحة بإتمام الحذف.
-    case 'ENTRY_EXIT':
-      return entryExitRules(activity, windBand);
     case 'SITE_TRAFFIC':
       return siteTrafficRules(activity, riskClass);
     case 'CD_WASTE_TRANSPORT':
@@ -1094,7 +1023,6 @@ export function applyActivityRules(
       return idleSurfaceRules(activity, windSpeedKmh);
     case 'EARTHWORKS':
       return earthworksRules(activity, windBand);
-    case 'OTHER':
     default:
       return [];
   }

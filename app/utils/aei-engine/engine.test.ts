@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import { evaluateAei } from './engine';
 import { AEI_RESTRICT_CAP } from './tables';
 import type { DviEvaluationResult } from '../dust-engine/types';
@@ -41,8 +41,6 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
       distanceFactor: 1,
       receptorImpact: 0,
       receptorSensitivityMultiplier: 1,
-      mitigationScore: 0,
-      mitigationReductionFactor: 1,
     },
     visibilityKm: 10,
     effectiveWindKmh: 5,
@@ -67,7 +65,7 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
 
 describe('AEI engine — البوابة الحاكمة (mandatoryStop)', () => {
   it('DVI بإيقاف إلزامي → AEI مُغلَق تماماً بصرف النظر عن أي درجة', () => {
-    const result = evaluateAei(baseDvi({ mandatoryStop: true, decisionCategory: 'MANDATORY_STOP' }), 'EXCAVATION');
+    const result = evaluateAei(baseDvi({ mandatoryStop: true, decisionCategory: 'MANDATORY_STOP' }), 'EARTHWORKS');
     expect(result.status).toBe('CLOSED');
     expect(result.score).toBe(0);
     expect(result.closedByGate).toBe(true);
@@ -83,7 +81,7 @@ describe('AEI engine — الإجبار المنطقي لتطابق الحالة
       decisionCategory: 'RESTRICT_SEVERE',
       decisionLabelAr: 'تقييد شديد',
     });
-    const result = evaluateAei(dvi, 'EXCAVATION');
+    const result = evaluateAei(dvi, 'EARTHWORKS');
 
     expect(result.cappedByGate).toBe(true);
     expect(result.score).toBeLessThanOrEqual(AEI_RESTRICT_CAP);
@@ -98,7 +96,7 @@ describe('AEI engine — الإجبار المنطقي لتطابق الحالة
       decisionCategory: 'ALLOW_WITH_MONITORING',
       decisionLabelAr: 'تشغيل مع مراقبة',
     });
-    const result = evaluateAei(dvi, 'EXCAVATION');
+    const result = evaluateAei(dvi, 'EARTHWORKS');
 
     expect(result.cappedByGate).toBe(false); // ليس ضمن AEI_CAPPING_DVI_DECISIONS
     expect(result.status).toBe('MONITOR');
@@ -106,10 +104,33 @@ describe('AEI engine — الإجبار المنطقي لتطابق الحالة
 
   it('قرار DVI عادي (ALLOW) بدرجة عالية → لا سقف ولا إجبار، status تبقى ALLOW', () => {
     const dvi = baseDvi({ score: 0, decisionCategory: 'ALLOW' });
-    const result = evaluateAei(dvi, 'EXCAVATION');
+    const result = evaluateAei(dvi, 'EARTHWORKS');
 
     expect(result.cappedByGate).toBe(false);
     expect(result.closedByGate).toBe(false);
     expect(result.status).toBe('ALLOW');
+  });
+});
+
+// -----------------------------------------------------------------------
+// طلب مستخدم صريح (توحيد كامل): بعد حذف ActivityCategory نهائياً،
+// regulatoryActivity هو الحقل الإجباري الوحيد لـevaluateAei — لا آلية
+// استبدال اختياري بعد الآن. DUST_QUALITY_SENSITIVE_ACTIVITIES (aei-engine/
+// tables.ts) قائمة فارغة عن قصد — لا نشاط من التسعة التنظيمية حساس للجودة
+// فعلياً، فكل الأنشطة تنتج qualityScore بنفس المعادلة العادية غير الحساسة.
+describe('AEI engine — DUST_QUALITY_SENSITIVE_ACTIVITIES فارغة، كل الأنشطة التنظيمية التسعة غير حساسة جودة', () => {
+  it('كل التسعة أنشطة التنظيمية → qualityScore متطابق للجميع لنفس DVI (لا نشاط حساس للجودة)', () => {
+    const dvi = baseDvi({
+      score: 30,
+      decisionCategory: 'ALLOW_WITH_MONITORING',
+      channels: { ...baseDvi().channels, particulateRisk: 50, windTransportRisk: 20 },
+      dustExposureHigh: true,
+    });
+    const keys = [
+      'EARTHWORKS', 'SITE_TRAFFIC', 'MATERIAL_HANDLING_STOCKPILE', 'DEMOLITION',
+      'CRUSHER', 'BATCHING_PLANT', 'STONE_CUTTING', 'CD_WASTE_TRANSPORT', 'IDLE_SURFACE',
+    ] as const;
+    const scores = keys.map((key) => evaluateAei(dvi, key).qualityScore);
+    scores.forEach((score) => expect(score).toBe(scores[0]));
   });
 });

@@ -6,9 +6,6 @@
 // 'indicators': شاشة عرض تقييم الغبار للنشاط المختار
 export type ActivityStep =
   | 'choose'
-  | 'time_location' // جديد
-  | 'resources'     // جديد
-  | 'specific_details' // جديد
   | 'indicators'
   | 'dust';
 

@@ -54,7 +54,7 @@ interface RecentActivityItem {
 interface DustResultDisplayItem {
   activityId: string;
   activityGroupId: string;
-  activityType: string;
+  regulatoryActivity: string;
   windowEval: DustWindowEvaluation;
   aei: AeiEvaluationResult;
   hourlyForecasts?: DviHourlyEvaluation[];
@@ -432,7 +432,7 @@ export default function ProjectDetailsPage({
                           .map((r) => (
                             <ComplianceWidgetCard
                               key={`dust-compliance-${r.activityId}`}
-                              activityType={r.activityType}
+                              regulatoryActivity={r.regulatoryActivity}
                               complianceList={r.complianceList ?? []}
                               complianceHourly={r.complianceHourly}
                               aei={r.aei}

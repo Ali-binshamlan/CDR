@@ -24,7 +24,7 @@ import type { DustEngineInput } from './types';
 
 function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   return {
-    activityType: 'GENERAL_OUTDOOR_WORK',
+    regulatoryActivity: 'IDLE_SURFACE',
     latitude: 24.7,
     longitude: 46.7,
     site: {
@@ -32,15 +32,7 @@ function input(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
       internalDirtRoads: false,
       heavyEquipmentMovement: false,
       looseMaterials: false,
-      largeExposedArea: false,
-      drySurface: false,
       surfaceWet: false,
-      wateringAvailable: false,
-      stockpilesCovered: false,
-      speedLimitApplied: false,
-      wheelWashAvailable: false,
-      dustScreensAvailable: false,
-      fieldMonitoringAvailable: false,
       receptorType: 'NONE_NEARBY',
       receptorDistance: 'OVER_500M',
       receptorIsDownwind: false,

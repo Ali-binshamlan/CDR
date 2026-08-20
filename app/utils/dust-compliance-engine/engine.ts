@@ -1,4 +1,4 @@
-// =============================================================
+﻿// =============================================================
 // Riyadh Dust Compliance Engine — Core
 // evaluateDustCompliance: الدالة الرئيسية. تستهلك نتيجة DVI الجاهزة
 // (قراءة فقط، بلا إعادة حساب)، وتُطبّق تصنيف المشروع + بروتوكول
@@ -149,7 +149,7 @@ function buildPlanningForecastResult(ctx: DustComplianceContext, now: number): D
 
     regulatoryActivity: ctx.activity.regulatoryActivity,
     regulatoryActivityLabelAr:
-      REGULATORY_ACTIVITY_LABEL_AR[ctx.activity.regulatoryActivity] ?? REGULATORY_ACTIVITY_LABEL_AR.OTHER,
+      REGULATORY_ACTIVITY_LABEL_AR[ctx.activity.regulatoryActivity],
 
     riskClass,
     riskClassReasonAr,
@@ -1121,7 +1121,7 @@ export function evaluateDustCompliance(
 
     regulatoryActivity: ctx.activity.regulatoryActivity,
     regulatoryActivityLabelAr:
-      REGULATORY_ACTIVITY_LABEL_AR[ctx.activity.regulatoryActivity] ?? REGULATORY_ACTIVITY_LABEL_AR.OTHER,
+      REGULATORY_ACTIVITY_LABEL_AR[ctx.activity.regulatoryActivity],
 
     riskClass,
     riskClassReasonAr,

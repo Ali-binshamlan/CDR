@@ -1,16 +1,17 @@
-// نقطة الحقيقة الواحدة لترجمة activity_type (نص خام كـ HEAVY_EQUIPMENT_MOVEMENT)
-// إلى تسمية عربية معروضة — بديل النُسخ المكرَّرة سابقاً (نفس القاموس
-// تقريباً، بقيم متضاربة أحياناً) في app/api/projects/[projectId]/route.ts،
+// نقطة الحقيقة الواحدة لترجمة regulatory_activity (نص خام كـ CRUSHER) إلى
+// تسمية عربية معروضة — بديل النُسخ المكرَّرة سابقاً (نفس القاموس تقريباً،
+// بقيم متضاربة أحياناً) في app/api/projects/[projectId]/route.ts،
 // app/dashboard/alerts/page.tsx، وapp/components/dashborad/projectdashborad/
 // {Dustwidgetcard,Compliancewidgetcard}.tsx.
 //
-// المصدر الأساسي (canonical) هو ACTIVITY_LABEL_AR في app/utils/dust-engine/
-// tables.ts — مبني على ActivityCategory الفعلي المستخدم في محرك الغبار،
-// لا نصوصاً حرة. الأسماء الإضافية أدناه (LEGACY_ACTIVITY_LABEL_AR) قيم قديمة
-// ظهرت فعلياً في project_dust_profiles.activity_type عبر الزمن ولا تقابل
-// مفتاحاً في ActivityCategory الحالي (مثال: 'INDOOR_WORK', 'WELDING').
-
-import { ACTIVITY_LABEL_AR } from '@/app/utils/dust-engine/tables';
+// المصدر الأساسي (canonical) هو REGULATORY_ACTIVITY_LABEL_AR في dust-
+// compliance-engine/rulebook.ts — التسعة أنشطة التنظيمية الفعلية القابلة
+// للاختيار من الواجهة. طلب مستخدم صريح (توحيد كامل): ActivityCategory
+// وACTIVITY_LABEL_AR (dust-engine/tables.ts) حُذفا بالكامل — لم يعودا مصدر
+// ترجمة. LEGACY_ACTIVITY_LABEL_AR أدناه يبقى فقط كخط دفاع أخير لصفوف نادرة
+// جداً بلا regulatory_activity صالح (سابقة على إضافة هذا الحقل، عمود
+// activity_type نفسه بات غير مستخدَم في أي حساب — راجع project_dvi_activity_
+// scope في الذاكرة).
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 
 const LEGACY_ACTIVITY_LABEL_AR: Record<string, string> = {
@@ -30,7 +31,7 @@ const LEGACY_ACTIVITY_LABEL_AR: Record<string, string> = {
 // translateAlertMessage في dashboard/alerts/page.tsx، حيث يلزم التكرار على
 // كل المفاتيح لا مجرد lookup مفرد.
 export const ALL_ACTIVITY_LABELS_AR: Record<string, string> = {
-  ...(ACTIVITY_LABEL_AR as Record<string, string>),
+  ...REGULATORY_ACTIVITY_LABEL_AR,
   ...LEGACY_ACTIVITY_LABEL_AR,
 };
 
@@ -38,27 +39,25 @@ export function translateActivityType(type: string | null | undefined): string {
   if (!type) return 'نشاط عام';
   const trimmed = String(type).trim();
 
-  if ((ACTIVITY_LABEL_AR as Record<string, string>)[trimmed]) return (ACTIVITY_LABEL_AR as Record<string, string>)[trimmed];
+  if (REGULATORY_ACTIVITY_LABEL_AR[trimmed]) return REGULATORY_ACTIVITY_LABEL_AR[trimmed];
   if (LEGACY_ACTIVITY_LABEL_AR[trimmed]) return LEGACY_ACTIVITY_LABEL_AR[trimmed];
 
   const normalized = trimmed.toUpperCase().replace(/[\s-]+/g, '_');
-  if ((ACTIVITY_LABEL_AR as Record<string, string>)[normalized]) return (ACTIVITY_LABEL_AR as Record<string, string>)[normalized];
+  if (REGULATORY_ACTIVITY_LABEL_AR[normalized]) return REGULATORY_ACTIVITY_LABEL_AR[normalized];
   if (LEGACY_ACTIVITY_LABEL_AR[normalized]) return LEGACY_ACTIVITY_LABEL_AR[normalized];
 
   return trimmed;
 }
 
 // عنوان النشاط المعروض للمستخدم = النشاط التنظيمي المختار فعلياً (كسارة/
-// هدم/محطة خلط...) لا التصنيف الفيزيائي الداخلي (activity_type، مثل "حركة
-// معدات ثقيلة") المستخدم فقط لتغذية حساب حساسية محرك DVI ولا يظهر كقائمة
-// اختيار في أي شاشة. نقطة الحقيقة الواحدة لهذا القرار — بدل تكرار نفس
+// هدم/محطة خلط...). نقطة الحقيقة الواحدة لهذا القرار — بدل تكرار نفس
 // الـ ternary في كل صفحة/جدول يعرض اسم نشاط غبار.
 export function displayActivityLabel(row: {
   regulatory_activity?: string | null;
   activity_type?: string | null;
 } | null | undefined): string {
   const reg = row?.regulatory_activity;
-  if (reg && reg !== 'OTHER' && REGULATORY_ACTIVITY_LABEL_AR[reg]) {
+  if (reg && REGULATORY_ACTIVITY_LABEL_AR[reg]) {
     return REGULATORY_ACTIVITY_LABEL_AR[reg];
   }
   return translateActivityType(row?.activity_type);

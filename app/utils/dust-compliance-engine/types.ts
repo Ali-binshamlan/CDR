@@ -5,7 +5,7 @@
 // and never recomputes it. The decision here is fully independent of DviDecisionCategory.
 // =============================================================
 
-import type { DviDecisionCategory } from '@/app/utils/dust-engine/types';
+import type { DviDecisionCategory, RegulatoryDustActivityKey } from '@/app/utils/dust-engine/types';
 
 export type DustRiskClass =
   | 'CATEGORY_I_LOW'
@@ -42,21 +42,14 @@ export type DustComplianceDecisionCategory =
   | 'STOP_AFFECTED_ACTIVITY'
   | 'MANDATORY_STOP';
 
-// Regulatory activity type, independent of dust-engine's engineering
-// ActivityCategory — this classifies by the RCRC/NCEC guide chapters
-// (Chapter 3), optional at the activity level.
-export type RegulatoryDustActivity =
-  | 'EARTHWORKS'
-  | 'SITE_TRAFFIC'
-  | 'ENTRY_EXIT'
-  | 'MATERIAL_HANDLING_STOCKPILE'
-  | 'DEMOLITION'
-  | 'CRUSHER'
-  | 'BATCHING_PLANT'
-  | 'STONE_CUTTING'
-  | 'CD_WASTE_TRANSPORT'
-  | 'IDLE_SURFACE'
-  | 'OTHER';
+// طلب مستخدم صريح (توحيد كامل): كان هذا النوع نسخة منفصلة عن
+// RegulatoryDustActivityKey (dust-engine/types.ts) بفارق ENTRY_EXIT/OTHER
+// فقط — ENTRY_EXIT كود ميت مؤكَّد (غير قابل للوصول من الواجهة، راجع
+// rulebook.ts)، وOTHER كانت قيمة افتراضية بلا قواعد فعلية (تُرجع مصفوفة
+// فارغة). أُعيد تصدير النوع الموحّد مباشرة بدل نسخة محلية قد تنحرف عنها —
+// استثناء صغير من استقلالية dust-engine المعمارية القائمة أصلاً (نفس نمط
+// استيراد getRuleParameters الموجود من قبل).
+export type RegulatoryDustActivity = RegulatoryDustActivityKey;
 
 export type DmpApprovalStatus =
   | 'NOT_REQUIRED'

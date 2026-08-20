@@ -45,7 +45,7 @@ function projectProfile(overrides: Partial<DustProjectComplianceProfile> = {}): 
 function activityProfile(overrides: Partial<DustActivityComplianceProfile> = {}): DustActivityComplianceProfile {
   return {
     activityGroupId: 'test-group-1',
-    regulatoryActivity: 'OTHER',
+    regulatoryActivity: 'IDLE_SURFACE',
     isDustGenerating: true,
     isEnclosedOperation: false,
     isActiveOrPlanned: true,
@@ -882,7 +882,7 @@ describe('محرك امتثال الغبار — أعلى من 25 كم/س (بر�
     const r = evaluateDustCompliance(
       context({
         windSpeedKmh: 30,
-        activity: activityProfile({ regulatoryActivity: 'ENTRY_EXIT', controls: { ...activityProfile().controls, hourlyInspectionRecorded: false } }),
+        activity: activityProfile({ regulatoryActivity: 'SITE_TRAFFIC', controls: { ...activityProfile().controls, hourlyInspectionRecorded: false } }),
       })
     );
     // فوق 25، بروتوكول الرياح يوصي بإيقاف الأنشطة المكشوفة عموماً؛ هنا نتحقق
@@ -2112,66 +2112,11 @@ describe('محرك امتثال الغبار — اكتشاف مستقبل حس�
   });
 });
 
-describe('محرك امتثال الغبار — الدخول والخروج (تفريع طريقة تنظيف الإطارات)', () => {
-  it('فرع وحدة غسيل الإطارات: نقص مصيدة الرمال أو فاصل الزيوت → تقييد', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'ENTRY_EXIT',
-          controls: {
-            ...activityProfile().controls,
-            tireCleaningMethod: 'WHEEL_WASH',
-            sandTrapPresent: false,
-            oilSeparatorPresent: false,
-          },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-SANDTRAP-007')).toBe(true);
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-OILSEP-008')).toBe(true);
-    // فرع الغمر بالمياه لا يجب أن يُفعَّل لأن طريقة التنظيف مختلفة
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-IMMERSION-MESH-011')).toBe(false);
-  });
-
-  it('فرع غمر الإطارات بالمياه: نقص الشبكة المانعة للانزلاق أو الحوض السفلي → تقييد', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'ENTRY_EXIT',
-          controls: {
-            ...activityProfile().controls,
-            tireCleaningMethod: 'WATER_IMMERSION',
-            antiSlipMeshPresent: false,
-            collectionBasinPresent: false,
-          },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-IMMERSION-MESH-011')).toBe(true);
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-BASIN-013')).toBe(true);
-    // فرع وحدة الغسيل لا يجب أن يُفعَّل
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-SANDTRAP-007')).toBe(false);
-  });
-
-  it('نقص إحداثيات نقطة الدخول/الخروج → يتطلب تحقق ميداني', () => {
-    const r = evaluateDustCompliance(
-      context({
-        activity: activityProfile({
-          regulatoryActivity: 'ENTRY_EXIT',
-          measurements: {
-            ...activityProfile().measurements,
-            entryPointLat: null,
-            entryPointLng: null,
-            exitPointLat: null,
-            exitPointLng: null,
-          },
-        }),
-      })
-    );
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-POINT-MISSING-004')).toBe(true);
-    expect(r.triggeredRules.some((h) => h.code === 'ENTRY-EXITPOINT-MISSING-005')).toBe(true);
-  });
-});
+// طلب مستخدم صريح (توحيد كامل): describe "الدخول والخروج (تفريع طريقة
+// تنظيف الإطارات)" حُذف بالكامل — كان يختبر entryExitRules() وENTRY-* (15
+// قاعدة)، المحذوفة جميعها من rulebook.ts/ruleMetadata.ts/rulesCatalog.ts
+// (كود ميت مؤكَّد، غير قابل للوصول من الواجهة أصلاً؛ راجع تعليق
+// applyActivityRules الكامل في rulebook.ts).
 
 // CDWASTE-CAPACITY-007 (تجاوز السعة الاستيعابية) حُذف من rulebook.ts سابقاً
 // — loadExceedsCapacity لم يعد يُدخَل عبر الواجهة. CDWASTE-PILEHEIGHT-003
@@ -3036,8 +2981,6 @@ describe('buildComplianceContext — تمرير العينة الخام (rawWeat
       distanceFactor: 1,
       receptorImpact: 0,
       receptorSensitivityMultiplier: 1,
-      mitigationScore: 0,
-      mitigationReductionFactor: 1,
     },
     visibilityKm: 10,
     effectiveWindKmh: 29.66,

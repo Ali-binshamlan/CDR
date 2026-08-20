@@ -2,16 +2,16 @@
 // AEI Engine — Tables & Constants
 // =============================================================
 
-import { ActivityCategory } from '../dust-engine/types';
+import { RegulatoryDustActivityKey } from '../dust-engine/types';
 import { AeiColor, AeiStatus } from './types';
 
-// أنشطة تتأثر جودتها مباشرة بالغبار العالق (التصاق/تشطيب/طبقة نهائية)
-export const DUST_QUALITY_SENSITIVE_ACTIVITIES: ActivityCategory[] = [
-  'EXTERNAL_PAINTING',
-  'COATING',
-  'WATERPROOFING',
-  'FACADE_INSTALLATION',
-];
+// أنشطة تتأثر جودتها مباشرة بالغبار العالق (التصاق/تشطيب/طبقة نهائية).
+// طلب مستخدم صريح (توحيد كامل): لا نشاط من التسعة التنظيمية الحالية
+// (CRUSHER/DEMOLITION/STONE_CUTTING/EARTHWORKS/SITE_TRAFFIC/MATERIAL_
+// HANDLING_STOCKPILE/BATCHING_PLANT/CD_WASTE_TRANSPORT/IDLE_SURFACE) حساس
+// للجودة فعلياً — القائمة فارغة عن قصد، وتبقى جاهزة إن أُضيف مستقبلاً نشاط
+// تنظيمي فعلي يتأثر بجودته (كالدهان أو العزل) دون الحاجة لتوسيع الواجهة.
+export const DUST_QUALITY_SENSITIVE_ACTIVITIES: RegulatoryDustActivityKey[] = [];
 
 // السقف الإجباري لقيمة AEI عندما يكون قرار DVI في مرحلة تحذيرية/مقيدة
 export const AEI_RESTRICT_CAP = 59;

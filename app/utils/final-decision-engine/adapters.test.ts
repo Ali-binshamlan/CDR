@@ -47,8 +47,6 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
       distanceFactor: 1,
       receptorImpact: 0,
       receptorSensitivityMultiplier: 1,
-      mitigationScore: 0,
-      mitigationReductionFactor: 1,
     },
     visibilityKm: 5,
     effectiveWindKmh: 10,

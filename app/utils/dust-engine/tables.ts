@@ -2,7 +2,7 @@
 // DVI Engine — Lookup Tables (مستخرجة حرفيًا من جداول المواصفة)
 // =============================================================
 
-import { ActivityCategory, DistanceBand, DviLevel, ReceptorType } from './types';
+import { DistanceBand, DviLevel, ReceptorType, RegulatoryDustActivityKey } from './types';
 
 // جدول 1: الرؤية الأفقية بالمتر أو الكيلومتر → VisibilityRisk
 export function visibilityRisk(visibilityKm: number): number {
@@ -42,49 +42,53 @@ export function windTransportRisk(effectiveWindKmh: number): number {
   return 100;
 }
 
-// جدول 5: حساسية الأنشطة المختلفة للغبار وتدني مستويات الرؤية
-export const ACTIVITY_SENSITIVITY: Record<ActivityCategory, number> = {
-  CRANE_LIFTING: 0.9,
-  WORK_AT_HEIGHT: 0.85,
-  STEEL_ERECTION: 0.85,
-  FACADE_INSTALLATION: 0.8,
-  HEAVY_EQUIPMENT_MOVEMENT: 0.65,
-  MATERIAL_TRANSPORT: 0.7,
-  EXCAVATION: 0.75,
-  BACKFILLING: 0.75,
-  GRADING: 0.75,
-  SOIL_TRANSPORT: 0.75,
-  COMPACTION: 0.6,
-  ROAD_WORKS: 0.6,
-  ASPHALT_PAVING: 0.5,
-  EXTERNAL_PAINTING: 0.9,
-  COATING: 0.85,
-  WATERPROOFING: 0.7,
-  CONCRETE_POURING: 0.55,
-  GENERAL_OUTDOOR_WORK: 0.5,
-  MEP_EXTERNAL_WORK: 0.6,
-  LANDSCAPING: 0.4,
-  INDOOR_WORK: 0.0,
-  OFFICE_WORK: 0.0,
+// جدول 5: حساسية الأنشطة التنظيمية التسعة الفعلية (طلب مستخدم صريح: توحيد
+// كامل) — رقم مستقل لكل نشاط، بدل التشارك القسري القديم عبر ActivityCategory
+// الوسيط المحذوف (مثال: DEMOLITION/CRUSHER/STONE_CUTTING كانت الثلاثة تتقاسم
+// نفس رقم HEAVY_EQUIPMENT_MOVEMENT=0.65 رغم اختلاف خطورتها الفعلية عن
+// الغبار). القيم مبنية على طبيعة كل نشاط الفعلية (استمرارية الانبعاث، دقة
+// الجسيمات، اعتماده على الرؤية):
+//   CRUSHER (0.75): انبعاث غبار مستمر ومباشر أثناء التشغيل بالكامل.
+//   EARTHWORKS (0.75): حفر/ردم/تسوية — يثير التربة مباشرة، استمرار طويل.
+//   DEMOLITION (0.7): غبار كثيف لكن متقطع (دفعات هدم، لا انبعاث ثابت).
+//   CD_WASTE_TRANSPORT (0.65): نقل مخلفات — غبار ثانوي من حمولة مكشوفة.
+//   STONE_CUTTING (0.65): جسيمات دقيقة عالية الخطورة صحياً لكن موضعية النطاق.
+//   BATCHING_PLANT (0.6): مصدر إسمنت/خرسانة، غالباً جزئي الإغلاق.
+//   MATERIAL_HANDLING_STOCKPILE (0.6): تحميل/تنزيل/تخزين — دفعات متقطعة.
+//   SITE_TRAFFIC (0.55): حركة مركبات — غبار ثانوي (إثارة تربة الطريق)، لا مصدر مباشر.
+//   IDLE_SURFACE (0.4): سطح غير نشط بلا عمل فعلي — أقل الأنشطة التسعة حساسية.
+export const ACTIVITY_SENSITIVITY: Record<RegulatoryDustActivityKey, number> = {
+  CRUSHER: 0.75,
+  EARTHWORKS: 0.75,
+  DEMOLITION: 0.7,
+  CD_WASTE_TRANSPORT: 0.65,
+  STONE_CUTTING: 0.65,
+  BATCHING_PLANT: 0.6,
+  MATERIAL_HANDLING_STOCKPILE: 0.6,
+  SITE_TRAFFIC: 0.55,
+  IDLE_SURFACE: 0.4,
 };
 
-// قائمة الأنشطة المعتمدة كليًا على الرؤية الأفقية المباشرة والتواصل البصري
-export const VISIBILITY_DEPENDENT_ACTIVITIES: ActivityCategory[] = [
-  'CRANE_LIFTING',
-  'WORK_AT_HEIGHT',
-  'STEEL_ERECTION',
-  'FACADE_INSTALLATION',
-  'HEAVY_EQUIPMENT_MOVEMENT',
+// قائمة الأنشطة المعتمدة كليًا على الرؤية الأفقية المباشرة والتواصل البصري.
+// طلب مستخدم صريح لكل نشاط: CRUSHER/DEMOLITION/STONE_CUTTING (كلاهما معاً
+// رؤية+غبار — تشغيل آلي مستمر/هدم دفعي/قطع يدوي دقيق، كل واحد يحتاج تنسيقاً
+// بصرياً مباشراً وينتج غباراً فعلياً في آن واحد).
+export const VISIBILITY_DEPENDENT_ACTIVITIES: RegulatoryDustActivityKey[] = [
+  'CRUSHER',
+  'DEMOLITION',
+  'STONE_CUTTING',
 ];
 
-// قائمة الأنشطة المسببة والمثيرة للغبار والأتربة بطبيعتها التشغيلية
-export const DUST_GENERATING_ACTIVITIES: ActivityCategory[] = [
-  'EXCAVATION',
-  'BACKFILLING',
-  'GRADING',
-  'SOIL_TRANSPORT',
-  'COMPACTION',
-  'ROAD_WORKS',
+// قائمة الأنشطة المسببة والمثيرة للغبار والأتربة بطبيعتها التشغيلية.
+// EARTHWORKS/SITE_TRAFFIC مضافان لهذه القائمة أيضاً (لا اعتماد رؤية).
+// MATERIAL_HANDLING_STOCKPILE/BATCHING_PLANT/CD_WASTE_TRANSPORT/IDLE_SURFACE
+// لا ينتميان لأي من القائمتين.
+export const DUST_GENERATING_ACTIVITIES: RegulatoryDustActivityKey[] = [
+  'CRUSHER',
+  'DEMOLITION',
+  'STONE_CUTTING',
+  'EARTHWORKS',
+  'SITE_TRAFFIC',
 ];
 
 // جدول 6: حساسية المستقبلات الحساسة المحيطة بالموقع
@@ -94,32 +98,6 @@ export const RECEPTOR_SENSITIVITY: Record<ReceptorType, number> = {
   COMMERCIAL_AREA: 0.5,
   INDUSTRIAL_AREA: 0.2,
   NONE_NEARBY: 0.0,
-};
-
-// القاموس العربي لأسماء الأنشطة (مطلوب لواجهات الإدخال وعرض المكونات)
-export const ACTIVITY_LABEL_AR: Record<ActivityCategory, string> = {
-  CRANE_LIFTING: 'رفع برافعة',
-  WORK_AT_HEIGHT: 'عمل على ارتفاع',
-  STEEL_ERECTION: 'تركيب هياكل معدنية',
-  FACADE_INSTALLATION: 'أعمال واجهات',
-  HEAVY_EQUIPMENT_MOVEMENT: 'حركة معدات ثقيلة',
-  MATERIAL_TRANSPORT: 'نقل مواد / حركة شاحنات',
-  EXCAVATION: 'أعمال حفر',
-  BACKFILLING: 'أعمال ردم',
-  GRADING: 'أعمال تسوية',
-  SOIL_TRANSPORT: 'نقل تربة',
-  COMPACTION: 'أعمال دمك',
-  ROAD_WORKS: 'أعمال طرق',
-  ASPHALT_PAVING: 'رصف أسفلت',
-  EXTERNAL_PAINTING: 'دهان خارجي',
-  COATING: 'أعمال طلاء/تغليف',
-  WATERPROOFING: 'أعمال عزل',
-  CONCRETE_POURING: 'صب خرسانة',
-  GENERAL_OUTDOOR_WORK: 'عمل عام خارجي',
-  MEP_EXTERNAL_WORK: 'أعمال ميكانيكا/كهرباء خارجية',
-  LANDSCAPING: 'أعمال تنسيق مواقع',
-  INDOOR_WORK: 'عمل داخلي',
-  OFFICE_WORK: 'عمل إداري/مكتبي',
 };
 
 // جدول 7: عامل نطاق المسافة الفاصلة للمستقبل البيئي المحيط

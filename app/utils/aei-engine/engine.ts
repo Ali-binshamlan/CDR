@@ -8,8 +8,9 @@
 //  4) BaseScore = min(safety, quality) + سقف إجباري وتعديل حالة إجباري.
 // =============================================================
 
-import { ActivityCategory, DviEvaluationResult } from '../dust-engine/types';
-import { ACTIVITY_LABEL_AR, ACTIVITY_SENSITIVITY } from '../dust-engine/tables';
+import { DviEvaluationResult, RegulatoryDustActivityKey } from '../dust-engine/types';
+import { ACTIVITY_SENSITIVITY } from '../dust-engine/tables';
+import { REGULATORY_ACTIVITY_LABEL_AR } from '../dust-compliance-engine/rulebook';
 import {
   AEI_CAPPING_DVI_DECISIONS,
   AEI_RESTRICT_CAP,
@@ -32,14 +33,14 @@ function buildSourceSnapshot(dvi: DviEvaluationResult): AeiSourceSnapshot[] {
   ];
 }
 
-function calculateSafetyScore(dvi: DviEvaluationResult, activityType: ActivityCategory): number {
-  const sensitivity = ACTIVITY_SENSITIVITY[activityType] ?? 0.5;
+function calculateSafetyScore(dvi: DviEvaluationResult, regulatoryActivity: RegulatoryDustActivityKey): number {
+  const sensitivity = ACTIVITY_SENSITIVITY[regulatoryActivity];
   const dustRiskContribution = dvi.score * (0.6 + 0.4 * sensitivity);
   return Math.round(Math.max(0, 100 - dustRiskContribution) * 10) / 10;
 }
 
-function calculateQualityScore(dvi: DviEvaluationResult, activityType: ActivityCategory): number {
-  const isQualitySensitive = DUST_QUALITY_SENSITIVE_ACTIVITIES.includes(activityType);
+function calculateQualityScore(dvi: DviEvaluationResult, regulatoryActivity: RegulatoryDustActivityKey): number {
+  const isQualitySensitive = DUST_QUALITY_SENSITIVE_ACTIVITIES.includes(regulatoryActivity);
 
   if (!isQualitySensitive) {
     return Math.round(Math.max(0, 100 - dvi.channels.particulateRisk * 0.4) * 10) / 10;
@@ -55,9 +56,9 @@ function calculateQualityScore(dvi: DviEvaluationResult, activityType: ActivityC
 
 export function evaluateAei(
   dvi: DviEvaluationResult,
-  activityType: ActivityCategory
+  regulatoryActivity: RegulatoryDustActivityKey
 ): AeiEvaluationResult {
-  const activityLabelAr = ACTIVITY_LABEL_AR[activityType] ?? activityType;
+  const activityLabelAr = REGULATORY_ACTIVITY_LABEL_AR[regulatoryActivity] ?? regulatoryActivity;
   const sources = buildSourceSnapshot(dvi);
 
   // المرحلة 1 — البوابة الحاكمة: إيقاف فوري
@@ -83,8 +84,8 @@ export function evaluateAei(
   }
 
   // المرحلة 2 — حساب السلامة والجودة
-  const safetyScore = calculateSafetyScore(dvi, activityType);
-  const qualityScore = calculateQualityScore(dvi, activityType);
+  const safetyScore = calculateSafetyScore(dvi, regulatoryActivity);
+  const qualityScore = calculateQualityScore(dvi, regulatoryActivity);
 
   // المرحلة 3 — الأساس والسقف الإجباري
   const baseScore = Math.min(safetyScore, qualityScore);
@@ -123,7 +124,7 @@ export function evaluateAei(
   }
 
   // المرحلة 4 — تحديد السبب الرئيسي للقصور
-  const isQualitySensitive = DUST_QUALITY_SENSITIVE_ACTIVITIES.includes(activityType);
+  const isQualitySensitive = DUST_QUALITY_SENSITIVE_ACTIVITIES.includes(regulatoryActivity);
   const qualityIsLimiting = qualityScore < safetyScore;
 
   let shortReasonAr = '';

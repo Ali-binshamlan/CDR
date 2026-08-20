@@ -13,7 +13,6 @@ import { X, Plus, CheckCircle2 } from 'lucide-react';
 // evaluateDustVisibilityWindow/evaluateAei كانا يُستوردان ويُشغَّلان هنا في
 // المتصفح أثناء الحفظ — أُزيلا بالكامل من مسار إنشاء النشاط (راجع تعليق
 // handleDustSubmit الكامل). React يجمع المدخلات الخام ويرسلها فقط.
-import type { ActivityCategory } from '@/app/utils/dust-engine/types';
 
 import { ActivityTypeStep } from './ActivityTypeStep';
 import { DustStep } from './DustStep';
@@ -196,8 +195,6 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   // عند جدولة الفحص (بداية المؤقّت 600ms) ويُنقَص عند وصول أي نتيجة (نجاح
   // أو فشل شبكة) — الزر الرئيسي يُعطَّل طالما > 0.
   const [pendingPrecheckCount, setPendingPrecheckCount] = useState(0);
-
-  const updateDustField = <K extends keyof typeof DUST_FORM_DEFAULTS>(field: K, value: (typeof DUST_FORM_DEFAULTS)[K]) => { setDustForm((prev) => ({ ...prev, [field]: value })); };
 
   const generateActivityItemId = (): string => {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') { try { return crypto.randomUUID(); } catch {} }
@@ -551,10 +548,6 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     // مؤشر واحد (غبار) → مجموعة نشاط واحدة تربط كل الصفوف معاً
     setCurrentActivityGroupId(generateActivityGroupId());
 
-    // فئة DVI الفيزيائية (تُستخدم داخلياً لمحرك الغبار فقط، لا حقل واجهة
-    // بعد حذف قسم "أ. التصنيف الدقيق للنشاط") تُؤخذ من النشاط المختار.
-    setDustForm((prev) => ({ ...prev, activityType: option.dviCategory as ActivityCategory }));
-
     const today = new Date().toISOString().slice(0, 10);
     setRegulatoryActivity({
       id: generateActivityItemId(),
@@ -663,7 +656,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
   ) => {
    const regulatoryFields = item.fields;
    return ({
-    project_id: project.id, activity_group_id: currentActivityGroupId, activity_type: dustForm.activityType,
+    project_id: project.id, activity_group_id: currentActivityGroupId,
     activity_lat: item.lat, activity_lng: item.lng, device_id: item.deviceId,
     planned_date: item.startDate, planned_time: dailyStartTime, duration_hours: durationHours,
     // خطأ مكتشَف ومُصلَح (المستخدم سأل: "هل يُحتسب من وقت العمل فقط لنشاط
@@ -674,7 +667,7 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
     // duration_hours الإجمالية (تبقى كما هي لأغراض إحصائية).
     daily_duration_hours: dailyHours,
     shift_id: item.shiftId,
-    has_earthworks: dustForm.hasEarthworks, internal_dirt_roads: dustForm.internalDirtRoads, heavy_equipment_movement: dustForm.heavyEquipmentMovement, loose_materials: dustForm.looseMaterials, large_exposed_area: dustForm.largeExposedArea, dry_surface: dustForm.drySurface, surface_wet: dustForm.surfaceWet, watering_available: dustForm.wateringAvailable, stockpiles_covered: dustForm.stockpilesCovered, speed_limit_applied: dustForm.speedLimitApplied, wheel_wash_available: dustForm.wheelWashAvailable, dust_screens_available: dustForm.dustScreensAvailable, field_monitoring_available: dustForm.fieldMonitoringAvailable, receptor_type: dustForm.receptorType, receptor_distance: dustForm.receptorDistance, receptor_is_downwind: dustForm.receptorIsDownwind, visible_dust_plume_reported: dustForm.visibleDustPlumeReported, open_concrete_pour: dustForm.openConcretePour, onsite_visibility_m: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsite_pm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsite_pm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
+    has_earthworks: dustForm.hasEarthworks, internal_dirt_roads: dustForm.internalDirtRoads, heavy_equipment_movement: dustForm.heavyEquipmentMovement, loose_materials: dustForm.looseMaterials, surface_wet: dustForm.surfaceWet, receptor_type: dustForm.receptorType, receptor_distance: dustForm.receptorDistance, receptor_is_downwind: dustForm.receptorIsDownwind, visible_dust_plume_reported: dustForm.visibleDustPlumeReported, open_concrete_pour: dustForm.openConcretePour, onsite_visibility_m: dustForm.onsiteVisibilityM === '' ? null : Number(dustForm.onsiteVisibilityM), onsite_pm10: dustForm.onsitePm10 === '' ? null : Number(dustForm.onsitePm10), onsite_pm25: dustForm.onsitePm25 === '' ? null : Number(dustForm.onsitePm25),
     // حقول محرك الامتثال التنظيمي (Riyadh Dust Compliance) — لا تؤثر على
     // حساب DVI أعلاه.
     regulatory_activity: regulatoryFields.regulatoryActivity,
@@ -1119,8 +1112,6 @@ export default function AddActivityModal({ project, onActivityCreated }: AddActi
                       <DustStep
                         project={project}
                         isMounted={isMounted}
-                        dustForm={dustForm}
-                        updateDustField={updateDustField}
                         dustLoading={dustLoading}
                         onSubmit={handleDustSubmit}
                         regulatoryActivity={regulatoryActivity}

@@ -88,7 +88,7 @@ describe('classifyCause — تصنيف سبب ضعف الرؤية', () => {
 function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
   const freshNowIso = new Date().toISOString();
   return {
-    activityType: 'GENERAL_OUTDOOR_WORK',
+    regulatoryActivity: 'IDLE_SURFACE',
     latitude: 24.7136,
     longitude: 46.6753,
     site: {
@@ -96,17 +96,9 @@ function baseInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
       internalDirtRoads: false,
       heavyEquipmentMovement: false,
       looseMaterials: false,
-      largeExposedArea: false,
-      drySurface: false,
       surfaceWet: false,
-      wateringAvailable: true,
-      stockpilesCovered: true,
-      speedLimitApplied: true,
-      wheelWashAvailable: true,
-      dustScreensAvailable: true,
-      fieldMonitoringAvailable: true,
-      receptorType: 'NONE',
-      receptorDistance: 'FAR',
+      receptorType: 'NONE_NEARBY',
+      receptorDistance: 'OVER_500M',
       receptorIsDownwind: false,
       visibleDustPlumeReported: false,
       openConcretePour: false,
@@ -404,6 +396,10 @@ describe('computeDviResult — confidenceScore يعتمد على القراءة 
       deviceWindGustKmh: 20,
       devicePm10: 40,
       devicePm25: 15,
+      // بيانات موقع حقيقية (حفريات) — يعزل هذا الاختبار عن خصم -20 المنفصل
+      // لغياب بيانات الموقع (siteDataProvided)، غير متعلق بموضوع الاختبار
+      // (عزل الجهاز عن الطقس).
+      site: { ...baseInput().site, hasEarthworks: true },
     });
     // عينة طقس فارغة تماماً (كأن API الطقس فشل أو لا يوجد اتصال) — لا يجوز
     // أن تؤثر على الثقة إطلاقاً ما دام الجهاز غطّى كل الحقول المطلوبة.
@@ -419,6 +415,7 @@ describe('computeDviResult — confidenceScore يعتمد على القراءة 
       deviceWindSpeedKmh: 15,
       devicePm10: null,
       devicePm25: null,
+      site: { ...baseInput().site, hasEarthworks: true },
     });
     const fullWeather = sample({ pm10: 999, pm25: 999 }); // طقس كامل لكن غير مُستهلَك (عزل تام)
     const r = computeDviResult(input, fullWeather);
@@ -549,5 +546,170 @@ describe('computeDviResult — caveatsAr يتفاعل مع القراءة الم
       sample({ relativeHumidityPercent: 40 })
     );
     expect(r.caveatsAr.some((c) => c.includes('الرطوبة'))).toBe(false);
+  });
+});
+
+// اختبارات قبول صريحة (طلب المستخدم — "أضف الأنشطة الموجودة لدينا، أضف لها
+// أرقام خطر"): regulatoryActivity (اختياري) يحل محل ACTIVITY_SENSITIVITY[
+// activityType] العامة عند توفره — رقم حساسية مستقل لكل من الأنشطة
+// التنظيمية التسعة الفعلية بدل التشارك القسري عبر dviCategory الوسيط
+// (مثال حقيقي: DEMOLITION/CRUSHER/STONE_CUTHING كانت الثلاثة تتقاسم
+// HEAVY_EQUIPMENT_MOVEMENT=0.65 رغم اختلاف خطورتها الفعلية عن الغبار).
+// خطأ مكتشَف أثناء كتابة هذه الاختبارات (مسبق الوجود، لا علاقة لـregulatoryActivity
+// به): site.receptorType/receptorDistance في baseInput الافتراضية أعلاه تحملان
+// قيمتين غير صالحتين فعلياً ('NONE'/'FAR' بدل 'NONE_NEARBY'/'OVER_500M' الحقيقيتين
+// في ReceptorType/DistanceBand)، بسبب `as DustEngineInput` الذي يتجاوز فحص النوع
+// بصمت. RECEPTOR_SENSITIVITY['NONE']/DISTANCE_FACTOR['FAR'] كلاهما undefined،
+// فتتحول receptorImpact/receptorSensitivityMultiplier وبالتالي .score نفسها إلى
+// NaN — لم يظهر هذا سابقاً لأن كل الاختبارات القديمة كانت تفحص حقولاً محددة
+// (.visibilityKm/.effectiveWindKmh/.caveatsAr) لا .score/.multipliers.activitySensitivity
+// المباشرة. لا نُصلِح baseInput المشتركة هنا (خارج نطاق هذا الطلب، قد يُغيّر سلوك
+// اختبارات أخرى) — فقط نمرّر قيماً صالحة صراحة في site لهذه الاختبارات تحديداً.
+const VALID_RECEPTOR_SITE = { receptorType: 'NONE_NEARBY' as const, receptorDistance: 'OVER_500M' as const };
+function validInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
+  const built = baseInput(overrides);
+  return { ...built, site: { ...built.site, ...VALID_RECEPTOR_SITE } };
+}
+
+// طلب مستخدم صريح لاحق (توحيد كامل): بعد حذف ActivityCategory (النظام
+// العام القديم، 6 قيم) نهائياً، regulatoryActivity أصبح الحقل الإجباري
+// الوحيد — لا آلية استبدال اختياري بعد الآن (كل نشاط يحمل قيمة من التسعة
+// دائماً). الاختبارات التالية تثبت التمايز المباشر بين الأنشطة التسعة، لا
+// مقارنة "مع/بلا override" (لم تعد ممكنة التعبير عنها إطلاقاً).
+describe('computeDviResult — كل نشاط تنظيمي له رقم حساسية مستقل (ACTIVITY_SENSITIVITY)', () => {
+  it('CRUSHER (0.75) وDEMOLITION (0.7) وSTONE_CUTTING (0.65) تنتج حساسيات وسكورات مختلفة فعلياً', () => {
+    const weather = sample({ visibilityM: 3000, pm10: 180, windSpeedKmh: 20, windGustKmh: 25 });
+    const crusher = computeDviResult(validInput({ regulatoryActivity: 'CRUSHER' }), weather);
+    const demolition = computeDviResult(validInput({ regulatoryActivity: 'DEMOLITION' }), weather);
+    const stoneCutting = computeDviResult(validInput({ regulatoryActivity: 'STONE_CUTTING' }), weather);
+    expect(crusher.multipliers.activitySensitivity).toBeCloseTo(0.75, 5);
+    expect(demolition.multipliers.activitySensitivity).toBeCloseTo(0.7, 5);
+    expect(stoneCutting.multipliers.activitySensitivity).toBeCloseTo(0.65, 5);
+    expect(crusher.score).not.toBe(demolition.score);
+    expect(demolition.score).not.toBe(stoneCutting.score);
+    expect(crusher.score).toBeGreaterThan(demolition.score);
+    expect(demolition.score).toBeGreaterThan(stoneCutting.score);
+  });
+
+  it('كل التسعة أنشطة التنظيمية لها رقم حساسية مستقل صريح (لا تعادل عرضي بين أي زوج)', () => {
+    const weather = sample({ visibilityM: 3000, pm10: 180, windSpeedKmh: 20, windGustKmh: 25 });
+    const keys = [
+      'EARTHWORKS', 'SITE_TRAFFIC', 'MATERIAL_HANDLING_STOCKPILE', 'DEMOLITION',
+      'CRUSHER', 'BATCHING_PLANT', 'STONE_CUTTING', 'CD_WASTE_TRANSPORT', 'IDLE_SURFACE',
+    ] as const;
+    const sensitivities = keys.map(
+      (key) => computeDviResult(validInput({ regulatoryActivity: key }), weather).multipliers.activitySensitivity
+    );
+    // القيم المتوقعة بالضبط (راجع REGULATORY_ACTIVITY_SENSITIVITY في tables.ts)
+    expect(sensitivities).toEqual([0.75, 0.55, 0.6, 0.7, 0.75, 0.6, 0.65, 0.65, 0.4]);
+  });
+
+  it('IDLE_SURFACE (0.4، الأقل حساسية) → activitySensitivityMultiplier أقل من EARTHWORKS (0.75، الأعلى)', () => {
+    const weather = sample({ visibilityM: 3000, pm10: 180, windSpeedKmh: 20, windGustKmh: 25 });
+    const idleSurface = computeDviResult(validInput({ regulatoryActivity: 'IDLE_SURFACE' }), weather);
+    const earthworks = computeDviResult(validInput({ regulatoryActivity: 'EARTHWORKS' }), weather);
+    expect(idleSurface.multipliers.activitySensitivityMultiplier).toBeLessThan(earthworks.multipliers.activitySensitivityMultiplier);
+  });
+});
+
+// -----------------------------------------------------------------------
+// طلب مستخدم صريح (توحيد كامل): VISIBILITY_DEPENDENT_ACTIVITIES/DUST_
+// GENERATING_ACTIVITIES (تُحددان baseDecisionFromLevel عند RED+) مبنيتان
+// الآن مباشرة على التسعة أنشطة التنظيمية — CRUSHER/DEMOLITION/STONE_CUTTING
+// كل واحد يُصنَّف بتمييز حقيقي (لا تشارك قسري عبر dviCategory وسيط محذوف).
+// وزن الطقس أدناه (visibilityM=1200، أعلى من عتبتي البوابتين 500م/1000م
+// عمداً) يصل بالاسكور لمستوى RED فقط عبر مسار الاسكور، لا عبر DVI-
+// VISIBILITY-MANDATORY-STOP-001/DVI-VISIBILITY-RED-002 المباشرتين — لعزل
+// تأثير عضوية القائمتين تحديداً.
+describe('computeDviResult — تصنيف كل نشاط تنظيمي ضمن VISIBILITY_DEPENDENT_ACTIVITIES/DUST_GENERATING_ACTIVITIES', () => {
+  const redLevelWeather = sample({
+    visibilityM: 1200,
+    pm10: 600,
+    pm25: 500,
+    windSpeedKmh: 70,
+    windGustKmh: 90,
+    weatherSymbol: 'SANDSTORM',
+    dustConcentration: 1000,
+    relativeHumidityPercent: 10,
+  });
+  const nearbyDownwindReceptor = {
+    receptorType: 'HOSPITAL_SCHOOL_NURSERY_RESIDENTIAL_ADJACENT' as const,
+    receptorDistance: 'UNDER_50M' as const,
+    receptorIsDownwind: true,
+  };
+  function redLevelInput(overrides: Partial<DustEngineInput> = {}): DustEngineInput {
+    const built = validInput(overrides);
+    return { ...built, site: { ...built.site, ...nearbyDownwindReceptor } };
+  }
+
+  it('يتحقق أولاً أن ضبط الطقس فعلاً يصل لمستوى RED (65-79.9) لا DARK_RED/BLACK — إثبات أن visibilityM=1200 لا يُفعِّل بوابتي 500م/1000م المباشرتين', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'CRUSHER' }), redLevelWeather);
+    expect(result.level).toBe('RED');
+    expect(result.score).toBeGreaterThanOrEqual(65);
+    expect(result.score).toBeLessThan(80);
+  });
+
+  it('CRUSHER (رؤية+غبار كلاهما) عند RED → STOP_VISIBILITY_DEPENDENT_ACTIVITIES (الأولوية لقائمة الرؤية عند التقاطع)', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'CRUSHER' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('STOP_VISIBILITY_DEPENDENT_ACTIVITIES');
+  });
+
+  it('DEMOLITION (رؤية+غبار كلاهما) عند RED → STOP_VISIBILITY_DEPENDENT_ACTIVITIES', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'DEMOLITION' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('STOP_VISIBILITY_DEPENDENT_ACTIVITIES');
+  });
+
+  it('STONE_CUTTING (رؤية+غبار كلاهما) عند RED → STOP_VISIBILITY_DEPENDENT_ACTIVITIES', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'STONE_CUTTING' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('STOP_VISIBILITY_DEPENDENT_ACTIVITIES');
+  });
+
+  it('DEMOLITION (رؤية+غبار كلاهما) عند RED → STOP_VISIBILITY_DEPENDENT_ACTIVITIES أيضاً (نفس تصنيف CRUSHER/STONE_CUTTING)', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'DEMOLITION' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('STOP_VISIBILITY_DEPENDENT_ACTIVITIES');
+  });
+
+  it('EARTHWORKS (غبار فقط، ليست معتمدة على الرؤية) عند RED → STOP_DUST_GENERATING_ACTIVITIES', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'EARTHWORKS' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
+  });
+
+  it('SITE_TRAFFIC (غبار فقط) عند RED → STOP_DUST_GENERATING_ACTIVITIES', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'SITE_TRAFFIC' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('STOP_DUST_GENERATING_ACTIVITIES');
+  });
+
+  it('MATERIAL_HANDLING_STOCKPILE (لا في أي قائمة) عند RED → RESTRICT_SEVERE', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'MATERIAL_HANDLING_STOCKPILE' }), redLevelWeather);
+    expect(result.decisionCategory).toBe('RESTRICT_SEVERE');
+  });
+
+  it('BATCHING_PLANT/CD_WASTE_TRANSPORT (لا في أي قائمة) عند RED → RESTRICT_SEVERE أيضاً', () => {
+    const keys = ['BATCHING_PLANT', 'CD_WASTE_TRANSPORT'] as const;
+    keys.forEach((key) => {
+      const result = computeDviResult(redLevelInput({ regulatoryActivity: key }), redLevelWeather);
+      expect(result.decisionCategory).toBe('RESTRICT_SEVERE');
+    });
+  });
+
+  // IDLE_SURFACE (0.4، الأقل حساسية بين التسعة) ينتج بهذا الطقس بالذات درجة
+  // 64.9 فقط — دون عتبة RED (65)، فيبقى ORANGE → ALLOW_WITH_MONITORING (نفس
+  // سلوك baseDecisionFromLevel لكل مستوى ORANGE، بلا تصعيد إضافي). طلب
+  // مستخدم صريح: DVI-RECEPTOR-ESCALATION-006 (كانت تصعّد ALLOW_WITH_MONITORING
+  // إلى RESTRICT هنا سابقاً) حُذفت بالكامل — كانت تعتمد على receptorImpact
+  // الذي يبقى صفراً ثابتاً رياضياً دائماً (لا مسار واجهة يملأ site.receptorType/
+  // receptorDistance/receptorIsDownwind)، فلم تكن تُفعَّل فعلياً في أي حالة
+  // إنتاجية حقيقية أصلاً — nearbyDownwindReceptor في redLevelInput أعلاه
+  // يبقى فقط لإثبات أن هذا الطقس تحديداً يصل RED (اختبار أعلاه)، بلا أي أثر
+  // آخر على هذا الاختبار بعد حذف القاعدة.
+  it('IDLE_SURFACE (لا في أي قائمة، الأقل حساسية 0.4) عند هذا الطقس بالذات → درجة أقل من عتبة RED فتبقى ALLOW_WITH_MONITORING (لا تصعيد، القاعدة 006 محذوفة)', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'IDLE_SURFACE' }), redLevelWeather);
+    expect(result.score).toBeLessThan(65);
+    expect(result.decisionCategory).toBe('ALLOW_WITH_MONITORING');
+  });
+
+  it('لا DVI-RECEPTOR-ESCALATION-006 إطلاقاً في triggeredRules حتى مع مستقبِل حساس قريب باتجاه الرياح (القاعدة محذوفة بالكامل)', () => {
+    const result = computeDviResult(redLevelInput({ regulatoryActivity: 'MATERIAL_HANDLING_STOCKPILE' }), redLevelWeather);
+    expect(result.triggeredRules).not.toContain('DVI-RECEPTOR-ESCALATION-006');
   });
 });

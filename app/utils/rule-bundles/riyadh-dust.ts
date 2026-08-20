@@ -4,7 +4,9 @@
 // لمنظومة مرقاب") — تفصل النطاق التشغيلي لمرقاب (operational) عن الحكم
 // التنظيمي الرسمي (regulatory) بدل خلطهما في حدود PM10 واحدة كما كانت في
 // rulebook.ts. لا تُعدَّل حزمة بعد نشرها؛ أي تغيير على الحدود يتطلب حزمة
-// جديدة تُضاف إلى RULE_BUNDLES أدناه.
+// جديدة (ACTIVE_RULE_BUNDLE يُحدَّث للإشارة لها عند النشر — سجل RULE_BUNDLES
+// الوسيط حُذف لعدم وجود أي مستهلك يبحث بالمعرّف، طلب مستخدم صريح: فحص شامل
+// لكل كود ميت بالمشروع).
 //
 // خطأ مكتشَف ومُصلَح سابقاً (طلب صريح من المستخدم): كانت حزمة
 // RIYADH_DUST_2026_3 سابقة (نطاق تشغيلي أضيق: أخضر≤150، تقييد شديد من
@@ -117,9 +119,5 @@ export const RIYADH_DUST_2026_3: Readonly<RuleBundle<Pm10RegulatoryBoundsV3>> = 
     },
   },
 });
-
-export const RULE_BUNDLES = {
-  'RCRC-NCEC-RIYADH-DUST-2026.3': RIYADH_DUST_2026_3,
-} as const;
 
 export const ACTIVE_RULE_BUNDLE = RIYADH_DUST_2026_3;

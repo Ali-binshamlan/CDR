@@ -6,29 +6,27 @@
 // بل قرارًا تشغيليًا: استمرار / مراقبة / تقييد / إيقاف / إعادة جدولة.
 // =============================================================
 
-export type ActivityCategory =
-  | 'CRANE_LIFTING'
-  | 'WORK_AT_HEIGHT'
-  | 'STEEL_ERECTION'
-  | 'FACADE_INSTALLATION'
-  | 'HEAVY_EQUIPMENT_MOVEMENT'
-  | 'MATERIAL_TRANSPORT'
-  | 'EXCAVATION'
-  | 'BACKFILLING'
-  | 'GRADING'
-  | 'SOIL_TRANSPORT'
-  | 'COMPACTION'
-  | 'ROAD_WORKS'
-  | 'ASPHALT_PAVING'
-  | 'EXTERNAL_PAINTING'
-  | 'COATING'
-  | 'WATERPROOFING'
-  | 'CONCRETE_POURING'
-  | 'GENERAL_OUTDOOR_WORK'
-  | 'MEP_EXTERNAL_WORK'
-  | 'LANDSCAPING'
-  | 'INDOOR_WORK'
-  | 'OFFICE_WORK';
+// طلب مستخدم صريح (توحيد كامل): ActivityCategory (النظام الهندسي العام
+// القديم، 6 قيم) حُذف نهائياً — RegulatoryDustActivityKey أدناه هو المصدر
+// الوحيد للحقيقة الآن في كل محرك (DVI/AEI/الامتثال). قبل هذا الحذف، كانت
+// ثلاثة أنشطة تنظيمية مختلفة (CRUSHER/DEMOLITION/STONE_CUTTING) تتشارك قسراً
+// نفس قيمة ActivityCategory الواحدة (HEAVY_EQUIPMENT_MOVEMENT) لعلاقة many-
+// to-one بين النظامين — لا يمكن إعطاء الثلاثة أرقام حساسية مختلفة إلا
+// بالانتقال الكامل لنظام التسعة. نوع محلي مستقل هنا (لا استيراد من dust-
+// compliance-engine، رغم تطابق القيم التسعة تماماً هناك أيضاً بعد حذف
+// ENTRY_EXIT/OTHER) — dust-engine يبقى مستقلاً معمارياً كما هو (الاستثناء
+// الوحيد القائم أصلاً هو استيراد قيمة رقمية واحدة من ruleParameters.ts، لا
+// نوع/منطق قرار).
+export type RegulatoryDustActivityKey =
+  | 'EARTHWORKS'
+  | 'SITE_TRAFFIC'
+  | 'MATERIAL_HANDLING_STOCKPILE'
+  | 'DEMOLITION'
+  | 'CRUSHER'
+  | 'BATCHING_PLANT'
+  | 'STONE_CUTTING'
+  | 'CD_WASTE_TRANSPORT'
+  | 'IDLE_SURFACE';
 
 export type ReceptorType =
   | 'HOSPITAL_SCHOOL_NURSERY_RESIDENTIAL_ADJACENT'
@@ -89,17 +87,7 @@ export interface DustSiteInputs {
   internalDirtRoads: boolean;      // طرق ترابية داخلية
   heavyEquipmentMovement: boolean; // حركة معدات ثقيلة كثيفة
   looseMaterials: boolean;         // مواد سائبة مكشوفة / أكوام رمل أو تربة
-  largeExposedArea: boolean;       // منطقة مكشوفة كبيرة
-  drySurface: boolean;             // سطح جاف (يرفع الغبار أسهل)
   surfaceWet: boolean;             // سطح مبلل الآن (رش/مطر حديث)
-
-  // إجراءات التحكم
-  wateringAvailable: boolean;
-  stockpilesCovered: boolean;
-  speedLimitApplied: boolean;
-  wheelWashAvailable: boolean;
-  dustScreensAvailable: boolean;
-  fieldMonitoringAvailable: boolean;
 
   // الجوار
   receptorType: ReceptorType;
@@ -112,7 +100,12 @@ export interface DustSiteInputs {
 }
 
 export interface DustEngineInput {
-  activityType: ActivityCategory;
+  // طلب مستخدم صريح (توحيد كامل): إجباري صرفاً، لا اختياري — كل نشاط مضمون
+  // أن يحمل واحداً من التسعة (الواجهة تفرض الاختيار من REGULATORY_ACTIVITY_
+  // OPTIONS قبل أي إنشاء، ولا توجد صفوف قديمة ناقصة لهذا الحقل). راجع تعليق
+  // RegulatoryDustActivityKey الكامل في types.ts لسبب إلغاء ActivityCategory
+  // (النظام العام القديم) بالكامل لصالح هذا الحقل وحده.
+  regulatoryActivity: RegulatoryDustActivityKey;
   latitude: number;
   longitude: number;
   site: DustSiteInputs;
@@ -308,8 +301,6 @@ export interface DviMultipliers {
   distanceFactor: number;
   receptorImpact: number;
   receptorSensitivityMultiplier: number;
-  mitigationScore: number;
-  mitigationReductionFactor: number;
 }
 
 export interface DviEvaluationResult {

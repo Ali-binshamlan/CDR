@@ -78,12 +78,10 @@ function makeRequest(insert: Record<string, unknown>): Request {
   });
 }
 
-// حمولة أساسية صالحة — كسارة (CRUSHER) بـactivity_type المتوافق فعلياً
-// (HEAVY_EQUIPMENT_MOVEMENT)، مع كل الحقول الإلزامية.
+// حمولة أساسية صالحة — كسارة (CRUSHER)، مع كل الحقول الإلزامية.
 function baseInsert(overrides: Record<string, unknown> = {}) {
   return {
     project_id: PROJECT_ID,
-    activity_type: 'HEAVY_EQUIPMENT_MOVEMENT',
     regulatory_activity: 'CRUSHER',
     planned_date: '2999-01-01',
     planned_time: '09:00',
@@ -137,77 +135,17 @@ describe('POST /api/dust-profiles', () => {
     });
   });
 
-  // خطأ أمني مكتشَف ومُصلَح — طلب صريح من المستخدم: activity_type يجب أن
-  // يطابق النوع الجائز فعلياً لـregulatory_activity المُرسَل معه.
-  describe('تحقق تناسب activity_type مع regulatory_activity', () => {
-    it('CRUSHER مع activity_type مطابق (HEAVY_EQUIPMENT_MOVEMENT) → 200', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(makeRequest(baseInsert()) as never);
-      expect(res.status).toBe(200);
-    });
-
-    it('CRUSHER مع activity_type مخالف (INDOOR_WORK) → 400، لا يُحفَظ شيء', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(makeRequest(baseInsert({ activity_type: 'INDOOR_WORK' })) as never);
-      expect(res.status).toBe(400);
-      expect(lastDustProfileInsert).toBeNull();
-    });
-
-    it('DEMOLITION مع activity_type مطابق (HEAVY_EQUIPMENT_MOVEMENT) → 200', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ regulatory_activity: 'DEMOLITION', activity_type: 'HEAVY_EQUIPMENT_MOVEMENT' })) as never
-      );
-      expect(res.status).toBe(200);
-    });
-
-    it('EARTHWORKS مع activity_type مطابق (GRADING) → 200', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ regulatory_activity: 'EARTHWORKS', activity_type: 'GRADING' })) as never
-      );
-      expect(res.status).toBe(200);
-    });
-
-    it('EARTHWORKS مع activity_type مخالف (CRANE_LIFTING) → 400', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ regulatory_activity: 'EARTHWORKS', activity_type: 'CRANE_LIFTING' })) as never
-      );
-      expect(res.status).toBe(400);
-    });
-
-    it('BATCHING_PLANT مع activity_type مطابق (CONCRETE_POURING) → 200', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ regulatory_activity: 'BATCHING_PLANT', activity_type: 'CONCRETE_POURING' })) as never
-      );
-      expect(res.status).toBe(200);
-    });
-
-    it('OTHER بلا نوع متوقَّع محدد → أي activity_type صالح يُقبَل بلا رفض تناسب', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ regulatory_activity: 'OTHER', activity_type: 'OFFICE_WORK' })) as never
-      );
-      expect(res.status).toBe(200);
-    });
-
-    it('ENTRY_EXIT (صف قديم، غير قابل للإنشاء من الواجهة الحالية) بلا نوع متوقَّع محدد → لا رفض تناسب', async () => {
-      const { POST } = await import('./route');
-      const res = await POST(
-        makeRequest(baseInsert({ regulatory_activity: 'ENTRY_EXIT', activity_type: 'MATERIAL_TRANSPORT' })) as never
-      );
-      expect(res.status).toBe(200);
-    });
-
-    it('regulatory_activity غائبة تماماً → لا تحقق تناسب (اختيارية في الـschema)', async () => {
-      const insert = baseInsert();
-      delete (insert as Record<string, unknown>).regulatory_activity;
-      const { POST } = await import('./route');
-      const res = await POST(makeRequest(insert) as never);
-      expect(res.status).toBe(200);
-    });
+  // طلب مستخدم صريح (توحيد كامل): describe "تحقق تناسب activity_type مع
+  // regulatory_activity" حُذف بالكامل — activity_type والـschema الخاص به
+  // (ACTIVITY_TYPE_VALUES) وREGULATORY_ACTIVITY_EXPECTED_TYPE حُذفت جميعها
+  // من route.ts؛ regulatory_activity هو الحقل الوحيد المطلوب الآن، إجباري
+  // بلا .optional() (z.enum(REGULATORY_ACTIVITY_VALUES) بلا تحقق تناسق).
+  it('regulatory_activity غائبة تماماً → 400 (إجبارية الآن في الـschema، لا اختيارية)', async () => {
+    const insert = baseInsert();
+    delete (insert as Record<string, unknown>).regulatory_activity;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest(insert) as never);
+    expect(res.status).toBe(400);
   });
 
   it('device_id المُرسَل من العميل يُتجاهَل، يُشتَق تلقائياً من أقرب جهاز نشط', async () => {
@@ -416,18 +354,20 @@ describe('POST /api/dust-profiles', () => {
   // نشاط الغبار ليس معاملة واحدة"): activity_groups لم يعد يُكتَب مباشرة من
   // route.ts بمعزل عن باقي التحققات — الكتابة الوحيدة الآن هي RPC واحدة
   // (insert_dust_profile_atomic) تُنشئ activity_groups وproject_dust_profiles
-  // معاً، ولا تُستدعى إطلاقاً قبل نجاح كل تحقق سابق (تاريخ/أوقات دوام/تناسب
-  // activity_type). فشل أي تحقق لاحق يعني عدم استدعاء RPC مطلقاً — لا صف
+  // معاً، ولا تُستدعى إطلاقاً قبل نجاح كل تحقق سابق (تاريخ/أوقات دوام/تحقق
+  // الـschema). فشل أي تحقق لاحق يعني عدم استدعاء RPC مطلقاً — لا صف
   // مجموعة يتيم ممكن.
   //
   // ملاحظة: فحص موقع الكسارة/محطة الخلط لم يعد يمنع الحفظ (راجع describe
-  // أعلاه — "تنبيه توعوي فقط، لا يمنع الحفظ")، فلم يعد مصدراً صالحاً لسيناريو
-  // "فشل تحقق لاحق" هنا؛ استُبدل بتحقق تناسب activity_type (لا يزال حارساً
-  // حقيقياً يمنع الحفظ قبل RPC).
+  // أعلاه — "تنبيه توعوي فقط، لا يمنع الحفظ")، وتحقق تناسب activity_type
+  // (المصدر السابق لسيناريو "فشل تحقق لاحق" هنا) حُذف بالكامل — استُبدل
+  // بـregulatory_activity غائبة (حارس schema حقيقي لا يزال يمنع الحفظ قبل RPC).
   describe('لا كتابة على activity_groups قبل نجاح كل التحققات (اختبار قبول صريح)', () => {
-    it('فشل تناسب activity_type مع regulatory_activity → RPC الذرية لا تُستدعى إطلاقاً', async () => {
+    it('regulatory_activity غائبة (فشل تحقق الـschema) → RPC الذرية لا تُستدعى إطلاقاً', async () => {
+      const insert = baseInsert();
+      delete (insert as Record<string, unknown>).regulatory_activity;
       const { POST } = await import('./route');
-      const res = await POST(makeRequest(baseInsert({ activity_type: 'INDOOR_WORK' })) as never);
+      const res = await POST(makeRequest(insert) as never);
       expect(res.status).toBe(400);
       expect(lastRpcCall).toBeNull();
     });

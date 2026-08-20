@@ -7,7 +7,7 @@ import {
   evaluateDustVisibilityWorkDayHourly,
   evaluateLiveOperationalDecision,
 } from '@/app/utils/dust-engine';
-import type { ActivityCategory, DustEngineInput, DustWindowEvaluation } from '@/app/utils/dust-engine/types';
+import type { DustEngineInput, DustWindowEvaluation } from '@/app/utils/dust-engine/types';
 import { evaluateAei } from '@/app/utils/aei-engine';
 import type { AeiEvaluationResult } from '@/app/utils/aei-engine/types';
 import { AEI_RESTRICT_CAP } from '@/app/utils/aei-engine/tables';
@@ -64,7 +64,6 @@ export interface DustActivityRow {
   id: string | number;
   project_id?: string;
   activity_group_id?: string | null;
-  activity_type?: string;
   created_at?: string;
   activity_lat?: number | null;
   activity_lng?: number | null;
@@ -93,7 +92,7 @@ export interface DustActivityRow {
 export interface DustResultItem {
   activityGroupId: string;
   activityId: string;
-  activityType: ActivityCategory;
+  regulatoryActivity: DustEngineInput['regulatoryActivity'];
   windowEval: DustWindowEvaluation;
   aei: AeiEvaluationResult;
   hourlyForecasts: unknown[];
@@ -421,28 +420,83 @@ export function resolveWindDirectionEvidence(
   };
 }
 
-export function buildDustInput(row: DustActivityRow, project: ProjectRow, freshDevice?: FreshDeviceReading | null): DustEngineInput {
+// طلب مستخدم صريح (توحيد كامل): التسعة قيم هي الوحيدة الممكنة لـ
+// regulatory_activity الآن — الواجهة (AddActivityModal) وschema الـAPI
+// (app/api/dust-profiles/route.ts) يفرضان الاختيار من REGULATORY_ACTIVITY_
+// OPTIONS قبل أي إنشاء، ولا توجد صفوف قديمة ناقصة لهذا الحقل. لا حاجة لفحص/
+// fallback بعد الآن — يُقرأ مباشرة كقيمة مضمونة من التسعة.
+function toRegulatoryDustActivityKey(value: string | undefined): DustEngineInput['regulatoryActivity'] {
+  return value as DustEngineInput['regulatoryActivity'];
+}
+
+// طلب مستخدم صريح: hasEarthworks/internalDirtRoads/looseMaterials
+// (DustSiteInputs) لا مسار واجهة فعلي يملأها — قسم "إجراءات التحكم
+// المتوفرة" في DustStep.tsx معطَّل بالكامل (SHOW_CONTROL_MEASURES_SECTION
+// = false) ولا يضم أصلاً checkbox لهذه الثلاثة تحديداً (DUST_CONTROL_
+// CHECKBOXES تغطي إجراءات التخفيف الستة فقط: رش/تغطية/سرعة/غسيل/شاشات/
+// مراقبة، لا مصادر الغبار الداخلية هذه). القيمة كانت دائماً false ثابتة من
+// project_dust_profiles، فيتعطل عملياً الشرط الثاني لـDVI-PM10-ACTION-003
+// (pm10≥150 مع مصدر غبار داخلي واضح) لكل الأنشطة التسعة. الحل: اشتقاق
+// تلقائي من regulatory_activity نفسه (نوع النشاط يحدد طبيعة مصدر الغبار
+// بدقة أعلى من هذه الفئات العامة الثلاث أصلاً) — بلا حاجة لسؤال المستخدم:
+//   EARTHWORKS: حفريات مباشرة (حفر/ردم/تسوية) — تعريفه الحرفي.
+//   SITE_TRAFFIC: شاحنات على طرق داخلية غالباً غير مسفلتة.
+//   MATERIAL_HANDLING_STOCKPILE/CD_WASTE_TRANSPORT: أكوام/حمولة مكشوفة —
+//     نفس تعليق "حمولة مكشوفة" في ACTIVITY_SENSITIVITY (tables.ts) لكلا النشاطين.
+//   الباقي (CRUSHER/DEMOLITION/BATCHING_PLANT/STONE_CUTTING/IDLE_SURFACE):
+//     مصدر غبارهم مغطى أصلاً بحساسية النشاط الخاصة بهم (ACTIVITY_SENSITIVITY)،
+//     لا علاقة له بحفريات/طرق ترابية/مواد سائبة عامة.
+// || مع قيمة العمود الخام: لا يُسقِط أي قيمة true يدوية مستقبلية لو أُضيف
+// مسار واجهة لاحقاً لهذه الحقول تحديداً — فقط يضمن حداً أدنى منطقياً الآن.
+//
+// طلب مستخدم صريح (نفس الفجوة، حقل رابع): heavyEquipmentMovement (حركة
+// معدات ثقيلة كثيفة) لا مسار واجهة له هو الآخر — بخلاف largeExposedArea/
+// drySurface (خصائص موقع فيزيائية بحتة، حُذفتا نهائياً من siteDustGenerationRisk
+// لعدم إمكانية اشتقاقهما منطقياً من نوع النشاط)، حركة المعدات الثقيلة صفة
+// حقيقية لطبيعة نشاط معيّن — الأنشطة التي تتضمن معدات ثقيلة كثيفة فعلياً:
+//   CRUSHER: معدات تكسير ثقيلة تعمل باستمرار.
+//   DEMOLITION: معدات هدم ثقيلة (حفارات هدم، شاحنات نقل ركام).
+//   EARTHWORKS: حفارات/بلدوزرات — معدات ثقيلة بطبيعة العمل الترابي.
+//   CD_WASTE_TRANSPORT: شاحنات نقل ثقيلة.
+//   MATERIAL_HANDLING_STOCKPILE: لوادر/رافعات لمناولة الأكوام.
+// الباقي (SITE_TRAFFIC/BATCHING_PLANT/STONE_CUTTING/IDLE_SURFACE) بلا حركة
+// معدات ثقيلة كثيفة مميِّزة لطبيعة النشاط نفسه.
+export function deriveInternalDustSourceFromActivity(regulatoryActivity: DustEngineInput['regulatoryActivity']) {
   return {
-    activityType: row.activity_type as DustEngineInput['activityType'],
+    hasEarthworksFromActivity: regulatoryActivity === 'EARTHWORKS',
+    internalDirtRoadsFromActivity: regulatoryActivity === 'SITE_TRAFFIC',
+    looseMaterialsFromActivity:
+      regulatoryActivity === 'MATERIAL_HANDLING_STOCKPILE' || regulatoryActivity === 'CD_WASTE_TRANSPORT',
+    heavyEquipmentMovementFromActivity:
+      regulatoryActivity === 'CRUSHER' ||
+      regulatoryActivity === 'DEMOLITION' ||
+      regulatoryActivity === 'EARTHWORKS' ||
+      regulatoryActivity === 'CD_WASTE_TRANSPORT' ||
+      regulatoryActivity === 'MATERIAL_HANDLING_STOCKPILE',
+  };
+}
+
+export function buildDustInput(row: DustActivityRow, project: ProjectRow, freshDevice?: FreshDeviceReading | null): DustEngineInput {
+  const regulatoryActivity = toRegulatoryDustActivityKey(row.regulatory_activity);
+  const {
+    hasEarthworksFromActivity,
+    internalDirtRoadsFromActivity,
+    looseMaterialsFromActivity,
+    heavyEquipmentMovementFromActivity,
+  } = deriveInternalDustSourceFromActivity(regulatoryActivity);
+  return {
+    regulatoryActivity,
     // موقع النشاط المستقل (محدد يدوياً داخل zone المشروع) له الأولوية على
     // موقع المشروع المركزي — يُستخدم فعلياً في جلب طقس هذه النقطة تحديداً.
     // fallback لموقع المشروع فقط لأنشطة قديمة محفوظة قبل هذه الميزة.
     latitude: typeof row.activity_lat === 'number' ? row.activity_lat : (project.latitude ?? 0),
     longitude: typeof row.activity_lng === 'number' ? row.activity_lng : (project.longitude ?? 0),
     site: {
-      hasEarthworks: !!row.has_earthworks,
-      internalDirtRoads: !!row.internal_dirt_roads,
-      heavyEquipmentMovement: !!row.heavy_equipment_movement,
-      looseMaterials: !!row.loose_materials,
-      largeExposedArea: !!row.large_exposed_area,
-      drySurface: !!row.dry_surface,
+      hasEarthworks: !!row.has_earthworks || hasEarthworksFromActivity,
+      internalDirtRoads: !!row.internal_dirt_roads || internalDirtRoadsFromActivity,
+      heavyEquipmentMovement: !!row.heavy_equipment_movement || heavyEquipmentMovementFromActivity,
+      looseMaterials: !!row.loose_materials || looseMaterialsFromActivity,
       surfaceWet: !!row.surface_wet,
-      wateringAvailable: !!row.watering_available,
-      stockpilesCovered: !!row.stockpiles_covered,
-      speedLimitApplied: !!row.speed_limit_applied,
-      wheelWashAvailable: !!row.wheel_wash_available,
-      dustScreensAvailable: !!row.dust_screens_available,
-      fieldMonitoringAvailable: !!row.field_monitoring_available,
       receptorType: row.receptor_type as DustEngineInput['site']['receptorType'],
       receptorDistance: row.receptor_distance as DustEngineInput['site']['receptorDistance'],
       // تدقيق مكتشَف (مراجعة كود خارجي — "اتجاه الرياح يُستخدم دون توثيق
@@ -1364,7 +1418,7 @@ export async function computeDustResults(
               avoidWindowWorst: null,
             }
           : await evaluateDustVisibilityWindow(input, startIso, durationHours);
-        const aei: AeiEvaluationResult = evaluateAei(windowEval.worst, input.activityType);
+        const aei: AeiEvaluationResult = evaluateAei(windowEval.worst, input.regulatoryActivity);
 
         // توقعات ساعية عبر كامل ساعات دوام *يوم النشاط المجدول* (startIso)،
         // لا يوم فتح الصفحة. نشاط حي بجهاز مرتبط لا يستدعي الشبكة إطلاقاً
@@ -1408,7 +1462,7 @@ export async function computeDustResults(
         return {
           activityGroupId: row.activity_group_id || `dust-${row.id}`,
           activityId: String(row.id),
-          activityType: input.activityType,
+          regulatoryActivity: input.regulatoryActivity,
           windowEval: annotatedWindowEval,
           aei,
           hourlyForecasts: annotatedWorkDayHourly,
@@ -1448,101 +1502,6 @@ export function shouldSkipPersist(
   if (previousDecision !== newDecision) return false;
   const minutesSinceLast = (Date.now() - new Date(previousUpdatedAt).getTime()) / 60000;
   return minutesSinceLast < MIN_MINUTES_BETWEEN_UNCHANGED_EVALUATIONS;
-}
-
-// خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-04: "حفظ القرار غير
-// ذري... تبتلع الدالة الخطأ لكل نشاط ويمكن أن يعيد المسار نجاحًا"): كانت
-// كل دالة persist* هنا تبتلع أي خطأ كتابة بصمت (console.error فقط) وتعيد
-// undefined دائماً — فلا يملك evaluate/route.ts أي وسيلة لمعرفة أن نشاطاً
-// معيناً فشل حفظه فعلياً، ويُرجِع 200 "success" حتى لو فشلت كل الكتابات.
-// بلا معاملة قاعدة بيانات حقيقية عبر 3 جداول منفصلة (dust_evaluations،
-// dust_compliance_evaluations، final_decisions — يتطلب RPC/PL-pgSQL كامل)،
-// الإصلاح هنا هو "نقطة فشل متسقة" بدل الذرية الكاملة: كل دالة تُرجِع الآن
-// قائمة activityId التي فشل حفظها فعلياً (بدل ابتلاع الخطأ بصمت)،
-// والمسار (route.ts) يستخدم هذه القوائم لـ(1) رفض الأنشطة التي فشلت في
-// مرحلة سابقة من مراحل الحفظ اللاحقة (لا معنى لحفظ FinalDecision لنشاط فشل
-// حفظ DVI/compliance له أصلاً)، و(2) إرجاع 207/500 صريح يعكس الفشل الجزئي
-// بدل "success" كاذب. راجع تعليق evaluate/route.ts للتفاصيل الكاملة.
-export async function persistDustEvaluations(
-  supabaseAdmin: SupabaseClient,
-  projectId: string,
-  dustResults: DustResultItem[],
-  triggeredBy: string
-): Promise<string[]> {
-  const failedActivityIds: string[] = [];
-  await Promise.all(
-    dustResults.map(async (r) => {
-      try {
-        const worst = r.windowEval?.worst;
-        if (!worst) return;
-
-        const newDecision = worst.decisionCategory ?? 'UNKNOWN';
-
-        const { data: existing } = await supabaseAdmin
-          .from('current_dust_decisions')
-          .select('decision, updated_at')
-          .eq('project_id', projectId)
-          .eq('activity_group_id', r.activityGroupId)
-          .maybeSingle();
-
-        if (shouldSkipPersist(existing?.decision, existing?.updated_at, newDecision)) return;
-
-        const { data: inserted, error: insertError } = await supabaseAdmin
-          .from('dust_evaluations')
-          .insert({
-            project_id: projectId,
-            dust_profile_id: r.activityId,
-            activity_group_id: r.activityGroupId,
-            result: worst,
-            triggered_by: triggeredBy,
-          })
-          .select('id')
-          .single();
-
-        const evaluationId = (inserted as { id: string } | null)?.id;
-        if (!evaluationId) {
-          failedActivityIds.push(r.activityId);
-          if (insertError) console.error(`فشل حفظ تقييم الغبار للنشاط ${r.activityId}:`, insertError);
-          return;
-        }
-
-        // كتابة محميّة من التزامن (compare-and-swap): كان upsert أعمى يستبدل
-        // الصف بلا شرط، فطلبان متزامنان لنفس النشاط (مثال: التحديث الدوري كل
-        // دقيقتين + طلب onCountdownElapsed بنفس اللحظة) يقرآن نفس existing ثم
-        // يكتبان معاً، فيفوز الذي يصل متأخراً للخادم لا الأحدث حساباً — فقد
-        // يستقر النظام على قرار محسوب من بيانات أقدم. الآن نشترط أن يكون
-        // updated_at لم يتغيّر منذ القراءة (eq على القيمة المقروءة)؛ إن تغيّر
-        // فطلب آخر كتب بالفعل ونتخطى الكتابة (فوز الأحدث فعلياً، لا الأبطأ).
-        const nowIso = new Date().toISOString();
-        const decisionRow = {
-          activity_group_id: r.activityGroupId,
-          project_id: projectId,
-          latest_evaluation_id: evaluationId,
-          decision: newDecision,
-          triggered_rules: worst.triggeredRules ?? [],
-          short_reason: worst.shortReason ?? null,
-          updated_at: nowIso,
-        };
-        if (existing?.updated_at) {
-          await supabaseAdmin
-            .from('current_dust_decisions')
-            .update(decisionRow)
-            .eq('project_id', projectId)
-            .eq('activity_group_id', r.activityGroupId)
-            .eq('updated_at', existing.updated_at);
-        } else {
-          // لا صف سابق — insert عادي. تصادم نادر (طلبان أولان متزامنان تماماً)
-          // يفشل أحدهما على قيد المفتاح الأساسي المركب (project_id,
-          // activity_group_id)، وهو السلوك الصحيح هنا.
-          await supabaseAdmin.from('current_dust_decisions').insert(decisionRow);
-        }
-      } catch (error) {
-        failedActivityIds.push(r.activityId);
-        console.error(`فشل حفظ تقييم الغبار للنشاط ${r.activityId}:`, error);
-      }
-    })
-  );
-  return failedActivityIds;
 }
 
 // -----------------------------------------------------------------------
@@ -2040,7 +1999,7 @@ export function computeDustComplianceHourly(
         // نفس السبب بالضبط الذي يمنع STOP/تعليق إلزامي على PLANNING أعلاه
         // بـcomputeDustComplianceResults، راجع buildPlanningForecastResult.
         const result = evaluateDustCompliance(ctx, hourEvaluatedAtMs, true);
-        const rawAei = evaluateAei(hour, r.activityType);
+        const rawAei = evaluateAei(hour, toRegulatoryDustActivityKey(row.regulatory_activity));
         // mode='PLANNING' — نفس ساعة توقّع بلا استمرار PM10/استقرار استئناف
         // (لم تُمرَّر previousDecision/pm10Sustained لـbuildComplianceContext
         // أعلاه أصلاً)، راجع FinalDecisionMode في final-decision-engine/types.ts.
@@ -2273,8 +2232,6 @@ export const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
     distanceFactor: 1,
     receptorImpact: 0,
     receptorSensitivityMultiplier: 1,
-    mitigationScore: 0,
-    mitigationReductionFactor: 1,
   },
   visibilityKm: null,
   effectiveWindKmh: null,
@@ -2494,101 +2451,6 @@ export function computePendingResumeSince(
   return new Date().toISOString();
 }
 
-export async function persistDustComplianceEvaluations(
-  supabaseAdmin: SupabaseClient,
-  projectId: string,
-  complianceResults: DustComplianceResultItem[],
-  triggeredBy: string
-): Promise<string[]> {
-  const failedActivityIds: string[] = [];
-  await Promise.all(
-    (complianceResults || []).map(async (r) => {
-      try {
-        const newDecision = r.result?.decisionCategory ?? 'UNKNOWN';
-        const resumeHoldApplied = Boolean(r.result?.resumeHoldApplied);
-
-        const { data: existing } = await supabaseAdmin
-          .from('current_dust_compliance_decisions')
-          .select('decision, updated_at, stopped_since, pending_resume_since')
-          .eq('project_id', projectId)
-          .eq('activity_group_id', r.activityGroupId)
-          .maybeSingle();
-
-        const pendingResumeSince = computePendingResumeSince(existing?.pending_resume_since, resumeHoldApplied);
-        // لا نتخطى الكتابة إن تغيّر pending_resume_since (بداية/نهاية استقرار
-        // معلَّق) حتى لو بقي newDecision نفسه (STOP_AFFECTED_ACTIVITY طوال
-        // فترة الاستقرار) — وإلا لن يُسجَّل بدء الاستقرار أبداً، فيبقى عداد
-        // الـ10 دقائق بلا نقطة بداية صحيحة (نفس الخلل الذي نُصلحه هنا).
-        const pendingResumeChanged = (existing?.pending_resume_since ?? null) !== pendingResumeSince;
-        // راجع تعليق skipCompliance المطابق في persistActivityDecisionsAtomic —
-        // resumeHoldApplied=true يتجاوز الـthrottle أيضاً هنا، بنفس السبب
-        // (updated_at يجب أن يعكس آخر دورة تقييم فعلية طوال نافذة الاستقرار،
-        // لا يبقى قديماً بتصميم الـthrottle).
-        if (!pendingResumeChanged && !resumeHoldApplied && shouldSkipPersist(existing?.decision, existing?.updated_at, newDecision)) return;
-
-        const { data: inserted, error: insertError } = await supabaseAdmin
-          .from('dust_compliance_evaluations')
-          .insert({
-            project_id: projectId,
-            dust_profile_id: r.dustProfileId,
-            activity_group_id: r.activityGroupId,
-            result: r.result,
-            rulebook_version: r.result?.rulebookVersion,
-            triggered_by: triggeredBy,
-          })
-          .select('id')
-          .single();
-
-        const evaluationId = (inserted as { id: string } | null)?.id;
-        if (!evaluationId) {
-          failedActivityIds.push(r.activityId);
-          if (insertError) console.error(`فشل حفظ تقييم امتثال الغبار للنشاط ${r.activityId}:`, insertError);
-          return;
-        }
-
-        const stoppedSince = computeStoppedSince(existing?.decision, existing?.stopped_since, newDecision);
-
-        // كتابة محميّة من التزامن (compare-and-swap) — نفس علة upsert الأعمى
-        // المشروحة في persistDustEvaluations أعلاه، وأخطر هنا لأن الصف يحمل
-        // stopped_since/pending_resume_since (عدّادات الإيقاف والاستئناف):
-        // كتابة متأخرة من طلب أقدم كانت قد تُرجِع عدّاداً لقيمة سابقة.
-        const nowIso = new Date().toISOString();
-        const complianceRow = {
-          activity_group_id: r.activityGroupId,
-          project_id: projectId,
-          latest_evaluation_id: evaluationId,
-          decision: newDecision,
-          triggered_rules: r.result?.triggeredRules ?? [],
-          short_reason: r.result?.shortReasonAr ?? null,
-          updated_at: nowIso,
-          stopped_since: stoppedSince,
-          pending_resume_since: pendingResumeSince,
-          // كود القاعدة الفعلية التي بنت newDecision (راجع previousDecidingRuleCode
-          // في types.ts) — يمكّن التقييم التالي من معرفة *سبب* هذا الإيقاف
-          // بدقة، لا فئته العامة فقط (STOP_AFFECTED_ACTIVITY تُنتَج من عشرات
-          // القواعد المختلفة، لا بوابة الرياح فقط).
-          deciding_rule_code: r.result?.decidingRuleCode ?? null,
-          stop_cause: r.result?.decidingRuleMessageAr ?? null,
-        };
-        if (existing?.updated_at) {
-          await supabaseAdmin
-            .from('current_dust_compliance_decisions')
-            .update(complianceRow)
-            .eq('project_id', projectId)
-            .eq('activity_group_id', r.activityGroupId)
-            .eq('updated_at', existing.updated_at);
-        } else {
-          await supabaseAdmin.from('current_dust_compliance_decisions').insert(complianceRow);
-        }
-      } catch (error) {
-        failedActivityIds.push(r.activityId);
-        console.error(`فشل حفظ تقييم امتثال الغبار للنشاط ${r.activityId}:`, error);
-      }
-    })
-  );
-  return failedActivityIds;
-}
-
 // -----------------------------------------------------------------------
 // final_decisions — لقطة واحدة موثوقة لكل قرار decideFinal (خطأ معماري
 // مكتشَف ومُصلَح، مراجعة كود مدير — "FinalDecisionEngine ليس المصدر
@@ -2627,89 +2489,20 @@ export function determineFinalDecisionMode(
   return !Number.isNaN(startMs) && nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS ? 'PLANNING' : 'LIVE_OPERATIONAL';
 }
 
-export async function persistFinalDecisions(
-  supabaseAdmin: SupabaseClient,
-  projectId: string,
-  dustResults: DustResultItem[],
-  complianceResults: DustComplianceResultItem[],
-  // activityId التي فشل حفظ DVI و/أو compliance الخاص بها في مرحلة سابقة
-  // (persistDustEvaluations/persistDustComplianceEvaluations) — نقطة الفشل
-  // المتسقة C-04: لا معنى لحفظ FinalDecision لنشاط فشلت مرحلته السابقة
-  // فعلياً، فهذا كان سيُنتج قراراً نهائياً "ناجحاً" مبنياً فوق دليل لم
-  // يُحفظ أصلاً (dvi/compliance غير موجودين في سجل التدقيق رغم أن
-  // final_decisions يشير ضمنياً إلى وجودهما). راجع تعليق evaluate/route.ts.
-  skipActivityIds: Set<string> = new Set()
-): Promise<string[]> {
-  const complianceByActivityId = new Map<string, DustComplianceResultItem>(
-    (complianceResults || []).map((r) => [r.activityId, r])
-  );
-  const failedActivityIds: string[] = [];
-
-  await Promise.all(
-    (dustResults || []).map(async (r) => {
-      try {
-        if (!r?.aei) return;
-        if (skipActivityIds.has(r.activityId)) {
-          failedActivityIds.push(r.activityId);
-          return;
-        }
-        const complianceEntry = complianceByActivityId.get(r.activityId);
-        const compliance: DustComplianceResult | null = complianceEntry?.result ?? null;
-        const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
-        const mode = determineFinalDecisionMode(r.startIso);
-
-        const finalInput = buildFinalDecisionInput(
-          r.activityGroupId ?? r.activityId ?? 'unknown',
-          dvi,
-          compliance,
-          r.aei,
-          mode
-        );
-        const decision = decideFinal(finalInput);
-
-        const { error: insertError } = await supabaseAdmin.from('final_decisions').insert({
-          project_id: projectId,
-          activity_group_id: r.activityGroupId,
-          dust_profile_id: r.activityId ?? null,
-          mode: decision.mode,
-          operational_decision: decision.operationalDecision,
-          regulatory_finding: decision.regulatoryFinding,
-          mandatory_stop: decision.mandatoryStop,
-          overridable: decision.overridable,
-          short_reason_ar: decision.shortReasonAr,
-          decision_label_ar: decision.decisionLabelAr,
-          level: decision.level,
-          pending_confirmation: decision.pendingConfirmation,
-          reason_codes: decision.reasonCodes,
-          evidence_quality: decision.evidenceQuality,
-          rule_bundle_version: decision.ruleBundleVersion,
-          evaluated_at: finalInput.evaluatedAt,
-        });
-        if (insertError) {
-          failedActivityIds.push(r.activityId);
-          console.error(`فشل حفظ القرار النهائي للنشاط ${r.activityId}:`, insertError);
-        }
-      } catch (error) {
-        failedActivityIds.push(r.activityId);
-        console.error(`فشل حفظ القرار النهائي للنشاط ${r.activityId}:`, error);
-      }
-    })
-  );
-  return failedActivityIds;
-}
-
 // =========================================================================
 // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خبير خارجي — C-04: "حفظ القرار غير
-// ذري"): persistDustEvaluations/persistDustComplianceEvaluations/
-// persistFinalDecisions أعلاه تبقى معرَّفة ومصدَّرة كما هي (تُستخدم في
-// اختبارات موجودة ومسارات أخرى)، لكن evaluate/route.ts يستخدم الآن هذه
-// الدالة البديلة حصراً: تحسب بالضبط نفس ما كانت تحسبه الدوال الثلاث (نفس
-// shouldSkipPersist/computeStoppedSince/computePendingResumeSince/
-// decideFinal بلا أي تغيير في المنطق)، لكن تجمع نتيجة الحساب لكل نشاط في
-// استدعاء واحد لدالة SQL persist_activity_decision_atomic (راجع
-// 202607290007_atomic_decision_persist.sql) تكتب الجداول الثلاثة معاً ضمن
-// معاملة PostgreSQL واحدة — فشل أي مرحلة يُرجع كل الكتابات الخمس لنفس
-// النشاط لحالتها قبل الاستدعاء (لا "DVI محفوظ بلا FinalceDecision مقابل").
+// ذري"): كانت هنا ثلاث دوال منفصلة (persistDustEvaluations/
+// persistDustComplianceEvaluations/persistFinalDecisions)، كل واحدة تكتب
+// جدولها الخاص بمعزل عن الأخرى — نفس شكل الفشل: فشل مرحلة وسطى يترك "DVI
+// محفوظ بلا FinalDecision مقابل". حُذفت الثلاث نهائياً (طلب مستخدم صريح —
+// فحص شامل لكل كود ميت بالمشروع؛ صفر مستدعٍ فعلي لأي منها في أي مكان،
+// حتى الاختبارات، بعد أن حل محلها persistActivityDecisionsAtomic أدناه منذ
+// فترة): تحسب بالضبط نفس ما كانت تحسبه الدوال الثلاث (نفس shouldSkipPersist/
+// computeStoppedSince/computePendingResumeSince/decideFinal بلا أي تغيير في
+// المنطق)، لكن تجمع نتيجة الحساب لكل نشاط في استدعاء واحد لدالة SQL
+// persist_activity_decision_atomic (راجع 202607290007_atomic_decision_
+// persist.sql) تكتب الجداول الثلاثة معاً ضمن معاملة PostgreSQL واحدة —
+// فشل أي مرحلة يُرجع كل الكتابات الخمس لنفس النشاط لحالتها قبل الاستدعاء.
 export interface ActivityDecisionPersistResult {
   activityId: string;
   // جديد (202608160004 — المشكلة 4: "React ما زالت تحسب DVI/AEI وتعرض

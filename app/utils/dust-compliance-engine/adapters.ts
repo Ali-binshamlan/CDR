@@ -65,7 +65,9 @@ export function buildActivityComplianceProfile(
   // undefined (توافقي) = لا دليل توثيق أصلاً، يُعامَل كغياب اتجاه تماماً.
   windDirectionEvidence?: WindDirectionEvidence
 ): DustActivityComplianceProfile {
-  const regulatoryActivity: RegulatoryDustActivity = (row?.regulatory_activity as RegulatoryDustActivity) ?? 'OTHER';
+  // طلب مستخدم صريح (توحيد كامل): regulatory_activity مضمون الحضور الآن —
+  // الواجهة/API تفرضان قيمة من التسعة عند كل إنشاء، ولا صفوف قديمة ناقصة.
+  const regulatoryActivity = row?.regulatory_activity as RegulatoryDustActivity;
 
   const directionForAnalysisDeg = windDirectionEvidence?.directionForAnalysisDeg ?? null;
   const crusherLat = toNullableNumber(row?.crusher_lat);
