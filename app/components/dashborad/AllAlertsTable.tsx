@@ -35,6 +35,9 @@ interface AdminAlertRow {
   ownerCompany: string | null;
   ownerPhone: string | null;
   regulatoryActivity: string | null;
+  // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — منفصل تماماً عن state
+  // (راجع تعليق migration 202608200001_alert_reads.sql الكامل).
+  isRead: boolean;
 }
 
 // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "رابط المشروع في جدول
@@ -77,6 +80,17 @@ export default function AllAlertsTable({ projectLinksEnabled = true }: { project
       setIsLoading(false);
     }
   }, []);
+
+  // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — الضغط على الصف يعلّمه
+  // مقروءاً (لا expand/collapse بهذا الجدول أصلاً، بخلاف dashboard/alerts/
+  // page.tsx). تحديث متفائل فوري + فشل شبكة صامت، نفس نمط toggleExpand هناك.
+  const markRowRead = (id: string) => {
+    const alert = alerts.find((a) => a.id === id);
+    if (!alert || alert.isRead) return;
+
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)));
+    apiClient.post('/alerts/mark-read', { alertIds: [id] }).catch(() => {});
+  };
 
   useEffect(() => {
     // جدولة عبر microtask بدل استدعاء fetchAlerts مباشرة من جسم الـEffect —
@@ -132,6 +146,7 @@ export default function AllAlertsTable({ projectLinksEnabled = true }: { project
             <table className="w-full text-right text-sm whitespace-nowrap">
               <thead className="bg-slate-50/50 text-slate-500">
                 <tr>
+                  <th className="py-3 px-5 font-bold w-4"></th>
                   <th className="py-3 px-5 font-bold">#</th>
                   <th className="py-3 px-5 font-bold">المشروع</th>
                   <th className="py-3 px-5 font-bold">المالك</th>
@@ -152,7 +167,14 @@ export default function AllAlertsTable({ projectLinksEnabled = true }: { project
                   const meta = decisionMeta[alertKindToDecision(a.kind)];
                   const hasCoords = typeof a.projectLatitude === 'number' && typeof a.projectLongitude === 'number';
                   return (
-                    <tr key={a.id} className="hover:bg-slate-50/50 transition-colors">
+                    <tr
+                      key={a.id}
+                      onClick={() => markRowRead(a.id)}
+                      className={`hover:bg-slate-50/50 transition-colors cursor-pointer ${!a.isRead ? 'bg-blue-50/40' : ''}`}
+                    >
+                      <td className="py-3 px-5">
+                        {!a.isRead && <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" title="غير مقروء" />}
+                      </td>
                       <td className="py-3 px-5 text-slate-400">{idx + 1}</td>
                       <td className="py-3 px-5">
                         {projectLinksEnabled ? (

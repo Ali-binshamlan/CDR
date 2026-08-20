@@ -114,6 +114,9 @@ interface AlertItem {
   severity: Severity;
   metrics: { label: string; actual: string; threshold: string } | null;
   recommendedAction: string;
+  // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — منفصل تماماً عن state
+  // (راجع تعليق migration 202608200001_alert_reads.sql الكامل).
+  isRead: boolean;
 }
 
 // شكل صف مشروع خام كما يُرجعه GET /api/dashboard/alerts-list (تُقرأ منه
@@ -139,6 +142,7 @@ interface DashboardAlertRow {
   metric_actual?: string | null;
   metric_threshold?: string | null;
   recommended_action?: string | null;
+  isRead?: boolean;
 }
 
 // شكل عنصر activityLabels (خريطة "source:id" → بيانات خام) كما يُرجعه نفس
@@ -213,6 +217,9 @@ export default function AlertsPage() {
   const [alertTimingFilter, setAlertTimingFilter] = useState<AlertTiming | 'الكل'>('الكل');
   const [alertProjectFilter, setAlertProjectFilter] = useState<string>('الكل');
   const [alertStateFilterVal, setAlertStateFilterVal] = useState<AlertState | 'الكل'>('الكل');
+  // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — فلتر عرض منفصل تماماً
+  // عن alertStateFilterVal (الحالة NEW/CLOSED).
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
   // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب في "غرفة التحكم" هذه
   // كان يعني "لا توجد تنبيهات نشطة حالياً" — نفس الرسالة تماماً سواء لم
@@ -263,6 +270,7 @@ export default function AlertsPage() {
           created_at: a.created_at,
           metrics,
           recommendedAction: translateAlertMessage(a.recommended_action || getFallbackRecommendedAction(kind)),
+          isRead: Boolean(a.isRead),
         };
       });
 
@@ -293,12 +301,24 @@ export default function AlertsPage() {
         (alertTimingFilter === 'الكل' || a.timing === alertTimingFilter) &&
         (alertProjectFilter === 'الكل' || a.project === alertProjectFilter) &&
         (alertStateFilterVal === 'الكل' || a.state === alertStateFilterVal) &&
+        (!showUnreadOnly || !a.isRead) &&
         (a.message.includes(searchQuery) || a.activity.includes(searchQuery))
     );
-  }, [alertsData, alertTimingFilter, alertProjectFilter, alertStateFilterVal, searchQuery]);
+  }, [alertsData, alertTimingFilter, alertProjectFilter, alertStateFilterVal, showUnreadOnly, searchQuery]);
 
+  // طلب مستخدم صريح: فتح بطاقة تنبيه غير مقروء يعلّمه مقروءاً تلقائياً —
+  // تحديث متفائل فوري للحالة المحلية (بلا انتظار الشبكة)، والاستدعاء
+  // الفعلي لا يُعاد لو كان مقروءاً أصلاً (لا فائدة إضافية). فشل الشبكة هنا
+  // صامت عمداً — لا يستحق كسر تجربة فتح البطاقة نفسها، والمحاولة التالية
+  // (فتح بطاقة أخرى، أو إعادة تحميل الصفحة) تُصحّح الحالة تلقائياً.
   const toggleExpand = (id: string) => {
     setExpandedAlertId(prev => prev === id ? null : id);
+
+    const alert = alertsData.find((a) => a.id === id);
+    if (!alert || alert.isRead) return;
+
+    setAlertsData((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)));
+    apiClient.post('/alerts/mark-read', { alertIds: [id] }).catch(() => {});
   };
 
   if (isLoading) {
@@ -409,6 +429,19 @@ export default function AlertsPage() {
                   </button>
                 ))}
               </div>
+
+              {/* طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" */}
+              <button
+                onClick={() => setShowUnreadOnly((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all flex items-center gap-1.5 ${
+                  showUnreadOnly
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-md'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${showUnreadOnly ? 'bg-white' : 'bg-blue-500'}`} />
+                غير المقروءة فقط
+              </button>
             </div>
 
             <div className="relative w-full xl:w-72 shrink-0">
@@ -484,6 +517,13 @@ export default function AlertsPage() {
                       </div>
 
                       <div className="flex items-center gap-4 shrink-0 mt-3 md:mt-0 mr-14 md:mr-0">
+                        {/* طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — نقطة
+                            زرقاء منفصلة عن badge الحالة (NEW/CLOSED) أعلاه، لأن
+                            المفهومين مستقلان تماماً (تنبيه CLOSED قديم قد يكون
+                            لم يُقرأ بعد، وتنبيه NEW قد يكون قُرئ للتو). */}
+                        {!alert.isRead && (
+                          <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" title="غير مقروء" />
+                        )}
                         <span className={`px-3 py-1.5 rounded-full text-[11px] font-black border ${sMeta.bg} ${sMeta.text} ${sMeta.border}`}>
                           {stateLabel[alert.state]}
                         </span>

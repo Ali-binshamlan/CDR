@@ -266,6 +266,19 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
             fetchAlertsCount();
           }
         )
+        // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء لكي يقل الرقم" —
+        // الرقم مبني على alert_reads أيضاً الآن (راجع alerts/count/route.ts)،
+        // فتعليم تنبيه مقروءاً من صفحة التنبيهات (نافذة/تبويب آخر لنفس
+        // المستخدم، أو نفس الصفحة) يجب أن يُحدِّث الشارة فوراً — نفس فلتر
+        // user_id (alert_reads.user_id، لا alert_id) بنفس منطق قناة alerts
+        // أعلاه بالضبط.
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'alert_reads', filter: `user_id=eq.${uid}` },
+          () => {
+            fetchAlertsCount();
+          }
+        )
         .subscribe();
     })();
 

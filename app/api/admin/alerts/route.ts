@@ -45,6 +45,21 @@ export async function GET(request: NextRequest) {
   const { data: alerts, error: alertsError } = await alertsQuery;
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'admin/alerts fetch failed') }, { status: 500 });
 
+  // حالة القراءة الخاصة بهذا المستخدم تحديداً (سوبر أدمن أو جهة مراقبة) —
+  // نفس آلية alert_reads المستخدمة في dashboard/alerts-list/route.ts، طلب
+  // مستخدم صريح: "فعل خاصية مقروء/غير مقروء" على كل شاشات التنبيهات، لا
+  // شاشة المالك العادي فقط.
+  const alertIds = (alerts || []).map((a: { id: string }) => a.id);
+  const readAlertIdSet = new Set<string>();
+  if (alertIds.length > 0) {
+    const { data: reads } = await supabaseAdmin
+      .from('alert_reads')
+      .select('alert_id')
+      .eq('user_id', auth.userId)
+      .in('alert_id', alertIds);
+    (reads || []).forEach((r: { alert_id: string }) => readAlertIdSet.add(r.alert_id));
+  }
+
   const { data: profiles } = await supabaseAdmin.from('profiles').select('id, username, company_name, phone_number');
   const profileByUserId = new Map(
     (profiles || []).map((p: { id: string; username: string | null; company_name: string | null; phone_number: string | null }) => [p.id, p])
@@ -62,6 +77,7 @@ export async function GET(request: NextRequest) {
   const dustProfileById = new Map((dustProfiles || []).map((p: { id: string; regulatory_activity: string | null }) => [p.id, p]));
 
   const data = (alerts || []).map((alert: {
+    id: string;
     activity_id: string;
     viewer_message?: string | null;
     message: string;
@@ -87,6 +103,7 @@ export async function GET(request: NextRequest) {
       ownerCompany: owner?.company_name || null,
       ownerPhone: owner?.phone_number || null,
       regulatoryActivity: dustProfile?.regulatory_activity || null,
+      isRead: readAlertIdSet.has(alert.id),
     };
   });
 

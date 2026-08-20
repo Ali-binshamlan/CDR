@@ -30,6 +30,22 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false });
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'dashboard/alerts-list alerts fetch failed') }, { status: 500 });
 
+  // حالة القراءة الخاصة بهذا المستخدم تحديداً — جدول ربط منفصل تماماً عن
+  // alerts.state (راجع تعليق migration 202608200001_alert_reads.sql
+  // الكامل). alertId غائب من readAlertIds يعني "لم يُقرأ بعد".
+  const alertIds = (dbAlerts || []).map((a: { id: string }) => a.id);
+  const readAlertIds: string[] = [];
+  if (alertIds.length > 0) {
+    const { data: reads } = await supabaseAdmin
+      .from('alert_reads')
+      .select('alert_id')
+      .eq('user_id', userId)
+      .in('alert_id', alertIds);
+    (reads || []).forEach((r: { alert_id: string }) => readAlertIds.push(r.alert_id));
+  }
+  const readAlertIdSet = new Set(readAlertIds);
+  const alertsWithReadState = (dbAlerts || []).map((a: { id: string }) => ({ ...a, isRead: readAlertIdSet.has(a.id) }));
+
   const dustIds = [
     ...new Set(
       (dbAlerts || [])
@@ -47,5 +63,5 @@ export async function GET(request: NextRequest) {
     (data || []).forEach((d: { id: string; regulatory_activity: string | null }) => { activityLabels[`dust:${d.id}`] = { regulatory_activity: d.regulatory_activity }; });
   }
 
-  return NextResponse.json({ projects: dbProjects || [], alerts: dbAlerts || [], activityLabels });
+  return NextResponse.json({ projects: dbProjects || [], alerts: alertsWithReadState, activityLabels });
 }
