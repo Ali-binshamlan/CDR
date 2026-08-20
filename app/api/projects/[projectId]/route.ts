@@ -76,7 +76,13 @@ function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel:
   const dviWorst = engineResult.windowEval.worst;
   // startIso ضروري لحساب mode الصحيح (PLANNING لنشاط مستقبلي بعيد) — راجع
   // تعليق computeUnifiedActivityDecision في dustEvaluation.ts للسبب الكامل.
-  const decision = computeUnifiedActivityDecision(dviWorst, engineResult.compliance ?? null, engineResult.aei ?? null, engineResult.startIso);
+  const decision = computeUnifiedActivityDecision(
+    dviWorst,
+    engineResult.compliance ?? null,
+    engineResult.aei ?? null,
+    engineResult.startIso,
+    engineResult.durationHours
+  );
   return {
     decisionLabel: decision.decisionLabelAr,
     riskWeight: riskWeightFromColor(decision.level),

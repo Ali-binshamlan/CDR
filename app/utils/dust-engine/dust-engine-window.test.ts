@@ -183,13 +183,45 @@ describe('evaluateDustVisibilityWindow — worst يجب أن يكون ساعة �
     expect(abortTimeoutSpy).toHaveBeenCalledWith(3000);
   });
 
-  it('نشاط توقّعي بعيد (خارج هامش الساعتين الحية) يستخدم مهلة الشبكة الكاملة', async () => {
+  it('نشاط توقّعي بعيد (لم يبدأ بعد) يستخدم مهلة الشبكة الكاملة', async () => {
     const farFutureIso = new Date(Date.now() + 5 * 3600000).toISOString();
     const { forecast, air } = buildHourlySamplesAround(farFutureIso);
     const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     mockForecastAirResponses(forecast, air);
 
     await evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), farFutureIso, 3);
+
+    expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);
+  });
+
+  // طلب مستخدم صريح نهائي ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
+  // النشاط — ألغِ هامش الساعتين نهائياً"): نشاط سيبدأ خلال ساعة واحدة (كان
+  // "حياً" سابقاً ضمن هامش الساعتين المُلغى) لم يعد يُعامَل حياً الآن —
+  // مهلة الشبكة الكاملة الطبيعية (7 ثوانٍ)، لا المختصرة (3 ثوانٍ).
+  it('نشاط سيبدأ خلال ساعة واحدة (لم يبدأ بعد بالضبط، بلا هامش) يستخدم مهلة الشبكة الكاملة', async () => {
+    const soonIso = new Date(Date.now() + 3600000).toISOString();
+    const { forecast, air } = buildHourlySamplesAround(soonIso);
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    await evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), soonIso, 3);
+
+    expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);
+  });
+
+  // طلب مستخدم صريح نهائي (حد نهاية جديد لم يكن موجوداً أصلاً: planned_time
+  // + duration): نشاط بدأ منذ فترة أطول من مدته المجدولة (انتهى فعلياً) لم
+  // يعد يُعامَل حياً — قبل هذا الإصلاح كان يبقى "حياً" إلى الأبد بعد البدء.
+  it('نشاط انتهى فعلياً (بدأ قبل مدته المجدولة بالكامل) يستخدم مهلة الشبكة الكاملة، لا المختصرة', async () => {
+    const endedStartIso = new Date(Date.now() - 5 * 3600000).toISOString(); // بدأ منذ 5 ساعات
+    const { forecast, air } = buildHourlySamplesAround(endedStartIso);
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    // مدة النشاط 3 ساعات — انتهى فعلياً قبل ساعتين
+    await evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), endedStartIso, 3);
 
     expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
     expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);

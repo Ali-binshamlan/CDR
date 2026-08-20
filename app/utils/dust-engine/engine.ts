@@ -1224,12 +1224,6 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
   };
 }
 
-// نشاط ضمن هامش ساعتين من بدايته المجدولة (بدأ فعلاً، أو سيبدأ قريباً) —
-// "جهاز الرصد يتفعّل قبل ساعتين من بداية النشاط" (طلب صريح موثَّق أدناه في
-// isActivityLiveNow/buildAwaitingEvaluationWindow). ثابت وحدة واحد بدل تكرار
-// نفس الرقم 120*60000 محلياً في ثلاثة مواضع مختلفة داخل هذا الملف.
-const ACTIVITY_LIVE_MARGIN_MS_ENGINE = 120 * 60000;
-
 // راجع تعليق weatherTimeoutMs الكامل داخل evaluateDustVisibilityWindow —
 // مهلة مختصرة لطلب Open-Meteo حصراً لنشاط حي بجهاز مرتبط (القرار الحي لا
 // يعتمد على نتيجتها أصلاً)، بدل المهلة الكاملة الطبيعية (FETCH_TIMEOUT_MS
@@ -1259,6 +1253,16 @@ export async function evaluateDustVisibilityWindow(
   const hoursFromNowToWindowEnd = Math.max(0, Math.ceil((endMs - nowMs) / 3600000));
   const horizonHours = Math.max(hoursFromNowToWindowEnd + 6, safeDuration + 24, 24);
 
+  // طلب مستخدم صريح نهائي ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
+  // النشاط — يعني اذا المشروع 8 ساعات يقرأ فترة الدوام فقط. ألغِ هامش
+  // الساعتين نهائياً"): إلغاء هامش الساعتين المبكر نهائياً (كان "جهاز
+  // الرصد يتفعّل قبل ساعتين من بداية النشاط") — الجهاز يُعامَل حياً فقط
+  // ضمن [startMs, endMs] بالضبط، لا قبله ولا بعده. راجع أيضاً isActivityLiveNow
+  // أدناه (نفس الحد بالضبط) وحدود نافذة الجهاز في dustEvaluation.ts
+  // (isActivityLiveForDevice) وdevice-readings-history/pm10-history routes
+  // (الرسوم البيانية) — نفس النافذة بالضبط الآن في كل المواضع الأربعة، لا
+  // هامش متبقٍ في أي منها.
+  //
   // خطأ تشغيلي مكتشَف — مراجعة كود خبير خارجي: "المسار التشغيلي الحي ما
   // زال ينتظر Open-Meteo وقد يفشل عند بيانات غير متطابقة زمنياً". لنشاط حي
   // بجهاز مرتبط (نفس شرط isActivityLiveNow أدناه، محسوب مبكراً هنا قبل جلب
@@ -1269,10 +1273,11 @@ export async function evaluateDustVisibilityWindow(
   // المحاولة) قبل الوصول لتلك النتيجة. مهلة مختصرة هنا (3 ثوانٍ، محاولة
   // واحدة فعلياً ضمنها) تكفي لالتقاط استجابة سريعة إن وُجدت (تُفيد hourly/
   // bestWindowWorst فقط)، بلا حجب القرار الحي طويلاً عند بطء/فشل الشبكة.
-  // نشاط غير حي الآن (توقّع مستقبلي بحت) يبقى بالمهلة الكاملة الطبيعية —
-  // hourly هنا هي مصدر worst الوحيد فعلياً لتلك الحالة (راجع pickWorstActualHour
-  // أدناه)، فتقصير مهلتها كان سيُفقد دقة القرار التوقّعي بلا أي فائدة مقابلة.
-  const isLiveNow = nowMs >= startMs - ACTIVITY_LIVE_MARGIN_MS_ENGINE;
+  // نشاط غير حي الآن (توقّع مستقبلي بحت أو منتهٍ) يبقى بالمهلة الكاملة
+  // الطبيعية — hourly هنا هي مصدر worst الوحيد فعلياً لتلك الحالة (راجع
+  // pickWorstActualHour أدناه)، فتقصير مهلتها كان سيُفقد دقة القرار
+  // التوقّعي بلا أي فائدة مقابلة.
+  const isLiveNow = nowMs >= startMs && nowMs <= endMs;
   const weatherTimeoutMs = isLiveNow ? LIVE_WEATHER_TIMEOUT_MS : undefined;
 
   // تعديل حاسم: تم تمرير windowStartIso كـ anchorIso لمنع تكرار بيانات التنبؤ عند اختلاف التواريخ المستقبلية
@@ -1285,10 +1290,11 @@ export async function evaluateDustVisibilityWindow(
   // الجهاز مباشرة أدناه (لا يعتمد فعلياً على allHourlyEvaluations، راجع
   // isActivityLiveNow أدناه) — القرار الحي يبقى صحيحاً رغم غياب شبكة
   // التوقعات المستقبلية (hourly/bestWindowWorst/avoidWindowWorst فقط
-  // ستكون فارغة مؤقتاً). نشاط بلا جهاز، أو لم يبدأ بعد، يرجع نافذة محايدة
-  // "بانتظار تقييم" بدل استثناء يسقط النشاط كاملاً.
+  // ستكون فارغة مؤقتاً). نشاط بلا جهاز، أو لم يبدأ بعد/انتهى فعلياً (خارج
+  // [startMs, endMs] — لا هامش بعد الآن)، يرجع نافذة محايدة "بانتظار
+  // تقييم" بدل استثناء يسقط النشاط كاملاً.
   if (allSamples.length === 0) {
-    if (!input.hasDeviceLink || nowMs < startMs - ACTIVITY_LIVE_MARGIN_MS_ENGINE) {
+    if (!input.hasDeviceLink || !isLiveNow) {
       return buildAwaitingEvaluationWindow(windowStartIso, endMs, safeDuration);
     }
 

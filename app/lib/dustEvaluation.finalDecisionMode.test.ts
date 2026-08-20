@@ -13,10 +13,12 @@ import { determineFinalDecisionMode, isActivityLiveForDevice } from './dustEvalu
 // (ACTIVITY_LIVE_MARGIN_MS، أُضيف سابقاً بطلب صريح آخر — "جهاز الرصد
 // يتفعّل قبل ساعتين") أُزيل من هذه الدالة تحديداً — كان يسمح بتسجيل
 // مخالفات تنظيمية حقيقية لنشاط لم يبدأ بعد (حتى ساعتين قبل planned_time).
-// الهامش نفسه يبقى مطبَّقاً فقط في نطاق منفصل تماماً: عرض القراءات الحية
-// بالرسوم البيانية (WINDOW_START_MARGIN_MS في device-readings-history/
-// pm10-history routes) — عرض قراءة مبكرة لا يساوي تسجيل مخالفة مبكرة.
-// PLANNING يسري الآن حتى اللحظة الفعلية لـplanned_time بالضبط، بلا هامش.
+// طلب مستخدم صريح نهائي لاحق ("القراءات تبدأ مع بداية النشاط وتقف مع
+// نهاية النشاط — ألغِ هامش الساعتين نهائياً"): نفس الهامش أُزيل لاحقاً
+// أيضاً من isActivityLiveForDevice أدناه (كان يبقيه لعرض القراءات الحية)
+// ومن device-readings-history/pm10-history routes (الرسوم البيانية) —
+// لا هامش متبقٍ في أي مكان الآن. PLANNING يسري حتى اللحظة الفعلية
+// لـplanned_time بالضبط، بلا هامش.
 // =====================================================================
 
 describe('determineFinalDecisionMode', () => {
@@ -67,35 +69,42 @@ describe('determineFinalDecisionMode', () => {
 });
 
 // =====================================================================
-// اختبارات isActivityLiveForDevice — خطأ إعادة إنتاج مكتشَف ومُصلَح: إزالة
-// هامش الساعتين من determineFinalDecisionMode (أعلاه) أثّرت بالخطأ على مسار
-// الجهاز الحي أيضاً (isLiveActivity في computeDustResults، وisPlanning في
-// evaluateDustCompliance عبر computeDustComplianceResults) — نشاط سيبدأ خلال
-// 50 دقيقة (جهازه حي فعلياً) أصبح يُعامَل كتوقّع طقس عام بدل قراءة الجهاز
-// الحية (بلاغ مباشر من المستخدم: لقطة شاشة تُظهر "سيتم تفعيل جهاز الرصد...
-// قبل ساعتين من موعد البدء" لنشاط يبدأ خلال 50 دقيقة). isActivityLiveForDevice
-// يستعيد هامش الساعتين لهذين المسارين تحديداً (يظهر كل شيء تبع الجهاز)، بينما
-// determineFinalDecisionMode تبقى بلا هامش (لا تسجيل مخالفات قبل البدء).
+// اختبارات isActivityLiveForDevice — تصميم نهائي (طلب مستخدم صريح: "القراءات
+// تبدأ مع بداية النشاط وتقف مع نهاية النشاط — يعني اذا المشروع 8 ساعات
+// يقرأ فترة الدوام فقط. ألغِ هامش الساعتين نهائياً"). محاولتان سابقتان
+// أضافتا هامش ساعتين مبكر ("جهاز الرصد يتفعّل قبل ساعتين من بداية النشاط")
+// ثم أُلغي بالكامل هنا، وأُضيف حد أعلى جديد (planned_time + duration) لم
+// يكن موجوداً أصلاً — الجهاز يُعامَل حياً فقط ضمن [startMs, endMs] بالضبط.
 // =====================================================================
 describe('isActivityLiveForDevice', () => {
-  it('نشاط سيبدأ خلال 50 دقيقة (ضمن هامش الساعتين) → حي بجهازه', () => {
+  it('نشاط سيبدأ خلال 50 دقيقة (لم يبدأ بعد بالضبط) → ليس حياً بعد (لا هامش)', () => {
     const startIso = new Date(Date.now() + 50 * 60000).toISOString();
-    expect(isActivityLiveForDevice(startIso)).toBe(true);
-  });
-
-  it('نشاط سيبدأ خلال 119 دقيقة (لا يزال ضمن هامش الساعتين) → حي بجهازه', () => {
-    const startIso = new Date(Date.now() + 119 * 60000).toISOString();
-    expect(isActivityLiveForDevice(startIso)).toBe(true);
-  });
-
-  it('نشاط سيبدأ خلال 121 دقيقة (تجاوز هامش الساعتين) → ليس حياً بعد', () => {
-    const startIso = new Date(Date.now() + 121 * 60000).toISOString();
     expect(isActivityLiveForDevice(startIso)).toBe(false);
   });
 
-  it('نشاط بدأ بالفعل → حي بجهازه', () => {
+  it('نشاط سيبدأ خلال 5 دقائق → لا يزال ليس حياً (لا هامش مهما قرُب البدء)', () => {
+    const startIso = new Date(Date.now() + 5 * 60000).toISOString();
+    expect(isActivityLiveForDevice(startIso)).toBe(false);
+  });
+
+  it('نشاط بدأ منذ ساعة، مدته 8 ساعات (لا يزال ضمن نافذة الدوام) → حي بجهازه', () => {
     const startIso = new Date(Date.now() - 60 * 60000).toISOString();
+    expect(isActivityLiveForDevice(startIso, Date.now(), 8)).toBe(true);
+  });
+
+  it('نشاط بدأ منذ 9 ساعات، مدته 8 ساعات (انتهى فعلياً) → ليس حياً بعد الآن', () => {
+    const startIso = new Date(Date.now() - 9 * 3600000).toISOString();
+    expect(isActivityLiveForDevice(startIso, Date.now(), 8)).toBe(false);
+  });
+
+  it('durationHours غائب (undefined) → بلا حد أعلى، حي إلى الأبد بعد البدء (السلوك التاريخي الأقدم، فشل آمن)', () => {
+    const startIso = new Date(Date.now() - 100 * 3600000).toISOString(); // بدأ منذ 100 ساعة
     expect(isActivityLiveForDevice(startIso)).toBe(true);
+  });
+
+  it('durationHours=null صراحةً → نفس معاملة undefined (بلا حد أعلى)', () => {
+    const startIso = new Date(Date.now() - 100 * 3600000).toISOString();
+    expect(isActivityLiveForDevice(startIso, Date.now(), null)).toBe(true);
   });
 
   it('startIso غائب/غير صالح → فشل آمن نحو حي بجهازه (نفس سلوك determineFinalDecisionMode)', () => {
@@ -104,19 +113,23 @@ describe('isActivityLiveForDevice', () => {
     expect(isActivityLiveForDevice('not-a-real-date')).toBe(true);
   });
 
-  it('يقبل nowMs صريحاً — حتمي بالكامل، وحدود الهامش دقيقة (ساعتان بالضبط)', () => {
+  it('يقبل nowMs صريحاً — حتمي بالكامل، وحدود [بدء، نهاية] دقيقة', () => {
     const fixedNow = new Date('2026-01-01T12:00:00.000Z').getTime();
-    const startInThreeHours = new Date(fixedNow + 3 * 3600000).toISOString();
-    // بعد ساعتين بالضبط قبل البدء (nowMs = startMs - 2h) → حي (>= لا >)
-    expect(isActivityLiveForDevice(startInThreeHours, fixedNow + 3600000)).toBe(true);
-    // دقيقة واحدة قبل حدود الهامش → ليس حياً بعد
-    expect(isActivityLiveForDevice(startInThreeHours, fixedNow + 3600000 - 60000)).toBe(false);
+    const startIso = new Date(fixedNow + 3600000).toISOString(); // يبدأ بعد ساعة
+    // قبل البدء بدقيقة → ليس حياً
+    expect(isActivityLiveForDevice(startIso, fixedNow + 3600000 - 60000, 4)).toBe(false);
+    // اللحظة نفسها لبداية النشاط بالضبط → حي (nowMs >= startMs، لا >)
+    expect(isActivityLiveForDevice(startIso, fixedNow + 3600000, 4)).toBe(true);
+    // نهاية النشاط بالضبط (بعد البدء بـ4 ساعات) → لا يزال حياً (nowMs <= endMs، لا <)
+    expect(isActivityLiveForDevice(startIso, fixedNow + 3600000 + 4 * 3600000, 4)).toBe(true);
+    // دقيقة واحدة بعد النهاية بالضبط → لم يعد حياً
+    expect(isActivityLiveForDevice(startIso, fixedNow + 3600000 + 4 * 3600000 + 60000, 4)).toBe(false);
   });
 
-  it('نفس الحالة (activity يبدأ خلال 50 دقيقة): determineFinalDecisionMode=PLANNING لكن isActivityLiveForDevice=true — هذا هو الانفصال المقصود', () => {
+  it('نفس الحالة (activity يبدأ خلال 50 دقيقة): determineFinalDecisionMode=PLANNING وisActivityLiveForDevice=false أيضاً — لا انفصال بعد الآن (التصميم النهائي)', () => {
     const fixedNow = Date.now();
     const startIso = new Date(fixedNow + 50 * 60000).toISOString();
     expect(determineFinalDecisionMode(startIso, fixedNow)).toBe('PLANNING');
-    expect(isActivityLiveForDevice(startIso, fixedNow)).toBe(true);
+    expect(isActivityLiveForDevice(startIso, fixedNow, 8)).toBe(false);
   });
 });

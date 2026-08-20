@@ -97,6 +97,10 @@ export interface DustResultItem {
   aei: AeiEvaluationResult;
   hourlyForecasts: unknown[];
   startIso: string;
+  // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
+  // — يلزم لحساب حد النهاية في isActivityLiveForDevice. اختياري: undefined
+  // في مصادر أقدم (لا حد نهاية كان موجوداً أصلاً هناك) يعني "بلا حد أعلى".
+  durationHours?: number | null;
   compliance?: DustComplianceResult | null;
   unitReceptors?: unknown[];
   complianceHourly?: unknown[];
@@ -1402,7 +1406,7 @@ export async function computeDustResults(
         // شبكة يمكن أن يؤخر أو يُسقِط القرار المحفوظ. نشاط توقّعي بحت
         // (PLANNING) أو حي بلا جهاز يبقى بمساره القديم كاملاً
         // (evaluateDustVisibilityWindow، شبكة Open-Meteo الكاملة).
-        const isLiveActivity = isActivityLiveForDevice(startIso);
+        const isLiveActivity = isActivityLiveForDevice(startIso, Date.now(), durationHours);
         const isLiveWithDevice = isLiveActivity && input.hasDeviceLink;
 
         const windowEval: DustWindowEvaluation = isLiveWithDevice
@@ -1475,6 +1479,11 @@ export async function computeDustResults(
           // الافتراضي الدائم LIVE_OPERATIONAL بصرف النظر عن توقيت النشاط
           // الفعلي.
           startIso,
+          // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
+          // النشاط"): يلزم لحساب حد النهاية في isActivityLiveForDevice —
+          // لم يكن هذا الحقل مُصدَّراً هنا سابقاً أصلاً (لا حد نهاية كان
+          // موجوداً قبل هذا الإصلاح).
+          durationHours,
         };
       } catch (error) {
         console.error(`فشل تقييم الغبار للنشاط ${row.id}:`, error);
@@ -1605,6 +1614,9 @@ export interface ComplianceEvaluatableActivity {
   activityId: string;
   activityGroupId?: string;
   startIso?: string;
+  // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
+  // — يلزم لحساب حد النهاية في isActivityLiveForDevice.
+  durationHours?: number | null;
   windowEval?: Pick<DustWindowEvaluation, 'worst'>;
 }
 
@@ -1785,14 +1797,14 @@ export async function computeDustComplianceResults(
         // التقييم الحالي لا يمثّل استمراراً فعلياً لتلك الحالة أصلاً (توقّع
         // منفصل تماماً، لا مصدره جهاز).
         //
-        // isPlanning يُستمَد من isActivityLiveForDevice (هامش الساعتين) لا من
-        // determineFinalDecisionMode (بلا هامش) — طلب مستخدم صريح: "يظهر كل
-        // شي تبع الجهاز لكن بدون تسجيل مخالفات". نشاط حي بجهازه (حتى لو لم
-        // يبدأ رسمياً بعد) يُشغَّل بقواعد الامتثال الحقيقية على قراءته
+        // isPlanning يُستمَد من isActivityLiveForDevice (نافذة [بدء، نهاية]
+        // النشاط بالضبط — بلا هامش مبكر بعد الآن) لا من determineFinalDecisionMode
+        // (بلا هامش أيضاً، لكن بلا حد نهاية — راجع الفرق في تعليقيهما). نشاط
+        // ضمن نافذته الفعلية يُشغَّل بقواعد الامتثال الحقيقية على قراءته
         // الفعلية بدل نص توقّعي عام؛ منع تسجيل أي مخالفة/تقييد ملزم قبل
         // planned_time الفعلي محصور في determineFinalDecisionMode المستخدَمة
         // لاحقاً عند بناء decideFinal (finalDecisionPayload أدناه)، لا هنا.
-        const isLiveForDevice = isActivityLiveForDevice(r.startIso);
+        const isLiveForDevice = isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours);
         const previousDecision =
           !isLiveForDevice || !r.activityGroupId ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
         // نفس شرط previousDecision أعلاه بالضبط — نشاط غير حي بجهازه/بلا
@@ -2314,6 +2326,9 @@ export interface AeiGateableActivity {
   activityId: string;
   activityGroupId?: string;
   startIso?: string;
+  // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
+  // — يلزم لحساب حد النهاية في isActivityLiveForDevice.
+  durationHours?: number | null;
   aei: AeiEvaluationResult;
   compliance?: DustComplianceResult | null;
   windowEval?: { worst: DviEvaluationResult };
@@ -2356,7 +2371,7 @@ export function applyComplianceGatesToDustAei(
         r.aei,
         mode,
         undefined,
-        isActivityLiveForDevice(r.startIso)
+        isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours)
       );
       decision = decideFinal(finalInput);
     }
@@ -2415,11 +2430,23 @@ export function computeUnifiedActivityDecision(
   // الصحيح عبر نفس determineFinalDecisionMode المستخدَمة بمسار الحفظ؛ غيابه
   // (استدعاءات قديمة لا تملك توقيت النشاط) يبقي LIVE_OPERATIONAL كافتراضي
   // آمن كما كان — بلا كسر توافقي.
-  startIso?: string | null
+  startIso?: string | null,
+  // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
+  // — يلزم لحساب حد النهاية في isActivityLiveForDevice؛ اختياري بنفس مبدأ
+  // startIso أعلاه (غيابه = بلا حد أعلى، لا كسر توافقي).
+  durationHours?: number | null
 ): UnifiedActivityDecision {
   const mode = determineFinalDecisionMode(startIso);
   const decision = decideFinal(
-    buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null, mode, undefined, isActivityLiveForDevice(startIso))
+    buildFinalDecisionInput(
+      'unified',
+      dviWorst,
+      compliance,
+      aei ?? null,
+      mode,
+      undefined,
+      isActivityLiveForDevice(startIso, Date.now(), durationHours)
+    )
   );
 
   return {
@@ -2533,20 +2560,31 @@ export function determineFinalDecisionMode(
   return !Number.isNaN(startMs) && nowMs < startMs ? 'PLANNING' : 'LIVE_OPERATIONAL';
 }
 
-// هامش ساعتين — "جهاز الرصد يتفعّل قبل ساعتين من بداية النشاط" (نفس
-// ACTIVITY_LIVE_MARGIN_MS_ENGINE في dust-engine/engine.ts وWINDOW_START_
-// MARGIN_MS في device-readings-history/pm10-history routes). يحدد فقط "هل
-// نعرض/نُشغّل بيانات الجهاز الحية؟" — لا علاقة له بتسجيل مخالفات ملزمة
-// (تلك مقصورة على determineFinalDecisionMode أعلاه بلا هامش). دالة نقية
-// (nowMs صريح) لنفس سبب determineFinalDecisionMode.
-const ACTIVITY_LIVE_DEVICE_MARGIN_MS = 120 * 60000;
-
+// طلب مستخدم صريح نهائي ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
+// النشاط — يعني اذا المشروع 8 ساعات يقرأ فترة الدوام فقط"): هامش الساعتين
+// المبكر (كان هنا سابقاً — "جهاز الرصد يتفعّل قبل ساعتين من بداية النشاط")
+// أُلغي نهائياً، وأُضيف حد أعلى جديد لم يكن موجوداً أصلاً (planned_time +
+// duration) — الجهاز يُعامَل حياً فقط ضمن [startMs, endMs] بالضبط، تماماً
+// كما أصبح isLiveNow في dust-engine/engine.ts (نفس الحد بالضبط، مصدر حقيقة
+// موازٍ هناك لغياب استيراد مباشر بين الملفين). يحدد فقط "هل نعرض/نُشغّل
+// بيانات الجهاز الحية؟" — لا علاقة له بتسجيل مخالفات ملزمة (تلك مقصورة على
+// determineFinalDecisionMode أعلاه، غير متأثرة بحد النهاية أصلاً — نشاط
+// LIVE_OPERATIONAL يبقى كذلك حتى بعد planned_time+duration، فقط لم يعد
+// "حياً بجهازه" لغرض القراءة). durationHours اختياري: غيابه (استدعاءات
+// قديمة لا تملك مدة النشاط) يعني "بلا حد أعلى" (فشل آمن نحو السلوك
+// التاريخي الأقدم — حي إلى الأبد بعد البدء)، لا استبعاداً خاطئاً لنشاط جارٍ
+// فعلياً. دالة نقية (nowMs صريح) لنفس سبب determineFinalDecisionMode.
 export function isActivityLiveForDevice(
   startIso: string | null | undefined,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  durationHours?: number | null
 ): boolean {
   const startMs = startIso ? new Date(startIso).getTime() : NaN;
-  return Number.isNaN(startMs) || nowMs >= startMs - ACTIVITY_LIVE_DEVICE_MARGIN_MS;
+  if (Number.isNaN(startMs)) return true;
+  if (nowMs < startMs) return false;
+  if (durationHours === undefined || durationHours === null) return true;
+  const endMs = startMs + durationHours * 3600000;
+  return nowMs <= endMs;
 }
 
 // =========================================================================
@@ -2757,7 +2795,7 @@ export async function persistActivityDecisionsAtomic(
             r.aei,
             mode,
             undefined,
-            isActivityLiveForDevice(r.startIso)
+            isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours)
           );
           const decision = decideFinal(finalInput);
           finalDecisionPayload = {

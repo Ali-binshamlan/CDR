@@ -9,14 +9,12 @@ import { riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 const MAX_HOURS = 24 * 14; // أسبوعان
 const DEFAULT_HOURS = 6;
 
-// طلب مستخدم صريح (بلاغ مباشر: "الرسم لا يظهر إلا اذا اصبح النشاط جاري")
-// — نفس هامش ACTIVITY_LIVE_MARGIN_MS (ساعتان) المستخدَم في dust-engine/
-// engine.ts وdetermineFinalDecisionMode (dustEvaluation.ts) لتحديد متى
-// يُعتبَر النشاط حياً: قراءة وصلت قبل planned_time بأقل من ساعتين تُقبَل
-// (الجهاز بدأ يرسل مبكراً، أو المستخدم يفتح الشاشة قبل الموعد بقليل)،
-// بلا التضحية بالحماية الأصلية (منع نشاط جديد من وراثة قراءات نشاط قديم
-// منتهٍ من ساعات/أيام سابقة على نفس الجهاز — الهامش يبقى ضيقاً كفاية لذلك).
-const WINDOW_START_MARGIN_MS = 120 * 60000;
+// طلب مستخدم صريح نهائي ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
+// النشاط — يعني اذا المشروع 8 ساعات يقرأ فترة الدوام فقط. ألغِ هامش
+// الساعتين نهائياً"): كان هنا هامش ACTIVITY_LIVE_MARGIN_MS (ساعتان) يقبل
+// قراءات وصلت قبل planned_time — أُلغي كلياً ليطابق الرسم البياني نفس
+// نافذة القرار بالضبط (isActivityLiveForDevice في dustEvaluation.ts):
+// [planned_time, planned_time + duration]، بلا هامش قبل البدء.
 
 type ReadingPoint = {
   time: string;
@@ -82,7 +80,7 @@ export async function GET(
       if (!g) {
         const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
         const rawStartMs = startIso ? new Date(startIso).getTime() : null;
-        const startMs = rawStartMs !== null ? rawStartMs - WINDOW_START_MARGIN_MS : null;
+        const startMs = rawStartMs;
         const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
         const endMs = rawStartMs !== null ? rawStartMs + durationHours * 3600000 : Date.now();
         g = {
