@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AxiosError } from 'axios';
+import toast from 'react-hot-toast';
 import { ChevronDown, Wind, CheckCircle2, AlertTriangle, XCircle, Clock3, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
@@ -281,6 +282,12 @@ export default function MultiIndicatorActivityBox({
 
   const handleDelete = async () => {
     if (decisionTargets.length === 0) return;
+    // طلب مستخدم صريح ("أريد توست جميل يظهر أثناء تأكيد الحذف"): استُبدل
+    // window.confirm (نافذة المتصفح الافتراضية القبيحة، بلا أي تنسيق) بتوست
+    // مخصَّص عبر react-hot-toast (مستخدَمة أصلاً في Compliancewidgetcard.tsx)
+    // — نفس منطق التأكيد بالضبط (Promise تُحل true/false حسب زر المستخدم)،
+    // فقط بواجهة متناسقة مع تصميم التطبيق بدل نافذة نظام التشغيل.
+    //
     // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "عبارة «حذف النشاط
     // نهائياً» غير صحيحة؛ النظام يؤرشفه ويحفظ أدلته"): DELETE /api/activities
     // لا يحذف project_dust_profiles فعلياً — يؤرشفه فقط (archived_at/
@@ -289,9 +296,50 @@ export default function MultiIndicatorActivityBox({
     // route.ts الكامل). النص السابق ("حذف نهائياً... لن يظهر في أي تقارير
     // أو سجلات قادمة") كان يصف حذفاً فعلياً غير موجود — نفس نمط الصياغة
     // الدقيقة المستخدَم أصلاً في صفحة إعدادات المشروع (أرشفة المشروع).
-    const confirmed = window.confirm(
-      'سيتم أرشفة هذا النشاط — سيختفي من قائمة الأنشطة الجارية، لكن كل أدلته وتقييماته وقراراته المرتبطة تبقى محفوظة لأغراض التدقيق. هل أنت متأكد؟'
-    );
+    const confirmed = await new Promise<boolean>((resolve) => {
+      toast.custom(
+        (t) => (
+          <div
+            className={`${t.visible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1'} transition-all duration-200 bg-white rounded-2xl shadow-lg border border-slate-200 p-4 w-full max-w-sm`}
+          >
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-9 h-9 rounded-full bg-red-50 flex items-center justify-center">
+                <Trash2 className="w-4 h-4 text-red-600" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[13px] font-black text-[#061B40]">أرشفة هذا النشاط؟</p>
+                <p className="text-[12px] font-bold text-slate-500 mt-1 leading-relaxed">
+                  سيختفي من قائمة الأنشطة الجارية، لكن كل أدلته وتقييماته وقراراته المرتبطة تبقى محفوظة لأغراض التدقيق.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  resolve(false);
+                }}
+                className="text-[11px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                تراجع
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  resolve(true);
+                }}
+                className="text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                أرشفة النشاط
+              </button>
+            </div>
+          </div>
+        ),
+        { duration: Infinity, position: 'top-center' }
+      );
+    });
     if (!confirmed) return;
 
     setIsDeleting(true);
@@ -311,12 +359,13 @@ export default function MultiIndicatorActivityBox({
 
       setIsDeleted(true);
       onDeleted?.();
+      toast.success('تمت أرشفة النشاط بنجاح.');
       // نحدّث بيانات الصفحة (Server Component) عشان أي عدّادات أو أقسام
       // ثانية بالصفحة تعتمد على نفس البيانات المحذوفة تتحدث بدون Reload كامل
       router.refresh();
     } catch (error) {
       console.error('خطأ أثناء أرشفة النشاط:', error);
-      alert('حدث خطأ أثناء أرشفة النشاط. راجع صلاحيات قاعدة البيانات (RLS) على جداول الأنشطة إن استمرت المشكلة.');
+      toast.error('حدث خطأ أثناء أرشفة النشاط. راجع صلاحيات قاعدة البيانات (RLS) على جداول الأنشطة إن استمرت المشكلة.');
     } finally {
       setIsDeleting(false);
     }
