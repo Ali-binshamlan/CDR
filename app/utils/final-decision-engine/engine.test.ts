@@ -912,35 +912,48 @@ describe('decideFinal — PLANNING + isLiveForDevice: جهاز حي داخل ه�
     expect(r.mandatoryStop).toBe(false);
   });
 
-  // خطأ إعادة إنتاج ثانٍ (بلاغ مباشر: "كيف توقعات طقس وانا استلم قراءات من
-  // الجهاز الآن؟" — نشاط يبدأ خلال دقيقة، حقول حية فعلية معروضة PM10=226
-  // إلخ، لكن shortReasonAr قال "توقّعات طقس... لا قراءة جهاز حية"). النص
-  // الآن يفرّق: isLiveForDevice=true + evidenceQuality=OK يعني قراءة جهاز
-  // حقيقية طازجة، لا تقدير طقس — shortReasonAr يجب ألا يقول "توقّعات طقس"
-  // ولا "سيتم تفعيل جهاز الرصد" (الجهاز مفعَّل فعلاً ويرسل الآن).
-  it('isLiveForDevice=true + evidenceQuality=OK (قراءة جهاز طازجة) → نص "قراءة جهاز حية فعلية"، لا "توقّعات طقس"', () => {
+  // طلب مستخدم صريح (تصحيح نهائي — "الفكرة بسيطة: إذا دخلت مجال الساعتين
+  // نصوص التوقعات ولا نريدها. فيه قراءة؟ تظهر النصوص حقها طبيعي"): لا نص
+  // خاص "قراءة جهاز حية فعلية" مُصطنَع بعد الآن — isLiveForDevice=true يمر
+  // عبر آلة المرشحين الكاملة (نفس LIVE_OPERATIONAL بالضبط)، فالنص/اللون هما
+  // نفس ما يعرضه compliance/dvi الحقيقيان مباشرة، بلا أي طبقة نص وسيطة.
+  it('isLiveForDevice=true + evidenceQuality=OK (قراءة جهاز طازجة) + compliance=ALLOW → نص compliance الحقيقي ("لا توجد مخالفات...")، لا أي نص PLANNING/توقّعي', () => {
     const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
     const r = decideFinal(input({ mode: 'PLANNING', dvi, evidenceQuality: 'OK', isLiveForDevice: true }));
     expect(r.operationalDecision).toBe('ALLOW');
-    expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
-    expect(r.shortReasonAr).toContain('قراءة جهاز رصد حية فعلية');
+    expect(r.shortReasonAr).toBe('لا توجد مخالفات تنظيمية ظاهرة على النشاط الحالي');
     expect(r.shortReasonAr).not.toContain('توقّعات طقس');
     expect(r.shortReasonAr).not.toContain('سيتم تفعيل جهاز الرصد');
     expect(r.mandatoryStop).toBe(false);
     expect(r.mode).toBe('PLANNING');
   });
 
-  it('isLiveForDevice=true + evidenceQuality=OK + planningSuitability.isFavorable=false → نص "لا تصلح" يتضمن سبب compliance، لا "توقّعات طقس"', () => {
+  it('isLiveForDevice=true + evidenceQuality=OK + compliance.decisionCategory=RESTRICT_ACTIVITY حقيقي → operationalDecision/نص من القاعدة الحقيقية، لا planningSuitability', () => {
     const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
     const compliance = baseCompliance({
-      planningSuitability: { isFavorable: false, reasonAr: 'رياح حالية 45 كم/س تتجاوز الحد الآمن.' },
+      decisionCategory: 'RESTRICT_ACTIVITY',
+      shortReasonAr: 'رياح حالية 45 كم/س تتجاوز الحد الآمن.',
     });
     const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance, evidenceQuality: 'OK', isLiveForDevice: true }));
-    expect(r.operationalDecision).toBe('MONITOR');
-    expect(r.shortReasonAr).toContain('قراءة جهاز رصد حية فعلية');
-    expect(r.shortReasonAr).toContain('رياح حالية 45 كم/س');
+    expect(r.operationalDecision).toBe('RESTRICT');
+    expect(r.shortReasonAr).toBe('رياح حالية 45 كم/س تتجاوز الحد الآمن.');
     expect(r.shortReasonAr).not.toContain('توقّعات طقس');
     expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('isLiveForDevice=true + compliance.decisionCategory=MANDATORY_STOP حقيقي → لا يجوز MANDATORY_STOP، يُستبعَد لصالح أعلى مرشح مسموح (لا مجرد MONITOR بلا سبب)', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const compliance = baseCompliance({
+      decisionCategory: 'MANDATORY_STOP',
+      mandatoryStop: true,
+      canOverride: false,
+      shortReasonAr: 'تجاوز PM10 اللحظي 340 ميكروجرام/م³.',
+    });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, compliance, evidenceQuality: 'OK', isLiveForDevice: true }));
+    expect(r.operationalDecision).not.toBe('MANDATORY_STOP');
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.overridable).toBe(true);
+    expect(r.regulatoryFinding).toBe('NOT_DETERMINABLE');
   });
 
   it('isLiveForDevice=false (خارج هامش الساعتين) + evidenceQuality=OK → يبقى نص "توقّعات طقس" العام (لا جهاز فعلياً بعد رغم evidenceQuality)', () => {

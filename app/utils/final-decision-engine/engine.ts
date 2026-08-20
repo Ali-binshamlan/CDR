@@ -73,37 +73,20 @@ function complianceFloorLevel(decisionCategory: string): FinalDecision['level'] 
 export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<FinalDecision> {
   const { dvi, compliance, mode, evidenceQuality, isLiveForDevice } = input;
 
-  // طلب مستخدم صريح ("لو دخلنا نطاق الساعتين والجهاز قراءاته قديمة، تعرض
-  // قاعدة يتطلب تحقق قبل الاستمرار"): نشاط لم يبدأ رسمياً بعد (PLANNING)
-  // لكن دخل هامش تفعيل الجهاز المسبق (isLiveForDevice=true) وجهازه يرسل
-  // فعلياً — فقط قراءته قديمة/غير كافية (evidenceQuality من نفس القراءة
-  // الحقيقية، لا تقدير طقس) — لا يجوز أن يُعرَض بنص "لا قراءة جهاز حية
-  // بعد... سيتم تفعيل الجهاز قبل ساعتين" العام (مضلِّل: الجهاز فعّال
-  // ويرسل فعلاً). فرع منفصل ضيّق يُرجِع HOLD_FOR_VERIFICATION مباشرة (نفس
-  // نص/دلالة evidenceCandidate في الفرع LIVE_OPERATIONAL أدناه بالضبط) —
-  // مقصود عمداً بدل السقوط في آلة المرشحين الكاملة تحت: mandatoryStop
-  // يبقى false دائماً هنا (HOLD_FOR_VERIFICATION لا يضبطه true أبداً)، فلا
-  // خطر انزلاق لإيقاف إلزامي حقيقي على نشاط لم يبدأ فعلياً — نفس ضمان فرع
-  // PLANNING العام أدناه، فقط بنص مختلف يعكس وجود الجهاز الحقيقي.
-  if (mode === 'PLANNING' && isLiveForDevice === true && (evidenceQuality === 'STALE' || evidenceQuality === 'UNAVAILABLE')) {
-    const result: FinalDecision = {
-      snapshotId: input.snapshotId,
-      mode,
-      operationalDecision: 'HOLD_FOR_VERIFICATION',
-      regulatoryFinding: 'NOT_DETERMINABLE',
-      mandatoryStop: false,
-      overridable: true,
-      shortReasonAr: 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.',
-      decisionLabelAr: 'بانتظار تحقق ميداني — بيانات غير كافية',
-      level: 'ORANGE',
-      pendingConfirmation: false,
-      reasonCodes: Object.freeze(['DATA_STALE_OR_UNAVAILABLE']),
-      evidenceQuality,
-      ruleBundleVersion: input.ruleBundleVersion,
-    };
-    assertDecisionInvariant(result);
-    return Object.freeze(result);
-  }
+  // طلب مستخدم صريح (تصحيح نهائي بعد محاولتين جزئيتين — "الفكرة بسيطة: إذا
+  // دخلت مجال الساعتين نصوص التوقعات ولا نريدها. فيه قراءة؟ تظهر النصوص
+  // حقها طبيعي. مافي قراءة؟ تظهر نص بيانات غير كافية يتطلب تحقق"): نصوص/
+  // ألوان "توقّع طقس" (isFavorable أدناه) لا تُستخدَم إطلاقاً بمجرد دخول
+  // هامش تفعيل الجهاز (isLiveForDevice=true) — القرار كله (نص، لون،
+  // operationalDecision) يُبنى من آلة المرشحين الكاملة أدناه تماماً كوضع
+  // LIVE_OPERATIONAL (evidenceUnavailable يُفعَّل لها أيضاً أدناه، فتُنتج
+  // HOLD_FOR_VERIFICATION تلقائياً حين لا توجد قراءة كافية، بلا فرع خاص
+  // منفصل هنا بعد الآن). الفرق الوحيد المتبقي عن LIVE_OPERATIONAL الحقيقي:
+  // mandatoryStop يُقيَّد إلى false دائماً في النهاية (طلب المستخدم الأصلي
+  // — "لا تسجيل مخالفة قبل بدء النشاط فعلياً") — راجع كتلة التقييد أسفل
+  // الدالة (بعد بناء regulatoryFinding مباشرة). isLiveForDevice=false (خارج الهامش تماماً، لا جهاز بعد)
+  // هو الحالة الوحيدة التي تبقي فرع "توقّع طقس" التالي مباشرة.
+  const isPlanningLiveDevice = mode === 'PLANNING' && isLiveForDevice === true;
 
   // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
   // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts) لا
@@ -119,8 +102,10 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   // دائماً بينما النص وحده يحذّر — هذا تناقض بصري مباشر. إذن: تصلح → أخضر/
   // "مسموح"، لا تصلح → أصفر/"تنبيه: أجواء متوقعة غير مناسبة"؛ في كلتا
   // الحالتين mandatoryStop=false/overridable=true دائماً (لا إيقاف إلزامي
-  // فعلي على توقّع، مهما كان اللون).
-  if (mode === 'PLANNING') {
+  // فعلي على توقّع، مهما كان اللون). isPlanningLiveDevice=true (جهاز حي
+  // فعلياً داخل هامش الساعتين) يتخطّى هذا الفرع بالكامل الآن — راجع
+  // isPlanningLiveDevice أعلاه للسبب الكامل.
+  if (mode === 'PLANNING' && !isPlanningLiveDevice) {
     // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #11:
     // "FinalDecisionEngine يعيد تطبيق Threshold لـPM10 في وضع PLANNING"):
     // كانت هذه الدالة تستورد PM10_WARNING_UG_M3 وتُعيد حساب isFavorable
@@ -150,27 +135,10 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     // فرق بينهما هنا: كلاهما توقّع بلا قراءة حية، بصرف النظر عن جودة
     // التوقّع نفسه. operationalDecision/mandatoryStop/level تبقى بلا تغيير
     // (لا علاقة لها بهذا الإصلاح — تعكس جودة التوقّع، لا وجود دليل ميداني).
-    // خطأ إعادة إنتاج ثانٍ مكتشَف ومُصلَح (بلاغ مباشر من المستخدم — لقطة شاشة:
-    // نشاط يبدأ خلال دقيقة، الحقول تعرض أرقاماً حية فعلية (PM10=226، حرارة/
-    // رطوبة/رياح حقيقية — لا شرطات "—")، لكن shortReasonAr ظل يقول "هذه
-    // توقّعات طقس... لا قراءة جهاز حية بعد" رغم أن الأرقام المعروضة قراءة
-    // جهاز حقيقية بالفعل: "كيف توقعات طقس وانا استلم قراءات من الجهاز
-    // الآن؟"): إصلاح isLiveForDevice السابق عالج فقط حالة evidenceQuality
-    // STALE/UNAVAILABLE (→ HOLD_FOR_VERIFICATION) — بقيت حالة الجهاز الحي
-    // بقراءة *طازجة* (OK/PARTIAL) تسقط هنا في النص العام نفسه بلا تمييز.
-    // isLiveForDevice=true يعني القراءة (مهما كانت جودتها) مصدرها الجهاز
-    // الفعلي، لا Open-Meteo — النص يجب أن يعكس ذلك: "قراءة جهاز حية فعلية
-    // (لم يبدأ النشاط رسمياً بعد)" بدل "توقّعات طقس... لا قراءة جهاز". mode
-    // يبقى 'PLANNING' ومandatoryStop=false دائماً — لا تغيير على منع تسجيل
-    // مخالفة قبل البدء، هذا تعديل نص عرض فقط.
-    const isLiveDeviceReading = isLiveForDevice === true;
-    const shortReasonAr = isLiveDeviceReading
-      ? isFavorable
-        ? 'تنبيه: هذه قراءة جهاز رصد حية فعلية (النشاط لم يبدأ رسمياً بعد) — الأجواء الحالية تصلح للنشاط. لا يُسجَّل أي قرار ملزم قبل بدء النشاط فعلياً.'
-        : `تنبيه: هذه قراءة جهاز رصد حية فعلية (النشاط لم يبدأ رسمياً بعد) — ${unfavorableReasonAr ?? 'الأجواء الحالية لا تصلح للنشاط.'} يُرجى المراجعة قبل البدء. لا يُسجَّل أي قرار ملزم قبل بدء النشاط فعلياً.`
-      : isFavorable
-        ? 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة تصلح للنشاط. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.'
-        : `تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — ${unfavorableReasonAr ?? 'الأجواء المتوقعة لا تصلح للنشاط.'} يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.`;
+    // ملاحظة: هذا الفرع لا يُنفَّذ أبداً الآن حين isPlanningLiveDevice=true
+    // (جهاز حي فعلياً — راجع الشرط أعلى الفرع وتعليق isPlanningLiveDevice
+    // أعلى الدالة) — نصوص "توقّعات طقس/سيتم تفعيل الجهاز" هنا صحيحة حصراً
+    // لحالة "لا جهاز إطلاقاً بعد ضمن الهامش".
     const result: FinalDecision = {
       snapshotId: input.snapshotId,
       mode,
@@ -178,7 +146,9 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
       regulatoryFinding: 'NOT_DETERMINABLE',
       mandatoryStop: false,
       overridable: true,
-      shortReasonAr,
+      shortReasonAr: isFavorable
+        ? 'تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — الأجواء المتوقعة تصلح للنشاط. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.'
+        : `تنبيه: هذه توقّعات طقس لوقت بدء النشاط المجدول (لم يبدأ بعد)، لا قراءة جهاز حية — ${unfavorableReasonAr ?? 'الأجواء المتوقعة لا تصلح للنشاط.'} يُرجى مراجعة توقعات الساعات القادمة قبل البدء. سيتم تفعيل جهاز الرصد وعرض قراءاته الحية قبل ساعتين من موعد البدء.`,
       decisionLabelAr: isFavorable ? 'مسموح — تشغيل اعتيادي' : 'تنبيه: أجواء متوقعة غير مناسبة',
       level: isFavorable ? 'GREEN' : 'YELLOW',
       pendingConfirmation: false,
@@ -200,11 +170,16 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   const confirmedAffectedStop = complianceBlocks && compliance?.pendingConfirmation !== true;
   const pendingAffectedStop = complianceBlocks && compliance?.pendingConfirmation === true;
 
-  // الأدلة غير كافية — يُطبَّق فقط في LIVE_OPERATIONAL (PLANNING لا تملك
-  // "الآن" ليُطلَب تحقق ميداني منه). STALE تُعامَل معاملة UNAVAILABLE تماماً
-  // — قراءة قديمة لا يجوز أن تنتج "آمن الآن" ولا "مخالفة مؤكَّدة الآن".
+  // الأدلة غير كافية — يُطبَّق في LIVE_OPERATIONAL دائماً، وأيضاً في
+  // PLANNING حين isPlanningLiveDevice=true (جهاز حي فعلياً داخل هامش
+  // الساعتين — "فيه قراءة؟ تظهر النصوص حقها طبيعي، مافي قراءة؟ تظهر نص
+  // بيانات غير كافية"). PLANNING بلا جهاز حي (توقّع طقس بحت) لا يملك "الآن"
+  // ليُطلَب تحقق ميداني منه، فيبقى مستبعَداً (يعود مبكراً بالفرع أعلاه أصلاً
+  // ولا يصل هنا). STALE تُعامَل معاملة UNAVAILABLE تماماً — قراءة قديمة لا
+  // يجوز أن تنتج "آمن الآن" ولا "مخالفة مؤكَّدة الآن".
   const evidenceUnavailable =
-    mode === 'LIVE_OPERATIONAL' && (evidenceQuality === 'UNAVAILABLE' || evidenceQuality === 'STALE');
+    (mode === 'LIVE_OPERATIONAL' || isPlanningLiveDevice) &&
+    (evidenceQuality === 'UNAVAILABLE' || evidenceQuality === 'STALE');
 
   // هل سبب dvi.mandatoryStop هو PM10 لحظي فقط (لا خطر فيزيائي حقيقي آخر
   // كرؤية حرجة/عاصفة مساهم بنفس اللحظة)؟ يُقرأ الآن من dvi.stopBasis/
@@ -528,11 +503,25 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
   const candidates: DecisionCandidate[] = [complianceCandidate, dviCandidate, dviMandatoryCandidate, evidenceCandidate];
   if (aeiCandidate) candidates.push(aeiCandidate);
 
-  const winner = candidates.reduce((strictest, current) =>
+  // طلب مستخدم أصلي صريح ("لا تسجيل مخالفة قبل بدء النشاط فعلياً"):
+  // isPlanningLiveDevice=true يستبعد أي مرشح يصل MANDATORY_STOP/
+  // PROTECTIVE_STOP *قبل* الاختيار (لا بعده) — حتى يفوز أعلى مرشح مسموح
+  // فعلياً (مثال: HOLD_FOR_VERIFICATION من evidenceCandidate) بنصه/لونه
+  // الحقيقيين، بدل استبدال نص "إيقاف إلزامي" بكلمة MONITOR عارية بلا نص
+  // مطابق (كان هذا عيب محاولة أولى: قراءة PM10 تقديرية عالية + evidenceQuality
+  // STALE كانت تُنتج MONITOR بلا أي نص "بيانات غير كافية" رغم توفر
+  // evidenceCandidate=HOLD_FOR_VERIFICATION الأنسب فعلياً بنفس اللحظة).
+  const eligibleCandidates = isPlanningLiveDevice
+    ? candidates.filter((c) => c.decision !== 'MANDATORY_STOP' && c.decision !== 'PROTECTIVE_STOP')
+    : candidates;
+  // فشل آمن نظري بحت (لا يحدث عملياً: evidenceCandidate وحدها كافية لبقاء
+  // المصفوفة غير فارغة دائماً، فئتها ALLOW/HOLD_FOR_VERIFICATION فقط) —
+  // يمنع خطأ وقت التشغيل من reduce على مصفوفة فارغة لو تغيّر بناء evidenceCandidate
+  // مستقبلاً بما يسمح لها بفئة مستبعَدة.
+  const winner = (eligibleCandidates.length > 0 ? eligibleCandidates : candidates).reduce((strictest, current) =>
     OPERATION_RANK[current.decision] > OPERATION_RANK[strictest.decision] ? current : strictest
   );
   const operationalDecision = winner.decision;
-  const mandatoryStop = operationalDecision === 'MANDATORY_STOP';
 
   let regulatoryFinding: RegulatoryFinding;
   if (confirmedAffectedStop) {
@@ -601,7 +590,26 @@ export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<Final
     regulatoryFinding = 'COMPLIANT';
   }
 
-  const overridable = !mandatoryStop && (compliance ? compliance.canOverride === true : dvi.overridable === true);
+  // MANDATORY_STOP لا يمكن أن يفوز أصلاً هنا حين isPlanningLiveDevice=true —
+  // استُبعد من eligibleCandidates قبل الاختيار (راجع تعليق eligibleCandidates
+  // أعلاه) — لا حاجة لتقييد لاحق منفصل.
+  const mandatoryStop = operationalDecision === 'MANDATORY_STOP';
+  // regulatoryFinding يبقى NOT_DETERMINABLE دائماً في isPlanningLiveDevice —
+  // لا حكم تنظيمي قاطع (COMPLIANT/NON_COMPLIANT) قبل بدء النشاط فعلياً،
+  // بصرف النظر عمّا رجّحه compliance (نفس مبدأ الفرع العام أعلاه بالضبط).
+  if (isPlanningLiveDevice) {
+    regulatoryFinding = 'NOT_DETERMINABLE';
+  }
+
+  // isPlanningLiveDevice=true: compliance.canOverride/dvi.overridable قد
+  // يعكسان مرشحاً مُستبعَداً فعلياً (MANDATORY_STOP/PROTECTIVE_STOP لم يفز —
+  // راجع eligibleCandidates أعلاه)، فقراءتهما هنا مضلِّلة (canOverride=false
+  // لقرار لم يعد هو الفائز). لا قرار ملزم غير قابل للتجاوز يمكن أن ينجو من
+  // الأساس في هذا الوضع (mandatoryStop مضبوطة false دائماً هنا) — overridable
+  // تكون true دائماً بالتبعية، بصرف النظر عن canOverride/overridable الخام.
+  const overridable = isPlanningLiveDevice
+    ? true
+    : !mandatoryStop && (compliance ? compliance.canOverride === true : dvi.overridable === true);
 
   // خطأ مكتشَف ومُصلَح (طلب المستخدم — تقرير المراجعة الخارجي: "سبب القرار
   // قد لا يشرح القرار الفائز"، راجع تعليق DecisionCandidate الكامل أعلى
