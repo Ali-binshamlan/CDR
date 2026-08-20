@@ -171,7 +171,7 @@ describe('persistActivityDecisionsAtomic — activityGroupId/finalDecisionId ف�
               dvi_persisted: true,
               compliance_persisted: true,
               final_decision_persisted: true,
-              final_decision_id: 'decision-uuid-123',
+              v_out_final_decision_id: 'decision-uuid-123',
             }],
             error: null,
           };
@@ -199,7 +199,7 @@ describe('persistActivityDecisionsAtomic — activityGroupId/finalDecisionId ف�
       rpc: async (name: string) => {
         if (name === 'persist_activity_decision_atomic') {
           return {
-            data: [{ dvi_persisted: false, compliance_persisted: false, final_decision_persisted: false, final_decision_id: null }],
+            data: [{ dvi_persisted: false, compliance_persisted: false, final_decision_persisted: false, v_out_final_decision_id: null }],
             error: null,
           };
         }

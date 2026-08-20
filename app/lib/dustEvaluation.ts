@@ -2755,7 +2755,11 @@ export async function persistActivityDecisionsAtomic(
           dviPersisted: Boolean(row.dvi_persisted),
           compliancePersisted: Boolean(row.compliance_persisted),
           finalDecisionPersisted: Boolean(row.final_decision_persisted),
-          finalDecisionId: row.final_decision_id ?? null,
+          // اسم عمود الإخراج تغيّر (migration 202608200002 — خطأ 42702 "column
+          // reference final_decision_id is ambiguous": كان يتعارض مع عمود
+          // decision_alert_outbox.final_decision_id المُستخدَم داخل نفس الدالة
+          // في قوائم أعمدة insert/on conflict، بلا إمكانية تأهيل هناك).
+          finalDecisionId: row.v_out_final_decision_id ?? null,
           failed: false,
           conflict: false,
         };
