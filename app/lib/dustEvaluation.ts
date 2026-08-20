@@ -2238,11 +2238,7 @@ export const NEUTRAL_DVI_FALLBACK: DviEvaluationResult = {
   // بديل ALLOW محايد تماماً (راجع تعليق الدالة أعلاه) — لا جهاز فعلي هنا
   // إطلاقاً، فلا معنى لـ"جهاز مرتبط لكن الرؤية غائبة" تحديداً.
   visibilityDataMissing: false,
-  visibilityConstraint: false,
-  mandatoryVisibilityStop: false,
-  respiratoryPPERequired: false,
   dustExposureHigh: false,
-  outdoorWorkRestriction: false,
   triggeredRules: [],
   requiredActions: [],
   shortReason: '',

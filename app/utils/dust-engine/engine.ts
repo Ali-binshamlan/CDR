@@ -850,11 +850,6 @@ export function computeDviResult(
   const confidenceScore = calculateConfidence(merged, weather, siteDataProvided);
 
   const dustExposureHigh = cause === 'DUST' && score >= 45;
-  const outdoorWorkRestriction =
-    gates.decision === 'MANDATORY_STOP' ||
-    gates.decision === 'STOP_DUST_GENERATING_ACTIVITIES' ||
-    gates.decision === 'STOP_VISIBILITY_DEPENDENT_ACTIVITIES' ||
-    gates.decision === 'RESTRICT_SEVERE';
 
   const { shortReason, caveatsAr } = buildShortReasonAndCaveats(
     gates.decision,
@@ -915,11 +910,7 @@ export function computeDviResult(
     // false) لا "يفتقد" قراءة رؤية بنفس المعنى، فيبقى false دائماً هناك.
     visibilityDataMissing: input.hasDeviceLink && risk.visibilityKm === null,
 
-    visibilityConstraint: risk.visibilityKm !== null && risk.visibilityKm < getRuleParameters().VISIBILITY_RESTRICT_SEVERE_KM,
-    mandatoryVisibilityStop: risk.visibilityKm !== null && risk.visibilityKm < getRuleParameters().VISIBILITY_MANDATORY_STOP_KM,
-    respiratoryPPERequired: risk.PR >= 45 || dustExposureHigh,
     dustExposureHigh,
-    outdoorWorkRestriction,
 
     triggeredRules: gates.triggeredRules,
     requiredActions,
@@ -1186,11 +1177,7 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
     // false. evidenceQuality=UNAVAILABLE (عبر deviceLastReadingAt المحذوف
     // أعلاه) يكفي لمنع أي قرار واثق هنا أصلاً.
     visibilityDataMissing: false,
-    visibilityConstraint: false,
-    mandatoryVisibilityStop: false,
-    respiratoryPPERequired: false,
     dustExposureHigh: false,
-    outdoorWorkRestriction: false,
     triggeredRules: [],
     requiredActions: [],
     shortReason: 'بانتظار تقييم: لا يوجد جهاز رصد مرتبط بهذا النشاط — لا يُعتمَد على تقدير طقس بديل لقرار حي.',

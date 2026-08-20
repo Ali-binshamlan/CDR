@@ -341,12 +341,13 @@ export interface DviEvaluationResult {
   // القراءة حينها تقدير طقس فقط، لا معنى لـ"جهاز لم يرسل قراءة رؤية".
   visibilityDataMissing: boolean;
 
-  // إشارات للمحركات الأخرى (قسم 17 و 16.1 من المواصفة)
-  visibilityConstraint: boolean;
-  mandatoryVisibilityStop: boolean;
-  respiratoryPPERequired: boolean;
+  // إشارة للمحركات الأخرى (قسم 17 و 16.1 من المواصفة) — تُستهلَك فعلياً في
+  // aei-engine/engine.ts (calculateSafetyScore). visibilityConstraint/
+  // mandatoryVisibilityStop/respiratoryPPERequired/outdoorWorkRestriction
+  // كانت هنا بنفس النية (نفس القسم) لكن حُذفت (طلب مستخدم صريح — فحص شامل
+  // لكل كود ميت بالمشروع): محسوبة فعلياً لكن بلا أي مستهلك حي واحد خارج
+  // حسابها هي نفسها — لا محرك آخر، لا API، لا واجهة يقرأها.
   dustExposureHigh: boolean;
-  outdoorWorkRestriction: boolean;
 
   triggeredRules: string[];
   requiredActions: string[];

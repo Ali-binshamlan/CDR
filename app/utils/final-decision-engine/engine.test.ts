@@ -50,11 +50,7 @@ function baseDvi(overrides: Partial<DviEvaluationResult> = {}): DviEvaluationRes
     visibilityKm: 5,
     effectiveWindKmh: 10,
     visibilityDataMissing: false,
-    visibilityConstraint: false,
-    mandatoryVisibilityStop: false,
-    respiratoryPPERequired: false,
     dustExposureHigh: false,
-    outdoorWorkRestriction: false,
     triggeredRules: ['DVI-PM10-ACTION-003'],
     requiredActions: [],
     shortReason: 'تقييد العمل: وجود فجوة في إجراءات التحكم الميدانية (مثل غياب رش المياه أو مصدات الغبار).',
@@ -560,7 +556,6 @@ describe('decideFinal — إيقاف DVI مبني على PM10 لحظي قديم 
       stopBasis: 'MIXED',
       confirmationState: 'CONFIRMED',
       visibilityKm: 0.499,
-      mandatoryVisibilityStop: true,
       // الرؤية الحرجة (DVI-VISIBILITY-MANDATORY-STOP-001) ورؤية PM10 اللحظي
       // القديم مساهمان معاً بنفس اللحظة — dviHasIndependentPhysicalHazard
       // يجب أن يكتشف قاعدة الرؤية ويرفض تخفيف dviCandidate رغم وجود
@@ -638,7 +633,6 @@ describe('decideFinal — الإيقاف الرسمي لـPM10 وحده يأتي
       stopBasis: 'MIXED',
       confirmationState: 'CONFIRMED',
       visibilityKm: 0.3,
-      mandatoryVisibilityStop: true,
       triggeredRules: [
         'DVI-VISIBILITY-MANDATORY-STOP-001',
         'DVI-DUST-ACTIVITY-STOP-004',

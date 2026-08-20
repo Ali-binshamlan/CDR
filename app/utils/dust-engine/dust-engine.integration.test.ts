@@ -80,11 +80,6 @@ describe('DVI تكامل — بوابات الرؤية الحرجة', () => {
     expect(r.decisionCategory).toBe('RESTRICT_SEVERE');
     expect(r.triggeredRules).toContain('DVI-VISIBILITY-MANDATORY-STOP-001');
   });
-
-  it('mandatoryVisibilityStop = true عند رؤية دون 0.5 كم', () => {
-    const r = computeDviResult(input(), weather({ visibilityM: 400 }));
-    expect(r.mandatoryVisibilityStop).toBe(true);
-  });
 });
 
 describe('DVI تكامل — بوابات الغبار والجسيمات', () => {
@@ -335,7 +330,7 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
     );
     // لا رؤية من الطقس ولا تعويض من onsite — visibilityM تبقى null فعلياً
     // في القراءة المدموجة، فلا تُفعَّل بوابة "دون 500م" (تتطلب رقماً فعلياً).
-    expect(r.mandatoryVisibilityStop).toBe(false);
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
   });
 
   it('وضع API: توقعات الطقس هي المصدر الوحيد — قيمة onsite السيئة لا تفسد قراراً جيداً من الطقس', () => {
@@ -343,7 +338,6 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
       input({ regulatoryActivity: 'CRUSHER', onsiteVisibilityM: 300, hasDeviceLink: false }),
       weather({ visibilityM: 10000 })
     );
-    expect(r.mandatoryVisibilityStop).toBe(false);
     expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
   });
 
@@ -354,7 +348,7 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
     );
     // الجهاز لم يرسل deviceVisibilityM، والوضع لا يسمح بالرجوع للطقس ولا
     // onsite — لا بوابة رؤية تُفعَّل من رقم غائب.
-    expect(r.mandatoryVisibilityStop).toBe(false);
+    expect(r.decisionCategory).not.toBe('MANDATORY_STOP');
   });
 
   // deviceVisibilityAt="الآن" مطلوب صراحة هنا بعد القسم 5.3/18.3 — بلا وقت
@@ -370,7 +364,6 @@ describe('DVI تكامل — عزل تام: onsite_* لا يُستهلَك في 
       }),
       weather({ visibilityM: 10000 })
     );
-    expect(r.mandatoryVisibilityStop).toBe(true);
     expect(r.decisionCategory).toBe('MANDATORY_STOP');
   });
 });
