@@ -6,14 +6,18 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { apiClient } from '@/app/lib/apiClient';
 import { SAUDI_BOUNDS, SAUDI_CENTER } from '@/app/utils/geo/countryBounds';
+import type { Decision } from '@/app/lib/decisionMeta';
 
-export type Decision = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
+// طلب مستخدم صريح: كانت هذه نسخة محلية مستقلة عن decisionMeta.ts (نفس
+// القيم الخمس القديمة معاد كتابتها هنا) — خطر انحراف صامت لو عُدِّل مصدر
+// الحقيقة هناك بلا تحديث هذا الملف بالتزامن (بالضبط ما حصل عند تبسيط
+// Decision لـ3 مستويات). الآن يستورد النوع مباشرة، والألوان مطابقة لنفس
+// 3 المستويات (سماح/مراقبة/إيقاف).
+export type { Decision };
 
 const decisionColor: Record<Decision, string> = {
   safe: '#10b981',
-  caution: '#f59e0b',
-  restricted: '#f97316',
-  postpone: '#f43f5e',
+  restricted: '#f59e0b',
   stopped: '#b91c1c',
 };
 
@@ -90,10 +94,8 @@ export interface ProjectPoint {
 }
 
 const decisionLabelAr: Record<Decision, string> = {
-  safe: 'آمن',
-  caution: 'مناسب بحذر',
-  restricted: 'مقيد',
-  postpone: 'يُقترح تأجيله',
+  safe: 'سماح',
+  restricted: 'مراقبة',
   stopped: 'إيقاف',
 };
 

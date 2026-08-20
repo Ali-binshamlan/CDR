@@ -6,16 +6,21 @@
 // أدناه مبني على getSeverity في app/dashboard/alerts/page.tsx (مصدر موثوق
 // موجود مسبقاً)، لا تصنيف مخترَع من جديد.
 
-export type Decision = 'safe' | 'caution' | 'restricted' | 'postpone' | 'stopped';
+// طلب مستخدم صريح: "نريد جعلها مثل مؤشر الامتثال 3 مستويات فقط" — تبسيط
+// عرضي بحت (كان 5 قيم: safe/caution/restricted/postpone/stopped). caution
+// دُمجت في safe (كلتاهما "لا قيد فعلي")، وpostpone دُمجت في stopped (كلتاهما
+// "لا يجوز الاستمرار الآن"). restricted تبقى وحدها كالمستوى الأوسط. الدمج
+// عرضي فقط — لا تغيير على أي منطق قرار حقيقي (mandatoryStop/decisionCategory
+// الخام في dust-engine/dust-compliance-engine تبقى كما هي تماماً، هذا فقط
+// يجمّع تصنيف الألوان/الشارات المشتق منها).
+export type Decision = 'safe' | 'restricted' | 'stopped';
 
 export const decisionMeta: Record<
   Decision,
   { label: string; text: string; bg: string; border: string; dot: string }
 > = {
-  safe: { label: 'آمن', text: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', dot: 'bg-emerald-500' },
-  caution: { label: 'مناسب بحذر', text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', dot: 'bg-amber-500' },
-  restricted: { label: 'مقيد', text: 'text-orange-700', bg: 'bg-orange-50', border: 'border-orange-200', dot: 'bg-orange-500' },
-  postpone: { label: 'يفضل التأجيل', text: 'text-rose-700', bg: 'bg-rose-50', border: 'border-rose-200', dot: 'bg-rose-500' },
+  safe: { label: 'سماح', text: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', dot: 'bg-emerald-500' },
+  restricted: { label: 'مراقبة', text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', dot: 'bg-amber-500' },
   stopped: { label: 'إيقاف', text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200', dot: 'bg-red-700' },
 };
 
@@ -65,16 +70,19 @@ export function alertKindToDecision(kind: string): Decision {
     case 'SAFETY_BREACH': return 'stopped';
     case 'COMPLIANCE_VIOLATION': return 'stopped';
     // إيقاف احترازي معلَّق — النشاط متوقف فعلياً الآن (نفس أثر mandatoryStop
-    // التشغيلي)، فيُصنَّف 'stopped' كالإيقاف المؤكَّد، لا 'postpone'/'caution'
-    // (تصنيفان أخف لا يعكسان أن النشاط متوقف بالفعل هذه اللحظة).
+    // التشغيلي)، فيُصنَّف 'stopped' كالإيقاف المؤكَّد.
     case 'PROTECTIVE_STOP': return 'stopped';
-    case 'DUST': return 'postpone';
+    // DUST كانت 'postpone' (مستوى منفصل) قبل الدمج إلى 3 مستويات — الآن
+    // تندمج مع 'stopped' (نفس مبدأ "لا يجوز الاستمرار الآن").
+    case 'DUST': return 'stopped';
     case 'COMPLIANCE_RESTRICTION': return 'restricted';
-    case 'COMPLIANCE_ADVISORY': return 'caution';
-    case 'PM10_APPROACHING_LIMIT': return 'caution';
-    case 'NO_DECISION_YET': return 'caution';
-    case 'FORECAST_WARNING': return 'caution';
-    case 'BEFORE_START': return 'caution';
+    // كانت 'caution' (مستوى منفصل) قبل الدمج — الآن تندمج مع 'safe' (لا قيد
+    // فعلي، مجرد تنبيه/معلومة).
+    case 'COMPLIANCE_ADVISORY': return 'safe';
+    case 'PM10_APPROACHING_LIMIT': return 'safe';
+    case 'NO_DECISION_YET': return 'safe';
+    case 'FORECAST_WARNING': return 'safe';
+    case 'BEFORE_START': return 'safe';
     // تحسّن القراءة — خبر إيجابي صراحة، لا يرفع حالة الخطر إطلاقاً.
     case 'PM10_IMPROVED': return 'safe';
     default: return 'safe'; // BEFORE_1H / BEFORE_2H — تذكير بحت، لا يرفع حالة الخطر
@@ -117,9 +125,12 @@ export function dviLevelToDecision(level: string, mandatoryStop: boolean): Decis
   switch (level) {
     case 'BLACK':
     case 'DARK_RED': return 'stopped';
-    case 'RED': return 'postpone';
+    // RED كانت 'postpone' (مستوى منفصل) قبل الدمج إلى 3 مستويات — الآن
+    // تندمج مع 'stopped'.
+    case 'RED': return 'stopped';
     case 'ORANGE': return 'restricted';
-    case 'YELLOW': return 'caution';
+    // YELLOW كانت 'caution' (مستوى منفصل) قبل الدمج — الآن تندمج مع 'safe'.
+    case 'YELLOW': return 'safe';
     default: return 'safe'; // GREEN
   }
 }

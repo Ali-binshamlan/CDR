@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { apiClient } from '@/app/lib/apiClient';
 import type { ProjectPoint } from './ProjectsMap';
 import { dviLevelToDecision } from '@/app/lib/decisionMeta';
+import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 import { Loader2, Map as MapIcon } from 'lucide-react';
 
 // خريطة Leaflet تحتاج window، فلازم تُحمَّل داخل المتصفح فقط بدون SSR
@@ -97,10 +98,14 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
         const todayActivitiesCount = todayActivities.filter((a) => a.project_id === p.id).length;
         const decision = liveActivity ? dviLevelToDecision(liveActivity.level, liveActivity.mandatoryStop) : null;
         // جهة المراقبة الخارجية (viewer) لا تُعرض لها صياغة القرار الداخلية
-        // التفصيلية (مثال: "إيقاف إلزامي نظامي") عند حالة الإيقاف تحديدًا —
-        // بطلب صريح من المستخدم تُستبدل بصياغة تنظيمية مبسطة، وباقي الحالات
-        // تبقى بنصها الحالي (statusLabel/statusReason كما هما).
-        const isStopped = decision === 'stopped';
+        // التفصيلية — طلب مستخدم صريح بعد تبسيط Decision لـ3 مستويات
+        // (سماح/مراقبة/إيقاف، راجع decisionMeta.ts): النص يتبع اللون
+        // (decision) مباشرة، لا حالة "مخالفة" ثنائية سابقة. عند إيقاف فعلي
+        // مع PM10 تجاوز حد المخالفة التنظيمي فعلياً (>340، لا مجرد نطاق
+        // تحذير)، يظهر نص محدد "تم تجاوز الحد 340" بدل الصياغة الداخلية.
+        const pm10 = liveActivity?.readingPm10UgM3 ?? null;
+        const isConfirmedPm10Violation =
+          decision === 'stopped' && pm10 !== null && pm10 > ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
         return {
           id: p.id,
           name: p.name,
@@ -111,8 +116,10 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
           projectStatus: p.project_status,
           todayActivitiesCount,
           hasLiveActivity: !!liveActivity,
-          statusLabel: isStopped ? 'تم تسجيل مخالفة' : liveActivity?.decisionLabelAr,
-          statusReason: isStopped ? undefined : liveActivity?.shortReason,
+          statusLabel: isConfirmedPm10Violation
+            ? `تم تجاوز الحد ${ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive}`
+            : liveActivity?.decisionLabelAr,
+          statusReason: isConfirmedPm10Violation ? undefined : liveActivity?.shortReason,
           decisionEvaluatedAt: liveActivity?.evaluatedAt ?? null,
           decisionReadingPm10UgM3: liveActivity?.readingPm10UgM3 ?? null,
           decisionReadingWindSpeedKmh: liveActivity?.readingWindSpeedKmh ?? null,
