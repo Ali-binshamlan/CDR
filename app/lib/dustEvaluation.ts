@@ -2345,7 +2345,15 @@ export function applyComplianceGatesToDustAei(
       decision = { ...storedRowToPartialFinalDecision(storedRow), mode };
     } else {
       const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
-      const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, r.compliance ?? null, r.aei, mode);
+      const finalInput = buildFinalDecisionInput(
+        r.activityGroupId ?? r.activityId ?? 'unknown',
+        dvi,
+        r.compliance ?? null,
+        r.aei,
+        mode,
+        undefined,
+        isActivityLiveForDevice(r.startIso)
+      );
       decision = decideFinal(finalInput);
     }
     r.aei = applyFinalDecisionToAei(r.aei, decision as FinalDecision, r.compliance ?? null);
@@ -2406,7 +2414,9 @@ export function computeUnifiedActivityDecision(
   startIso?: string | null
 ): UnifiedActivityDecision {
   const mode = determineFinalDecisionMode(startIso);
-  const decision = decideFinal(buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null, mode));
+  const decision = decideFinal(
+    buildFinalDecisionInput('unified', dviWorst, compliance, aei ?? null, mode, undefined, isActivityLiveForDevice(startIso))
+  );
 
   return {
     decisionLabelAr: decision.decisionLabelAr,
@@ -2603,12 +2613,18 @@ export interface ActivityDecisionPersistResult {
 // لوقت الحفظ، لا مُدخلاً يغيّر القرار بذاته (بخلاف evidenceQuality المشتقة
 // منه وتؤثر فعلياً)؛ تضمينه كان سيجعل البصمة تتغيّر لمجرد إعادة تشغيل نفس
 // التقييم بالضبط في لحظة مختلفة، بلا أي تغيّر حقيقي في المدخلات المحسوبة.
+// isLiveForDevice معامل سادس اختياري — نفس سبب إضافة evidenceQuality أعلاه
+// بالضبط: قادرة فعلياً على قلب operationalDecision (نص PLANNING العام مقابل
+// HOLD_FOR_VERIFICATION، راجع الفرع المخصَّص أعلى decideFinal في
+// final-decision-engine/engine.ts) لنفس dvi/compliance/mode/evidenceQuality
+// بالضبط — يجب أن تدخل البصمة، وإلا بقيت قابلة للتطابق بين قرارين مختلفين.
 export function computeInputSnapshotHash(
   dvi: DviEvaluationResult,
   compliance: DustComplianceResult | null,
   mode: string,
   aei: AeiEvaluationResult | null = null,
-  evidenceQuality: string | null = null
+  evidenceQuality: string | null = null,
+  isLiveForDevice: boolean | null = null
 ): string {
   const sortedStringify = (value: unknown): string =>
     JSON.stringify(value, (_key, val) => {
@@ -2622,7 +2638,7 @@ export function computeInputSnapshotHash(
       }
       return val;
     });
-  const snapshot = sortedStringify({ dvi, compliance, aei, mode, evidenceQuality });
+  const snapshot = sortedStringify({ dvi, compliance, aei, mode, evidenceQuality, isLiveForDevice });
   return createHash('sha256').update(snapshot).digest('hex');
 }
 
@@ -2730,12 +2746,27 @@ export async function persistActivityDecisionsAtomic(
           const compliance: DustComplianceResult | null = complianceEntry?.result ?? null;
           const dvi: DviEvaluationResult = r.windowEval?.worst ?? NEUTRAL_DVI_FALLBACK;
           const mode = determineFinalDecisionMode(r.startIso);
-          const finalInput = buildFinalDecisionInput(r.activityGroupId ?? r.activityId ?? 'unknown', dvi, compliance, r.aei, mode);
+          const finalInput = buildFinalDecisionInput(
+            r.activityGroupId ?? r.activityId ?? 'unknown',
+            dvi,
+            compliance,
+            r.aei,
+            mode,
+            undefined,
+            isActivityLiveForDevice(r.startIso)
+          );
           const decision = decideFinal(finalInput);
           finalDecisionPayload = {
             decision,
             evaluatedAt: finalInput.evaluatedAt,
-            inputSnapshotHash: computeInputSnapshotHash(dvi, compliance, mode, r.aei, decision.evidenceQuality),
+            inputSnapshotHash: computeInputSnapshotHash(
+              dvi,
+              compliance,
+              mode,
+              r.aei,
+              decision.evidenceQuality,
+              finalInput.isLiveForDevice ?? null
+            ),
           };
         }
 

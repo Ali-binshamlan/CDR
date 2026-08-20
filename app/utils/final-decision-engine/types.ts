@@ -60,6 +60,16 @@ export interface FinalDecisionInput {
 
   evidenceQuality: EvidenceQuality;
 
+  // نشاط لم يبدأ رسمياً بعد (mode='PLANNING') لكن جهاز الرصد دخل هامش
+  // تفعيله المسبق (isActivityLiveForDevice في dustEvaluation.ts، هامش
+  // الساعتين) ويرسل قراءات فعلية — ولو قديمة. طلب مستخدم صريح ("لو دخلنا
+  // نطاق الساعتين والجهاز قراءاته قديمة، تعرض قاعدة يتطلب تحقق قبل
+  // الاستمرار"): يفرّق بين "لا جهاز إطلاقاً بعد" (نص توقّعي عام) و"جهاز
+  // موجود ويرسل، فقط النشاط لم يبدأ" (نفس معاملة evidenceUnavailable/
+  // HOLD_FOR_VERIFICATION المستخدَمة في LIVE_OPERATIONAL). اختياري: false/
+  // undefined = السلوك القديم بلا تغيير (نص PLANNING العام دائماً).
+  isLiveForDevice?: boolean;
+
   ruleBundleVersion: string;
 }
 

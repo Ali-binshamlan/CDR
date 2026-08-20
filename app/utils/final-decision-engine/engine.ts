@@ -71,7 +71,39 @@ function complianceFloorLevel(decisionCategory: string): FinalDecision['level'] 
 }
 
 export function decideFinal(input: Readonly<FinalDecisionInput>): Readonly<FinalDecision> {
-  const { dvi, compliance, mode, evidenceQuality } = input;
+  const { dvi, compliance, mode, evidenceQuality, isLiveForDevice } = input;
+
+  // طلب مستخدم صريح ("لو دخلنا نطاق الساعتين والجهاز قراءاته قديمة، تعرض
+  // قاعدة يتطلب تحقق قبل الاستمرار"): نشاط لم يبدأ رسمياً بعد (PLANNING)
+  // لكن دخل هامش تفعيل الجهاز المسبق (isLiveForDevice=true) وجهازه يرسل
+  // فعلياً — فقط قراءته قديمة/غير كافية (evidenceQuality من نفس القراءة
+  // الحقيقية، لا تقدير طقس) — لا يجوز أن يُعرَض بنص "لا قراءة جهاز حية
+  // بعد... سيتم تفعيل الجهاز قبل ساعتين" العام (مضلِّل: الجهاز فعّال
+  // ويرسل فعلاً). فرع منفصل ضيّق يُرجِع HOLD_FOR_VERIFICATION مباشرة (نفس
+  // نص/دلالة evidenceCandidate في الفرع LIVE_OPERATIONAL أدناه بالضبط) —
+  // مقصود عمداً بدل السقوط في آلة المرشحين الكاملة تحت: mandatoryStop
+  // يبقى false دائماً هنا (HOLD_FOR_VERIFICATION لا يضبطه true أبداً)، فلا
+  // خطر انزلاق لإيقاف إلزامي حقيقي على نشاط لم يبدأ فعلياً — نفس ضمان فرع
+  // PLANNING العام أدناه، فقط بنص مختلف يعكس وجود الجهاز الحقيقي.
+  if (mode === 'PLANNING' && isLiveForDevice === true && (evidenceQuality === 'STALE' || evidenceQuality === 'UNAVAILABLE')) {
+    const result: FinalDecision = {
+      snapshotId: input.snapshotId,
+      mode,
+      operationalDecision: 'HOLD_FOR_VERIFICATION',
+      regulatoryFinding: 'NOT_DETERMINABLE',
+      mandatoryStop: false,
+      overridable: true,
+      shortReasonAr: 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.',
+      decisionLabelAr: 'بانتظار تحقق ميداني — بيانات غير كافية',
+      level: 'ORANGE',
+      pendingConfirmation: false,
+      reasonCodes: Object.freeze(['DATA_STALE_OR_UNAVAILABLE']),
+      evidenceQuality,
+      ruleBundleVersion: input.ruleBundleVersion,
+    };
+    assertDecisionInvariant(result);
+    return Object.freeze(result);
+  }
 
   // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
   // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts) لا

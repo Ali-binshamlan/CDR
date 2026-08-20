@@ -144,7 +144,11 @@ export function buildFinalDecisionInput(
   compliance: DustComplianceResult | null,
   aei: AeiEvaluationResult | null,
   mode: FinalDecisionMode = 'LIVE_OPERATIONAL',
-  evaluatedAt: string = new Date().toISOString()
+  evaluatedAt: string = new Date().toISOString(),
+  // اختياري: راجع تعليق isLiveForDevice الكامل في types.ts — يُمرَّر فقط من
+  // المسارات التي تعرف فعلياً حالة هامش تفعيل الجهاز المسبق (isActivityLiveForDevice
+  // في dustEvaluation.ts). غيابه = السلوك القديم بلا تغيير.
+  isLiveForDevice?: boolean
 ): FinalDecisionInput {
   return {
     snapshotId,
@@ -156,6 +160,7 @@ export function buildFinalDecisionInput(
     // nowMs مشتقة من evaluatedAt نفسه (لا Date.now() منفصل) — راجع تعليق
     // deriveEvidenceQuality أعلاه.
     evidenceQuality: deriveEvidenceQuality(compliance, mode, new Date(evaluatedAt).getTime()),
+    isLiveForDevice,
     ruleBundleVersion: compliance?.rulebookVersion ?? RULEBOOK_VERSION,
   };
 }

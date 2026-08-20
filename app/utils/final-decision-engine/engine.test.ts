@@ -884,6 +884,67 @@ describe('decideFinal — PLANNING: لا قرار إلزامي أبداً مهم
   });
 });
 
+// خطأ إعادة إنتاج مكتشَف ومُصلَح (بلاغ مباشر من المستخدم — لقطة شاشة: نشاط
+// يبدأ خلال 50 دقيقة، جهازه يرسل فعلياً (آخر قراءة قبل 24 دقيقة، ظاهرة في
+// بطاقة أخرى بنفس الصفحة)، لكن البانر الموحَّد عرض "مسموح — تشغيل اعتيادي"
+// مع نص "لا قراءة جهاز حية بعد... سيتم تفعيل الجهاز قبل ساعتين" — نص مضلِّل
+// لأن الجهاز فعّال فعلياً. طلب مستخدم صريح للحل: "لو دخلنا نطاق الساعتين
+// والجهاز قراءاته قديمة تعرض قاعدة يتطلب تحقق قبل الاستمرار". isLiveForDevice
+// (isActivityLiveForDevice في dustEvaluation.ts، هامش الساعتين) يُميّز الآن
+// "لا جهاز إطلاقاً بعد" عن "جهاز موجود ويرسل، فقط النشاط لم يبدأ رسمياً".
+describe('decideFinal — PLANNING + isLiveForDevice: جهاز حي داخل هامش الساعتين قبل البدء', () => {
+  it('isLiveForDevice=true + evidenceQuality=STALE → HOLD_FOR_VERIFICATION (لا نص "لا قراءة جهاز حية بعد" المضلِّل)', () => {
+    const r = decideFinal(input({ mode: 'PLANNING', evidenceQuality: 'STALE', isLiveForDevice: true }));
+
+    expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+    expect(r.decisionLabelAr).toBe('بانتظار تحقق ميداني — بيانات غير كافية');
+    expect(r.shortReasonAr).not.toContain('سيتم تفعيل جهاز الرصد');
+    expect(r.shortReasonAr).toContain('يتطلب تحقق ميداني');
+    expect(r.mandatoryStop).toBe(false); // لا إيقاف إلزامي رغم HOLD — نفس ضمان PLANNING الأصلي
+    expect(r.overridable).toBe(true);
+    expect(r.regulatoryFinding).toBe('NOT_DETERMINABLE');
+    expect(r.mode).toBe('PLANNING'); // mode نفسه يبقى PLANNING — لا يتحول LIVE_OPERATIONAL
+  });
+
+  it('isLiveForDevice=true + evidenceQuality=UNAVAILABLE → HOLD_FOR_VERIFICATION أيضاً', () => {
+    const r = decideFinal(input({ mode: 'PLANNING', evidenceQuality: 'UNAVAILABLE', isLiveForDevice: true }));
+    expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+    expect(r.mandatoryStop).toBe(false);
+  });
+
+  it('isLiveForDevice=true + evidenceQuality=OK (قراءة جهاز طازجة) → يبقى نص PLANNING العام (الجهاز حي فعلاً، لا نقص أدلة)', () => {
+    const dvi = baseDvi({ decisionCategory: 'ALLOW', level: 'GREEN', mandatoryStop: false, overridable: true });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, evidenceQuality: 'OK', isLiveForDevice: true }));
+    expect(r.operationalDecision).toBe('ALLOW');
+    expect(r.decisionLabelAr).toBe('مسموح — تشغيل اعتيادي');
+  });
+
+  it('isLiveForDevice=false (خارج هامش الساعتين) + evidenceQuality=STALE → يبقى نص PLANNING العام (لا HOLD_FOR_VERIFICATION، لا جهاز فعلياً بعد)', () => {
+    const r = decideFinal(input({ mode: 'PLANNING', evidenceQuality: 'STALE', isLiveForDevice: false }));
+    expect(r.operationalDecision).not.toBe('HOLD_FOR_VERIFICATION');
+    expect(r.shortReasonAr).toContain('سيتم تفعيل جهاز الرصد');
+  });
+
+  it('isLiveForDevice غائب (undefined، توافقي) + evidenceQuality=STALE → يبقى نص PLANNING العام (السلوك القديم بلا تغيير)', () => {
+    const r = decideFinal(input({ mode: 'PLANNING', evidenceQuality: 'STALE' }));
+    expect(r.operationalDecision).not.toBe('HOLD_FOR_VERIFICATION');
+    expect(r.shortReasonAr).toContain('سيتم تفعيل جهاز الرصد');
+  });
+
+  it('mode=LIVE_OPERATIONAL + isLiveForDevice=true + evidenceQuality=STALE → السلوك الأصلي (evidenceCandidate عبر آلة المرشحين) بلا تغيير', () => {
+    const r = decideFinal(input({ mode: 'LIVE_OPERATIONAL', evidenceQuality: 'STALE', isLiveForDevice: true }));
+    expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+    expect(r.mode).toBe('LIVE_OPERATIONAL');
+  });
+
+  it('isLiveForDevice=true + evidenceQuality=STALE + dvi.mandatoryStop=true (قراءة تقديرية عالية) → mandatoryStop يبقى false (الفرع الضيق لا يقرأ dvi.mandatoryStop إطلاقاً)', () => {
+    const dvi = baseDvi({ decisionCategory: 'MANDATORY_STOP', level: 'BLACK', mandatoryStop: true, overridable: false });
+    const r = decideFinal(input({ mode: 'PLANNING', dvi, evidenceQuality: 'STALE', isLiveForDevice: true }));
+    expect(r.mandatoryStop).toBe(false);
+    expect(r.operationalDecision).toBe('HOLD_FOR_VERIFICATION');
+  });
+});
+
 describe('decideFinal — نشاط مغلق فعلياً وامتثاله نظيف يُخفي تنبيه مراقبة DVI مصدره الرياح فقط', () => {
   it('DVI يُظهر ALLOW_WITH_MONITORING (رياح) لكن isEnclosedOperation=true وcompliance=ALLOW → operationalDecision=ALLOW وlevel=GREEN', () => {
     const compliance = baseCompliance({ decisionCategory: 'ALLOW', isEnclosedOperation: true });
