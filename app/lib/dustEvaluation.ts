@@ -1402,7 +1402,7 @@ export async function computeDustResults(
         // شبكة يمكن أن يؤخر أو يُسقِط القرار المحفوظ. نشاط توقّعي بحت
         // (PLANNING) أو حي بلا جهاز يبقى بمساره القديم كاملاً
         // (evaluateDustVisibilityWindow، شبكة Open-Meteo الكاملة).
-        const isLiveActivity = determineFinalDecisionMode(startIso) === 'LIVE_OPERATIONAL';
+        const isLiveActivity = isActivityLiveForDevice(startIso);
         const isLiveWithDevice = isLiveActivity && input.hasDeviceLink;
 
         const windowEval: DustWindowEvaluation = isLiveWithDevice
@@ -1773,25 +1773,33 @@ export async function computeDustComplianceResults(
         const evaluatedAtMs = Date.now();
         const pm10SustainedLookupMs = evaluationAtMs ?? evaluatedAtMs;
 
-        // طلب مستخدم صريح: نشاط PLANNING (توقّع طقس لوقت بدء لم يحن بعد، لا
-        // قراءة جهاز — راجع ACTIVITY_LIVE_MARGIN_MS في dust-engine/engine.ts)
-        // لا يجوز أن تُطبَّق عليه قاعدة RESUME-STABILITY-HOLD (استقرار 10
-        // دقائق قبل الاستئناف بعد إيقاف سابق) — تلك القاعدة مصمَّمة لقراءات
-        // متتابعة زمنياً حقيقية، لا نقطة توقّع مستقبلية واحدة. previousDecision
-        // = null هنا يمنع تطبيقها ضمنياً (راجع تعليق previousDecision في
-        // buildComplianceContext: غيابه يعني "لا قيد" لا خطأً) — بلا حاجة
-        // لتعديل محرك الامتثال نفسه. سيناريو نادر لكن ممكن: نشاط عُدِّل موعده
-        // ليصبح PLANNING بعد أن كان LIVE_OPERATIONAL وموقوفاً فعلياً؛ تجاهل
-        // ذلك القرار السابق هنا صحيح لأن التقييم الحالي لا يمثّل استمراراً
-        // فعلياً لتلك الحالة أصلاً (توقّع منفصل تماماً، لا مصدره جهاز).
-        const mode = determineFinalDecisionMode(r.startIso);
+        // نشاط ليس حياً بعد بجهازه (خارج هامش الساعتين تماماً، توقّع طقس بحت
+        // — راجع isActivityLiveForDevice أعلاه) لا يجوز أن تُطبَّق عليه قاعدة
+        // RESUME-STABILITY-HOLD (استقرار 10 دقائق قبل الاستئناف بعد إيقاف
+        // سابق) — تلك القاعدة مصمَّمة لقراءات متتابعة زمنياً حقيقية، لا نقطة
+        // توقّع مستقبلية واحدة. previousDecision = null هنا يمنع تطبيقها
+        // ضمنياً (راجع تعليق previousDecision في buildComplianceContext:
+        // غيابه يعني "لا قيد" لا خطأً) — بلا حاجة لتعديل محرك الامتثال نفسه.
+        // سيناريو نادر لكن ممكن: نشاط عُدِّل موعده ليصبح توقّعياً بحتاً بعد أن
+        // كان حياً وموقوفاً فعلياً؛ تجاهل ذلك القرار السابق هنا صحيح لأن
+        // التقييم الحالي لا يمثّل استمراراً فعلياً لتلك الحالة أصلاً (توقّع
+        // منفصل تماماً، لا مصدره جهاز).
+        //
+        // isPlanning يُستمَد من isActivityLiveForDevice (هامش الساعتين) لا من
+        // determineFinalDecisionMode (بلا هامش) — طلب مستخدم صريح: "يظهر كل
+        // شي تبع الجهاز لكن بدون تسجيل مخالفات". نشاط حي بجهازه (حتى لو لم
+        // يبدأ رسمياً بعد) يُشغَّل بقواعد الامتثال الحقيقية على قراءته
+        // الفعلية بدل نص توقّعي عام؛ منع تسجيل أي مخالفة/تقييد ملزم قبل
+        // planned_time الفعلي محصور في determineFinalDecisionMode المستخدَمة
+        // لاحقاً عند بناء decideFinal (finalDecisionPayload أدناه)، لا هنا.
+        const isLiveForDevice = isActivityLiveForDevice(r.startIso);
         const previousDecision =
-          mode === 'PLANNING' || !r.activityGroupId ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
-        // نفس شرط previousDecision أعلاه بالضبط — PLANNING/بلا activityGroupId
-        // لا معنى لهما لحماية استئناف أصلاً (raisin: لا previousDecision
+          !isLiveForDevice || !r.activityGroupId ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
+        // نفس شرط previousDecision أعلاه بالضبط — نشاط غير حي بجهازه/بلا
+        // activityGroupId لا معنى له لحماية استئناف أصلاً (لا previousDecision
         // مُطبَّق أصلاً في تلك الحالات)، فلا يجوز أن يفرض فشل الاستعلام حالة
         // HOLD على تقييم توقّعي بحت.
-        const activityQueryFailed = mode !== 'PLANNING' && !!r.activityGroupId && previousDecisionQueryFailed;
+        const activityQueryFailed = isLiveForDevice && !!r.activityGroupId && previousDecisionQueryFailed;
 
         // بناء أولي لقراءة pm10UgM3/dataSource فقط (بلا استمرار بعد) — يلزم
         // معرفة القراءة الحالية قبل تسجيلها في السجل التاريخي وجلب استمرارها.
@@ -1928,10 +1936,14 @@ export async function computeDustComplianceResults(
           pm10HistoryFailureCode,
           pm10TemporalEvidenceState
         );
-        // isPlanning=true: طلب مستخدم صريح — نشاط PLANNING لا يُصدر أي قرار
-        // امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع، فقط نص "تصلح/لا
-        // تصلح" (راجع buildPlanningForecastResult في engine.ts).
-        const result = evaluateDustCompliance(ctx, evaluatedAtMs, mode === 'PLANNING');
+        // isPlanning=true: نشاط خارج هامش الساعتين (لا جهاز حي بعد فعلياً)
+        // لا يُصدر أي قرار امتثال إلزامي (STOP/تعليق) مهما بلغت قيم التوقّع،
+        // فقط نص "تصلح/لا تصلح" (راجع buildPlanningForecastResult في
+        // engine.ts). نشاط حي بجهازه (isLiveForDevice=true) يُشغَّل بقواعد
+        // الامتثال الحقيقية على قراءته الفعلية — منع تسجيل مخالفة قبل
+        // planned_time الفعلي محصور في determineFinalDecisionMode عند بناء
+        // القرار النهائي الملزم لاحقاً، لا هنا (راجع التعليق أعلاه).
+        const result = evaluateDustCompliance(ctx, evaluatedAtMs, !isLiveForDevice);
         return {
           activityGroupId: r.activityGroupId,
           activityId: r.activityId,
@@ -2477,23 +2489,50 @@ export function computePendingResumeSince(
 // في dust-compliance-engine/engine.ts) لتبقى قابلة للاختبار بمعزل عن أي
 // اتصال قاعدة بيانات.
 //
-// طلب مستخدم صريح (بلاغ مباشر: "لا تسجيل مخالفة قبل بدء النشاط فعلياً"):
-// كان هامش ساعتين (ACTIVITY_LIVE_MARGIN_MS) يُطبَّق هنا أيضاً — بمعنى نشاط
-// سيبدأ خلال ساعتين يُعامَل LIVE_OPERATIONAL فعلياً (مخالفات حقيقية ممكن
-// تُسجَّل في final_decisions/current_dust_compliance_decisions)، رغم أنه
-// لم يبدأ بعد. هذا الهامش (سبب وجوده أصلاً: "جهاز الرصد يتفعّل قبل ساعتين
-// من بداية النشاط") يبقى مناسباً لعرض القراءات الحية في الرسوم البيانية
-// (device-readings-history/pm10-history routes، WINDOW_START_MARGIN_MS)،
-// لكنه غير مناسب هنا: قراءة سيئة تصل قبل البداية بساعتين لا يجوز أن تُنتج
-// "مخالفة تنظيمية" رسمية لنشاط لم يبدأ. الإصلاح: PLANNING يبقى سارياً حتى
-// اللحظة الفعلية لـplanned_time بالضبط (بلا هامش)، لا قبلها بساعتين —
-// تسجيل المخالفات مقصور الآن على الأنشطة الجارية فعلياً فقط.
+// طلب مستخدم صريح (بلاغ مباشر: "لا تسجيل مخالفة قبل بدء النشاط فعلياً" ثم
+// "يظهر كل شي تبع الجهاز لكن بدون تسجيل مخالفات"): محاولة أولى أزالت هامش
+// الساعتين من هنا بالكامل — لكن اتضح أن determineFinalDecisionMode كانت
+// مصدر الحقيقة المشترك لثلاثة استخدامات مختلفة الغرض فعلياً، لا استخدام
+// واحد:
+//   1) مسار DVI السريع للجهاز الحي (isLiveActivity في computeDustResults
+//      أدناه) — يقرر: هل نبني القرار من قراءة الجهاز الفعلية مباشرة؟
+//   2) isPlanning في evaluateDustCompliance (عبر computeDustComplianceResults
+//      أدناه) — يقرر: هل نُشغّل قواعد الامتثال الحقيقية على القراءة الحية،
+//      أم نص توقّعي عام (buildPlanningForecastResult)؟
+//   3) mode في decideFinal (هنا وبقية المواضع) — يقرر: هل يُسمح بتسجيل
+//      قرار نهائي ملزم (mandatoryStop=true/مخالفة حقيقية) في final_decisions؟
+// إزالة الهامش من الثلاثة معاً عطّلت (1) و(2) بلا داعٍ: نشاط سيبدأ خلال 50
+// دقيقة (جهازه حي فعلياً ويرسل قراءات) أصبح يُعامَل كتوقّع عام بطيء (Open-
+// Meteo) بدل قراءة الجهاز الحية — نص عام مضلِّل ("سيتم تفعيل جهاز الرصد...")
+// يظهر بدل القرار الفعلي المبني على القراءة الحقيقية.
+// الإصلاح الصحيح: هامش الساعتين يعود لـ(1) و(2) عبر isActivityLiveForDevice
+// أدناه — الجهاز يُعرَض ويُشغَّل بقواعد الامتثال الحقيقية بمجرد دخوله هامش
+// التفعيل، تماماً كسلوكه الأصلي. determineFinalDecisionMode نفسها (بلا
+// هامش، حد planned_time بالضبط) تبقى محصورة في (3) فقط — القرار *النهائي
+// الملزم* المخزَّن في final_decisions/current_dust_compliance_decisions لا
+// يتحول لمخالفة/تقييد ملزم قبل اللحظة الفعلية للبدء، مهما كانت قراءة الجهاز.
 export function determineFinalDecisionMode(
   startIso: string | null | undefined,
   nowMs: number = Date.now()
 ): 'LIVE_OPERATIONAL' | 'PLANNING' {
   const startMs = startIso ? new Date(startIso).getTime() : NaN;
   return !Number.isNaN(startMs) && nowMs < startMs ? 'PLANNING' : 'LIVE_OPERATIONAL';
+}
+
+// هامش ساعتين — "جهاز الرصد يتفعّل قبل ساعتين من بداية النشاط" (نفس
+// ACTIVITY_LIVE_MARGIN_MS_ENGINE في dust-engine/engine.ts وWINDOW_START_
+// MARGIN_MS في device-readings-history/pm10-history routes). يحدد فقط "هل
+// نعرض/نُشغّل بيانات الجهاز الحية؟" — لا علاقة له بتسجيل مخالفات ملزمة
+// (تلك مقصورة على determineFinalDecisionMode أعلاه بلا هامش). دالة نقية
+// (nowMs صريح) لنفس سبب determineFinalDecisionMode.
+const ACTIVITY_LIVE_DEVICE_MARGIN_MS = 120 * 60000;
+
+export function isActivityLiveForDevice(
+  startIso: string | null | undefined,
+  nowMs: number = Date.now()
+): boolean {
+  const startMs = startIso ? new Date(startIso).getTime() : NaN;
+  return Number.isNaN(startMs) || nowMs >= startMs - ACTIVITY_LIVE_DEVICE_MARGIN_MS;
 }
 
 // =========================================================================
