@@ -301,10 +301,15 @@ export default function AlertsPage() {
         (alertTimingFilter === 'الكل' || a.timing === alertTimingFilter) &&
         (alertProjectFilter === 'الكل' || a.project === alertProjectFilter) &&
         (alertStateFilterVal === 'الكل' || a.state === alertStateFilterVal) &&
-        (!showUnreadOnly || !a.isRead) &&
+        // طلب مستخدم صريح (بلاغ مباشر: "فيه فلترة على غير المقروء تظهر لكن
+        // لا تفتح"): فتح البطاقة يعلّمها مقروءة فوراً (isRead=true)، فكانت
+        // تختفي من هذه القائمة على الفور بمجرد فتحها — تبقى ظاهرة الآن طالما
+        // هي البطاقة المفتوحة حالياً حتى لو أصبحت مقروءة، وتختفي فقط بعد
+        // إغلاقها (toggleExpand يضبط expandedAlertId=null) أو تحديث الفلتر.
+        (!showUnreadOnly || !a.isRead || a.id === expandedAlertId) &&
         (a.message.includes(searchQuery) || a.activity.includes(searchQuery))
     );
-  }, [alertsData, alertTimingFilter, alertProjectFilter, alertStateFilterVal, showUnreadOnly, searchQuery]);
+  }, [alertsData, alertTimingFilter, alertProjectFilter, alertStateFilterVal, showUnreadOnly, expandedAlertId, searchQuery]);
 
   // طلب مستخدم صريح: فتح بطاقة تنبيه غير مقروء يعلّمه مقروءاً تلقائياً —
   // تحديث متفائل فوري للحالة المحلية (بلا انتظار الشبكة)، والاستدعاء
