@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
   // جدول الأسبوع لأن archived_at لم يُفحَص هنا إطلاقاً.
   const { data: activities, error } = await supabaseAdmin
     .from('project_dust_profiles')
-    .select('id, project_id, activity_type, regulatory_activity, planned_date, planned_time, duration_hours')
+    .select('id, project_id, regulatory_activity, planned_date, planned_time, duration_hours')
     .in('project_id', projectIds)
     .is('archived_at', null)
     .gte('planned_date', from)

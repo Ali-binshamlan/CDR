@@ -40,11 +40,11 @@ export async function GET(request: NextRequest) {
 
   // activityLabels: مفتاح "source:id" → بيانات خام كافية لبناء التسمية في
   // الواجهة (translateActivityType نفسها منطق عرض، تبقى في الواجهة)
-  const activityLabels: Record<string, { activity_type: string | null; regulatory_activity: string | null }> = {};
+  const activityLabels: Record<string, { regulatory_activity: string | null }> = {};
 
   if (dustIds.length > 0) {
-    const { data } = await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', dustIds);
-    (data || []).forEach((d: { id: string; activity_type: string | null; regulatory_activity: string | null }) => { activityLabels[`dust:${d.id}`] = { activity_type: d.activity_type, regulatory_activity: d.regulatory_activity }; });
+    const { data } = await supabaseAdmin.from('project_dust_profiles').select('id, regulatory_activity').in('id', dustIds);
+    (data || []).forEach((d: { id: string; regulatory_activity: string | null }) => { activityLabels[`dust:${d.id}`] = { regulatory_activity: d.regulatory_activity }; });
   }
 
   return NextResponse.json({ projects: dbProjects || [], alerts: dbAlerts || [], activityLabels });

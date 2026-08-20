@@ -3,8 +3,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
-import { translateActivityType, ALL_ACTIVITY_LABELS_AR } from '@/app/lib/activityLabels';
-import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
+import { ALL_ACTIVITY_LABELS_AR, displayActivityLabel } from '@/app/lib/activityLabels';
 import {
   MapPin,
   Layers,
@@ -146,7 +145,6 @@ interface DashboardAlertRow {
 // المسار — راجع تعليق activityLabels في app/api/dashboard/alerts-list/route.ts.
 interface ActivityLabelInfo {
   regulatory_activity?: string | null;
-  activity_type?: string;
 }
 
 // ============================================================
@@ -236,16 +234,11 @@ export default function AlertsPage() {
       const projectNameById = new Map<string, string>();
       (dbProjects as DashboardProjectRow[]).forEach((p) => projectNameById.set(p.id, p.name));
 
-      // اسم النشاط المعروض = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...)،
-      // لا التصنيف الفيزيائي الداخلي (activity_type) المستخدم فقط لتغذية
-      // حساب حساسية محرك DVI.
+      // اسم النشاط المعروض = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...)
+      // — activity_type القديم حُذف نهائياً من project_dust_profiles.
       const activityLabelMap = new Map<string, string>();
       Object.entries(activityLabels as Record<string, ActivityLabelInfo>).forEach(([key, raw]) => {
-        const label =
-          (raw.regulatory_activity && raw.regulatory_activity !== 'OTHER'
-            ? REGULATORY_ACTIVITY_LABEL_AR[raw.regulatory_activity]
-            : null) ?? translateActivityType(raw.activity_type);
-        activityLabelMap.set(key, label);
+        activityLabelMap.set(key, displayActivityLabel(raw));
       });
 
       const formattedAlerts: AlertItem[] = ((dbAlerts as DashboardAlertRow[]) || []).map((a) => {

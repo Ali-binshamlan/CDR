@@ -52,13 +52,14 @@ export async function GET(request: NextRequest) {
 
   // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي، نفس
   // الاتفاقية المستخدمة في app/api/alerts/generate/route.ts) — نجلب
-  // regulatory_activity (النشاط التنظيمي المختار فعلياً: كسارة/هدم/...)
-  // لعرضه بدل activity_type الفيزيائي الداخلي (HEAVY_EQUIPMENT_MOVEMENT).
+  // regulatory_activity (النشاط التنظيمي المختار فعلياً: كسارة/هدم/...)،
+  // المصدر الوحيد لتسمية النشاط الآن (activity_type القديم حُذف نهائياً من
+  // project_dust_profiles، راجع migration 202608190005).
   const activityIds = [...new Set((alerts || []).map((a: { activity_id: string }) => a.activity_id).filter(Boolean))];
   const { data: dustProfiles } = activityIds.length > 0
-    ? await supabaseAdmin.from('project_dust_profiles').select('id, activity_type, regulatory_activity').in('id', activityIds)
-    : { data: [] as { id: string; activity_type: string | null; regulatory_activity: string | null }[] };
-  const dustProfileById = new Map((dustProfiles || []).map((p: { id: string; activity_type: string | null; regulatory_activity: string | null }) => [p.id, p]));
+    ? await supabaseAdmin.from('project_dust_profiles').select('id, regulatory_activity').in('id', activityIds)
+    : { data: [] as { id: string; regulatory_activity: string | null }[] };
+  const dustProfileById = new Map((dustProfiles || []).map((p: { id: string; regulatory_activity: string | null }) => [p.id, p]));
 
   const data = (alerts || []).map((alert: {
     activity_id: string;
@@ -85,7 +86,6 @@ export async function GET(request: NextRequest) {
       ownerUsername: owner?.username || null,
       ownerCompany: owner?.company_name || null,
       ownerPhone: owner?.phone_number || null,
-      activityType: dustProfile?.activity_type || null,
       regulatoryActivity: dustProfile?.regulatory_activity || null,
     };
   });

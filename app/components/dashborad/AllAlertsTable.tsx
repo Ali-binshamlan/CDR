@@ -4,8 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { apiClient } from '@/app/lib/apiClient';
 import { alertKindLabelAr, alertKindToDecision, decisionMeta } from '@/app/lib/decisionMeta';
-import { translateActivityType } from '@/app/lib/activityLabels';
-import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
+import { displayActivityLabel } from '@/app/lib/activityLabels';
 import { Loader2, CloudRain, MapPin } from 'lucide-react';
 
 // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "حالات REVIEWED وACTION_TAKEN
@@ -35,7 +34,6 @@ interface AdminAlertRow {
   ownerUsername: string | null;
   ownerCompany: string | null;
   ownerPhone: string | null;
-  activityType: string | null;
   regulatoryActivity: string | null;
 }
 
@@ -186,9 +184,7 @@ export default function AllAlertsTable({ projectLinksEnabled = true }: { project
                       <td className="py-3 px-5 text-slate-600">{a.projectNeighborhood || '—'}</td>
                       <td className="py-3 px-5 text-slate-600">{a.projectCity || '—'}</td>
                       <td className="py-3 px-5 text-slate-600">
-                        {a.regulatoryActivity && a.regulatoryActivity !== 'OTHER'
-                          ? REGULATORY_ACTIVITY_LABEL_AR[a.regulatoryActivity] ?? translateActivityType(a.activityType)
-                          : translateActivityType(a.activityType)}
+                        {displayActivityLabel({ regulatory_activity: a.regulatoryActivity })}
                       </td>
                       <td className="py-3 px-5">
                         <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${meta.bg} ${meta.text} border ${meta.border}`}>

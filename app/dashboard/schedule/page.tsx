@@ -58,7 +58,6 @@ interface ScheduleProjectRow {
 interface ScheduleActivityRow {
   id: string;
   project_id: string;
-  activity_type: string | null;
   regulatory_activity: string | null;
   planned_date: string;
   planned_time: string | null;

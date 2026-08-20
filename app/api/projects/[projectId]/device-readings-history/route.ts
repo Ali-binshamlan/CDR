@@ -50,7 +50,7 @@ export async function GET(
     // لها في هذا الجدول أصلاً (لا فائدة من تضمينها).
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from('project_dust_profiles')
-      .select('id, activity_group_id, device_id, activity_type, regulatory_activity, planned_date, planned_time, duration_hours')
+      .select('id, activity_group_id, device_id, regulatory_activity, planned_date, planned_time, duration_hours')
       .eq('project_id', projectId)
       .not('device_id', 'is', null);
     if (profilesError) {

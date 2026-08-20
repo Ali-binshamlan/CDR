@@ -39,7 +39,7 @@ export async function GET(
     // مفيداً للمراجعة، والفلترة الزمنية لعرض الرسم تبقى مسؤولية hours= أعلاه.
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from('project_dust_profiles')
-      .select('id, activity_group_id, activity_type, regulatory_activity, device_id, planned_date, planned_time, duration_hours')
+      .select('id, activity_group_id, regulatory_activity, device_id, planned_date, planned_time, duration_hours')
       .eq('project_id', projectId);
     if (profilesError) {
       return NextResponse.json({ error: safeErrorResponse(profilesError, 'pm10-history profiles fetch failed') }, { status: 500 });

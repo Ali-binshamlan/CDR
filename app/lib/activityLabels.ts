@@ -8,10 +8,10 @@
 // compliance-engine/rulebook.ts — التسعة أنشطة التنظيمية الفعلية القابلة
 // للاختيار من الواجهة. طلب مستخدم صريح (توحيد كامل): ActivityCategory
 // وACTIVITY_LABEL_AR (dust-engine/tables.ts) حُذفا بالكامل — لم يعودا مصدر
-// ترجمة. LEGACY_ACTIVITY_LABEL_AR أدناه يبقى فقط كخط دفاع أخير لصفوف نادرة
-// جداً بلا regulatory_activity صالح (سابقة على إضافة هذا الحقل، عمود
-// activity_type نفسه بات غير مستخدَم في أي حساب — راجع project_dvi_activity_
-// scope في الذاكرة).
+// ترجمة. LEGACY_ACTIVITY_LABEL_AR أدناه يبقى فقط كخط دفاع أخير لنصوص نادرة
+// غير مطابقة لأي مفتاح تنظيمي حالي (لا علاقة له بعمود activity_type نفسه،
+// المحذوف نهائياً من project_dust_profiles — راجع migration
+// 202608190005_drop_activity_type_column.sql).
 import { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 
 const LEGACY_ACTIVITY_LABEL_AR: Record<string, string> = {
@@ -54,11 +54,10 @@ export function translateActivityType(type: string | null | undefined): string {
 // الـ ternary في كل صفحة/جدول يعرض اسم نشاط غبار.
 export function displayActivityLabel(row: {
   regulatory_activity?: string | null;
-  activity_type?: string | null;
 } | null | undefined): string {
   const reg = row?.regulatory_activity;
   if (reg && REGULATORY_ACTIVITY_LABEL_AR[reg]) {
     return REGULATORY_ACTIVITY_LABEL_AR[reg];
   }
-  return translateActivityType(row?.activity_type);
+  return translateActivityType(reg);
 }

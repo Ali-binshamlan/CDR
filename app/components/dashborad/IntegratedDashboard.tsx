@@ -43,7 +43,6 @@ interface DashboardActivityRow {
   project_id: string;
   planned_time?: string | null;
   regulatory_activity?: string | null;
-  activity_type?: string | null;
   [key: string]: unknown;
 }
 
