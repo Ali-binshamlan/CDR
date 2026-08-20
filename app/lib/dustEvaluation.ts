@@ -2054,33 +2054,23 @@ export function applyFinalDecisionToAei(aei: AeiEvaluationResult, decision: Fina
   // الصحيح "تنبيه: أجواء متوقعة غير مناسبة" الظاهر فعلياً في البطاقة
   // الرئيسية لنفس النشاط عبر decision.shortReasonAr/decisionLabelAr نفسها
   // — تناقض بصري مباشر بين البطاقة الإجمالية وشبكة الساعات القادمة لنفس
-  // النشاط ونفس decideFinal بالضبط. يُفحَص أولاً (قبل حتى HOLD_FOR_VERIFICATION
-  // تحته) لأن "تحقق ميداني" لا معنى له لساعة توقّعية لم تبدأ بعد أصلاً.
-  if (decision.mode === 'PLANNING') {
-    const isFavorable = decision.operationalDecision === 'ALLOW';
-    return {
-      ...aei,
-      status: isFavorable ? aei.status : 'MONITOR',
-      statusLabelAr: decision.decisionLabelAr,
-      color: isFavorable ? aei.color : 'YELLOW',
-      shortReasonAr: decision.shortReasonAr,
-      recommendationAr: isFavorable
-        ? aei.recommendationAr
-        : 'راجع توقعات الساعات القادمة قبل البدء — لا قرار ملزم على توقّع طقس، فقط تنبيه توعوي.',
-    };
-  }
-
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "لا زالت المشكلة"، بعد أول
-  // إصلاح لهذا الفرع): هذا الفحص كان يأتي *بعد* شرط aei.closedByGate أدناه
-  // — فحين dvi.mandatoryStop=true (PM10 لحظي تقديري من Open-Meteo تجاوز
-  // 340 بلا جهاز حقيقي)، evaluateAei الأساسية (aei-engine/engine.ts) تضبط
-  // aei.closedByGate=true *قبل* وصول القرار لهذه الدالة أصلاً، فيُرجَع aei
-  // كما هو بالسطر التالي (return aei محكومة بـclosedByGate) قبل حتى الوصول
-  // لفحص HOLD_FOR_VERIFICATION تحته — فتبقى بطاقة AEI "مغلق" بثقة كاملة
-  // وعدّاد تنازلي فعلي، رغم أن نفس تلك القراءة (1229.3) مصدرها تقدير طقس لا
-  // قراءة جهاز حقيقية. الإصلاح: HOLD_FOR_VERIFICATION يُفحَص أولاً، قبل أي
-  // إفلات مبكر آخر — غياب الأدلة الحقيقية يُبطل حتى إغلاق DVI نفسه المبني
-  // على نفس تلك القراءة التقديرية، لا فقط قرارات الامتثال الأخف.
+  // النشاط ونفس decideFinal بالضبط. (تحديث لاحق: هذا الفرع لم يعد يُفحَص
+  // أولاً — راجع التعليق التالي مباشرة لسبب انعكاس الترتيب.)
+  // خطأ إعادة إنتاج مكتشَف ومُصلَح (بلاغ مباشر من المستخدم — لقطة شاشة: بطاقة
+  // AEI عرضت "قابل للتنفيذ مع مراقبة" بثقة منخفضة (26) ونطاق رياح "غير
+  // معروف" لنشاط جهازه يرسل فعلياً (متأخر) قبل بدء النشاط، رغم أن البانر
+  // الموحَّد لنفس النشاط أعلاه أصبح يعرض "بانتظار تحقق ميداني" بعد إصلاح
+  // decideFinal — "نسيت تحدّث AEI بنفس الطريقة"): فرع mode==='PLANNING' هنا
+  // كان يُفحَص *قبل* HOLD_FOR_VERIFICATION أدناه دائماً، بصرف النظر عن
+  // decision.operationalDecision — فحتى حين يُرجِع decideFinal الآن
+  // HOLD_FOR_VERIFICATION فعلياً لحالة الجهاز الحي المتأخر قبل البدء (mode
+  // يبقى 'PLANNING' عمداً في تلك الحالة أيضاً، راجع الفرع المخصَّص في
+  // final-decision-engine/engine.ts)، كانت بطاقة AEI تسقط دائماً في فرع
+  // ALLOW/MONITOR التوقّعي العام هنا بدل معاملة HOLD_FOR_VERIFICATION —
+  // نفس فجوة aei.closedByGate الموثَّقة أدناه بالضبط، سبب مختلف. الإصلاح:
+  // HOLD_FOR_VERIFICATION يُفحَص أولاً بصرف النظر عن mode — decideFinal هو
+  // من يقرر فعلياً هل الحالة "توقّع عام" أم "جهاز حي بأدلة غير كافية"، لا
+  // mode وحدها.
   if (decision.operationalDecision === 'HOLD_FOR_VERIFICATION') {
     return {
       ...aei,
@@ -2093,6 +2083,20 @@ export function applyFinalDecisionToAei(aei: AeiEvaluationResult, decision: Fina
       shortReasonAr: decision.shortReasonAr,
       recommendationAr: 'لا يوجد جهاز رصد يرسل قراءة حقيقية لهذا النشاط — تحقّق ميدانياً قبل الاعتماد على أي قرار آلي (مسموح أو موقوف).',
       isHoldForVerification: true,
+    };
+  }
+
+  if (decision.mode === 'PLANNING') {
+    const isFavorable = decision.operationalDecision === 'ALLOW';
+    return {
+      ...aei,
+      status: isFavorable ? aei.status : 'MONITOR',
+      statusLabelAr: decision.decisionLabelAr,
+      color: isFavorable ? aei.color : 'YELLOW',
+      shortReasonAr: decision.shortReasonAr,
+      recommendationAr: isFavorable
+        ? aei.recommendationAr
+        : 'راجع توقعات الساعات القادمة قبل البدء — لا قرار ملزم على توقّع طقس، فقط تنبيه توعوي.',
     };
   }
 

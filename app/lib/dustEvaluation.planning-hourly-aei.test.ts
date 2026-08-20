@@ -93,3 +93,44 @@ describe('applyFinalDecisionToAei — وضع PLANNING الساعي يطابق ا
     expect(result.cappedByGate).toBe(false);
   });
 });
+
+// خطأ إعادة إنتاج مكتشَف ومُصلَح (بلاغ مباشر من المستخدم — لقطة شاشة: بطاقة
+// AEI عرضت "قابل للتنفيذ مع مراقبة" بثقة منخفضة لنشاط جهازه يرسل فعلياً
+// (متأخر) قبل بدء النشاط، رغم أن البانر الموحَّد لنفس النشاط أصبح يعرض
+// "بانتظار تحقق ميداني" بعد إصلاح decideFinal — "نسيت تحدّث AEI بنفس
+// الطريقة"). decideFinal قد يُرجِع الآن operationalDecision=
+// 'HOLD_FOR_VERIFICATION' حتى مع mode='PLANNING' (الفرع المخصَّص لجهاز حي
+// متأخر داخل هامش الساعتين قبل البدء — راجع isLiveForDevice في
+// final-decision-engine/engine.ts). applyFinalDecisionToAei يجب أن تعامل
+// هذه الحالة كـHOLD_FOR_VERIFICATION حقيقي (نفس معاملة الوضع الحي)، لا أن
+// تسقط في فرع mode==='PLANNING' العام لمجرد أن mode نفسها لم تتغيّر.
+describe('applyFinalDecisionToAei — HOLD_FOR_VERIFICATION يفوز حتى مع mode=PLANNING (جهاز حي متأخر قبل البدء)', () => {
+  it('operationalDecision=HOLD_FOR_VERIFICATION + mode=PLANNING → نفس معاملة الوضع الحي (RESTRICT/ORANGE)، لا نص PLANNING العام', () => {
+    const aei = buildAei({ statusLabelAr: 'قابل للتنفيذ مع مراقبة', color: 'YELLOW', score: 26 });
+    const decision = buildDecision({
+      mode: 'PLANNING',
+      operationalDecision: 'HOLD_FOR_VERIFICATION',
+      decisionLabelAr: 'بانتظار تحقق ميداني — بيانات غير كافية',
+      shortReasonAr: 'تعذّر اعتماد قرار واثق: بيانات القراءة الحالية قديمة أو غير متوفرة — يتطلب تحقق ميداني قبل الاستمرار.',
+      level: 'ORANGE',
+    });
+    const result = applyFinalDecisionToAei(aei, decision, null);
+
+    expect(result.status).toBe('RESTRICT');
+    expect(result.statusLabelAr).toBe('بانتظار تحقق ميداني — بيانات غير كافية');
+    expect(result.color).toBe('ORANGE');
+    expect(result.isHoldForVerification).toBe(true);
+    // لا يجوز أن يظهر نص "قابل للتنفيذ مع مراقبة" الأصلي — هذا بالضبط ما
+    // كان يحدث قبل الإصلاح (فرع mode==='PLANNING' يفوز أولاً بلا شرط).
+    expect(result.statusLabelAr).not.toBe('قابل للتنفيذ مع مراقبة');
+  });
+
+  it('operationalDecision=MONITOR (لا HOLD_FOR_VERIFICATION) + mode=PLANNING → يبقى السلوك القديم (فرع PLANNING العام)', () => {
+    const aei = buildAei();
+    const decision = buildDecision({ mode: 'PLANNING', operationalDecision: 'MONITOR' });
+    const result = applyFinalDecisionToAei(aei, decision, null);
+
+    expect(result.isHoldForVerification).toBeFalsy();
+    expect(result.statusLabelAr).toBe('تنبيه: أجواء متوقعة غير مناسبة');
+  });
+});
