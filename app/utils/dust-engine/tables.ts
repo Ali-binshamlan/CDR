@@ -15,10 +15,13 @@ export function visibilityRisk(visibilityKm: number): number {
 }
 
 // جدول 2: تركيز الجسيمات العالقة PM10 → PM10Risk
+// طلب مستخدم صريح: الفئات الثلاث تحت حد التحذير التنظيمي (250، راجع
+// PM10_WARNING_UG_M3 في dust-compliance-engine/rulebook.ts) دُمجت في فئة
+// واحدة بأدنى درجة (10) — كل قراءة تحت 250 "آمنة" بنفس الوزن، بدل التدرّج
+// السابق (10/25/45 لـ<100/<150/<250) الذي كان يرفع خطر DVI تدريجياً قبل
+// الوصول لحد التحذير التنظيمي الفعلي بأي معنى عملي.
 export function pm10Risk(pm10: number): number {
-  if (pm10 < 100) return 10;
-  if (pm10 < 150) return 25;
-  if (pm10 < 250) return 45;
+  if (pm10 < 250) return 10;
   if (pm10 < 500) return 70;
   return 90;
 }
