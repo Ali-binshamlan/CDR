@@ -3,12 +3,12 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// قائمة سماح صريحة للحقول القابلة للإدراج عند إنشاء مشروع — يستبدل نشر
-// body.project الخام مباشرة في insert() (mass-assignment)، الذي كان يسمح
-// لأي حقل إضافي يرسله العميل (بما فيه أعمدة داخلية/حساسة قد تُضاف لاحقاً
-// لجدول projects) بالوصول لقاعدة البيانات بلا أي قيد. نفس مبدأ استثناء
-// id/user_id/created_at المطبَّق فعلياً في PATCH (نفس مجموعة الملفات) —
-// هنا allowlist كاملة بدل denylist جزئية، لأن POST يبني صفاً من الصفر.
+// Explicit allowlist of allowed fields when creating a project — replaces spreading
+// raw body.project directly into insert() (mass-assignment), which previously allowed
+// any additional client-supplied field (including sensitive/internal columns added later
+// to the projects table) to reach the database without restriction. Same principle as
+// excluding id/user_id/created_at applied in PATCH (same file group) — full allowlist here
+// instead of partial denylist since POST builds a row from scratch.
 const ALLOWED_PROJECT_FIELDS = [
   'name', 'client_name', 'city', 'neighborhood', 'project_status', 'soil_type',
   'project_type', 'latitude', 'longitude', 'coordinates',
@@ -31,9 +31,9 @@ function pickAllowedProjectFields(project: Record<string, unknown>): Record<stri
   return picked;
 }
 
-// يستبدل supabase.from('projects').insert(...) المباشر من
-// Projects/create/page.tsx — user_id يُشتق من التوكن (auth.userId) وليس
-// من body المرسَل، حتى لا يستطيع أحد إنشاء مشروع باسم مستخدم آخر
+// Replaces direct supabase.from('projects').insert(...) from
+// Projects/create/page.tsx — user_id is derived from token (auth.userId) rather than
+// request body, preventing project creation under another user's identity.
 export async function POST(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -44,9 +44,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'project مطلوب' }, { status: 400 });
   }
 
-  // إحداثيات صالحة فعلياً قبل الإدراج — نفس فحص Number.isFinite المطبَّق
-  // في GET /api/weather، بالإضافة لنطاق جغرافي واقعي، حتى لا تُسمَّم نداءات
-  // الطقس/Overpass لاحقة بإحداثيات كـ 99999 لا تُطابق أي مكان فعلي.
+  // Pre-insert validation of actual coordinates — same Number.isFinite check applied
+  // in GET /api/weather, plus realistic geographic bounds, preventing weather/Overpass API
+  // calls from being poisoned by invalid coordinates like 99999 that do not map anywhere.
   const { latitude, longitude } = project;
   if (latitude !== undefined && latitude !== null) {
     if (typeof latitude !== 'number' || !Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
@@ -59,11 +59,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ورديات العمل (project_shifts) جدول منفصل — تُحفَظ مع المشروع ذرّياً عبر
-  // RPC واحدة (create_project_with_shifts، 202608120016) بدل إدراجين
-  // منفصلين: إن أُرسلت ورديات فعلاً مع الطلب، فإما أن تُحفظ الاثنتان معاً
-  // أو تفشل العملية بأكملها — لا مشروع "ناقص" بصمت بعد الآن. مشروع بلا
-  // ورديات (shifts غائبة أو []) يبقى مدعوماً بلا أي تغيير في السلوك.
+  // Work shifts (project_shifts) is a separate table — saved atomically with project via
+  // single RPC (create_project_with_shifts, 202608120016) instead of two separate inserts:
+  // if shifts are provided, either both save or whole operation fails — no silently "incomplete"
+  // projects. Projects without shifts (missing or empty array) remain supported with zero behavior change.
   const shifts = Array.isArray(project.shifts) ? project.shifts : [];
   const projectInsert = pickAllowedProjectFields(project);
 
@@ -76,8 +75,8 @@ export async function POST(request: NextRequest) {
 
   if (projectError) {
     let message = safeErrorResponse(projectError, 'project insert failed');
-    // فئات خطأ معروفة تبقى برسالة مصنَّفة مفيدة للمستخدم (لا تكشف أسماء
-    // أعمدة/قيود فعلية) — غير ذلك يسقط للرسالة العامة أعلاه.
+    // Known error categories mapped to helpful user messages (without exposing column/constraint
+    // names) — falls back to general safe error message above otherwise.
     if (projectError.code === '42501' || /row-level security/i.test(projectError.message)) {
       message = 'تم رفض الحفظ بواسطة سياسات الأمان (RLS) على جدول المشاريع. تأكد من صلاحيات المستخدم.';
     } else if (projectError.code === '23502') {

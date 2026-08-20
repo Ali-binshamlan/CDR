@@ -4,11 +4,12 @@ import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { assertSafeExternalUrl } from '@/app/lib/providers/safeUrl';
 
-// إدارة سجل المنصات المعتمدة (provider_instances، القسم 15.1 من "دليل
-// الإصلاح الجذري لمنظومة مرقاب") — مسؤول النظام فقط يضيف/يوافق على منصة
-// جديدة؛ المستخدم العادي يختار من هذه القائمة (provider-connection/route.ts)
-// بدل كتابة base_url حر. is_approved=true يُضبَط هنا فقط عبر PATCH صريح —
-// لا موافقة تلقائية عند الإنشاء.
+/*
+ * Approved Provider Registry Management (`provider_instances`, Section 15.1 of Mirqab Architecture Guide).
+ * Admin-only route for creating and approving external provider instances. 
+ * Regular users select from this registry (`provider-connection/route.ts`) rather than providing arbitrary `base_url` values.
+ * `is_approved=true` can only be updated explicitly via `PATCH`—auto-approval on creation is strictly prohibited.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
@@ -47,8 +48,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'المنفذ المسموح 443 فقط' }, { status: 400 });
   }
 
-  // نفس فحص SSRF المطبَّق وقت الاستخدام الفعلي — يُرفَض هنا أيضاً وقت
-  // الإضافة (فشل مبكر واضح لمسؤول النظام، لا انتظار أول محاولة سحب فعلية).
+  /*
+   * Executes the exact SSRF security checks used during runtime execution.
+   * Validates URLs upfront at insertion time to fail fast for administrators, preventing issues before initial fetch attempts.
+   */
   try {
     await assertSafeExternalUrl(origin);
   } catch (err) {

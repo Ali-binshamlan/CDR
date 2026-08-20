@@ -5,8 +5,8 @@ import { ArrowLeft } from 'lucide-react';
 import { REGULATORY_ACTIVITY_OPTIONS, type RegulatoryActivityKey, labelClass, getInputClass } from './constants';
 
 interface ActivityTypeStepProps {
-  // تُستدعى بعد اختيار نوع النشاط التنظيمي والضغط على "متابعة" — عنصر
-  // واحد فقط (النظام لا يدعم إضافة أكثر من نشاط تنظيمي في نفس الجلسة).
+  // Called after selecting the regulatory activity type and clicking "Continue" —
+  // a single item only (the system does not support adding more than one regulatory activity in the same session).
   onContinue: (activityKey: RegulatoryActivityKey) => void;
 }
 

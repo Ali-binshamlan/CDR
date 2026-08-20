@@ -5,16 +5,21 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 import { checkRateLimit } from '@/app/lib/rateLimit';
 import { checkDustActivities } from '../generate/route';
 
-// حد معدّل لكل مستخدم — الواجهة تنادي هذا المسار كل دقيقة تلقائياً
-// (Dashboard layout)، وهو مسموح؛ هذا فقط يمنع مستخدماً مصادقاً من مناداته
-// في حلقة ضيقة يدوياً (تكرار طلبات Open-Meteo/Overpass وحساب DVI/الامتثال
-// لمشاريعه بلا داعٍ).
+/*
+ * Per-user rate limiting configuration.
+ * The frontend dashboard layout polls this route automatically every minute, which is allowed.
+ * Rate limiting prevents authenticated users from triggering manual rapid loops 
+ * (which would unnecessarily duplicate Open-Meteo/Overpass requests and DVI/compliance recalculations).
+ */
 const GENERATE_MINE_MAX_REQUESTS_PER_WINDOW = 6;
 const GENERATE_MINE_WINDOW_MS = 60_000;
 
-// توليد التنبيهات فور تسجيل الدخول — يفحص أنشطة مشاريع المستخدم الحالي
-// فقط (بخلاف /api/alerts/generate الذي يفحص كل المشاريع عبر Cron). يعيد
-// استخدام نفس دالة الفحص، مُقيّدة بمعرّفات مشاريع المستخدم.
+/*
+ * Generates alerts upon user sign-in/dashboard initialization.
+ * Evaluates activities exclusively for projects owned by the currently authenticated user 
+ * (unlike `/api/alerts/generate` which evaluates all system projects via cron).
+ * Reuses the core `checkDustActivities` routine scoped tightly to the user's project IDs.
+ */
 export async function POST(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -23,9 +28,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'محاولات كثيرة جداً، الرجاء الانتظار قليلاً' }, { status: 429 });
   }
 
-  // archived_at is null: لا فائدة من فحص أنشطة مشروع أرشفه المستخدم بنفسه
-  // — checkDustActivities تُصفّي نفس الشيء عند استعلامها الداخلي أيضاً
-  // (دفاع مضاعف)، لكن تصفيتها هنا تمنع تمرير معرّفات مشاريع مؤرشفة أصلاً.
+  /*
+   * Filter (`archived_at IS NULL`): Prevents passing archived project IDs to the evaluation pipeline.
+   * While `checkDustActivities` applies a defense-in-depth filter internally, 
+   * filtering upfront avoids passing obsolete project references to the core engine.
+   */
   const { data: projects } = await supabaseAdmin
     .from('projects')
     .select('id')

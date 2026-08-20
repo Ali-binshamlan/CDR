@@ -6,20 +6,34 @@ import { getConnector } from '@/app/lib/providers/registry';
 import { encryptCredentialsV2 } from '@/app/lib/credentialsEncryption';
 import { randomUUID } from 'node:crypto';
 
-// أعمدة آمنة للعرض بالواجهة — credentials يُستبعَد دائماً عمداً (يحمل
-// مفاتيح API لطرف ثالث، لا داعي لعرضها بعد إدخالها مرة، بنفس فلسفة
-// api_key_hash في project_devices).
+/*
+ * Device Provider Connections Endpoint:
+ * Manages Third-Party Provider (vendor) integrations for project devices. Supports GET (read connection state),
+ * POST (upsert and test connection), and DELETE (unlink provider).
+ *
+ * Operational, Security & Architectural Highlights:
+ * 1. Safe Column Projection: Explicitly filters out sensitive key materials (`credentials_ciphertext`) on GET/POST 
+ *    responses via `CONNECTION_SAFE_COLUMNS`.
+ * 2. Scope & Device Authorization: Enforces project ownership (`verifyProjectOwnership`) and cross-project 
+ *    isolation via `loadOwnedDevice` to prevent cross-tenant device modifications.
+ * 3. Approved Platform Origin Resolution: Enforces `provider_instance_id` validation against approved system 
+ *    instances (`provider_instances`) for providers requiring platform base URLs, avoiding SSRF and unauthorized targets.
+ * 4. Mandatory Server-Side Connection Test: Executes `connector.testConnection` on raw credentials before persistence 
+ *    to block unverified configurations.
+ * 5. Authenticated Encription with AAD (V2): Encrypts credentials with `encryptCredentialsV2` bound to 
+ *    `(connectionId, projectId, deviceId, provider)` via Additional Authenticated Data (AAD) before storing.
+ */
+
 const CONNECTION_SAFE_COLUMNS =
   'id, device_id, project_id, provider, vendor_station_id, vendor_station_name, is_active, last_pull_at, last_pull_success, last_pull_error, created_at, updated_at';
 
-// نفس الحارس الموجود في app/api/projects/[projectId]/devices/[deviceId]/route.ts —
-// يمنع مالك مشروع A من التأثير على جهاز يتبع فعلياً مشروع B.
 async function loadOwnedDevice(projectId: string, deviceId: string) {
   const { data } = await supabaseAdmin
     .from('project_devices')
     .select('id, project_id')
     .eq('id', deviceId)
     .maybeSingle();
+
   if (!data || data.project_id !== projectId) return null;
   return data;
 }
@@ -32,9 +46,16 @@ export async function GET(
   if ('error' in auth) return auth.error;
 
   const { projectId, deviceId } = await params;
+
+  /*
+   * Verify project ownership boundaries
+   */
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  /*
+   * Confirm device belongs to the authorized project scope
+   */
   const device = await loadOwnedDevice(projectId, deviceId);
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
@@ -56,9 +77,16 @@ export async function POST(
   if ('error' in auth) return auth.error;
 
   const { projectId, deviceId } = await params;
+
+  /*
+   * Verify project ownership boundaries
+   */
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  /*
+   * Confirm device belongs to the authorized project scope
+   */
   const device = await loadOwnedDevice(projectId, deviceId);
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
@@ -75,10 +103,9 @@ export async function POST(
   const connector = getConnector(provider);
   if (!connector) return NextResponse.json({ error: `provider غير مسجَّل: ${provider}` }, { status: 400 });
 
-  // خطأ أمني مكتشَف ومُصلَح (القسم 15.1 — "provider_instances سجل معتمد من
-  // مسؤول النظام"): base_url لم يعد يأتي من credentials الحرة للمستخدم —
-  // المستخدم يختار providerInstanceId من قائمة معتمدة فقط (is_approved
-  // AND is_active)، ونحل origin هنا من الجدول مباشرة، لا من إدخاله.
+  /*
+   * Validate provider instance against system-approved records
+   */
   if (connector.requiresProviderInstance) {
     if (!providerInstanceId) {
       return NextResponse.json({ error: 'providerInstanceId مطلوب لهذا النوع من المزوّدين' }, { status: 400 });
@@ -88,6 +115,7 @@ export async function POST(
       .select('id, origin, provider, is_approved, is_active')
       .eq('id', providerInstanceId)
       .maybeSingle();
+
     if (!instance || instance.provider !== provider || !instance.is_approved || !instance.is_active) {
       return NextResponse.json({ error: 'المنصة المحددة غير معتمدة أو غير نشطة' }, { status: 400 });
     }
@@ -99,8 +127,9 @@ export async function POST(
       ).data?.origin ?? ''
     : '';
 
-  // إعادة تحقق أمنية على السيرفر — لا نثق بنتيجة اختبار سابق من المتصفح
-  // فقط (طرف قد يتلاعب بالطلب مباشرة متجاوزاً زر "اختبار الاتصال" بالواجهة).
+  /*
+   * Execute mandatory server-side connection pretest
+   */
   const testResult = await connector.testConnection(originForTest, credentials);
   if (!testResult.success) {
     return NextResponse.json(
@@ -109,24 +138,21 @@ export async function POST(
     );
   }
 
-  // معرّف الصف مطلوب قبل التشفير (v2 يربط AAD بـconnection_id) — لصف موجود
-  // (تحديث بيانات اتصال قائمة) نعيد استخدام نفس id بحيث لا يتغيّر AAD عند
-  // إعادة الحفظ؛ لصف جديد نولّد id هنا صراحة بدل ترك gen_random_uuid()
-  // بالقاعدة تختاره بعد الكتابة (نحتاجه *قبل* التشفير).
+  /*
+   * Resolve existing connection ID or generate UUID for AAD binding prior to encryption
+   */
   const { data: existingConnection } = await supabaseAdmin
     .from('provider_connections')
     .select('id')
     .eq('device_id', deviceId)
     .eq('provider', provider)
     .maybeSingle();
+
   const connectionId = existingConnection?.id ?? randomUUID();
 
-  // تشفير عند الحفظ فقط (خطأ أمني مكتشَف — راجع credentialsEncryption.ts):
-  // testConnection أعلاه يستخدم credentials الخام (القادمة من طلب المستخدم
-  // مباشرة، لم تُخزَّن بعد) — لا علاقة لها بالتشفير. القيمة المشفَّرة فقط
-  // هي ما يُكتَب فعلياً في provider_connections.credentials_ciphertext، مربوطة
-  // عبر AAD بـ(connection_id, project_id, device_id, provider) هذا الصف
-  // تحديداً — نسخ الـciphertext لصف آخر يفشل عند فك التشفير.
+  /*
+   * Encrypt raw credentials using V2 AAD context binding
+   */
   const { ciphertext, keyVersion } = encryptCredentialsV2(credentials, {
     connectionId,
     projectId,
@@ -168,14 +194,22 @@ export async function DELETE(
   if ('error' in auth) return auth.error;
 
   const { projectId, deviceId } = await params;
+
+  /*
+   * Verify project ownership boundaries
+   */
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  /*
+   * Confirm device belongs to the authorized project scope
+   */
   const device = await loadOwnedDevice(projectId, deviceId);
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
-  // حذف الربط فقط (إلغاء الربط) — لا يحذف تاريخ القراءات المسجَّلة سابقاً
-  // في device_readings_history/pm10_readings_history.
+  /*
+   * Unlink provider connection without removing underlying telemetry history
+   */
   const { error } = await supabaseAdmin.from('provider_connections').delete().eq('device_id', deviceId);
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'provider-connection delete failed') }, { status: 500 });
 

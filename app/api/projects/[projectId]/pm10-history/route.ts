@@ -5,22 +5,23 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 import { displayActivityLabel } from '@/app/lib/activityLabels';
 import { riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 
-// أقصى مدى زمني نقبله عبر hours= — سقف بسيط يمنع طلباً يطلب سنوات من
-// السجل التاريخي دفعة واحدة (لا فائدة عملية، وحمل غير ضروري على القاعدة).
-const MAX_HOURS = 24 * 14; // أسبوعان
+// Maximum time window allowed via hours= parameter — simple upper bound to prevent
+// requests fetching months/years of historical data at once (no practical benefit,
+// unnecessary load on the database).
+const MAX_HOURS = 24 * 14; // 2 weeks
 const DEFAULT_HOURS = 6;
 
-// طلب مستخدم صريح نهائي ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
-// النشاط — ألغِ هامش الساعتين نهائياً"، راجع نفس الإصلاح في
-// device-readings-history/route.ts) — كان هنا هامش ACTIVITY_LIVE_MARGIN_MS
-// (ساعتان) يقبل قراءات وصلت قبل planned_time، أُلغي كلياً ليطابق نافذة
-// القرار بالضبط (isActivityLiveForDevice في dustEvaluation.ts).
+// Explicit final user requirement ("Readings start with activity start and end with activity
+// end — remove the 2-hour margin completely", see matching fix in
+// device-readings-history/route.ts) — previously used ACTIVITY_LIVE_MARGIN_MS (2 hours)
+// which accepted readings received prior to planned_time; removed entirely to align exactly
+// with the decision window (isActivityLiveForDevice in dustEvaluation.ts).
 
-// يجلب سجل قراءات PM10 (pm10_readings_history) لمشروع، مُجمَّعاً حسب
-// activity_group_id، للرسم البياني — كل نشاط له نقاطه الزمنية الخاصة.
-// قراءات الجهاز (source='device', activity_group_id=null) تُدمَج ضمن كل
-// نشاط نشط لها جهاز مرتبط، بنفس منطق fetchPm10SustainedStatus في
-// app/lib/dustEvaluation.ts (الجهاز مرتبط بالمشروع ككل، لا نشاط محدد).
+// Fetches historical PM10 readings (pm10_readings_history) for a project, grouped by
+// activity_group_id, formatted for charts — each activity maintains its own time series.
+// Device readings (source='device', activity_group_id=null) are merged into each active
+// activity with a linked device using the same logic as fetchPm10SustainedStatus in
+// app/lib/dustEvaluation.ts (devices attach to the project globally, not a specific activity).
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> }
@@ -41,8 +42,8 @@ export async function GET(
       : DEFAULT_HOURS;
     const sinceIso = new Date(Date.now() - hours * 3600000).toISOString();
 
-    // كل الأنشطة (لا الجارية فقط) — نشاط منتهٍ لا يزال يملك سجلاً تاريخياً
-    // مفيداً للمراجعة، والفلترة الزمنية لعرض الرسم تبقى مسؤولية hours= أعلاه.
+    // All activities (not just active ones) — completed activities still retain historical
+    // records valuable for auditing; time-window filtering for display remains the responsibility of hours=.
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from('project_dust_profiles')
       .select('id, activity_group_id, regulatory_activity, device_id, planned_date, planned_time, duration_hours')
@@ -51,17 +52,16 @@ export async function GET(
       return NextResponse.json({ error: safeErrorResponse(profilesError, 'pm10-history profiles fetch failed') }, { status: 500 });
     }
 
-    // خطأ مكتشَف ومُصلَح (نفس الجهاز يُستخدَم لأكثر من نشاط متتالٍ فيرث
-    // النشاط الجديد قراءات النشاط القديم كاملة): windowStartMs/windowEndMs
-    // يحصران قراءات الجهاز المدموجة لكل نشاط ضمن نافذته الفعلية فقط (من
-    // planned_date/planned_time وحتى planned_start+duration_hours، أو الآن
-    // إن كان لا يزال جارياً) — بنفس startIso المستخدَم في computeDustResults
-    // (dustEvaluation.ts) لحساب DVI لهذا النشاط بالضبط، فلا تعارض بين وقت
-    // "بداية النشاط" هنا وهناك.
+    // Discovered and fixed bug (same device used across sequential activities inherited
+    // previous activity readings entirely): windowStartMs/windowEndMs scope merged device
+    // readings for each activity strictly within its actual window (from planned_date/planned_time
+    // through planned_start+duration_hours, or now if still active) — matching the exact startIso
+    // used in computeDustResults (dustEvaluation.ts) for calculating DVI for this exact activity,
+    // avoiding discrepancies between activity "start time" here and there.
     //
-    // مجموعة activity_group_id فريدة لكل نشاط حقيقي — نفس fallback المستخدم
-    // في DELETE /api/activities (activity_group_id || `dust-${id}`), حتى
-    // تتطابق مفاتيح التجميع مع ما يُسجَّل فعلياً في pm10_readings_history.
+    // Unique activity_group_id per actual activity — same fallback pattern used in
+    // DELETE /api/activities (activity_group_id || `dust-${id}`) so group aggregation keys
+    // match what is actually stored in pm10_readings_history.
     const groups = new Map<
       string,
       { activityGroupId: string; label: string; hasDeviceLink: boolean; windowStartMs: number | null; windowEndMs: number }
@@ -79,9 +79,9 @@ export async function GET(
         label: displayActivityLabel(row),
         hasDeviceLink: !!row.device_id,
         windowStartMs: startMs,
-        // نشاط لا يزال جارياً (لم تنتهِ نافذته المخططة بعد) يقبل قراءات حتى
-        // الآن، لا حتى نهايته النظرية فقط — يبقى الرسم البياني حياً أثناء
-        // التنفيذ الفعلي بدل التوقف عند حد المدة المخطَّطة.
+        // Ongoing activity (planned window has not ended yet) accepts readings up to current
+        // time rather than theoretical planned end — keeping chart stream live during active
+        // execution instead of cutting off at scheduled limit.
         windowEndMs: Math.max(endMs, Date.now()),
       });
     }
@@ -96,9 +96,9 @@ export async function GET(
       return NextResponse.json({ error: safeErrorResponse(readingsError, 'pm10-history readings fetch failed') }, { status: 500 });
     }
 
-    // قراءات الجهاز (activity_group_id=null) تُنسَخ لكل نشاط مرتبط فعلياً
-    // بجهاز — نفس دمج fetchPm10SustainedStatus، حتى يعرض الرسم البياني
-    // لكل نشاط بجهاز سلسلته الكاملة (لا سلسلة فارغة رغم وجود قراءات).
+    // Device readings (activity_group_id=null) are cloned for every activity explicitly
+    // linked to a device — matching fetchPm10SustainedStatus merging strategy so chart displays
+    // complete series per device-enabled activity (avoiding empty series despite existing readings).
     const deviceReadings = (readings || []).filter((r: { activity_group_id: string | null }) => r.activity_group_id === null);
     const series = new Map<string, { time: string; pm10: number; source: string }[]>();
     for (const g of groups.values()) series.set(g.activityGroupId, []);
@@ -116,9 +116,9 @@ export async function GET(
         const arr = series.get(g.activityGroupId)!;
         for (const row of deviceReadings) {
           const recordedMs = new Date(row.recorded_at).getTime();
-          // قراءة الجهاز تُضم لهذا النشاط فقط إن وقعت ضمن نافذته الفعلية
-          // (من بدايته المخططة وحتى نهايته/الآن) — راجع تعليق windowStartMs
-          // أعلاه لمنع نشاط جديد من وراثة قراءات نشاط قديم على نفس الجهاز.
+          // Device reading is included for this activity only if it falls within its active
+          // execution window (planned start to planned end/now) — see windowStartMs comment
+          // above regarding prevention of new activities inheriting old device readings.
           if (g.windowStartMs !== null && recordedMs < g.windowStartMs) continue;
           if (recordedMs > g.windowEndMs) continue;
           arr.push({ time: row.recorded_at, pm10: Number(row.pm10_ug_m3), source: row.source });
@@ -134,8 +134,8 @@ export async function GET(
         hasDeviceLink: g.hasDeviceLink,
         readings: series.get(g.activityGroupId) || [],
       }))
-      // أنشطة بلا أي قراءة إطلاقاً خلال المدى المطلوب لا تُفيد الرسم — تُستبعد
-      // بدل عرض خط فارغ.
+      // Activities with zero readings across requested time window offer no visual value — filtered out
+      // instead of rendering empty chart lines.
       .filter((a) => a.readings.length > 0);
 
     return NextResponse.json({ activities, hours });

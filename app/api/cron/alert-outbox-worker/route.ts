@@ -6,48 +6,20 @@ import { PM10_VIOLATION_STOP_UG_M3 } from '@/app/utils/dust-compliance-engine/ru
 
 const WORKER_NAME = 'alert-outbox-worker';
 
-// القسم 11.3/11.5 من "دليل الإصلاح الجذري لمنظومة مرقاب" — Outbox Worker:
-// يستهلك decision_alert_outbox (يملؤه persist_activity_decision_atomic في
-// نفس معاملة حفظ القرار، راجع 202608040013/202608040026) وينشئ/يغلق
-// التنبيهات الفعلية عبر create_alert_atomic/close_alert_atomic (تقفل الصف،
-// تقرأ الحالة، تكتب الحدث ذرياً — لا سباق alertExists/insertAlert
-// المنفصلين). منفصل تماماً عن checkDustActivities (تذكيرات BEFORE_2H/1H/
-// START التخطيطية تبقى في alerts/generate/route.ts كما هي — لا علاقة لها
-// بالقرار الحي المحفوظ).
-//
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — القسم 6: "Outbox: صف RUNNING لا
-// يملك Lease Recovery فعّال، لا توجد نوايا CLOSE، alert_id لا يُحفظ فعلياً،
-// العامل يهمل بعض أخطاء تحديث PROCESSED"): claim_alert_outbox_batch
-// (202608040026) يستخدم FOR UPDATE SKIP LOCKED + Lease زمني حقيقي (نفس نمط
-// claim_evaluation_jobs) بدل تحديث تفاؤلي بسيط بلا استرداد؛ complete_alert_
-// outbox_row يحفظ alert_id فعلياً على الصف؛ action='CLOSE' يُعالَج عبر
-// close_alert_atomic (تنوَى الآن فعلياً من persist_activity_decision_atomic
-// عند تحسّن القرار، لا "يقارن العامل لاحقاً" كما كان موصوفاً بلا تنفيذ).
-//
-// deriveAlertMessage نقية بالكامل (بلا DB/fetch/إعادة حساب DVI) — تبني نص
-// التنبيه من payload المخزَّن في صف الـOutbox نفسه فقط (القسم 11.4).
-//
-// مصادقة عبر ALERT_OUTBOX_CRON_SECRET — متغير بيئة منفصل عن باقي أسرار
-// الـcron، بنفس مبدأ الفصل الموثَّق في provider-pull/scheduler-tick.
-//
-// يُستدعى خارجياً كل دقيقة أو دقيقتين عبر خدمة cron مجانية (cron-job.org) —
-// لا إضافة لـvercel.json (خطة Vercel Hobby لا تدعم جدولة أقل من يومية).
-//
-// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
-// العمال"، راجع migration 202608110018 الكامل): BATCH_SIZE خُفِّض من 50
-// (نفس سبب telemetry-worker) — renew_alert_outbox_lease (استدعاء جديد
-// أدناه، قبل معالجة كل صف) هو خط الدفاع الفعلي، ودفعة أصغر تقلّل عدد
-// الصفوف المعرَّضة لخطر انتهاء المهلة قبل الوصول إليها.
+/*
+ * Section 11.3 / 11.5 of the Mirqab Outbox Specification:
+ * Outbox Worker: Consumes the `decision_alert_outbox` table (populated atomically by `persist_activity_decision_atomic`)
+ * and generates or closes active system alerts via atomic stored procedures (`create_alert_atomic` / `close_alert_atomic`).
+ *
+ * Operational & Concurrency Protections:
+ * 1. Batch Execution with Lease Locking: Uses `claim_alert_outbox_batch` with `FOR UPDATE SKIP LOCKED` and active leases.
+ * 2. Per-Row Lease Renewal: Invokes `renew_alert_outbox_lease` before processing each row to maintain explicit lease ownership.
+ * 3. Atomic State Management: Atomically marks outbox rows as completed (`complete_alert_outbox_row`) or failed (`fail_alert_outbox_row`).
+ */
 const BATCH_SIZE = 20;
 const LEASE_SECONDS = 60;
 const MAX_ATTEMPTS = 5;
 
-// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
-// والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
-// مستقل جديد — عامل هذا الملف كان يُسمّي كل صف SAFETY_BREACH (بما فيها
-// PROTECTIVE_STOP قبل الإصلاح) "إيقافاً إلزامياً" — مضلِّل لإيقاف احترازي
-// معلَّق لم يُؤكَّد بعد. payload.mandatoryStop أصبح boolean حقيقي (لا نص
-// "true"/"false") بعد إصلاح persist_activity_decision_atomic.
 interface OutboxRow {
   id: string;
   final_decision_id: string;
@@ -60,8 +32,10 @@ interface OutboxRow {
   attempts: number;
 }
 
-// دالة نقية — القسم 11.4: لا DB، لا fetch، لا إعادة حساب DVI. تبني نص
-// التنبيه حصراً من payload المخزَّن مسبقاً في صف الـOutbox.
+/*
+ * Section 11.4 Specification: Pure function for alert payload parsing.
+ * Constructs localized UI strings, recommended actions, and metric limits strictly from the Outbox payload.
+ */
 function deriveAlertMessage(row: OutboxRow): {
   message: string;
   viewerMessage: string | null;
@@ -79,11 +53,6 @@ function deriveAlertMessage(row: OutboxRow): {
       metricThreshold: 'إيقاف إلزامي',
     };
   }
-  // خطأ مكتشَف ومُصلَح (نفس المراجعة أعلاه): PROTECTIVE_STOP إيقاف احترازي
-  // معلَّق (pendingConfirmation=true في FinalDecision — قد يتحول تلقائياً
-  // إلى ALLOW أو MANDATORY_STOP بالتقييم التالي، راجع تعليق OperationalDecision
-  // الكامل في app/utils/final-decision-engine/types.ts) — نص منفصل تماماً
-  // عن "إيقاف إلزامي" النهائي أعلاه، حتى لا يُضلِّل المستخدم بيقين غير موجود.
   if (row.kind === 'PROTECTIVE_STOP') {
     return {
       message: `إيقاف احترازي معلَّق (بانتظار تأكيد): ${reason}`,
@@ -93,13 +62,6 @@ function deriveAlertMessage(row: OutboxRow): {
       metricThreshold: 'إيقاف احترازي معلَّق',
     };
   }
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — جهة الرصد تحديداً): نص
-  // shortReasonAr العام يصف "مخالفة تنظيمية مؤكدة ومسجَّلة..." — المستخدم
-  // لا يريد كلمة "مخالفة" في النص الذي تراه جهة الرصد، فقط صيغة "تجاوز"
-  // صريحة مع الرقم اللحظي الفعلي: "تم تجاوز الحد 340، حيث أن PM10 الحالي
-  // [X]". pm10UgM3 يصل من payload (أُضيف في migration 202608190001، مصدره
-  // p_compliance_result->>'pm10UgM3' الخام وقت فتح المخالفة) — null فقط إن
-  // غاب compliance تماماً (لا يحدث عملياً لأن NON_COMPLIANT يستلزمه).
   if (row.kind === 'COMPLIANCE_VIOLATION') {
     const pm10Value = row.payload?.pm10UgM3;
     const viewerText =
@@ -114,10 +76,6 @@ function deriveAlertMessage(row: OutboxRow): {
       metricThreshold: `${PM10_VIOLATION_STOP_UG_M3} ميكروجرام/م³`,
     };
   }
-  // جديد (202608190001، طلب صريح من المستخدم): تحسّن القراءة بعد مخالفة
-  // مؤكَّدة وقبل دخول الإيقاف الفعلي — الشرط (لا إيقاف حدث منذ فتح المخالفة)
-  // محسوب بالكامل في persist_activity_decision_atomic قبل إدراج هذه النية؛
-  // هنا نص العرض فقط.
   if (row.kind === 'PM10_IMPROVED') {
     const pm10Value = row.payload?.pm10UgM3;
     const viewerText =
@@ -166,11 +124,8 @@ export async function GET(request: Request) {
 
   const results: Array<{ id: string; ok: boolean; alertId?: string | null; error?: string }> = [];
 
-  // تسلسلي عمداً — نفس مبدأ باقي عمال الـcron في هذا المشروع.
   for (const row of (rows || []) as OutboxRow[]) {
-    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "ملكية Lease غير آمنة في
-    // العمال"): تجديد Lease قبل معالجة كل صف — راجع تعليق telemetry-
-    // worker/route.ts المطابق تماماً لسبب التوقّف الفوري بلا fail عند false.
+    // Validate lease ownership before processing each batch row
     const renewed = await supabaseAdmin.rpc('renew_alert_outbox_lease', {
       p_row_id: row.id,
       p_worker_id: workerId,
@@ -221,15 +176,7 @@ export async function GET(request: Request) {
         p_worker_id: workerId,
         p_alert_id: alertId,
       });
-      // خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "العامل يهمل بعض أخطاء
-      // تحديث PROCESSED"، ومراجعة كود خارجي لاحقة — "ملكية Lease غير آمنة
-      // في العمال"): فشل/عدم تحقق complete_alert_outbox_row يعني عامل آخر
-      // استرجع الصف بعد انتهاء Lease هذا العامل — لكن create_alert_atomic/
-      // close_alert_atomic أعلاه نجحا فعلياً بالفعل (التنبيه أُنشئ/أُغلق في
-      // قاعدة البيانات). استدعاء fail_alert_outbox_row هنا كان سيُعيد صفاً
-      // بات مسؤولية عامل آخر إلى RETRY/DEAD زوراً رغم نجاح العملية الفعلية
-      // — لا يجوز أن يمر عبر catch أدناه (الذي يستدعي fail لكل خطأ بلا
-      // تمييز). يُبلَّغ فشلاً في results مباشرة هنا، بلا catch، وبلا fail.
+
       if (completeError || !completed) {
         results.push({
           id: row.id,
@@ -250,10 +197,7 @@ export async function GET(request: Request) {
         p_error: message,
         p_max_attempts: MAX_ATTEMPTS,
       });
-      // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "دوال fail_* لا تتحقق من
-      // worker_id"): fail_alert_outbox_row تُرجع الآن boolean — false/خطأ
-      // هنا يعني عامل آخر بات يملك الصف؛ لا إجراء إضافي مطلوب، فقط الإبلاغ
-      // الصحيح في النتيجة (نفس مبدأ telemetry-worker/scheduler-worker).
+
       results.push({
         id: row.id,
         ok: false,

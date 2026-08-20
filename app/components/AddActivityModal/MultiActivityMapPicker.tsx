@@ -1,13 +1,12 @@
 'use client';
 
 // =============================================================
-// MultiActivityMapPicker — خريطة واحدة تعرض مواقع كل الأنشطة التنظيمية
-// معاً. كل نشاط "عادي" نقطة واحدة (المرجع = item.lat/lng)، بينما أنشطة
-// الخلاطة/الكسارة تعرض نقطة لكل وحدة (محطة خلط/كسارة) — موقع الوحدة الأولى
-// هو نفسه موقع النشاط العام (مُتزامن تلقائياً في index.tsx)، فلا خريطة
-// منفصلة "لموقع النشاط" مقابل "موقع الوحدة" لهذين النوعين. المستخدم يختار
-// "النقطة النشِطة" (activePointId) من شريط الرقائق أعلى الخريطة، ثم ينقر
-// على الخريطة لتحديد موقعها — أو ينقر على أي نقطة موجودة لتنشيطها.
+// MultiActivityMapPicker — A single map displaying positions of all
+// regulatory activities together. Standard activities render as a single point
+// (referenced via item.lat/lng), while batching plant / crusher activities render
+// a point per unit — the first unit's location serves as the overall activity site.
+// The user selects an "active point" (activePointId) from the chip bar above the map,
+// then clicks on the map to set its position or clicks any marker to activate it.
 // =============================================================
 
 import { useState } from 'react';
@@ -22,12 +21,12 @@ import { SAUDI_BOUNDS } from '@/app/utils/geo/countryBounds';
 import type { RegulatoryActivityItem } from './constants';
 import { REGULATORY_ACTIVITY_LABEL_AR } from './constants';
 
-// ألوان مميزة متتابعة لكل نشاط — نقاط نفس النشاط (وحدات خلاطة/كسارة) تشترك
-// في نفس اللون، وتُرقَّم فرعياً (1-1، 1-2، ...) لتمييزها عن بعضها
+// Sequential distinct marker colors per activity — units belonging to the same
+// activity share the same color and are sub-numbered (1-1, 1-2, ...) for distinction.
 const MARKER_COLORS = ['#3995FF', '#F97316', '#10B981', '#EF4444', '#A855F7', '#EAB308', '#06B6D4', '#EC4899'];
 
-// نقطة واحدة قابلة للتحديد على الخريطة — إما نشاط كامل (عادي) أو وحدة واحدة
-// (محطة خلط/كسارة) ضمن نشاط خلاطة/كسارة
+// Represents a selectable point on the map — either an entire activity (standard)
+// or a single unit within a batching plant or crusher activity.
 export interface MapPoint {
   id: string;
   itemId: string;
@@ -40,12 +39,10 @@ export interface MapPoint {
 
 function buildNumberedIcon(numberLabel: string, color: string, isActive: boolean): DivIcon | undefined {
   if (typeof window === 'undefined') return undefined;
-  // require() متعمَّد هنا (لا import ثابت أعلى الملف): leaflet نفسه يفشل
-  // عند التحميل خارج بيئة متصفح (يعتمد على window/document فوراً وقت
-  // الاستيراد) — استيراد ثابت كان سيكسر SSR بالكامل لهذا الملف. buildNumberedIcon
-  // تُستخدَم كـ prop icon={...} متزامنة مباشرة في JSX (راجع نقطة الاستدعاء
-  // أدناه)، فتحويلها لـ import() ديناميكي (async) يتطلب إعادة هيكلة state/
-  // effect كاملة بمخاطرة أعلى من إبقاء require المحمي بفحص typeof window.
+  // require() is intentionally used here (instead of top-level static import): Leaflet fails
+  // when evaluated outside client browser environments (it immediately expects window/document).
+  // A static import would break SSR. buildNumberedIcon is passed directly into JSX prop icon={...},
+  // so converting to async import() would require a full state/effect refactor.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const L = require('leaflet');
   const size = isActive ? 34 : 28;
@@ -71,9 +68,8 @@ function ClickHandler({ onClick }: { onClick: (lat: number, lng: number) => void
   return null;
 }
 
-// يبني قائمة النقاط القابلة للتحديد من كل الأنشطة — نقطة واحدة للأنشطة
-// العادية، ونقطة لكل وحدة لأنشطة الخلاطة/الكسارة (بلا نقطة إضافية لموقع
-// النشاط العام، لأنه نفسه موقع الوحدة الأولى).
+// Generates the list of selectable map points across all activities — single point
+// for standard activities, one point per unit for batching plants / crushers.
 export function buildMapPoints(items: RegulatoryActivityItem[]): MapPoint[] {
   const points: MapPoint[] = [];
   items.forEach((item, index) => {
@@ -153,14 +149,13 @@ export function MultiActivityMapPicker({
     onPointLocationChange(activePoint, clamped.lat, clamped.lng);
   };
 
-  // إدخال يدوي للإحداثيات كبديل عن النقر على الخريطة — نصوص محلية حتى يقدر
-  // المستخدم يكتب بحرية (مثلاً يمسح الحقل مؤقتاً) قبل أن يُطبَّق التغيير
-  // الفعلي (قصّ داخل حدود المشروع) عند اكتمال رقم صالح.
+  // Manual coordinate input as an alternative to map clicks — stored in local text state
+  // to allow user typing freedom (e.g., clearing the input temporarily) before committing
+  // the actual change (clamped within project bounds) once a valid number is entered.
   //
-  // إعادة الضبط عند تغيّر النقطة النشِطة/موقعها تحدث أثناء الـrender نفسه
-  // (لا Effect منفصل) — نتتبّع آخر مفتاح مصدر زُوِّمن منه النص، ونعيد الضبط
-  // فوراً إن اختلف عن المفتاح الحالي، بنفس نمط React الموصى به لـ"تعديل
-  // حالة استجابة لتغيّر خاصية" (راجع https://react.dev/learn/you-might-not-need-an-effect).
+  // State resynchronization on active point/position change happens during rendering itself
+  // (without a separate Effect) — tracking the source synchronization key and updating state
+  // directly during render per React's recommended "adjusting state when props change" pattern.
   const [latText, setLatText] = useState('');
   const [lngText, setLngText] = useState('');
   const activePositionKey = activePointId ? `${activePointId}:${activePosition?.[0]}:${activePosition?.[1]}` : null;
@@ -185,7 +180,7 @@ export function MultiActivityMapPicker({
     <div className="space-y-2">
       <div className="flex items-center gap-2 text-sm font-bold text-[#061B40]">
         <MapPin className="w-4 h-4 text-[#3995FF]" />
-        مواقع الأنشطة التنظيمية على الخريطة
+        م مواقع الأنشطة التنظيمية على الخريطة
         <span className="text-red-500">*</span>
       </div>
       <p className="text-xs text-[#061B40]/60">
@@ -223,8 +218,8 @@ export function MultiActivityMapPicker({
         </div>
       )}
 
-      {/* إدخال يدوي للإحداثيات — بديل عن النقر على الخريطة، للنقطة النشِطة
-          فقط. يُقيَّد داخل حدود منطقة المشروع بنفس منطق النقر تماماً. */}
+      {/* Manual coordinate inputs — active point alternative to clicking on the map.
+          Constrained within project zone boundaries using the exact same logic. */}
       {activePoint && (
         <div className="flex flex-wrap items-end gap-2 bg-[#F4F7FB] rounded-lg border border-[#061B40]/10 p-2.5">
           <div className="flex-1 min-w-[110px]">

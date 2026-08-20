@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
 
-// صفحة توثيق عامة (بلا تسجيل دخول) — أول صفحة معلوماتية عامة في التطبيق،
-// خارج app/dashboard/** تماماً فلا تمر بأي requireUserId/RLS. تشرح بروتوكول
-// POST /api/devices/ingest لمورّدي محطات الرصد وأصحاب المشاريع، حتى يقدر أي
-// طرف خارجي (بأي ماركة جهاز) يربط محطته دون تدخّل برمجي منّا — بروتوكول
-// موحّد واحد للجميع بدل جسور مخصصة لكل ماركة.
+// Public documentation page (unauthenticated) — the first public informational page in the app,
+// located entirely outside app/dashboard/** so it bypasses requireUserId/RLS. Explains the
+// POST /api/devices/ingest protocol to monitoring station vendors and project owners, enabling
+// any external party (regardless of hardware brand) to integrate their station without custom engineering
+// work from our side — a unified protocol for all instead of custom adapters per brand.
 export const metadata: Metadata = {
   title: 'توثيق API | ربط أجهزة الرصد — DCR',
   description: 'دليل تقني لربط أي جهاز/محطة رصد خارجية بمنصة DCR عبر واجهة استقبال القراءات الحية.',
@@ -21,8 +21,8 @@ interface FieldRow {
   range: string;
 }
 
-// عقد حدث الجهاز — إلزامية في كل طلب (لا فترة سماح): طلب بلا الحقول
-// الثلاثة يُرفض بـ400 صراحة، بصرف النظر عن وجود أي حقل قياس صالح آخر.
+// Device event contract — mandatory for every request (no grace period): request without these
+// three fields is explicitly rejected with 400, regardless of any other valid measurement field.
 const EVENT_CONTRACT_FIELDS: FieldRow[] = [
   { field: 'eventId', unit: '—', type: 'نص', range: 'غير فارغ، فريد لكل قراءة' },
   { field: 'sequence', unit: '—', type: 'رقم صحيح', range: '≥ 0، تصاعدي لكل جهاز' },

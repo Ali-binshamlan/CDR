@@ -1,13 +1,13 @@
 'use client';
 
-// مؤشر بصري مستقل تماماً لحالة طبقة Live Data الجديدة (SSE) — لا يلمس
-// Dustwidgetcard/Compliancewidgetcard (حساسان جداً، يعرضان القرار المحسوب
-// من مصدر مختلف تماماً: polling+Realtime، لا هذه الطبقة). يظهر فقط خلف
-// LIVE_DATA_V2، ويختفي كلياً إن كانت الراية مطفأة (راجع page.tsx).
+// Completely independent visual indicator for the new Live Data layer status (SSE) — does not
+// touch Dustwidgetcard/Compliancewidgetcard (very sensitive, displaying computed decisions
+// from an entirely different source: polling+Realtime, not this layer). Renders only behind
+// LIVE_DATA_V2, and completely disappears if the feature flag is disabled (see page.tsx).
 //
-// طلب صريح: "ممنوع عرض البيانات القديمة على أنها Live" — الحالة هنا مبنية
-// فقط من: (أ) حالة اتصال SSE نفسه (connecting/connected/disconnected)، و
-// (ب) عمر آخر لقطة فعلية وصلت. لا قيمة مُختلَقة أو مُقدَّرة أبداً.
+// Explicit request: "Do not present stale data as Live" — the state here is strictly built from:
+// (a) the SSE connection status itself (connecting/connected/disconnected), and
+// (b) the age of the latest actual snapshot received. No fabricated or estimated values ever.
 
 import type { LiveConnectionStatus } from '@/app/lib/liveData/useLiveDeviceData';
 import type { LiveDeviceSnapshot } from '@/app/lib/liveData/types';

@@ -3,7 +3,11 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// يجلب التنبيه النشط (غير CLOSED) لنشاط محدد — يُستخدم من Compliancewidgetcard.tsx.
+/*
+ * Retrieves active (non-CLOSED) alerts for a specific project activity.
+ * Primary client consumer: `ComplianceWidgetCard.tsx`.
+ * Validates request parameters and verifies project ownership for the authenticated user before executing the query.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;

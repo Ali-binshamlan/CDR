@@ -3,13 +3,17 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// نشر مجموعة معاملات مترابطة كوحدة ذرية واحدة — يُفوَّض بالكامل لـ
-// publish_rule_parameter_bundle (RPC ذرّي، migration 202608110003): ينشئ
-// سجل rule_parameter_publication_bundles واحداً، ثم ينشر كل معامل في
-// المصفوفة داخل نفس المعاملة (لا N استدعاء منفصل لـ publish_rule_parameter_
-// version — فشل أي معامل يُلغي المجموعة بأكملها). راجع خطة "حزمة نشر ذرية
-// لمعاملات القواعد" — يحل فجوة "تغيير عدة معاملات مترابطة يتطلب عدة
-// استدعاءات منفصلة بلا رابط مشترك".
+/*
+ * Publishes a set of interdependent rule parameters as a single atomic unit.
+ * Fully delegated to `publish_rule_parameter_bundle` (Atomic RPC, migration 202608110003):
+ * Creates a single `rule_parameter_publication_bundles` record, then publishes each parameter 
+ * in the array within the exact same database transaction (eliminates N separate RPC calls to 
+ * `publish_rule_parameter_version`—if any parameter fails validation, the entire bundle is rolled back).
+ * 
+ * References design specification: "Atomic Rule Parameter Publication Bundle."
+ * Resolves the operational gap where updating multiple interdependent parameters previously required 
+ * disjointed individual calls lacking unified correlation.
+ */
 export async function POST(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
@@ -43,8 +47,11 @@ export async function POST(request: NextRequest) {
   });
 
   if (error) {
-    // نفس تمييز أخطاء التحقق (رسالة عربية واضحة من RPC نفسها) عن الأخطاء
-    // غير المتوقعة — راجع تعليق [code]/publish/route.ts المطابق.
+    /*
+     * Custom validation error handling: Preserves explicit Arabic error messages raised by the RPC 
+     * while delegating unexpected internal DB/network failures to `safeErrorResponse`.
+     * Matches validation logic in `[code]/publish/route.ts`.
+     */
     if (error.code === '22023' || error.code === '23503') {
       console.error('rule-parameter bundle publish validation failed:', error.message);
       return NextResponse.json({ error: error.message }, { status: 400 });

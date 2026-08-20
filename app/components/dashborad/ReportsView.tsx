@@ -17,19 +17,16 @@ import {
   Printer
 } from 'lucide-react';
 
-// خطأ أمني مكتشَف ومُصلَح (طلب صريح من المستخدم — "تصدير التقرير يضع اسم
-// المشروع داخل document.write دون تعقيم HTML"): اسم المشروع نص حر يختاره
-// مالك المشروع بنفسه بلا أي تحقق من محتواه على مستوى الإنشاء (POST
-// /api/projects لا يطبّق أي schema على name إطلاقاً) أو التعديل (PATCH
-// يحدّ الطول لـ200 حرفاً فقط، لا يمنع وسوم HTML) — كان يصل خاماً إلى
-// handleExportPdf أدناه ويُدمَج مباشرة داخل قالب HTML واحد يُمرَّر بأكمله
-// لـdocument.write، بلا أي تعقيم. مالك مشروع خبيث (أو حساب مُخترَق) قادر
-// على وضع <script>/<img onerror=...> كاسم مشروعه، يُنفَّذ فعلياً في نافذة
-// التصدير عند أي مستخدم آخر (مالك مشروع مختلف يُصدِّر تقريراً يشمل كل
-// المشاريع، أو المراقب/الأدمن عبر /viewer/reports) يفتح ذلك التقرير —
-// XSS مخزَّن. escapeHtml تُطبَّق على كل قيمة نصية حرة (اسم مشروع) قبل
-// دمجها في القالب؛ القيم الرقمية/المحسوبة والنصوص الثابتة (labels) لا
-// تحتاج تعقيماً لأنها لا يمكن أن تحمل HTML أصلاً.
+// Security Vulnerability Discovered & Fixed (explicit user request — "Exporting report places project name
+// inside document.write without HTML sanitization"): Project name is free-text chosen by the project owner
+// without any schema validation at creation (POST /api/projects applies no schema to name at all) or update
+// (PATCH limits length to 200 chars only, does not prevent HTML tags). It arrived raw at handleExportPdf below
+// and was merged directly into a single HTML template passed entirely to document.write without sanitization.
+// A malicious project owner (or compromised account) could set <script>/<img onerror=...> as their project name,
+// executing it in the export window of any other user (different project owner exporting a report covering all projects,
+// or auditor/admin via /viewer/reports) who opens that report — Stored XSS. escapeHtml is applied to every
+// free-text value (project name) before merging into the template; numeric/computed values and static labels
+// do not require sanitization as they cannot carry HTML.
 export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -40,7 +37,7 @@ export function escapeHtml(value: string): string {
 }
 
 // ============================================================
-// الواجهات وأنواع البيانات
+// Interfaces and Data Types
 // ============================================================
 interface ReportMetrics {
   totalActivities: number;
@@ -63,15 +60,15 @@ interface ProjectStat {
 }
 
 interface ReportsViewProps {
-  // نقطة البيانات — افتراضياً تقارير المستخدم الحالي فقط. جهة المراقبة
-  // (viewer) تمرر '/viewer/reports' (نفس شكل {projects, decisions, alerts}
-  // تماماً، بلا فلترة user_id) لعرض تقرير مجمّع عن كل المشاريع.
+  // Data endpoint — defaults to current user reports only. Observer entity
+  // (viewer) passes '/viewer/reports' (exact same shape of {projects, decisions, alerts},
+  // without user_id filtering) to display an aggregated report for all projects.
   apiEndpoint?: string;
 }
 
-// status مُشتَق من final_decisions (operational_decision + mandatory_stop)
-// عبر app/lib/finalDecisionStatus.ts على الخادم — راجع تعليق fetchReportData
-// أدناه لتفاصيل هذا التحوّل من decision_records (ميزة محذوفة).
+// status derived from final_decisions (operational_decision + mandatory_stop)
+// via app/lib/finalDecisionStatus.ts on server — see fetchReportData comment
+// below for details on transition from decision_records (removed feature).
 interface RawDecisionRow {
   id: string;
   project_id: string;
@@ -87,39 +84,35 @@ interface RawAlertRow {
 export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: ReportsViewProps) {
   const [isLoading, setIsLoading] = useState(true);
 
-  // البيانات الخام التي سنجلبها ونحللها
+  // Raw data to fetch and analyze
   const [rawDecisions, setRawDecisions] = useState<RawDecisionRow[]>([]);
   const [rawAlerts, setRawAlerts] = useState<RawAlertRow[]>([]);
   const [projectsMap, setProjectsMap] = useState<Map<string, string>>(new Map());
 
-  // فلاتر التواريخ
+  // Date filters
   const defaultFromDate = new Date();
   defaultFromDate.setDate(defaultFromDate.getDate() - 30);
 
   const [fromDate, setFromDate] = useState<string>(defaultFromDate.toLocaleDateString('en-CA'));
   const [toDate, setToDate] = useState<string>(new Date().toLocaleDateString('en-CA'));
   const [projectFilter, setProjectFilter] = useState<string>('ALL');
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
-  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب كان يعني كل مؤشرات
-  // KPI تُصفَّر (0 أنشطة آمنة/موقوفة/تنبيهات) وجدول "لا توجد بيانات للفترة
-  // المحددة" — تقرير تنفيذي قد يُقرأ كـ"كل شيء مثالي" أو "لا نشاط" خطأً.
+  
+  // Discovered & Fixed Bug (explicit user request — "Network errors often turn into misleading zero values or empty states"):
+  // Fetch failure meant all KPI indicators reset to zero (0 safe/stopped/alert activities) and a table showing
+  // "No data for selected period" — an executive report that could be misread as "everything is perfect" or "no activity".
   //
-  // خطأ معماري مكتشَف ومُصلَح ("المكوّن الذي يحفظ decision_records مخفي،
-  // بينما التقارير تعتمد عليها؛ لذلك قد تظهر التقارير صفراً رغم وجود قرارات
-  // آلية"): decision_records كان جدول قرارات موثَّقة يدوياً فقط (زر "قرار
-  // ميداني مباشر" في DustWidgetCard — المكوّن محذوف الآن بالكامل، كان
-  // معطَّلاً فعلياً خلف {false && ...} في صفحة المشروع). القرارات الآلية
-  // الفعلية من محرك التقييم تُكتب في final_decisions حصراً، فكان بالإمكان أن
-  // يعمل النظام آلياً بالكامل ومع ذلك يعرض هذا التقرير أصفاراً تامة. الـAPI
-  // (dashboard/reports وviewer/reports) يبني الآن decisions من final_decisions
-  // مباشرة — هذا المكوّن لا يحتاج أي تعديل إضافي لأن شكل status يبقى مطابقاً.
+  // Discovered & Fixed Architectural Flaw ("Component saving decision_records is hidden while reports depend on it;
+  // thus reports may show zero despite existing automated decisions"): decision_records was a table for manually documented decisions only
+  // (direct field decision button in DustWidgetCard — component now completely removed, was disabled behind {false && ...} in project page).
+  // Actual automated decisions from evaluation engine are written exclusively to final_decisions, so system could be fully running automated
+  // while this report rendered complete zeros. The API (dashboard/reports and viewer/reports) now builds decisions directly from final_decisions —
+  // this component requires no extra modifications since status shape remains identical.
   const [error, setError] = useState<string | null>(null);
 
   const fetchReportData = useCallback(async () => {
-    // await فوري (microtask) قبل أول setState — يفصل استدعاء الدالة نفسه
-    // (المباشر من جسم الـEffect) عن أول تعديل حالة متزامن، بلا أي تأخير
-    // محسوس (microtask ينفَّذ قبل أي رسم/طلاء). راجع
-    // https://react.dev/learn/you-might-not-need-an-effect.
+    // Instant await (microtask) before first setState — separates function execution itself
+    // (direct from Effect body) from first synchronous state update without noticeable delay
+    // (microtask executes before layout/paint). See https://react.dev/learn/you-might-not-need-an-effect.
     await Promise.resolve();
     setIsLoading(true);
     setError(null);
@@ -144,18 +137,18 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
   }, [apiEndpoint, fromDate, toDate]);
 
   useEffect(() => {
-    // جدولة عبر microtask بدل استدعاء fetchReportData مباشرة من جسم
-    // الـEffect — نفس السبب الموثَّق أعلى الدالة (تعديل حالة متزامن داخل Effect).
+    // Schedule via microtask instead of calling fetchReportData directly from Effect body —
+    // same reason documented above the function (synchronous state update inside Effect).
     let cancelled = false;
     void Promise.resolve().then(() => { if (!cancelled) fetchReportData(); });
     return () => { cancelled = true; };
   }, [fetchReportData]);
 
   // ============================================================
-  // محرك التحليل (Analytics Engine) - تجميع البيانات للواجهة
+  // Analytics Engine - Data aggregation for UI
   // ============================================================
 
-  // تصفية البيانات حسب المشروع المختار (إذا لم يكن "الكل")
+  // Filter data by selected project (if not "ALL")
   const filteredDecisions = useMemo(() => {
     if (projectFilter === 'ALL') return rawDecisions;
     return rawDecisions.filter(d => d.project_id === projectFilter);
@@ -166,28 +159,26 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     return rawAlerts.filter(a => a.project_id === projectFilter);
   }, [rawAlerts, projectFilter]);
 
-  // حساب المؤشرات العامة (KPIs)
+  // Calculate Key Performance Indicators (KPIs)
   const metrics = useMemo<ReportMetrics>(() => {
     const totalActivities = filteredDecisions.length;
     const safeActivities = filteredDecisions.filter(d => d.status === 'safe' || d.status === 'caution').length;
     const stoppedActivities = filteredDecisions.filter(d => d.status === 'stopped').length;
 
     const totalAlerts = filteredAlerts.length;
-    // DCR: كل الأنشطة والتنبيهات مصدرها الغبار فقط — التنبيهات الحرجة هي
-    // تجاوز فيزيائي صارم (SAFETY_BREACH) أو مخالفة تنظيمية فعلية توقف
-    // النشاط (COMPLIANCE_VIOLATION، من محرك الامتثال).
+    // DCR: All activities and alerts originate from dust only — critical alerts are strict
+    // physical breaches (SAFETY_BREACH) or actual regulatory violations stopping work
+    // (COMPLIANCE_VIOLATION, from compliance engine).
     //
-    // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
-    // والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
-    // مستقل جديد — النشاط متوقف فعلياً الآن (نفس أثر SAFETY_BREACH التشغيلي)
-    // رغم عدم تأكيد الحالة إدارياً بعد، فيُحتسَب ضمن التنبيهات الحرجة هنا
-    // أيضاً — عدّه ضمن "تحذير متوسط" فقط كان يُقلِّل عدد الحالات الحرجة
-    // المعروضة زوراً عن العدد الفعلي.
+    // Discovered & Fixed Bug (external code review — "Outbox mixes mandatory and precautionary stop",
+    // see migration 202608110020): PROTECTIVE_STOP is a new standalone kind — activity is currently stopped
+    // (same operational impact as SAFETY_BREACH) despite status not yet admin-confirmed, so it is counted
+    // under critical alerts here as well — counting it under "medium warning" only falsely lowered displayed critical count.
     const criticalAlerts = filteredAlerts.filter(a =>
       ['SAFETY_BREACH', 'PROTECTIVE_STOP', 'COMPLIANCE_VIOLATION'].includes(a.kind)
     ).length;
 
-    // حساب المشروع الأكثر تضرراً
+    // Calculate most affected project
     const projectImpactCount: Record<string, number> = {};
     rawDecisions.filter(d => d.status === 'stopped').forEach(d => {
       projectImpactCount[d.project_id] = (projectImpactCount[d.project_id] || 0) + 1;
@@ -201,14 +192,14 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
       }
     });
 
-    // العامل المناخي السائد — DCR لا يملك سوى مصدر الغبار
+    // Dominant weather factor — DCR only monitors dust sources
     const stoppedCount = rawDecisions.filter(d => d.status === 'stopped').length;
     const dominantWeatherFactor = stoppedCount > 0 ? 'انعدام الرؤية/الغبار' : 'مستقر';
 
     return { totalActivities, safeActivities, stoppedActivities, totalAlerts, criticalAlerts, mostAffectedProject: mostAffected, dominantWeatherFactor };
   }, [filteredDecisions, filteredAlerts, rawDecisions, projectsMap]);
 
-  // حساب إحصائيات كل مشروع للجدول
+  // Calculate per-project statistics for table
   const projectStats = useMemo<ProjectStat[]>(() => {
     const statsMap = new Map<string, ProjectStat>();
 
@@ -233,15 +224,14 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     return Array.from(statsMap.values()).map(stat => {
       stat.impactPercentage = stat.total === 0 ? 0 : Math.round((stat.stopped / stat.total) * 100);
       return stat;
-    }).sort((a, b) => b.impactPercentage - a.impactPercentage); // ترتيب حسب الأكثر تضرراً
+    }).sort((a, b) => b.impactPercentage - a.impactPercentage); // Sort by most affected
   }, [rawDecisions, rawAlerts, projectsMap]);
 
   const projectsList = Array.from(projectsMap.entries());
 
-  // تصدير PDF تنفيذي: بلا مكتبة PDF عميلة (jsPDF لا يدعم العربية/RTL بخطوطه
-  // المدمجة افتراضياً) — نافذة طباعة مخصصة بتنسيق تقرير مستقل عن الصفحة
-  // الحالية، يختار المستخدم "حفظ كـPDF" من مربع حوار طباعة المتصفح، الذي
-  // يدعم العربية وRTL بشكل كامل عبر CSS.
+  // Executive PDF Export: No client-side PDF library (jsPDF lacks Arabic/RTL support in default built-in fonts) —
+  // custom print window styled independently from current page, user selects "Save as PDF" from browser print dialog,
+  // which natively supports Arabic and RTL via CSS.
   const handleExportPdf = useCallback(() => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
@@ -320,7 +310,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
 </html>`);
     printWindow.document.close();
     printWindow.focus();
-    // تأجيل الطباعة حتى يكتمل تحميل المستند في النافذة الجديدة.
+    // Delay print action until window document finishes loading
     printWindow.onload = () => {
       printWindow.print();
     };
@@ -355,7 +345,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
     <div className="min-h-screen bg-[#F4F7FB] p-6 lg:p-8 font-sans" dir="rtl">
       <div className="max-w-[1440px] mx-auto space-y-6">
 
-        {/* الترويسة وأزرار التصدير */}
+        {/* Header and Export Buttons */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
           <div className="absolute top-0 right-0 w-2 h-full bg-[#0176FB]"></div>
           <div className="flex items-center gap-4">
@@ -388,7 +378,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
           </div>
         </div>
 
-        {/* شريط الفلاتر الموحد */}
+        {/* Unified Filter Bar */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-6 justify-between items-center">
           <div className="flex flex-wrap gap-4 items-center w-full md:w-auto">
 
@@ -418,7 +408,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
           </div>
         </div>
 
-        {/* الملخص الذكي (Automated Insights) */}
+        {/* Automated Insights */}
         <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-6 shadow-sm flex gap-4 items-start">
           <div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center shrink-0">
             <Activity className="w-5 h-5" />
@@ -437,7 +427,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
           </div>
         </div>
 
-        {/* المؤشرات السريعة (KPI Grid) */}
+        {/* KPI Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group hover:border-emerald-200 transition-colors">
             <div className="flex justify-between items-start mb-4">
@@ -484,7 +474,7 @@ export default function ReportsView({ apiEndpoint = '/dashboard/reports' }: Repo
           </div>
         </div>
 
-        {/* الجدول التحليلي للمشاريع */}
+        {/* Project Performance Analytical Table */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="p-5 border-b border-slate-100 flex justify-between items-center">
             <div>

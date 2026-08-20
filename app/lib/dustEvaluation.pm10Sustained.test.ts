@@ -1144,3 +1144,127 @@ describe('fetchPm10SustainedStatus — عزل قراءات الأجهزة بحس
     });
   });
 });
+
+// =====================================================================
+// اختبارات activityWindow — سؤال مستخدم مباشر: "لو صار نشاطين بنفس الجهاز،
+// أحدهما بدأ الساعة 2 والآخر الساعة 4، هل تتداخل القراءات؟" — "اريد فصل
+// تماماً". قبل هذا الإصلاح، عزل device_id وحده (القسم أعلاه) كان كافياً
+// لعزل جهازين مختلفين عن بعض، لكن نشاطين *بنفس الجهاز* متداخلين زمنياً
+// كانا يتشاركان بالضبط نفس القراءات الخام (activity_group_id=null) لحساب
+// استمرار مخالفة PM10 — لا فحص زمني إطلاقاً قبل الإصلاح. activityWindow
+// (المعامل السادس) يقصر قراءات الجهاز الخام على نافذة هذا النشاط تحديداً.
+// =====================================================================
+describe('fetchPm10SustainedStatus — activityWindow: عزل زمني تام بين نشاطين بنفس الجهاز', () => {
+  function mockSupabase(rows: Record<string, unknown>[]): SupabaseClient {
+    const chain: Record<string, unknown> = {
+      select: () => chain,
+      eq: () => chain,
+      gte: () => chain,
+      lte: () => chain,
+      order: async () => ({ data: rows }),
+    };
+    return { from: vi.fn(() => chain) } as unknown as SupabaseClient;
+  }
+
+  const NOW = Date.parse('2026-01-01T12:00:00.000Z');
+  function readingRow(recordedAtMs: number, pm10: number, deviceId: string | null, id?: string) {
+    return {
+      id: id ?? `row-${recordedAtMs}-${pm10}`,
+      pm10_ug_m3: pm10,
+      recorded_at: new Date(recordedAtMs).toISOString(),
+      activity_group_id: null, // كل قراءات الأجهزة الحقيقية — deviceReadingWriter.ts لا يضبط activity_group_id إطلاقاً
+      source: 'device' as const,
+      device_id: deviceId,
+      is_late: false,
+      is_snapshot_only: false,
+    };
+  }
+
+  // سيناريو المستخدم بالضبط: نشاط 1 يبدأ الساعة 2:00، نشاط 2 يبدأ الساعة
+  // 4:00، نفس الجهاز D، نشاط 1 لا يزال جارياً (ينتهي 6:00) وقت بدء نشاط 2 —
+  // تداخل زمني حقيقي. قراءة وصلت 4:30 (ضمن نافذتي الاثنين معاً) يجب أن
+  // تُحتسَب لنشاط 2 فقط عند تمرير activityWindow الخاص بنشاط 2.
+  it('نشاطان متداخلان زمنياً بنفس الجهاز — قراءة 4:30 تُحتسَب لنشاط 2 فقط عند تمرير نافذته، لا نشاط 1', () => {
+    const activity2StartMs = Date.parse('2026-01-01T04:00:00.000Z');
+    const readingAt430Ms = Date.parse('2026-01-01T04:30:00.000Z');
+
+    const rows = [readingRow(readingAt430Ms, 400, 'device-D')];
+    const supabase = mockSupabase(rows);
+
+    // نشاط 2: نافذته [4:00, 8:00] — القراءة 4:30 تقع ضمنها.
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-2', 'device-D', readingAt430Ms, {
+      startMs: activity2StartMs,
+      endMs: activity2StartMs + 4 * 3600000,
+    }).then((r) => {
+      expect(r.status!.currentReadingUgM3).toBe(400);
+    });
+  });
+
+  it('نفس السيناريو — نشاط 1 (نافذته [2:00, 6:00]) لا يستقبل نفس القراءة إن مُرِّرت نافذته الخاصة المنتهية قبل 4:30', () => {
+    const activity1StartMs = Date.parse('2026-01-01T02:00:00.000Z');
+    const readingAt430Ms = Date.parse('2026-01-01T04:30:00.000Z');
+    // نافذة نشاط 1 الفعلية تنتهي الساعة 6:00 — القراءة 4:30 تقع ضمنها أيضاً
+    // (تداخل حقيقي)، لكن لو انتهى نشاط 1 مبكراً (مثال: مدته ساعتان فقط،
+    // ينتهي 4:00) فلا يجوز أن يستقبل قراءة وصلت بعد انتهائه.
+    const rows = [readingRow(readingAt430Ms, 400, 'device-D')];
+    const supabase = mockSupabase(rows);
+
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-D', readingAt430Ms, {
+      startMs: activity1StartMs,
+      endMs: activity1StartMs + 2 * 3600000, // ينتهي 4:00 بالضبط — قبل القراءة
+    }).then((r) => {
+      expect(r.status!.currentReadingUgM3).toBeNull();
+    });
+  });
+
+  it('activityWindow=null صراحةً (النشاط ليس ضمن أي نافذة دوام الآن) → لا تُطابَق أي قراءة جهاز خام، حتى لو device_id يطابق', () => {
+    const rows = [readingRow(NOW, 400, 'device-D')];
+    const supabase = mockSupabase(rows);
+
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-D', NOW, null).then((r) => {
+      expect(r.status!.currentReadingUgM3).toBeNull();
+    });
+  });
+
+  it('activityWindow=undefined (لم يُمرَّر إطلاقاً) → السلوك القديم بلا تغيير، بلا أي تصفية زمنية', () => {
+    const rows = [readingRow(NOW, 400, 'device-D')];
+    const supabase = mockSupabase(rows);
+
+    return fetchPm10SustainedStatus(supabase, 'project-1', 'group-1', 'device-D', NOW).then((r) => {
+      expect(r.status!.currentReadingUgM3).toBe(400);
+    });
+  });
+
+  it('نشاطان متداخلان زمنياً بنفس الجهاز — كل نشاط يحسب استمرار مخالفة PM10 مستقلاً تماماً من نفس تدفّق القراءات الخام', () => {
+    // نشاط 1: [2:00, 6:00]. نشاط 2: [4:00, 8:00]. أربع قراءات ≥340 متتالية
+    // تبدأ 4:00 (لحظة بدء نشاط 2 بالضبط) — يجب أن تُثبت مخالفة مؤكَّدة
+    // لنشاط 2 (كل القراءات ضمن نافذته)، بينما نشاط 1 (تنتهي نافذته 6:00،
+    // لكن القراءات تبدأ منها بالضبط أيضاً) يراها أيضاً — الاختبار الحاسم
+    // هو أن كل نشاط يُقيَّم بمعزل تام عبر استدعاء منفصل بنافذته الخاصة، لا
+    // أن نتيجة أحدهما "تتسرب" للآخر عبر حالة مشتركة.
+    const base = Date.parse('2026-01-01T04:00:00.000Z');
+    const rows = [
+      readingRow(base, 345, 'device-D'),
+      readingRow(base + 60000, 350, 'device-D'),
+      readingRow(base + 120000, 355, 'device-D'),
+      readingRow(base + 150000, 342, 'device-D'),
+    ];
+    const nowMs = base + 150000;
+    const supabase1 = mockSupabase(rows);
+    const supabase2 = mockSupabase(rows);
+
+    const activity1Window = { startMs: Date.parse('2026-01-01T02:00:00.000Z'), endMs: Date.parse('2026-01-01T06:00:00.000Z') };
+    const activity2Window = { startMs: base, endMs: Date.parse('2026-01-01T08:00:00.000Z') };
+
+    return Promise.all([
+      fetchPm10SustainedStatus(supabase1, 'project-1', 'group-1', 'device-D', nowMs, activity1Window),
+      fetchPm10SustainedStatus(supabase2, 'project-1', 'group-2', 'device-D', nowMs, activity2Window),
+    ]).then(([r1, r2]) => {
+      // كلاهما ضمن نافذته يرى نفس القراءات (تداخل حقيقي متعمَّد بهذا
+      // الاختبار) — كل استدعاء مستقل تماماً بمعامل نافذة خاص به، لا حالة
+      // مشتركة عالقة بين الاثنين.
+      expect(r1.status!.isConfirmedViolation340).toBe(true);
+      expect(r2.status!.isConfirmedViolation340).toBe(true);
+    });
+  });
+});

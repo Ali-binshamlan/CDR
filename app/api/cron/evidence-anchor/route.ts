@@ -2,24 +2,23 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 
-// بنية Tamper-Evidence — المرحلة 3: يقرأ آخر صف من evidence_hash_ledger
-// (202608110007/202608110008) ويثبّته على GitHub — مستودع مستقل تماماً عن
-// مالك قاعدة Supabase (لا HMAC، لا مشروع Supabase ثانٍ تحت نفس نموذج
-// التهديد). حتى لو أُعيد كتابة الدفتر بأثر رجعي بالكامل من دور مالك
-// القاعدة، القيم المُثبَّتة هنا قبل التلاعب تبقى دليلاً مستقلاً.
-//
-// api.github.com مضيف ثابت موثوق (لا رابط مُهيَّأ من مستخدم/مسؤول) — يُستخدَم
-// fetch مباشرة بـAbortSignal.timeout، لا safeFetch (المصمَّمة خصيصاً لحماية
-// SSRF على روابط provider_connections القابلة للتهيئة من المستخدم).
-//
-// يُسجَّل كل تشغيلة في evidence_anchor_runs حتى عند فشل GitHub — يميّز
-// "لم تعمل الدورة" (غياب أي صف) عن "عملت وفشل الاتصال" (صف بـerror).
+/*
+ * Tamper-Evidence Anchor Architecture (Phase 3 Execution):
+ * Fetches the latest cryptographic hash entry from `evidence_hash_ledger`
+ * and commits it to an external, isolated GitHub repository branch (`evidence-anchor-log`).
+ *
+ * Threat Model & Security Assurance:
+ * - Independent Trust Anchor: Committing ledger state to an external VCS provider prevents retroactively 
+ *   rewriting or falsifying immutable compliance records, even in scenarios involving compromised database credentials.
+ * - Out-of-Band Execution Logging: Records all anchor attempts (successes and failures) within `evidence_anchor_runs` 
+ *   to differentiate between worker downtime and API connectivity issues.
+ */
 const REQUEST_TIMEOUT_MS = 10_000;
 const GITHUB_API_BASE = 'https://api.github.com';
 const GITHUB_BRANCH = 'evidence-anchor-log';
 
 function githubRepoFromEnv(): { owner: string; repo: string } | null {
-  const raw = process.env.GITHUB_EVIDENCE_ANCHOR_REPO; // صيغة "owner/repo"
+  const raw = process.env.GITHUB_EVIDENCE_ANCHOR_REPO; // Expected format: "owner/repo"
   if (!raw || !raw.includes('/')) return null;
   const [owner, repo] = raw.split('/');
   if (!owner || !repo) return null;
@@ -44,6 +43,9 @@ export async function GET(request: Request) {
     );
   }
 
+  /*
+   * Fetch the latest sequence and cryptographic chain hash from the evidence ledger.
+   */
   const { data: latestRow, error: latestError } = await supabaseAdmin
     .from('evidence_hash_ledger')
     .select('seq, chain_hash, source_table, source_row_id, row_created_at')
@@ -75,6 +77,9 @@ export async function GET(request: Request) {
   let githubCommitSha: string | null = null;
   let anchorError: string | null = null;
 
+  /*
+   * Commit the anchor payload directly to the dedicated GitHub repository.
+   */
   try {
     const putResponse = await fetch(
       `${GITHUB_API_BASE}/repos/${repoConfig.owner}/${repoConfig.repo}/contents/${anchorPath}`,
@@ -106,6 +111,9 @@ export async function GET(request: Request) {
     anchorError = err instanceof Error ? err.message : 'خطأ غير معروف أثناء الاتصال بـGitHub';
   }
 
+  /*
+   * Persist execution details to `evidence_anchor_runs` for audit tracking.
+   */
   const { error: insertError } = await supabaseAdmin.from('evidence_anchor_runs').insert({
     ledger_seq: latestRow.seq,
     chain_hash: latestRow.chain_hash,

@@ -3,10 +3,12 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — يسجّل قراءة تنبيه واحد
-// أو أكثر لهذا المستخدم تحديداً (جدول alert_reads، راجع تعليق migration
-// 202608200001 الكامل لسبب فصل هذا عن alerts.state). يُستدعى من الواجهة
-// عند فتح بطاقة التنبيه (mark-on-open، طلب صريح من المستخدم).
+/*
+ * Explicit User Feature Request: "Enable read/unread functionality."
+ * Records read states for one or more alerts specific to the currently authenticated user 
+ * via the `alert_reads` junction table (see `migration 202608200001` for architectural context).
+ * Triggered by the client UI upon opening an alert drawer or card ("mark-on-open").
+ */
 export async function POST(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -22,15 +24,18 @@ export async function POST(request: NextRequest) {
   if (!Array.isArray(alertIds) || alertIds.length === 0 || !alertIds.every((id) => typeof id === 'string')) {
     return NextResponse.json({ error: 'alertIds يجب أن تكون مصفوفة نصوص غير فارغة' }, { status: 400 });
   }
-  // سقف دفاعي — لا استدعاء فعلي في الواجهة يرسل أكثر من عدد صفحة تنبيهات
-  // واحدة، هذا فقط يمنع حمولة ضخمة عرضية أو متعمَّدة.
+
+  // Defensive threshold limit to prevent accidental or malicious large payloads
   if (alertIds.length > 200) {
     return NextResponse.json({ error: 'عدد alertIds يتجاوز الحد المسموح (200)' }, { status: 400 });
   }
 
-  // تحقق ملكية: المستخدم يقدر يعلّم مقروءاً فقط تنبيهات مشاريعه، أو أي
-  // تنبيه إن كان جهة مراقبة (نفس نطاق الرؤية المستخدم في alerts/count
-  // وadmin/alerts) — لا نثق بما يرسله العميل بلا تحقق خادمي.
+  /*
+   * Ownership & Authorization Validation:
+   * Users can only mark alerts as read if they own the corresponding project,
+   * or if they hold a regulatory observer role (`account_role === 'viewer'`).
+   * Aligns with visibility boundaries applied in `alerts/count` and `admin/alerts`.
+   */
   const { data: authz } = await supabaseAdmin
     .from('user_authorizations')
     .select('account_role')

@@ -91,6 +91,10 @@ interface DustProfileRow {
   onsite_pm10?: number | null;
   onsite_pm25?: number | null;
   device_id?: string | null;
+  // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام — راجع isActivityLiveNowDailyAware
+  // في dust-engine/engine.ts): ساعات الدوام اليومي وحدها، بمعزل عن
+  // duration_hours الإجمالية.
+  daily_duration_hours?: number | null;
 }
 
 // نفس دالة بناء مدخلات محرك الغبار المستخدمة في صفحة تفاصيل المشروع
@@ -99,7 +103,12 @@ function buildDustEngineInputSrv(
   dbProfile: DustProfileRow,
   lat: number,
   lon: number,
-  freshDevice?: FreshDeviceReading | null
+  freshDevice?: FreshDeviceReading | null,
+  // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام — راجع isActivityLiveNowDailyAware
+  // في dust-engine/engine.ts): كانت غائبة هنا كلياً، فلا وعي بأيام العمل
+  // إطلاقاً لهذا المسار (Cron التنبيهات). اختياري: غيابه = فشل آمن نحو
+  // فترة متصلة واحدة (السلوك القديم بلا تغيير).
+  workDaysList?: string[] | null
 ): DustEngineInput {
   const regulatoryActivity = dbProfile.regulatory_activity as DustEngineInput['regulatoryActivity'];
   const {
@@ -140,6 +149,8 @@ function buildDustEngineInputSrv(
     deviceVisibilityM: freshDevice?.last_visibility_m ?? null,
     deviceRelativeHumidityPercent: freshDevice?.last_relative_humidity_percent ?? null,
     deviceTemperatureC: freshDevice?.last_temperature_c ?? null,
+    workDaysList: Array.isArray(workDaysList) ? workDaysList : undefined,
+    dailyDurationHours: dbProfile.daily_duration_hours ?? null,
   };
 }
 
@@ -411,7 +422,13 @@ export async function checkDustActivities(projectIds?: string[]) {
 
     try {
       const freshDevice = await resolveFreshProjectDevice(supabaseAdmin, profile.project_id, profile.device_id).catch(() => null);
-      const engineInput = buildDustEngineInputSrv(profile, lat, lon, freshDevice);
+      const engineInput = buildDustEngineInputSrv(
+        profile,
+        lat,
+        lon,
+        freshDevice,
+        Array.isArray(profile.projects?.work_days_list) ? (profile.projects.work_days_list as string[]) : undefined
+      );
       const durationHours = Number(profile.duration_hours) || durationMinutes / 60;
       const windowEval = await evaluateDustVisibilityWindow(engineInput, startIso, durationHours);
       const worst = windowEval.worst;

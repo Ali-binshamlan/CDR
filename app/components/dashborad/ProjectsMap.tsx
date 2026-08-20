@@ -8,11 +8,10 @@ import { apiClient } from '@/app/lib/apiClient';
 import { SAUDI_BOUNDS, SAUDI_CENTER } from '@/app/utils/geo/countryBounds';
 import type { Decision } from '@/app/lib/decisionMeta';
 
-// طلب مستخدم صريح: كانت هذه نسخة محلية مستقلة عن decisionMeta.ts (نفس
-// القيم الخمس القديمة معاد كتابتها هنا) — خطر انحراف صامت لو عُدِّل مصدر
-// الحقيقة هناك بلا تحديث هذا الملف بالتزامن (بالضبط ما حصل عند تبسيط
-// Decision لـ3 مستويات). الآن يستورد النوع مباشرة، والألوان مطابقة لنفس
-// 3 المستويات (سماح/مراقبة/إيقاف).
+// Explicit user request: This was previously a local standalone copy independent of decisionMeta.ts (the same
+// five old values rewritten here) — risk of silent drift if the single source of truth there was updated without
+// updating this file in sync (exactly what happened when Decision was simplified to 3 levels). Now it imports
+// the type directly, and the colors correspond to the same 3 levels (safe/restricted/stopped).
 export type { Decision };
 
 const decisionColor: Record<Decision, string> = {
@@ -26,7 +25,7 @@ const PROJECT_STATUS_LABEL_AR: Record<string, string> = {
   in_progress: 'جاري',
 };
 
-// أيقونة دائرية مخصصة بدل أيقونة Leaflet الافتراضية (اللي تنكسر مع Next.js/webpack)
+// Custom circular icon instead of default Leaflet icon (which breaks with Next.js/webpack)
 function makeIcon(color: string) {
   return L.divIcon({
     className: '',
@@ -36,9 +35,9 @@ function makeIcon(color: string) {
   });
 }
 
-// يضبط تكبير/تمركز الخريطة تلقائياً بحيث تظهر كل نقاط المشاريع — لكن دون
-// تجاوز حدود المملكة الصلبة (SAUDI_BOUNDS)، فلا "يهرب" التكبير التلقائي
-// خارج المنطقة المسموحة حتى لو وُجدت نقاط مشاريع خارجها فعلياً.
+// Automatically adjusts map zoom/center so that all project points are visible — but without
+// exceeding the strict Saudi boundaries (SAUDI_BOUNDS), so auto-zoom doesn't "escape"
+// outside the allowed region even if project points actually exist outside it.
 function FitBounds({ points }: { points: { latitude: number; longitude: number }[] }) {
   const map = useMap();
 
@@ -58,9 +57,9 @@ function FitBounds({ points }: { points: { latitude: number; longitude: number }
   return null;
 }
 
-// يغلق البطاقة المثبَّتة عند النقر على أي جزء آخر من الخريطة (خلفية بلا
-// نقطة مشروع) — إغلاق click على العلامة نفسه يُعالَج مباشرة في eventHandlers
-// أعلاه، هذا فقط للنقر خارج أي علامة.
+// Closes the pinned card when clicking anywhere else on the map (background without
+// a project point) — clicking the marker itself is handled directly in eventHandlers
+// above; this is only for clicking outside any marker.
 function CloseCardOnMapClick({ onClose }: { onClose: () => void }) {
   useMapEvent('click', onClose);
   return null;
@@ -72,23 +71,23 @@ export interface ProjectPoint {
   city?: string;
   latitude: number;
   longitude: number;
-  // null = لا يوجد نشاط جارٍ الآن لهذا المشروع، فلا يوجد قرار لعرضه —
-  // النقطة تُرسم بلون محايد بلا أي دلالة خطر/أمان (بطلب صريح من المستخدم:
-  // "اذا لا يوجد نشاط لا تظهر قرارات"). القرار عند وجوده هو "القرار الموحد
-  // للنشاط" (DVI + الامتثال التنظيمي)، راجع computeUnifiedActivityDecision
-  // في app/lib/dustEvaluation.ts وliveActivityByProjectId في route.ts.
+  // null = no active ongoing activity for this project, so there is no decision to display —
+  // the point is drawn in a neutral color without risk/safety indication (by explicit user request:
+  // "if there is no activity, do not show decisions"). The decision when present is the "unified
+  // activity decision" (DVI + regulatory compliance), see computeUnifiedActivityDecision
+  // in app/lib/dustEvaluation.ts and liveActivityByProjectId in route.ts.
   decision: Decision | null;
   projectStatus?: string | null;
   todayActivitiesCount?: number;
   hasLiveActivity?: boolean;
   statusLabel?: string;
   statusReason?: string;
-  /** لحظة تسجيل القرار الحالي (final_decisions.evaluated_at) — طلب صريح من
-   * جهة المراقبة: تعرض "متى سُجّلت هذه المخالفة" لا وقت التحميل الحالي. */
+  /** Timestamp of recording the current decision (final_decisions.evaluated_at) — explicit request from
+   * monitoring entity: displays "when was this violation recorded" rather than current load time. */
   decisionEvaluatedAt?: string | null;
-  /** القراءة الفعلية التي أنتجت هذا القرار تحديداً (device_readings_history
-   * الأقرب لـ decisionEvaluatedAt)، لا القراءة الحية الآن — قد تختلفان
-   * تماماً لو تغيّرت الظروف منذ لحظة التسجيل. */
+  /** Actual reading that generated this specific decision (device_readings_history
+   * closest to decisionEvaluatedAt), not current live reading — they may differ
+   * completely if conditions changed since recording time. */
   decisionReadingPm10UgM3?: number | null;
   decisionReadingWindSpeedKmh?: number | null;
 }
@@ -99,7 +98,7 @@ const decisionLabelAr: Record<Decision, string> = {
   stopped: 'إيقاف',
 };
 
-// رمادي محايد — لا نشاط جارٍ الآن فلا قرار لعرضه إطلاقاً
+// Neutral gray — no activity in progress so no decision to display at all
 const NO_ACTIVITY_COLOR = '#94a3b8';
 const NO_ACTIVITY_LABEL_AR = 'لا يوجد نشاط جارٍ حالياً';
 
@@ -110,16 +109,16 @@ interface LiveWeather {
   pm25: number | null;
 }
 
-// يحوّل درجة اتجاه الرياح (خط الشمال = صفر، اتجاه دوران الساعة) إلى نص
-// بوصلة عربي مختصر — أسهل قراءة سريعة من رقم الدرجات وحده
+// Converts wind direction degrees (North line = 0, clockwise direction) to a concise
+// Arabic compass text — easier for quick reading than degree numbers alone
 function degToCompassAr(deg: number): string {
   const directions = ['شمالية', 'شمالية شرقية', 'شرقية', 'جنوبية شرقية', 'جنوبية', 'جنوبية غربية', 'غربية', 'شمالية غربية'];
   const index = Math.round(deg / 45) % 8;
   return directions[index];
 }
 
-// وقت تسجيل القرار — بتوقيت الرياض، بصيغة تاريخ+ساعة مختصرة تكفي لسياق
-// فقاعة الهوفر (لا حاجة لثوانٍ).
+// Decision recording time — in Riyadh time, formatted as a concise date+time sufficient for
+// hover card context (no seconds needed).
 function formatDecisionTimeAr(iso: string): string {
   const d = new Date(iso);
   const datePart = d.toLocaleDateString('ar-SA', { day: 'numeric', month: 'short', timeZone: 'Asia/Riyadh', calendar: 'gregory' });
@@ -127,20 +126,19 @@ function formatDecisionTimeAr(iso: string): string {
   return `${datePart} — ${timePart}`;
 }
 
-// بطاقة معلومات لنقطة مشروع — موضعة بإحداثيات شاشة ثابتة (screenPosition)
-// بدل Popup الافتراضي لأن الأخير لا يدعم "تتبع الفأرة" بسلاسة عند الهوفر.
-// قراءات الطقس الحية (رياح/PM10/PM2.5) تُجلب كسولاً هنا فقط عند فتح البطاقة
-// فعلياً — لا دفعة واحدة لكل مشاريع الخريطة — عبر /api/weather (استثناء
-// متعمَّد لقاعدة "لا نعرض رقماً خاماً" في dust-engine، مبرَّر هنا لأنها نظرة
-// عامة على الخريطة لا شاشة قرار تشغيلي لنشاط محدد).
+// Info card for a project point — positioned via fixed screen coordinates (screenPosition)
+// instead of default Popup because the latter does not smoothly support "mouse tracking" on hover.
+// Live weather readings (wind/PM10/PM2.5) are lazily fetched here only when the card is actually
+// opened — not all at once for all map projects — via /api/weather (an intentional
+// exception to the "no raw numbers" rule in dust-engine, justified here because it is a general
+// map overview, not an operational decision screen for a specific activity).
 //
-// خطأ إتاحة مكتشَف ومُصلَح ("الخريطة تعتمد على hover، ما يضعف استخدامها
-// باللمس ولوحة المفاتيح"): كانت هذه البطاقة تظهر حصراً عبر mouseover/
-// mousemove/mouseout — بلا أي مسار بديل عبر اللمس (لا يُطلق هذه الأحداث
-// إطلاقاً) أو لوحة المفاتيح (التركيز كان يصل فقط لمعالج click، لا للهوفر).
-// الآن تُفتح بالنقر/الضغط، أو بالتركيز عبر لوحة المفاتيح (Tab)، أو بـEnter/
-// Space على العلامة نفسها، وتُغلق بالنقر خارجها، Escape، أو زر الإغلاق
-// الصريح داخلها — نفس المحتوى بلا استثناء آلية الوصول.
+// Discovered and fixed accessibility bug ("Map relied on hover, weakening touch and keyboard usability"):
+// this card appeared exclusively via mouseover/mousemove/mouseout — with no alternative path via
+// touch (which never fires these events) or keyboard (focus only reached click handler, not hover).
+// Now it opens via tap/click, keyboard focus (Tab), or Enter/Space on the marker itself,
+// and closes via clicking outside, Escape, or the explicit close button inside — same content without
+// compromising accessibility mechanism.
 function HoverCard({
   point,
   screenPosition,
@@ -151,33 +149,33 @@ function HoverCard({
 }: {
   point: ProjectPoint;
   screenPosition: { x: number; y: number };
-  // طلب صريح من المستخدم: جهة الرصد لا تُعرض لها القراءات الحية الخام
-  // (رياح/PM10/PM2.5) — الاسم/الموقع/لون وحالة القرار/سبب الحالة يبقى
-  // ظاهراً كما هو. حين مفعَّل، لا يُستدعى /api/weather إطلاقاً (لا فقط
-  // إخفاء العرض بعد الجلب) — توفير طلب شبكة لا داعي له.
+  // Explicit user request: Monitoring entity is not shown raw live readings
+  // (wind/PM10/PM2.5) — name/location/decision color and status/status reason remain
+  // visible as is. When enabled, /api/weather is not called at all (not just
+  // hiding after fetch) — saving unnecessary network request.
   hideRawReadings?: boolean;
-  // طلب صريح لاحق من المستخدم (جهة المراقبة فقط): لا يظهر بالفقاعة سوى
-  // اسم المشروع/المدينة وحالة المخالفة — تُخفى كل التفاصيل الأخرى (سبب
-  // الحالة، الحالة الإدارية، عدد أنشطة اليوم، وقراءات الطقس بالكامل).
+  // Subsequent explicit request from user (monitoring entity only): hover card shows only
+  // project name/city and violation status — all other details are hidden (status
+  // reason, administrative status, today's activities count, and all weather readings).
   minimal?: boolean;
-  // زر "عرض التفاصيل" داخل البطاقة — النقرة الأولى على العلامة تفتح
-  // البطاقة (بديل الهوفر)، لا تنقل مباشرة؛ الانتقال الفعلي لصفحة المشروع
-  // يتم فقط من هذا الزر الصريح داخل البطاقة.
+  // "View Details" button inside card — first click on marker opens card (hover alternative),
+  // does not navigate immediately; actual navigation to project page occurs only from this
+  // explicit button inside card.
   onSelect?: () => void;
   onClose: () => void;
 }) {
   const [weather, setWeather] = useState<LiveWeather | null>(null);
-  // القيمة الابتدائية تعكس ما إذا كان الطلب سيُطلَق فعلياً — hideRawReadings/
-  // minimal يمنعان الجلب كلياً (راجع الشرط أدناه)، فلا داعي أن تبدأ true ثم
-  // تُصحَّح لاحقاً false داخل الـEffect.
+  // Initial value reflects whether request will actually be fired — hideRawReadings/
+  // minimal prevent fetch entirely (see condition below), so no need to start true then
+  // correct to false later inside Effect.
   const [isLoadingWeather, setIsLoadingWeather] = useState(!hideRawReadings && !minimal);
 
   useEffect(() => {
     if (hideRawReadings || minimal) return;
     let cancelled = false;
-    // جدولة عبر microtask بدل استدعاء setWeather/setIsLoadingWeather مباشرة
-    // من جسم الـEffect — تعديل حالة متزامن مباشر داخل Effect (نفس السبب
-    // الموثَّق في fetchDevices/fetchHistory بصفحات المشروع).
+    // Scheduled via microtask instead of calling setWeather/setIsLoadingWeather directly
+    // from Effect body — direct synchronous state update inside Effect (same documented
+    // reason as in fetchDevices/fetchHistory on project pages).
     void Promise.resolve().then(() => {
       if (cancelled) return;
       setWeather(null);
@@ -232,9 +230,9 @@ function HoverCard({
         <div className="text-[11px] text-slate-500 mb-1.5 leading-relaxed">{point.statusReason}</div>
       )}
 
-      {/* طلب صريح من جهة المراقبة: وقت تسجيل المخالفة + القراءات الفعلية
-          وقت التسجيل تحديداً (لا القراءة الحية الآن) — تظهر حتى في وضع
-          minimal، بخلاف بقية التفاصيل المخفاة عمداً لهذا الوضع. */}
+      {/* Explicit request from monitoring entity: Violation recording time + actual readings
+          specifically at recording time (not current live reading) — displayed even in minimal
+          mode, unlike other details intentionally hidden for this mode. */}
       {point.hasLiveActivity && point.decisionEvaluatedAt && (
         <div className="text-[11px] text-slate-500 mb-1.5 pt-1.5 border-t border-slate-100 space-y-0.5">
           <div>
@@ -311,12 +309,11 @@ interface ActiveCardState {
 
 type SetActiveCard = Dispatch<SetStateAction<ActiveCardState | null>>;
 
-// علامة مشروع واحدة على الخريطة. مُستخرَجة كمكوّن مستقل (بدل Marker مضمَّن
-// مباشرة في الحلقة) لأن ربط حدث 'focus' يحتاج وصولاً مباشراً لكائن
-// L.Marker عبر ref — 'focus' مدعوم فعلياً وقت التشغيل في Leaflet (marker
-// icon قابل للتركيز افتراضياً، tabIndex=0 + role=button) لكنه غير موجود
-// إطلاقاً في نوع LeafletEventHandlerFnMap المستخدَم في prop eventHandlers،
-// فلا يمكن تمريره عبرها مباشرة بأمان من ناحية الأنواع.
+// Single project marker on map. Extracted as standalone component (instead of inline Marker
+// inside loop) because binding 'focus' event requires direct access to L.Marker object via ref —
+// 'focus' is actually supported at runtime in Leaflet (marker icon is focusable by default,
+// tabIndex=0 + role=button) but doesn't exist in LeafletEventHandlerFnMap type used in
+// eventHandlers prop, so cannot be passed through it directly in a type-safe manner.
 function ProjectMarker({ point: p, setActiveCard }: { point: ProjectPoint; setActiveCard: SetActiveCard }) {
   const markerRef = useRef<L.Marker | null>(null);
 
@@ -340,17 +337,17 @@ function ProjectMarker({ point: p, setActiveCard }: { point: ProjectPoint; setAc
       position={[p.latitude, p.longitude]}
       icon={makeIcon(p.decision ? decisionColor[p.decision] : NO_ACTIVITY_COLOR)}
       eventHandlers={{
-        // النقر/الضغط (وكذلك Enter/Space عبر لوحة المفاتيح، أو Tab للتركيز
-        // — راجع marker.on('focus', ...) أعلاه) يفتح بطاقة المعلومات نفسها
-        // المعروضة سابقاً بالهوفر فقط — بديل متكافئ يعمل باللمس ولوحة
-        // المفاتيح معاً. نقرة ثانية على نفس النقطة (أو زر الإغلاق داخل
-        // البطاقة) تُغلقها. زر "عرض التفاصيل" داخل البطاقة هو المسار الوحيد
-        // للتنقل الفعلي لصفحة المشروع (onSelect) — يختفي تلقائياً في وضع
-        // minimal لأن onSelect غير مُمرَّرة أصلاً من الأب في تلك الحالة.
+        // Click/tap (as well as Enter/Space via keyboard, or Tab focus
+        // — see marker.on('focus', ...) above) opens the same info card
+        // previously shown on hover only — an equivalent alternative that works for touch and
+        // keyboard alike. Second click on the same point (or close button inside
+        // card) closes it. "View Details" button inside card is the sole path
+        // for actual navigation to project page (onSelect) — automatically disappears in
+        // minimal mode because onSelect is not passed from parent in that case.
         click: (e) => {
-          // منع وصول الحدث لمعالج نقر الخريطة (CloseCardOnMapClick) — بدونه،
-          // نقر العلامة كان سيفتح البطاقة ثم يغلقها فوراً بنفس النقرة عبر
-          // فقاعة الحدث للخريطة.
+          // Prevent event from bubbling to map click handler (CloseCardOnMapClick) — without this,
+          // clicking marker would open card then immediately close it on same click via
+          // map event bubbling.
           L.DomEvent.stopPropagation(e);
           const containerPoint = e.target._map.latLngToContainerPoint(e.latlng);
           setActiveCard((prev) =>
@@ -369,16 +366,15 @@ function ProjectMarker({ point: p, setActiveCard }: { point: ProjectPoint; setAc
           if (e.originalEvent.key !== 'Escape') return;
           setActiveCard((prev) => (prev?.point.id === p.id ? null : prev));
         },
-        // عمداً بلا معالج blur لإغلاق البطاقة — البطاقة تُرسم خارج شجرة DOM
-        // الخاصة بالعلامة (موضع مطلق فوق الخريطة)، فـTab من العلامة للوصول
-        // لأزرارها (إغلاق/عرض التفاصيل) لا يمر عبر "تركيز العلامة نفسها" بل
-        // يقفز للعنصر التالي في تسلسل الصفحة. لو أُغلقت البطاقة عند blur، لن
-        // يصل أي مستخدم لوحة مفاتيح لتلك الأزرار إطلاقاً. البطاقة تبقى
-        // مفتوحة حتى إغلاق صريح (زر الإغلاق، Escape، أو النقر خارجها عبر
-        // CloseCardOnMapClick).
+        // Intentionally no blur handler to close card — card is rendered outside marker's DOM
+        // tree (absolute positioning above map), so Tab from marker to access
+        // its buttons (close/view details) doesn't pass through "marker's own focus" but
+        // jumps to next element in page sequence. If card closed on blur, no keyboard
+        // user would ever reach those buttons. Card stays open until explicit close
+        // (close button, Escape, or clicking outside via CloseCardOnMapClick).
         //
-        // الهوفر يبقى معاينة سريعة إضافية لمستخدمي الفأرة فقط — لا يُبدّل
-        // بطاقة مثبَّتة بالفعل بالنقر/التركيز لنقطة أخرى.
+        // Hover remains a quick additional preview for mouse users only — does not replace
+        // an already pinned card opened by click/focus on another point.
         mouseover: (e) => {
           setActiveCard((prev) => {
             if (prev?.pinned) return prev;
@@ -409,14 +405,14 @@ export default function ProjectsMap({
   points: ProjectPoint[];
   onSelect?: (id: string) => void;
   hideRawReadings?: boolean;
-  // طلب صريح من المستخدم: بفقاعة جهة المراقبة لا يظهر سوى اسم المشروع/
-  // المدينة وحالة القرار — كل التفاصيل الأخرى مخفاة (راجع HoverCard أعلاه).
+  // Explicit request from user: In monitoring entity hover card, show only project name/
+  // city and decision status — all other details are hidden (see HoverCard above).
   minimal?: boolean;
 }) {
-  // activeCard: بطاقة "مثبَّتة" (pinned=true) فُتحت بالنقر/الضغط أو التركيز
-  // بلوحة المفاتيح — تبقى ظاهرة حتى تُغلَق صراحة (زر الإغلاق، Escape، أو
-  // النقر خارجها)، على عكس الهوفر اللحظي (pinned=false) الذي يختفي عند
-  // mouseout كمعاينة سريعة فقط، ولا يستبدل أي بطاقة مثبَّتة بالفعل.
+  // activeCard: "pinned" card (pinned=true) opened by click/tap or keyboard focus —
+  // remains visible until explicitly closed (close button, Escape, or clicking outside),
+  // unlike transient hover (pinned=false) which disappears on mouseout as a quick preview only,
+  // and does not replace any already pinned card.
   const [activeCard, setActiveCard] = useState<ActiveCardState | null>(null);
 
   return (

@@ -4,10 +4,10 @@ import { requireViewer } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { toReportDecisionRow, dedupeToLatestPerActivity } from '@/app/lib/finalDecisionStatus';
 
-// نسخة غير مقيّدة من app/api/dashboard/reports/route.ts — نفس الشكل تماماً
-// ({projects, decisions, alerts}, نفس fromDate/toDate)، لكن بلا فلترة
-// user_id على projects، لتقرير جهة المراقبة المجمّع عن كل المشاريع.
-// ReportsView.tsx يستهلك هذا المسار بلا أي تعديل على محرك التحليل.
+// Unrestricted version of app/api/dashboard/reports/route.ts — exact same signature
+// ({projects, decisions, alerts}, same fromDate/toDate), but without user_id filtering on projects,
+// built for the monitoring viewer aggregated report across all projects.
+// ReportsView.tsx consumes this route with zero modifications to analysis engine logic.
 export async function GET(request: NextRequest) {
   const auth = await requireViewer(request);
   if ('error' in auth) return auth.error;
@@ -32,9 +32,8 @@ export async function GET(request: NextRequest) {
   const endOfDay = new Date(toDate);
   endOfDay.setHours(23, 59, 59, 999);
 
-  // راجع نفس التعليق في app/api/dashboard/reports/route.ts — التقارير
-  // تُبنى الآن من final_decisions (القرارات الآلية الفعلية) بدل
-  // decision_records (ميزة القرار اليدوي المحذوفة بالكامل).
+  // Reports are now built from final_decisions (actual automated decisions) instead
+  // of decision_records (deprecated manual decision feature).
   const [decisionsRes, alertsRes] = await Promise.all([
     supabaseAdmin
       .from('final_decisions')
@@ -52,9 +51,8 @@ export async function GET(request: NextRequest) {
   if (decisionsRes.error) return NextResponse.json({ error: safeErrorResponse(decisionsRes.error, 'viewer/reports decisions fetch failed') }, { status: 500 });
   if (alertsRes.error) return NextResponse.json({ error: safeErrorResponse(alertsRes.error, 'viewer/reports alerts fetch failed') }, { status: 500 });
 
-  // راجع نفس التعليق في app/api/dashboard/reports/route.ts —
-  // dedupeToLatestPerActivity تمنع تضخّم عدد "الأنشطة" بتكرار تقييم النشاط
-  // الواحد نفسه دورياً.
+  // dedupeToLatestPerActivity prevents inflating activity counts from periodic re-evaluations
+  // of the same running activity.
   const latestPerActivity = dedupeToLatestPerActivity(decisionsRes.data || []);
 
   return NextResponse.json({

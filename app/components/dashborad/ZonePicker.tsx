@@ -1,10 +1,10 @@
 'use client';
 
 // =============================================================
-// ZonePicker — معاينة منطقة المشروع (zone) على الخريطة فقط. لا يوجد
-// رسم يدوي (لا geoman ولا أدوات تحرير) — منطقة المشروع تُحدَّد حصراً
-// عبر استيراد KML (رفع ملف أو لصق نص خام)، ويعرض هذا المكوّن النتيجة
-// كـ Polygon/Circle للقراءة فقط.
+// ZonePicker — Preview project zone on the map only. There is no
+// manual drawing (no geoman nor editing tools) — the project zone is
+// determined exclusively via KML import (file upload or raw text paste),
+// and this component displays the result as a read-only Polygon/Circle.
 // =============================================================
 
 import { useEffect } from 'react';
@@ -24,13 +24,13 @@ export interface ZonePickerValue {
 interface ZonePickerProps {
   initialCenter: LatLng;
   value: ZonePickerValue;
-  /** يبقى في الواجهة للتوافق مع الاستدعاءات الحالية؛ لا استخدام فعلياً بعد إزالة الرسم اليدوي */
+  /** Kept in the interface for compatibility with existing invocations; no actual usage after removing manual drawing */
   onChange?: (value: ZonePickerValue) => void;
   readOnly?: boolean;
 }
 
-// يُعيد ضبط حدود الخريطة كل مرة تتغيّر فيها المنطقة (مثلاً بعد استيراد KML
-// جديد) — بديل بسيط لأدوات fitBounds التي كانت مرتبطة سابقاً بأحداث geoman.
+// Adjusts map bounds each time the zone changes (e.g., after importing a new KML) —
+// a simple replacement for fitBounds tools previously tied to geoman events.
 function FitToZone({ value }: { value: ZonePickerValue }) {
   const map = useMap();
 

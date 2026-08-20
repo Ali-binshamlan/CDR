@@ -10,11 +10,11 @@ import { LineChart as LineChartIcon } from 'lucide-react';
 import { apiClient } from '@/app/lib/apiClient';
 import { useProjectDeviceReadingsRealtime } from '@/app/lib/useProjectDeviceReadingsRealtime';
 
-// عناصر القياس السبعة — كل عنصر رسمه الخاص المستقل (لا محور مزدوج أبداً،
-// راجع dataviz skill: "قياسان مختلفا النطاق → رسمان منفصلان، لا محور ثانٍ").
-// اللون لكل عنصر ثابت من نفس لوحة الألوان التصنيفية المستخدمة في
-// app/dashboard/Projects/[id]/readings/page.tsx (SERIES_COLORS) — يبقى كل
-// عنصر بنفس هويته اللونية أينما ظهر في الواجهة.
+// Seven measurement elements — each element has its own independent chart (never dual axes,
+// refer to dataviz skill: "two measurements of different scales -> two separate charts, no second axis").
+// The color for each element is fixed from the same categorical palette used in
+// app/dashboard/Projects/[id]/readings/page.tsx (SERIES_COLORS) — keeping each
+// element with the same color identity wherever it appears in the UI.
 interface ReadingPoint {
   time: string;
   windSpeedKmh: number | null;
@@ -48,13 +48,12 @@ const ELEMENTS: {
   { key: 'temperatureC', titleAr: 'درجة الحرارة', unit: '°م', color: '#EF4444' },
 ];
 
-// خطأ أداء مكتشَف ومُصلَح (تحقيق ضغط Compute/CPU/Disk IO على خطة Free):
-// كانت هذه البطاقة تستطلع (poll) كل دقيقة بصرف النظر عن وصول قراءة جديدة
-// فعلاً أم لا — بل تُركَّب مرة لكل بطاقة نشاط ظاهرة، فعدة بطاقات معاً تعني
-// عدة استطلاعات متوازية لنفس المشروع. التحديث الفوري يصل الآن عبر اشتراك
-// Realtime مُشترَك (useProjectDeviceReadingsRealtime، قناة واحدة لكل مشروع
-// بصرف النظر عن عدد البطاقات). REFRESH_INTERVAL_MS يبقى فقط كشبكة أمان
-// احتياطية بطيئة جداً تغطي فشل اتصال WebSocket صامت.
+// Performance bottleneck discovered & fixed (alleviating Compute/CPU/Disk IO pressure on Free tier):
+// This card previously polled every minute regardless of whether a new reading actually arrived —
+// and mounted once for each visible activity card, meaning multiple cards created multiple
+// parallel polling streams for the same project. Real-time updates now arrive via a shared
+// Realtime subscription (useProjectDeviceReadingsRealtime, a single channel per project regardless
+// of card count). REFRESH_INTERVAL_MS remains only as a very slow fallback safety net to cover silent WebSocket drops.
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_HOURS = 6;
 
@@ -68,9 +67,9 @@ function formatDateTimeAr(iso: string): string {
   });
 }
 
-// رسم واحد لعنصر واحد — سلسلة نقاط فعلية فقط (لا استيفاء)، خط 2px، نقطة
-// نهاية بارزة (r=4، حلقة سطح 2px) بنفس مواصفات dataviz skill. بلا خريطة
-// ألوان تسلسلية متدرجة هنا لأن كل رسم سلسلة واحدة فقط — لا حاجة لتدرّج.
+// Single chart per element — actual data points series only (no interpolation), 2px stroke,
+// highlighted endpoint (r=4, 2px surface ring) matching dataviz skill specs. No sequential gradient
+// color map here since each chart renders a single series — no need for gradients.
 function SingleElementChart({
   element,
   points,
@@ -143,11 +142,10 @@ function SingleElementChart({
   );
 }
 
-// شبكة رسوم منفصلة لكل عنصر قياس — لنشاط واحد محدَّد (activityGroupId)،
-// وليست مقارنة بين عدة أنشطة (ذاك دور صفحة app/dashboard/Projects/[id]/
-// readings/page.tsx المنفصلة). تُعرض داخل بطاقة تفاصيل النشاط نفسها
-// (ComplianceWidgetCard) — طلب صريح من المستخدم: "مؤشر للقراءات حق النشاط،
-// رسم بياني منفصل لكل عنصر".
+// Grid of separate charts for each measurement element — for a single specific activity (activityGroupId),
+// not a comparison between multiple activities (that is the role of the separate
+// app/dashboard/Projects/[id]/readings/page.tsx page). Rendered inside the activity details card itself
+// (ComplianceWidgetCard) — explicit user requirement: "indicator for activity readings, separate chart for each element".
 export default function ActivityReadingsCharts({
   projectId,
   activityGroupId,
@@ -156,13 +154,13 @@ export default function ActivityReadingsCharts({
   activityGroupId?: string;
 }) {
   const [series, setSeries] = useState<ActivityReadingsSeries | null>(null);
-  // القيمة الابتدائية تعكس ما إذا كان الجلب سيُطلَق فعلياً (projectId/
-  // activityGroupId متوفران) — بلا حاجة لتصحيحها لاحقاً false داخل الـEffect.
+  // Initial value reflects whether fetching will actually be triggered (projectId/
+  // activityGroupId are present) — no need to adjust it to false later inside the Effect.
   const [loading, setLoading] = useState(Boolean(projectId && activityGroupId));
   const [error, setError] = useState<string | null>(null);
 
-  // يُستدعى أيضاً من useProjectDeviceReadingsRealtime عند وصول قراءة جديدة
-  // لهذا المشروع (silent=true) — راجع تعليق REFRESH_INTERVAL_MS أعلاه.
+  // Also called from useProjectDeviceReadingsRealtime when a new reading arrives
+  // for this project (silent=true) — see REFRESH_INTERVAL_MS comment above.
   const fetchHistoryRef = useRef<(silent?: boolean) => void>(() => {});
 
   useEffect(() => {

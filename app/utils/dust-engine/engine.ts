@@ -33,7 +33,7 @@ import {
   visibilityRisk,
   windTransportRisk,
 } from './tables';
-import { fetchDustWeather, fetchDustWeatherHourly } from './weather';
+import { fetchDustWeatherHourly } from './weather';
 import { DustWeatherSample } from './types';
 import { LIVE_FIELD_FRESHNESS_MS } from '@/app/utils/rule-bundles/field-freshness';
 // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "انقل حدود الرؤية 500/1000 إلى حزمة
@@ -926,11 +926,6 @@ export function computeDviResult(
   };
 }
 
-export async function evaluateDustVisibility(input: DustEngineInput): Promise<DviEvaluationResult> {
-  const weather = await fetchDustWeather(input.latitude, input.longitude);
-  return computeDviResult(input, weather);
-}
-
 // =============================================================
 // evaluateLiveOperationalDecision — القسم 9.2 من "دليل الإصلاح الجذري
 // لمنظومة مرقاب": دالة نقية بالكامل (Pure، بلا fetch إطلاقاً) تبني القرار
@@ -977,22 +972,6 @@ export function evaluateLiveOperationalDecision(input: DustEngineInput): DviHour
     rawWeatherSample: neutralWeatherSample,
     mergedReading: mergeDustReading(input, neutralWeatherSample, undefined),
   };
-}
-
-export async function evaluateDustVisibilityHourly(
-  input: DustEngineInput,
-  hoursAhead: number = 24
-): Promise<DviHourlyEvaluation[]> {
-  const samples = await fetchDustWeatherHourly(input.latitude, input.longitude, hoursAhead);
-  // treatAsForecast=true: شبكة توقعات مستقبلية بحتة — تستخدم تقدير الطقس
-  // دائماً لكل ساعة، بلا أي تدخل من الجهاز حتى لو صادفت ساعة معينة وقوعها
-  // قريبة من "الآن" (راجع تعليق treatAsForecast الكامل في mergeDustReading).
-  return samples.map((sample) => ({
-    ...computeDviResult(input, sample, sample.time, true),
-    time: sample.time,
-    rawWeatherSample: sample,
-    mergedReading: mergeDustReading(input, sample, sample.time, true),
-  }));
 }
 
 // -------------------------------------------------------------
@@ -1230,6 +1209,54 @@ function buildAwaitingEvaluationWindow(windowStartIso: string, endMs: number, sa
 // في weather.ts) التي تبقى مطبَّقة لأي نشاط توقّعي بحت.
 const LIVE_WEATHER_TIMEOUT_MS = 3000;
 
+const WEEK_DAY_IDS_ENGINE = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const RIYADH_UTC_OFFSET_MS_ENGINE = 3 * 3600000;
+
+function weekDayIdFromMsEngine(ms: number): string {
+  const riyadhDay = new Date(ms + RIYADH_UTC_OFFSET_MS_ENGINE).getUTCDay();
+  return WEEK_DAY_IDS_ENGINE[riyadhDay];
+}
+
+// خطأ مكتشَف ومُصلَح (سؤال مستخدم مباشر: "لو النشاط مستمر يومين كل يوم 8
+// ساعات، هل الجهاز يوقف قراءته في هذه الفترة؟"): نفس منطق
+// isDustProfileWithinDailyWindow في dustEvaluation.ts بالضبط، مُعاد بناؤه
+// هنا محلياً (لا استيراد مباشر بين الملفين، نفس اتفاقية field-freshness.ts
+// المستخدَمة في هذا الملف أصلاً) — نشاط 8ص-4م لثلاثة أيام لا يُعامَل حياً
+// طوال الليل بين الأيام، فقط ضمن نافذة الدوام الفعلية لكل يوم عمل. fallback
+// آمن لكل الحالات الناقصة (dailyDurationHours غياب/=0، workDaysList فارغة):
+// فترة متصلة واحدة (السلوك القديم بلا تغيير، مطابق تماماً لنشاط بيوم واحد).
+function isActivityLiveNowDailyAware(
+  startMs: number,
+  totalDurationHours: number,
+  nowMs: number,
+  dailyDurationHours: number | null | undefined,
+  workDaysList: string[] | null | undefined
+): boolean {
+  if (!dailyDurationHours || dailyDurationHours <= 0 || !Array.isArray(workDaysList) || workDaysList.length === 0) {
+    const endMs = startMs + totalDurationHours * 3600000;
+    return nowMs >= startMs && nowMs <= endMs;
+  }
+
+  const activeDaysCount = Math.max(1, Math.round(totalDurationHours / dailyDurationHours));
+  const nowDayStartMs = Math.floor((nowMs + RIYADH_UTC_OFFSET_MS_ENGINE) / 86400000) * 86400000 - RIYADH_UTC_OFFSET_MS_ENGINE;
+  const startDayStartMs = Math.floor((startMs + RIYADH_UTC_OFFSET_MS_ENGINE) / 86400000) * 86400000 - RIYADH_UTC_OFFSET_MS_ENGINE;
+
+  let countedDays = 0;
+  const maxDaysToScan = 370;
+  for (let i = 0; i < maxDaysToScan && countedDays < activeDaysCount; i++) {
+    const dayStartMs = startDayStartMs + i * 86400000;
+    if (!workDaysList.includes(weekDayIdFromMsEngine(dayStartMs))) continue;
+    countedDays++;
+    if (dayStartMs !== nowDayStartMs) continue;
+    // نفس ساعة/دقيقة planned_time لكل يوم عمل — startMs نفسه يحمل وقت
+    // البدء اليومي (planned_time)، فنستبدل يوم بدايته فقط بيوم "الآن".
+    const dayStartWithTimeMs = dayStartMs + (startMs - startDayStartMs);
+    const dayEndMs = dayStartWithTimeMs + dailyDurationHours * 3600000;
+    return nowMs >= dayStartWithTimeMs && nowMs <= dayEndMs;
+  }
+  return false;
+}
+
 // -------------------------------------------------------------
 // المنسق الرئيسي للنافذة الزمنية بعد حل مشكلة التاريخ المجدول المستقبلي
 // -------------------------------------------------------------
@@ -1277,7 +1304,15 @@ export async function evaluateDustVisibilityWindow(
   // الطبيعية — hourly هنا هي مصدر worst الوحيد فعلياً لتلك الحالة (راجع
   // pickWorstActualHour أدناه)، فتقصير مهلتها كان سيُفقد دقة القرار
   // التوقّعي بلا أي فائدة مقابلة.
-  const isLiveNow = nowMs >= startMs && nowMs <= endMs;
+  //
+  // خطأ مكتشَف ومُصلَح (سؤال مستخدم مباشر: "لو النشاط مستمر يومين كل يوم 8
+  // ساعات، هل الجهاز يوقف قراءته في هذه الفترة؟" — راجع isActivityLiveNowDailyAware
+  // أعلاه): nowMs>=startMs && nowMs<=endMs كانت تحسب duration الإجمالية
+  // (16 ساعة ليومين) كفترة متصلة واحدة بلا وعي بالفجوة الليلية — نفس الخلل
+  // الذي حلّته isDustProfileWithinDailyWindow (dustEvaluation.ts) في أماكن
+  // أخرى، أُصلح هنا أيضاً لأن هذا الملف مصدر مستقل (لا استيراد مشترك) يُستدعى
+  // مباشرة من app/api/alerts/generate/route.ts بمعزل عن ذلك الإصلاح.
+  const isLiveNow = isActivityLiveNowDailyAware(startMs, safeDuration, nowMs, input.dailyDurationHours, input.workDaysList);
   const weatherTimeoutMs = isLiveNow ? LIVE_WEATHER_TIMEOUT_MS : undefined;
 
   // تعديل حاسم: تم تمرير windowStartIso كـ anchorIso لمنع تكرار بيانات التنبؤ عند اختلاف التواريخ المستقبلية

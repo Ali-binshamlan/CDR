@@ -5,16 +5,23 @@ import { safeErrorResponse } from '@/app/lib/apiError';
 import { displayActivityLabel } from '@/app/lib/activityLabels';
 import { riyadhLocalToUtcIso } from '@/app/lib/dustEvaluation';
 
-// أقصى مدى زمني نقبله عبر hours= — نفس سقف pm10-history/route.ts.
-const MAX_HOURS = 24 * 14; // أسبوعان
-const DEFAULT_HOURS = 6;
+/*
+ * Historical Telemetry & Device Readings Endpoint:
+ * Fetches time-series telemetry metrics (`device_readings_history`) for a project, aggregated 
+ * by activity groups based on assigned device IDs (`project_dust_profiles.device_id`).
+ *
+ * Operational, Security & Architectural Highlights:
+ * 1. Authorization & Scope Verification: Validates user session (`requireUserId`) and verifies project ownership (`verifyProjectOwnership`).
+ * 2. Strict Activity Operational Window Isolation: Filters device telemetry strictly between activity 
+ *    start (`planned_date` + `planned_time` in UTC) and end (`planned_start` + `duration_hours`), eliminating 
+ *    pre-start buffer bleed and cross-activity telemetry leakage when devices are reassigned across schedules.
+ * 3. Comprehensive Metric Mapping: Exposes multi-sensor parameters (wind speed/gust/direction, PM10, PM2.5, 
+ *    visibility, relative humidity, and temperature) for precise chart rendering.
+ * 4. Empty Set Filtering: Prunes activity groups with zero matching telemetry records in the selected time range.
+ */
 
-// طلب مستخدم صريح نهائي ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية
-// النشاط — يعني اذا المشروع 8 ساعات يقرأ فترة الدوام فقط. ألغِ هامش
-// الساعتين نهائياً"): كان هنا هامش ACTIVITY_LIVE_MARGIN_MS (ساعتان) يقبل
-// قراءات وصلت قبل planned_time — أُلغي كلياً ليطابق الرسم البياني نفس
-// نافذة القرار بالضبط (isActivityLiveForDevice في dustEvaluation.ts):
-// [planned_time, planned_time + duration]، بلا هامش قبل البدء.
+const MAX_HOURS = 24 * 14; // 14 days maximum
+const DEFAULT_HOURS = 6;
 
 type ReadingPoint = {
   time: string;
@@ -28,11 +35,6 @@ type ReadingPoint = {
   temperatureC: number | null;
 };
 
-// يجلب سجل device_readings_history لمشروع، مُجمَّعاً حسب device_id ثم مرتبطاً
-// بكل نشاط عبر project_dust_profiles.device_id — للرسم البياني التاريخي لكل
-// عنصر قياس على حدة (رياح/هبة/اتجاه/رؤية/رطوبة/حرارة/PM10/PM2.5). نفس مبدأ
-// pm10-history/route.ts تماماً (تجميع حسب نشاط عبر الجهاز المرتبط)، لكن كل
-// الحقول معاً بدل PM10 وحده.
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> }
@@ -44,6 +46,9 @@ export async function GET(
     const { projectId: rawProjectId } = await params;
     const projectId = rawProjectId.trim();
 
+    /*
+     * Verify project ownership boundaries
+     */
     const owns = await verifyProjectOwnership(projectId, auth.userId);
     if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
@@ -53,36 +58,41 @@ export async function GET(
       : DEFAULT_HOURS;
     const sinceIso = new Date(Date.now() - hours * 3600000).toISOString();
 
-    // كل الأنشطة المرتبطة بجهاز فعلياً — الأنشطة بلا device_id لا سجل قراءات
-    // لها في هذا الجدول أصلاً (لا فائدة من تضمينها).
+    /*
+     * Fetch active profiles bound to a physical hardware device
+     */
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from('project_dust_profiles')
       .select('id, activity_group_id, device_id, regulatory_activity, planned_date, planned_time, duration_hours')
       .eq('project_id', projectId)
       .not('device_id', 'is', null);
+
     if (profilesError) {
-      return NextResponse.json({ error: safeErrorResponse(profilesError, 'device-readings-history profiles fetch failed') }, { status: 500 });
+      return NextResponse.json(
+        { error: safeErrorResponse(profilesError, 'device-readings-history profiles fetch failed') },
+        { status: 500 }
+      );
     }
 
-    // خطأ مكتشَف ومُصلَح (نفس الجهاز يُستخدَم لأكثر من نشاط متتالٍ فيرث
-    // النشاط الجديد قراءات النشاط القديم كاملة): windowStartMs/windowEndMs
-    // يحصران قراءات الجهاز المضمومة لكل نشاط ضمن نافذته الفعلية فقط (من
-    // planned_date/planned_time وحتى planned_start+duration_hours، أو الآن
-    // إن كان لا يزال جارياً) — بنفس startIso المستخدَم في computeDustResults
-    // (dustEvaluation.ts) لحساب DVI لهذا النشاط بالضبط.
+    /*
+     * Group activities and construct precise time execution windows
+     */
     const groups = new Map<
       string,
       { activityGroupId: string; label: string; deviceIds: Set<string>; windowStartMs: number | null; windowEndMs: number }
     >();
+
     for (const row of profiles || []) {
       const groupId = row.activity_group_id || `dust-${row.id}`;
       let g = groups.get(groupId);
+
       if (!g) {
         const startIso = riyadhLocalToUtcIso(row.planned_date, row.planned_time);
         const rawStartMs = startIso ? new Date(startIso).getTime() : null;
         const startMs = rawStartMs;
         const durationHours = Math.max(1, Math.round(row.duration_hours || 1));
         const endMs = rawStartMs !== null ? rawStartMs + durationHours * 3600000 : Date.now();
+
         g = {
           activityGroupId: groupId,
           label: displayActivityLabel(row),
@@ -99,14 +109,21 @@ export async function GET(
       return NextResponse.json({ activities: [], hours });
     }
 
+    /*
+     * Retrieve raw telemetry readings for project devices within specified lookback timeframe
+     */
     const { data: readings, error: readingsError } = await supabaseAdmin
       .from('device_readings_history')
       .select('device_id, recorded_at, wind_speed_kmh, wind_gust_kmh, wind_direction_deg, pm10_ug_m3, pm25_ug_m3, visibility_m, relative_humidity_percent, temperature_c')
       .eq('project_id', projectId)
       .gte('recorded_at', sinceIso)
       .order('recorded_at', { ascending: true });
+
     if (readingsError) {
-      return NextResponse.json({ error: safeErrorResponse(readingsError, 'device-readings-history readings fetch failed') }, { status: 500 });
+      return NextResponse.json(
+        { error: safeErrorResponse(readingsError, 'device-readings-history readings fetch failed') },
+        { status: 500 }
+      );
     }
 
     const readingsByDevice = new Map<string, ReadingPoint[]>();
@@ -126,30 +143,33 @@ export async function GET(
       readingsByDevice.get(row.device_id)!.push(point);
     }
 
+    /*
+     * Filter readings per activity group strictly within its scheduled operational window
+     */
     const activities = Array.from(groups.values())
       .map((g) => {
         const points = Array.from(g.deviceIds)
           .flatMap((deviceId) => readingsByDevice.get(deviceId) ?? [])
-          // قراءة الجهاز تُضم لهذا النشاط فقط إن وقعت ضمن نافذته الفعلية —
-          // راجع تعليق windowStartMs أعلاه لمنع نشاط جديد من وراثة قراءات
-          // نشاط قديم انتهى على نفس الجهاز.
           .filter((p) => {
             const recordedMs = new Date(p.time).getTime();
             if (g.windowStartMs !== null && recordedMs < g.windowStartMs) return false;
             return recordedMs <= g.windowEndMs;
           })
           .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+
         return {
           activityGroupId: g.activityGroupId,
           label: g.label,
           readings: points,
         };
       })
-      // نشاط بلا أي قراءة خلال المدى المطلوب لا يُفيد الرسم — يُستبعد.
       .filter((a) => a.readings.length > 0);
 
     return NextResponse.json({ activities, hours });
   } catch (error) {
-    return NextResponse.json({ error: safeErrorResponse(error, 'device-readings-history failed') }, { status: 500 });
+    return NextResponse.json(
+      { error: safeErrorResponse(error, 'device-readings-history failed') },
+      { status: 500 }
+    );
   }
 }

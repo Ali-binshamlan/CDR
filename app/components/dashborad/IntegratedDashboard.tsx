@@ -22,12 +22,12 @@ const ProjectsMap = dynamic(() => import('./ProjectsMap'), {
   ),
 });
 
-// لوحة التحكم المتكاملة للمستخدم العادي — تستبدل GlobalDashboard (خريطة فقط)
-// كصفحة رئيسية له، مع بطاقات إحصائية وقوائم مختصرة أعلى نفس الخريطة. تستهلك
-// نفس /dashboard/global دون أي تعديل عليه — كل الحقول المطلوبة (projects،
-// alerts مفلترة state != CLOSED، dustActivities مفلترة planned_date=اليوم،
-// liveActivityByProjectId) موجودة فيه فعلاً. GlobalDashboard.tsx يبقى بلا
-// تغيير لأنه يُستخدم أيضاً في /dashboard/viewer (خريطة فقط بتصميم مقصود).
+// Integrated dashboard for standard users — replaces GlobalDashboard (map-only)
+// as their main page, featuring stat cards and quick lists above the same map. It consumes
+// the same /dashboard/global without any modification — all required fields (projects,
+// alerts filtered by state != CLOSED, dustActivities filtered by planned_date=today,
+// liveActivityByProjectId) are already present in it. GlobalDashboard.tsx remains unchanged
+// as it is also used in /dashboard/viewer (a intentionally map-only design).
 interface DashboardProjectRow {
   id: string;
   name: string;
@@ -69,11 +69,11 @@ export default function IntegratedDashboard() {
   const [alerts, setAlerts] = useState<DashboardAlertRow[]>([]);
   const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, LiveActivitySummary>>({});
   const [isLoading, setIsLoading] = useState(true);
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
-  // إلى أرقام صفرية أو حالات فارغة مضللة"): كان catch يكتفي بـconsole.error
-  // بلا أي error state — فشل شبكة كان يعني بطاقات "0 مشاريع / 0 أنشطة / 0
-  // تنبيهات" وقوائم "لا توجد بيانات"، مطابقة بصرياً تماماً لحالة نجاح فعلي
-  // بلا بيانات. error state يعرض شاشة خطأ صريحة بدل ذلك (نفس نمط
+  // Detected and fixed bug (explicit user request — "Network errors often turn into
+  // misleading zero numbers or empty states"): the catch block only logged console.error
+  // without setting an error state — a network failure resulted in "0 projects / 0 activities / 0
+  // alerts" cards and "No data available" lists, visually identical to an actual successful response
+  // with no data. The error state renders an explicit error screen instead (same pattern as
   // Projects/[id]/page.tsx).
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
@@ -118,8 +118,8 @@ export default function IntegratedDashboard() {
     [todayActivities]
   );
 
-  // نفس منطق mapPoints في GlobalDashboard.tsx — القرار حصراً من النشاط
-  // الجاري فعلياً الآن (القرار الموحد للنشاط)، بلا أي fallback لأخطر تنبيه.
+  // Same mapPoints logic as in GlobalDashboard.tsx — decision is derived exclusively from the
+  // currently active ongoing activity (unified activity decision), with no fallback to the critical alert level.
   const mapPoints: ProjectPoint[] = useMemo(() => {
     return projects
       .filter((p) => typeof p.latitude === 'number' && typeof p.longitude === 'number')
@@ -187,7 +187,7 @@ export default function IntegratedDashboard() {
           </Link>
         </div>
 
-        {/* بطاقات إحصائية */}
+        {/* Stat Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-blue-50 text-[#0176FB] flex items-center justify-center shrink-0">
@@ -221,7 +221,7 @@ export default function IntegratedDashboard() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* أنشطة اليوم */}
+          {/* Today's Activities */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-extrabold text-[#061B40] text-base flex items-center gap-2">
@@ -255,7 +255,7 @@ export default function IntegratedDashboard() {
             </div>
           </div>
 
-          {/* أحدث التنبيهات */}
+          {/* Latest Alerts */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-extrabold text-[#061B40] text-base flex items-center gap-2">
@@ -292,7 +292,7 @@ export default function IntegratedDashboard() {
           </div>
         </div>
 
-        {/* الخريطة */}
+        {/* Map */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
           <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
             <MapIcon className="w-4 h-4 text-[#0176FB]" />
@@ -304,14 +304,13 @@ export default function IntegratedDashboard() {
                 لا تتوفر إحداثيات (latitude / longitude) للمشاريع بعد.
               </div>
             ) : (
-              // خطأ مكتشَف ومُصلَح (المستخدم لاحظ: "في خريطه المستخدم عادي
-              // تظهر القراءه ... ليست تبع الجهاز"): قسم قراءات الطقس في
-              // HoverCard (ProjectsMap.tsx) يجلب من /api/weather — تقدير
-              // Open-Meteo العام للموقع الجغرافي، بلا أي تحقق من وجود جهاز
-              // رصد حقيقي مرتبط بالمشروع أو قراءاته الحية الفعلية. مستخدم
-              // يفترض أنها قراءة جهازه الفعلي يُضلَّل. hideRawReadings يمنع
-              // هذا القسم بالكامل (ونداء /api/weather نفسه) — نفس الآلية
-              // المستخدمة أصلاً لخريطة جهة المراقبة (GlobalDashboard.tsx).
+              // Detected and fixed bug (User feedback: "In the standard user map,
+              // readings appear... they are not from the IoT device"): Weather readings section in
+              // HoverCard (ProjectsMap.tsx) fetches from /api/weather — Open-Meteo general
+              // estimate for the geographic location, without checking for an actual linked IoT monitoring
+              // device or its real live readings. A user assuming it's their physical device reading is misled.
+              // hideRawReadings suppresses this section entirely (and the /api/weather call itself) —
+              // same mechanism originally used for the viewer dashboard map (GlobalDashboard.tsx).
               <ProjectsMap points={mapPoints} onSelect={(id) => router.push(`/dashboard/Projects/${id}`)} hideRawReadings />
             )}
           </div>

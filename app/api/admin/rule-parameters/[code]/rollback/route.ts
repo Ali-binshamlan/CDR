@@ -3,12 +3,15 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// تراجع لنسخة سابقة — يُفوَّض لـ rollback_rule_parameter_version (RPC،
-// migration 202608060003): يعيد نشر قيمة نسخة سابقة (versionId، أي حالة —
-// عادة SUPERSEDED) كنسخة PUBLISHED جديدة تماماً (append-only، لا تعديل
-// رجعي على الصف القديم؛ راجع تعليق الدالة الكامل في الهجرة). "تراجع" هنا
-// يعني "انشر القيمة القديمة من جديد" لا "امسح ما حدث" — السجل التاريخي
-// الكامل يبقى محفوظاً.
+/*
+ * Rolls back to a previous parameter version. Delegated to `rollback_rule_parameter_version` 
+ * (RPC, migration 202608060003): Re-publishes the value of a historical version (`versionId`, 
+ * any status—typically `SUPERSEDED`) as a brand-new `PUBLISHED` version (strictly append-only, 
+ * no retrospective mutations on the old row; see full function comment in migration file).
+ * 
+ * Note: "Rollback" in this architecture means "re-publish the previous value as a new version" 
+ * rather than deleting/mutating historical records—complete audit history is preserved.
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
@@ -16,9 +19,10 @@ export async function POST(
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
 
-  // code في الرابط للتحقق فقط (يطابق الواجهة، تناسق مع بقية هذا المسار) —
-  // الدالة الفعلية تعتمد على versionId حصراً (يحمل parameter_code أصلاً في
-  // صفه) لا على هذا المعامل.
+  /*
+   * `code` parameter in URL is extracted for validation/route consistency only.
+   * The underlying RPC relies exclusively on `versionId` (which already embeds `parameter_code` on its row).
+   */
   await params;
 
   const body = await request.json().catch(() => null);

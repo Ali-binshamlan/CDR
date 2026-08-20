@@ -72,7 +72,7 @@ function riskWeightFromColor(color: string | undefined | null): number {
 // مع دمج aei تماماً كما تفعل الدالة نفسها) بدل الصف المخزَّن، فيعكسان دائماً
 // نفس اللحظة بالضبط. الصف المخزَّن يبقى fallback فقط حين لا توجد نتيجة محرك
 // حية لهذا النشاط في هذا الطلب (نادر: نشاط فشل حسابه هذه الدورة تحديداً).
-function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean } {
+function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean; mandatoryStop: boolean } {
   const dviWorst = engineResult.windowEval.worst;
   // startIso ضروري لحساب mode الصحيح (PLANNING لنشاط مستقبلي بعيد) — راجع
   // تعليق computeUnifiedActivityDecision في dustEvaluation.ts للسبب الكامل.
@@ -81,22 +81,25 @@ function summaryFromLiveDecision(engineResult: DustResultItem): { decisionLabel:
     engineResult.compliance ?? null,
     engineResult.aei ?? null,
     engineResult.startIso,
-    engineResult.durationHours
+    engineResult.durationHours,
+    engineResult.isLiveForDevice
   );
   return {
     decisionLabel: decision.decisionLabelAr,
     riskWeight: riskWeightFromColor(decision.level),
     reasonText: decision.shortReason || undefined,
     isLiveComputed: true,
+    mandatoryStop: decision.mandatoryStop,
   };
 }
 
-function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean } {
+function summaryFromStoredDecision(storedDecision: StoredFinalDecisionRow): { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean; mandatoryStop: boolean } {
   return {
     decisionLabel: storedDecision.decision_label_ar,
     riskWeight: riskWeightFromColor(storedDecision.level),
     reasonText: storedDecision.short_reason_ar || undefined,
     isLiveComputed: false,
+    mandatoryStop: storedDecision.mandatory_stop,
   };
 }
 
@@ -149,7 +152,7 @@ interface RecentActivityItem {
   // "معاينة حية" (Live Preview) عن "قرار رسمي محفوظ" بدل عرض كليهما بنفس
   // المظهر دون تفريق — بلا تغيير في زمن الاستجابة (لا إعادة هيكلة GET/
   // evaluate، فقط شفافية إضافية حول مصدر كل قيمة معروضة).
-  summaries: { kind: 'dust'; label: string; decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean }[];
+  summaries: { kind: 'dust'; label: string; decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean; mandatoryStop: boolean }[];
   decisionTargets: DecisionTarget[];
   mandatoryStop: boolean;
   isFutureActivity: boolean;
@@ -215,6 +218,7 @@ export function buildRecentActivities(
     riskWeight: number;
     reasonText?: string;
     isLiveComputed: boolean;
+    mandatoryStop: boolean;
   };
 
   const groups = new Map<string, Acc>();
@@ -288,7 +292,7 @@ export function buildRecentActivities(
     // المشاريع، القسم 12.2).
     const storedDecision = finalDecisionsByGroup.get(activityDecisionKey(projectId, groupId));
 
-    let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean };
+    let summaryFields: { decisionLabel: string; riskWeight: number; reasonText?: string; isLiveComputed: boolean; mandatoryStop: boolean };
     if (engineResult) {
       summaryFields = summaryFromLiveDecision(engineResult);
     } else if (storedDecision) {
@@ -300,6 +304,7 @@ export function buildRecentActivities(
         riskWeight: 0,
         reasonText: 'لم يصدر قرار موثّق لهذا المؤشر بعد',
         isLiveComputed: false,
+        mandatoryStop: false,
       };
     }
 
@@ -343,10 +348,20 @@ export function buildRecentActivities(
     .sort((a, b) => (a.latestCreatedAt < b.latestCreatedAt ? 1 : -1))
     .slice(0, 6) // أحدث 6 مجموعات نشاط (لا 6 صفوف) — يحافظ على نية limit السابقة
     .map((acc) => {
-      // إيقاف إلزامي مؤكَّد إن قال أي مؤشر بذلك — riskWeight=4 (الأسود) حصراً،
-      // لا 3 (الأحمر، يشمل حالات معلَّقة/مؤقتة مثل MRQ-PM10-BLACK-PENDING-104
-      // لا يجوز معاملتها كإيقاف إلزامي نهائي).
-      const mandatoryStop = acc.summaries.some((s) => s.riskWeight === 4);
+      // إيقاف إلزامي مؤكَّد إن قال أي مؤشر بذلك — يُقرأ من الحقل الحقيقي
+      // s.mandatoryStop (مصدره decideFinal.mandatoryStop عبر summaryFromLiveDecision
+      // /summaryFromStoredDecision) لا من riskWeight===4 (وكيل لوني فقط).
+      //
+      // خطأ معماري مكتشَف ومُصلَح (مراجعة كود — تدقيق تناسق المحركات الأربعة،
+      // الفئة 4): كانت riskWeight===4 (أي level==='BLACK') تُستخدَم كوكيل
+      // لـmandatoryStop، لكن AEI CLOSED يُترجَم في decideFinal إلى
+      // PROTECTIVE_STOP (mandatoryStop=false عمداً، راجع تعليق AEI_TO_OPERATION
+      // في final-decision-engine/engine.ts) بينما level قد يبقى 'BLACK'
+      // (موروث من aei.color) — تناقض مباشر: البانر الموحّد كان يعرض "إيقاف
+      // إلزامي نظامي" بينما بطاقة AEI لنفس النشاط/اللحظة تعرض إغلاقاً احترازياً
+      // غير إلزامي فعلياً. الإصلاح: قراءة mandatoryStop الحقيقي المخزَّن على كل
+      // ملخص مؤشر بدل اشتقاقه من اللون.
+      const mandatoryStop = acc.summaries.some((s) => s.mandatoryStop === true);
       const isFutureActivity = acc.windowStartIso ? new Date(acc.windowStartIso).getTime() > nowMs : false;
 
       // العنوان النهائي = كل الأنشطة التنظيمية المميّزة مدموجة (مثال:

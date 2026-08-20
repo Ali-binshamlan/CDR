@@ -52,6 +52,34 @@ function mockForecastAirResponses(forecastBody: unknown, airBody: unknown) {
   );
 }
 
+// بيانات محاكاة مبنية على مرساة زمنية مُمرَّرة — windowStartIso/"الآن" يجب
+// أن يقعا فعلياً ضمن ساعات الاستجابة المُحاكاة، وإلا يُرمى DATA_UNAVAILABLE
+// بغض النظر عن الغرض الفعلي من الاختبار (فحص قيمة timeout، لا محتوى النتيجة).
+function buildHourlySamplesAround(anchorIso: string) {
+  const anchorHourMs = Math.floor(new Date(anchorIso).getTime() / 3600000) * 3600000;
+  const times = [-1, 0, 1, 2, 3].map((h) => new Date(anchorHourMs + h * 3600000).toISOString().slice(0, 16));
+  const n = times.length;
+  return {
+    forecast: {
+      hourly: {
+        time: times,
+        visibility: Array(n).fill(9000),
+        weather_code: Array(n).fill(0),
+        wind_speed_10m: Array(n).fill(10),
+        wind_gusts_10m: Array(n).fill(15),
+        wind_direction_10m: Array(n).fill(180),
+        relative_humidity_2m: Array(n).fill(30),
+        temperature_2m: Array(n).fill(35),
+        precipitation: Array(n).fill(0),
+      },
+      daily: { precipitation_sum: [0] },
+    },
+    air: {
+      hourly: { time: times, pm10: Array(n).fill(50), pm2_5: Array(n).fill(20), dust: Array(n).fill(10) },
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -142,35 +170,6 @@ describe('evaluateDustVisibilityWindow — worst يجب أن يكون ساعة �
   // ينتظر Open-Meteo". نشاط حي بجهاز مرتبط لا يحتاج انتظار مهلة الشبكة
   // الكاملة (worst يُعاد بناؤه من الجهاز بصرف النظر عن نتيجة هذا الطلب) —
   // يجب أن يستخدم مهلة مختصرة (3 ثوانٍ) بدل الافتراضية (7 ثوانٍ).
-  //
-  // بيانات محاكاة مبنية على الوقت الفعلي وقت التشغيل (لا تواريخ ثابتة مثل
-  // THREE_HOUR_FORECAST أعلاه) — windowStartIso يجب أن يقع فعلياً ضمن ساعات
-  // الاستجابة المُحاكاة، وإلا يُرمى DATA_UNAVAILABLE بغض النظر عن الغرض
-  // الفعلي من هذين الاختبارين (فحص قيمة timeout، لا محتوى النتيجة).
-  function buildHourlySamplesAround(anchorIso: string) {
-    const anchorHourMs = Math.floor(new Date(anchorIso).getTime() / 3600000) * 3600000;
-    const times = [-1, 0, 1, 2, 3].map((h) => new Date(anchorHourMs + h * 3600000).toISOString().slice(0, 16));
-    const n = times.length;
-    return {
-      forecast: {
-        hourly: {
-          time: times,
-          visibility: Array(n).fill(9000),
-          weather_code: Array(n).fill(0),
-          wind_speed_10m: Array(n).fill(10),
-          wind_gusts_10m: Array(n).fill(15),
-          wind_direction_10m: Array(n).fill(180),
-          relative_humidity_2m: Array(n).fill(30),
-          temperature_2m: Array(n).fill(35),
-          precipitation: Array(n).fill(0),
-        },
-        daily: { precipitation_sum: [0] },
-      },
-      air: {
-        hourly: { time: times, pm10: Array(n).fill(50), pm2_5: Array(n).fill(20), dust: Array(n).fill(10) },
-      },
-    };
-  }
 
   it('نشاط حي الآن بجهاز مرتبط يستخدم مهلة شبكة مختصرة (3 ثوانٍ)', async () => {
     const nowIso = new Date().toISOString();
@@ -225,5 +224,90 @@ describe('evaluateDustVisibilityWindow — worst يجب أن يكون ساعة �
 
     expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
     expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);
+  });
+});
+
+// خطأ مكتشَف ومُصلَح (سؤال مستخدم مباشر: "لو النشاط مستمر يومين كل يوم 8
+// ساعات، هل الجهاز يوقف قراءته في هذه الفترة؟"): نشاط متعدد الأيام
+// (dailyDurationHours أقل من durationHours الإجمالية) كان يُعامَل كفترة
+// متصلة واحدة بلا وعي بالفجوة الليلية بين أيام العمل — نفس الخلل الذي
+// حلّته isDustProfileWithinDailyWindow (dustEvaluation.ts) في أماكن أخرى.
+// isActivityLiveNowDailyAware (دالة داخلية في engine.ts) تحلّه هنا أيضاً.
+describe('evaluateDustVisibilityWindow — نشاط متعدد الأيام (dailyDurationHours): الفجوة الليلية ليست "حية"', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // نشاط يبدأ الأحد 08:00 بتوقيت الرياض، يومان بدوام 8 ساعات (duration=16،
+  // dailyDurationHours=8)، أيام العمل كل الأسبوع (workDaysList كاملة) —
+  // "الآن" مضبوطة على منتصف الليل بين اليومين (الأحد 23:00 بتوقيت الرياض)،
+  // خارج نافذة أي من اليومين [08:00-16:00].
+  it('منتصف الليل بين يومي العمل (خارج نافذة الدوام لكلا اليومين) → مهلة الشبكة الكاملة (ليس حياً)', async () => {
+    vi.useFakeTimers();
+    // الأحد 2026-08-09 08:00 بتوقيت الرياض = 05:00Z
+    const startIso = '2026-08-09T05:00:00.000Z';
+    // نفس اليوم 23:00 بتوقيت الرياض = 20:00Z — بعد نهاية دوام اليوم الأول
+    // (08:00-16:00) وقبل بداية دوام اليوم الثاني (الاثنين 08:00) بكثير.
+    vi.setSystemTime(new Date('2026-08-09T20:00:00.000Z'));
+
+    const { forecast, air } = buildHourlySamplesAround('2026-08-09T20:00:00.000Z');
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    await evaluateDustVisibilityWindow(
+      input({
+        hasDeviceLink: true,
+        dailyDurationHours: 8,
+        workDaysList: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+      }),
+      startIso,
+      16
+    );
+
+    expect(abortTimeoutSpy).not.toHaveBeenCalledWith(3000);
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(7000);
+  });
+
+  it('ضمن ساعات دوام اليوم الثاني فعلياً (اليوم التالي 10:00 بتوقيت الرياض) → مهلة مختصرة (حي فعلاً)', async () => {
+    vi.useFakeTimers();
+    const startIso = '2026-08-09T05:00:00.000Z'; // الأحد 08:00 بتوقيت الرياض
+    // الاثنين 2026-08-10 10:00 بتوقيت الرياض = 07:00Z — ضمن دوام اليوم
+    // الثاني [08:00-16:00 بتوقيت الرياض] فعلياً.
+    vi.setSystemTime(new Date('2026-08-10T07:00:00.000Z'));
+
+    const { forecast, air } = buildHourlySamplesAround('2026-08-10T07:00:00.000Z');
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    // الغرض هنا فحص قيمة weatherTimeoutMs (تُحدَّد وتُستهلَك قبل أي محاولة
+    // بناء worst) — الاستجابة المُحاكاة (5 ساعات حول الاثنين 07:00Z) لا
+    // تغطي كامل نافذة الـ16 ساعة للنشاط (تبدأ الأحد 05:00Z)، فقد يُرمى
+    // DATA_UNAVAILABLE لاحقاً في pickWorstActualHour — غير ذي صلة بما
+    // نختبره هنا؛ نلتقطه بلا فحص محتواه.
+    await evaluateDustVisibilityWindow(
+      input({
+        hasDeviceLink: true,
+        dailyDurationHours: 8,
+        workDaysList: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+      }),
+      startIso,
+      16
+    ).catch(() => {});
+
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(3000);
+  });
+
+  it('بلا dailyDurationHours (undefined) → فشل آمن نحو فترة متصلة واحدة (منتصف الليل يبقى "حياً"، السلوك القديم)', async () => {
+    vi.useFakeTimers();
+    const startIso = '2026-08-09T05:00:00.000Z';
+    vi.setSystemTime(new Date('2026-08-09T20:00:00.000Z')); // نفس منتصف الليل أعلاه
+
+    const { forecast, air } = buildHourlySamplesAround('2026-08-09T20:00:00.000Z');
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mockForecastAirResponses(forecast, air);
+
+    await evaluateDustVisibilityWindow(input({ hasDeviceLink: true }), startIso, 16);
+
+    expect(abortTimeoutSpy).toHaveBeenCalledWith(3000);
   });
 });

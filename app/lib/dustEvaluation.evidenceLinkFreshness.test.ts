@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { persistActivityDecisionsAtomic, NEUTRAL_DVI_FALLBACK } from './dustEvaluation';
 import type { DustResultItem, DustComplianceResultItem } from './dustEvaluation';
@@ -234,5 +234,34 @@ describe('persistActivityDecisionsAtomic — activityGroupId/finalDecisionId ف�
     expect(results[0].failed).toBe(true);
     expect(results[0].conflict).toBe(true);
     expect(results[0].finalDecisionId).toBeNull();
+  });
+
+  // خطأ سباق مُصلَح (migration 202608200003 — "أرشفة نشاط أثناء دورة تقييم
+  // متزامنة"): ACTIVITY_ARCHIVED (مثل PROJECT_ARCHIVED الأقدم) تعارض تزامن
+  // طبيعي متوقّع، لا خطأ حقيقي يستحق console.error — النشاط ببساطة أُرشِف
+  // بين بداية الدورة ووصولها لهذا الاستدعاء، سيُستبعَد تلقائياً من الدورة
+  // التالية. failed=true (لا نتيجة صالحة لهذا النشاط)، لكن conflict=false
+  // (ليس 40001 — لا يستفيد من نفس منطق إعادة المحاولة الفورية لتعارض CAS).
+  it('فشل RPC (ACTIVITY_ARCHIVED) → failed=true بلا conflict، وبلا console.error (تعارض تزامن متوقّع لا خطأ حقيقي)', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const mockSupabase = {
+      from: () => ({
+        select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+      }),
+      rpc: async (name: string) => {
+        if (name === 'persist_activity_decision_atomic') {
+          return { data: null, error: { code: 'P0001', message: 'ACTIVITY_ARCHIVED' } };
+        }
+        return { data: null, error: null };
+      },
+    } as unknown as SupabaseClient;
+
+    const dustResults = [minimalDustResult({ activityGroupId: 'group-c', activityId: 'activity-3' })];
+    const results = await persistActivityDecisionsAtomic(mockSupabase, 'project-1', dustResults, [], 'user_refresh', 'user_refresh');
+
+    expect(results[0].failed).toBe(true);
+    expect(results[0].conflict).toBe(false);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });

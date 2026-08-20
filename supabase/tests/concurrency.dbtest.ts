@@ -271,6 +271,79 @@ describe('Archive متزامن مع Persist Decision — لا قرار جديد 
   });
 });
 
+// خطأ سباق مكتشَف (مراجعة كود — "أرشفة نشاط أثناء دورة تقييم متزامنة"،
+// migration 202608200003): PROJECT_ARCHIVED أعلاه يحمي فقط أرشفة *المشروع*
+// بالكامل — لا شيء كان يمنع persist_activity_decision_atomic من إعادة
+// إدراج قرار حي لنشاط (project_dust_profiles) أُرشِف بمفرده (DELETE
+// /api/activities، لا archive_project_atomic) بينما دورة تقييم متزامنة كانت
+// قد تجاوزت فحصها الوحيد لـarchived_at IS NULL في بداية evaluateProject.ts.
+describe('Archive نشاط واحد متزامن مع Persist Decision — لا قرار جديد بعد أرشفة النشاط', () => {
+  it('أرشفة project_dust_profiles.archived_at وحدها (لا المشروع كاملاً) تمنع persist_activity_decision_atomic لاحقاً بخطأ ACTIVITY_ARCHIVED صريح', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    // نفس ما يفعله DELETE /api/activities فعلياً (أرشفة نشاط واحد فقط، لا
+    // archive_project_atomic على مستوى المشروع بالكامل).
+    const { error: archiveActivityError } = await admin
+      .from('project_dust_profiles')
+      .update({ archived_at: new Date().toISOString(), archived_by: userId })
+      .eq('id', activityId);
+    expect(archiveActivityError).toBeNull();
+
+    const { error: persistError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: baseDviResult(),
+      p_dvi_triggered_by: 'user_refresh',
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: null,
+      p_compliance_rulebook_version: null,
+      p_compliance_triggered_by: null,
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: null,
+      p_final_evaluated_at: null,
+    });
+    expect(persistError).not.toBeNull();
+    expect(persistError!.message).toMatch(/ACTIVITY_ARCHIVED/);
+
+    const { data: decisions } = await admin.from('current_dust_decisions').select('id').eq('project_id', projectId);
+    expect(decisions).toEqual([]);
+  });
+
+  it('نشاط عادي غير مؤرشَف (المشروع أيضاً غير مؤرشَف) لا يزال يُقبَل بلا أي خطأ ACTIVITY_ARCHIVED/PROJECT_ARCHIVED (فحص سلبي — لا يُرفَض بلا سبب)', async () => {
+    const projectId = await createTestProject();
+    const groupId = `group-${randomUUID()}`;
+    const activityId = await createTestActivity(projectId, groupId);
+
+    const { error: persistError } = await admin.rpc('persist_activity_decision_atomic', {
+      p_project_id: projectId,
+      p_activity_group_id: groupId,
+      p_activity_id: activityId,
+      p_dvi_result: baseDviResult(),
+      p_dvi_triggered_by: 'user_refresh',
+      p_dvi_expected_updated_at: null,
+      p_compliance_result: null,
+      p_compliance_rulebook_version: null,
+      p_compliance_triggered_by: null,
+      p_compliance_expected_updated_at: null,
+      p_compliance_dust_profile_id: null,
+      p_compliance_stopped_since: null,
+      p_compliance_pending_resume_since: null,
+      p_final_decision: null,
+      p_final_evaluated_at: null,
+    });
+    expect(persistError).toBeNull();
+
+    const { data: decisions } = await admin.from('current_dust_decisions').select('id').eq('project_id', projectId);
+    expect(decisions).toHaveLength(1);
+  });
+});
+
 describe('Outbox — نية تنبيه واحدة فقط لكل قرار (unique constraint)', () => {
   it('قرار MANDATORY_STOP ينتج نية SAFETY_BREACH واحدة في decision_alert_outbox', async () => {
     const projectId = await createTestProject();

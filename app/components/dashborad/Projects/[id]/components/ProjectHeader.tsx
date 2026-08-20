@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import { MapPin, Settings, ArrowRight } from 'lucide-react';
-// تأكدي من صحة مسار مكون AddActivityModal حسب هيكلة مشروعك
 import AddActivityModal from '@/app/components/AddActivityModal';
 import type { ProjectLite } from '@/app/components/AddActivityModal/types';
 import type { ProjectRow } from '@/app/lib/dustEvaluation';
@@ -11,7 +10,7 @@ interface ProjectHeaderProps {
 }
 
 export default function ProjectHeader({ project, onActivityCreated }: ProjectHeaderProps) {
-  // إعداد الإحداثيات الافتراضية في حال لم تكن متوفرة
+  // Set default coordinates if not available
   const lat = typeof project.latitude === 'number' ? project.latitude : 24.7136;
   const lon = typeof project.longitude === 'number' ? project.longitude : 46.6753;
 
@@ -25,7 +24,7 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
       </div>
       <div className="flex items-center gap-3 w-full lg:w-auto mt-4 lg:mt-0">
         
-        {/* زر إعدادات المشروع */}
+        {/* Project settings button */}
         <Link
           href={`/dashboard/Projects/${project.id}/settings`}
           className="bg-white border border-slate-200 hover:bg-[#F4F7FB] text-[#061B40] px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all"
@@ -33,7 +32,7 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
           <Settings className="w-4 h-4 text-[#3995FF]" /> إعدادات المشروع
         </Link>
 
-        {/* رسم بياني لسجل قراءات PM10 لكل نشاط — راجع
+        {/* Chart for PM10 readings log per activity — see
             app/dashboard/Projects/[id]/readings/page.tsx */}
         {/* <Link
           href={`/dashboard/Projects/${project.id}/readings`}
@@ -42,7 +41,7 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
           <LineChart className="w-4 h-4 text-[#3995FF]" /> سجل القراءات
         </Link> */}
 
-        {/* نافذة إضافة نشاط */}
+        {/* Add activity modal */}
         <AddActivityModal
           project={{
             id: project.id,
@@ -63,7 +62,7 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
             work_hours_end: project.work_hours_end as ProjectLite['work_hours_end'],
             shifts: project.shifts as ProjectLite['shifts'],
             work_days_list: project.work_days_list as ProjectLite['work_days_list'],
-            // منطقة المشروع الكاملة (zone) — تُستخدم لقصّ موقع الرافعة داخلها
+            // Full project zone — used to clip crane location within it
             zone_type: project.zone_type as ProjectLite['zone_type'],
             zone_polygon: project.zone_polygon as ProjectLite['zone_polygon'],
             zone_radius_m: project.zone_radius_m as ProjectLite['zone_radius_m'],
@@ -71,10 +70,10 @@ export default function ProjectHeader({ project, onActivityCreated }: ProjectHea
           onActivityCreated={onActivityCreated}
         />
         
-        {/* زر العودة للمشاريع */}
+        {/* Back to projects button */}
         <Link
           href="/dashboard/Projects"
-          className="bg-white border border-slate-200 hover:bg-[#F4F7FB] text-[#061B40] px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all"
+          className="bg-[#white] border border-slate-200 hover:bg-[#F4F7FB] text-[#061B40] px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all"
         >
           <ArrowRight className="w-4 h-4 text-[#3995FF]" /> العودة للمشاريع
         </Link>

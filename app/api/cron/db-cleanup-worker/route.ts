@@ -5,35 +5,23 @@ import { recordWorkerHeartbeat } from '@/app/lib/workerHeartbeat';
 
 const WORKER_NAME = 'db-cleanup-worker';
 
-// خطة الاحتفاظ طويلة المدى (معتمدة 2026-08-10) — القسم 1: تنظيف الجداول
-// العابرة الستة (بلا حماية append-only، بلا دليل قانوني):
-// telemetry_ingestion_queue, decision_alert_outbox, project_evaluation_jobs
-// (عمود status)، provider_pull_run_lock, scheduler_locks, forecast_snapshots
-// (بلا عمود status، تنظيف بعمر بحت). db-cleanup-worker واحد يغطي الستة بدل
-// ست routes/أسرار منفصلة — نفس مبدأ اقتصاد endpoints المراقبة الخارجية
-// المُستخدَم في scheduler-heartbeat، مطبَّق هنا على عمّال الحذف الدوري.
-//
-// لا تُمس أي جداول أدلة هنا إطلاقاً — الحماية على 3 طبقات مستقلة: (1) هذه
-// المصفوفات الثابتة لا تسمّي إلا الجداول الستة، (2) القائمة البيضاء داخل
-// دوال SQL نفسها (cleanup_transient_table_batch[_by_age]) ترفض أي اسم آخر،
-// (3) triggers forbid_evidence_mutation/forbid_evidence_truncate على جداول
-// الأدلة نفسها ترفض أي DELETE بصرف النظر عن المستدعي.
-//
-// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "صفوف Telemetry الميتة تُحذف
-// بعد سبعة أيام"): telemetry_ingestion_queue/DEAD هو الاستثناء الوحيد من
-// "حذف مباشر بحت" ضمن الستة أعلاه — صف DEAD قد يكون النسخة الوحيدة
-// الموجودة لقراءة جهاز حقيقية لم تُحفظ بنجاح بعد. راجع تعليق
-// archive_dead_telemetry_batch أسفل هذا الملف وmigration 202608120002
-// للتفصيل الكامل: يُنقَل الآن إلى telemetry_dead_letter الدائم (Replay أو
-// اعتماد بشري موثَّق فقط يُخرجه من هناك لاحقاً)، لا حذف نهائي مباشر.
-//
-// نمط قفل تداخل الدورة: نفس provider_pull_run_lock/scheduler_locks حرفياً
-// (PRIMARY KEY على نافذة زمنية 5 دقائق — أطول من نافذة provider-pull لأن
-// هذه الدورة تنفّذ حتى 7 حذوفات دفعية متتالية، لا عملية واحدة خفيفة).
+/*
+ * Long-Term Data Retention & Maintenance Strategy (Consolidated Endpoint):
+ * Manages periodic batch deletion and archival across transient database tables:
+ * 1. `telemetry_ingestion_queue` (Processed rows purged, DEAD rows archived to `telemetry_dead_letter`)
+ * 2. `decision_alert_outbox`
+ * 3. `project_evaluation_jobs`
+ * 4. `provider_pull_run_lock`, `scheduler_locks`, `forecast_snapshots`, `db_cleanup_run_lock`, `scheduler_tick_run_lock`, `forecast_refresh_run_lock`
+ *
+ * Security & Audit Safeguards:
+ * - Evidence & Audit Tables: Strictly excluded from deletion. SQL functions enforce explicit table white-listing,
+ *   supplemented by database-level triggers blocking deletion/truncation on evidentiary records.
+ * - Archival Integrity: Failed telemetry records (`status = 'DEAD'`) are moved atomically to `telemetry_dead_letter`
+ *   rather than permanently deleted, preserving field sensor audit trails for manual inspection or replay.
+ * - Concurrency Control: Uses `db_cleanup_run_lock` with a 5-minute bucket window to prevent execution overlaps.
+ */
 const RUN_BUCKET_SECONDS = 300;
 const BATCH_LIMIT = 500;
-// حد أقصى 20×500=10,000 صف محذوف لكل جدول لكل تشغيلة — يمنع تشغيلة واحدة
-// من الاستحواذ على وقت غير محدود إذا تراكم Backlog ضخم.
 const MAX_BATCHES_PER_TABLE = 20;
 
 type StatusCleanupTarget = {
@@ -49,19 +37,9 @@ type AgeCleanupTarget = {
   olderThan: string;
 };
 
-// نوافذ الاستبقاء — راجع خطة الاحتفاظ طويلة المدى للمبررات الكاملة لكل
-// جدول. PENDING/RUNNING/RETRY (أي حالة نشطة) لا تُحذف أبداً في أي جدول.
-// خطأ حرج مكتشَف ومُصلَح (مراجعة كود خارجي — "صفوف Telemetry الميتة تُحذف
-// بعد سبعة أيام"): telemetry_ingestion_queue/DEAD كان ضمن STATUS_TARGETS
-// أدناه — حذف مباشر نهائي عبر cleanup_transient_table_batch. صف DEAD يعني
-// أن writeDeviceReading فشلت نهائياً (استنفدت MAX_ATTEMPTS في telemetry-
-// worker)، وpayload هذا الصف هو النسخة الوحيدة الموجودة في كل النظام لتلك
-// القراءة (لا نسخة أخرى في device_readings_history/pm10_readings_history —
-// الكتابة هناك هي بالضبط ما فشل). حذفه = فقدان نهائي لدليل ميداني حقيقي
-// بلا أي فرصة Replay أو مراجعة بشرية. أُزيل من هذه القائمة نهائياً — راجع
-// archiveDeadTelemetryLetters أدناه: الآن يُنقَل (لا يُحذف) إلى
-// telemetry_dead_letter الدائم (migration 202608120002)، ولا يُحذف من هناك
-// إطلاقاً إلا بعد Replay ناجح أو اعتماد بشري موثَّق صراحةً (سبب إلزامي).
+/*
+ * Retention Schedules for Transient Queue & Status Tables
+ */
 const STATUS_TARGETS: StatusCleanupTarget[] = [
   { table: 'telemetry_ingestion_queue', timestampColumn: 'processed_at', statusValues: ['PROCESSED'], olderThan: '24 hours' },
   { table: 'decision_alert_outbox', timestampColumn: 'processed_at', statusValues: ['PROCESSED'], olderThan: '7 days' },
@@ -70,23 +48,18 @@ const STATUS_TARGETS: StatusCleanupTarget[] = [
   { table: 'project_evaluation_jobs', timestampColumn: 'created_at', statusValues: ['DEAD'], olderThan: '30 days' },
 ];
 
+/*
+ * Retention Schedules for Lock & Ephemeral Snapshot Tables
+ */
 const AGE_TARGETS: AgeCleanupTarget[] = [
   { table: 'provider_pull_run_lock', timestampColumn: 'started_at', olderThan: '24 hours' },
   { table: 'scheduler_locks', timestampColumn: 'locked_at', olderThan: '24 hours' },
   { table: 'forecast_snapshots', timestampColumn: 'updated_at', olderThan: '14 days' },
   { table: 'db_cleanup_run_lock', timestampColumn: 'started_at', olderThan: '24 hours' },
-  // scheduler_tick_run_lock (202608130001) — نفس نمط provider_pull_run_lock/
-  // db_cleanup_run_lock أعلاه: صف واحد لكل نافذة دقيقتين، للأبد بلا هذا التنظيف.
   { table: 'scheduler_tick_run_lock', timestampColumn: 'started_at', olderThan: '24 hours' },
-  // forecast_refresh_run_lock (202608130002) — نفس النمط، صف واحد لكل نافذة
-  // 15 دقيقة.
   { table: 'forecast_refresh_run_lock', timestampColumn: 'started_at', olderThan: '24 hours' },
 ];
 
-// نفس نافذة 7 أيام السابقة قبل الأرشفة (لا حذف) — راجع تعليق STATUS_TARGETS
-// أعلاه. archive_dead_telemetry_batch (migration 202608120002) تنقل الصف
-// ذرّياً إلى telemetry_dead_letter الدائم ثم تحذفه من الطابور العابر فقط —
-// لا حذف نهائي لأي بيانات، فقط انتقال من جدول عابر إلى جدول دائم.
 const DEAD_TELEMETRY_ARCHIVE_OLDER_THAN = '7 days';
 
 type CleanupResult = {
@@ -107,24 +80,18 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
+  // Enforce single-worker execution window using timestamp bucket lock
   const runBucket = Math.floor(Date.now() / (RUN_BUCKET_SECONDS * 1000));
   const { error: lockError } = await supabaseAdmin.from('db_cleanup_run_lock').insert({ run_bucket: runBucket });
   if (lockError) {
-    // 23505 = دورة سابقة لا تزال قيد التنفيذ ضمن نفس النافذة — تخطَّ بأمان.
-    // لا نبضة هنا (نفس مبدأ provider-pull) — لا عمل فعلي حدث.
     return NextResponse.json({ ok: true, skipped: true, reason: 'previous cleanup run still in window' }, { status: 200 });
   }
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي: "Cleanup
-  // يقيس started_at كأنه نجاح"): db_cleanup_run_lock.started_at (يُدرَج هنا
-  // فوراً عند بداية الدورة) كان يُقرأ في scheduler-heartbeat/route.ts وكأنه
-  // "آخر تشغيلة ناجحة" — لو فشلت الدورة في منتصفها (استثناء غير متوقَّع بعد
-  // نجاح هذا الـinsert)، started_at يبقى حديثاً رغم عدم اكتمال التنظيف
-  // فعلياً. worker_heartbeats يفصل started عن succeeded/failed صراحة —
-  // scheduler-heartbeat يعتمد عليه الآن بدل started_at وحده.
+
   await recordWorkerHeartbeat(WORKER_NAME, 'started');
 
   const results: CleanupResult[] = [];
 
+  // Batch cleanup for status-filtered transient tables
   for (const target of STATUS_TARGETS) {
     let totalDeleted = 0;
     let batches = 0;
@@ -144,11 +111,12 @@ export async function GET(request: Request) {
       }
       const deleted = (data as number) ?? 0;
       totalDeleted += deleted;
-      if (deleted < BATCH_LIMIT) break; // استُنفدت الدفعات المستحقة
+      if (deleted < BATCH_LIMIT) break;
     }
     results.push({ table: target.table, column: target.timestampColumn, status: target.statusValues, deleted: totalDeleted, batches: batches + 1, error: lastError });
   }
 
+  // Batch cleanup for age-filtered transient lock tables
   for (const target of AGE_TARGETS) {
     let totalDeleted = 0;
     let batches = 0;
@@ -171,10 +139,7 @@ export async function GET(request: Request) {
     results.push({ table: target.table, column: target.timestampColumn, deleted: totalDeleted, batches: batches + 1, error: lastError });
   }
 
-  // أرشفة DEAD telemetry — لا حذف مباشر (راجع تعليق STATUS_TARGETS أعلاه).
-  // "deleted" هنا تعني "نُقل من telemetry_ingestion_queue إلى telemetry_
-  // dead_letter"، لا فقدان فعلي — نفس اسم الحقل في CleanupResult لبقاء شكل
-  // استجابة موحَّد عبر كل الأهداف، القيمة نفسها تمثّل عدد الصفوف المؤرشَفة.
+  // Archival execution: Moves unprocessable DEAD telemetry from active queue to permanent dead-letter store
   {
     let totalArchived = 0;
     let batches = 0;

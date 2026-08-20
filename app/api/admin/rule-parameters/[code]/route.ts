@@ -3,10 +3,11 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// سجل النسخ الكامل لمعامل واحد (كل حالاته: DRAFT/PUBLISHED/SUPERSEDED/
-// ARCHIVED) — يبني سلسلة "من نشر ماذا ومتى ولماذا" لعرضها في صفحة القواعد
-// الإدارية (تدقيق/rollback). راجع GET /api/admin/rule-parameters للقيمة
-// الحالية فقط (بلا تاريخ).
+/*
+ * Fetches the complete version history for a single parameter across all statuses (DRAFT / PUBLISHED / SUPERSEDED / ARCHIVED).
+ * Constructs the "who published what, when, and why" audit trail for display on the admin rules management UI (audit / rollback inspection).
+ * See `GET /api/admin/rule-parameters` for retrieving current active values only (without historical records).
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }

@@ -3,9 +3,11 @@ import { supabase } from '@/app/lib/supabase';
 import { checkRateLimit } from '@/app/lib/rateLimit';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// حد معدّل محاولات الدخول لكل IP — يمنع تخمين كلمة مرور مستخدم معروف
-// بطلبات آلية غير محدودة (brute force). المفتاح هو IP لا البريد، حتى لا
-// يقدر مهاجم يجرّب بريداً مختلفاً كل مرة للتحايل على الحد.
+/*
+ * Rate limiting parameters for login attempts per client IP address.
+ * Prevents automated password brute-force attacks.
+ * Keyed strictly by IP (rather than email) to prevent attackers from cycling target email addresses to bypass window limits.
+ */
 const LOGIN_MAX_ATTEMPTS_PER_WINDOW = 10;
 const LOGIN_WINDOW_MS = 5 * 60_000;
 
@@ -28,7 +30,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // محاولة تسجيل الدخول عبر Supabase Auth
+    /*
+     * Authenticates user credentials via Supabase Auth.
+     * Sanitizes response errors to provide user-friendly messages for invalid credentials 
+     * while masking underlying server or network errors using `safeErrorResponse`.
+     */
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,

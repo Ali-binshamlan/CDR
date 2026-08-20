@@ -28,19 +28,21 @@ import {
 } from 'lucide-react';
 
 // ============================================================
-// أنواع البيانات والقواميس
+// Data Types & Dictionaries
 // ============================================================
 type AlertTiming = 'BEFORE' | 'DURING';
-// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "حالات REVIEWED وACTION_TAKEN
-// تظهر في الواجهة، لكن مسار تغييرها حُذف؛ لا يوجد مسؤول أو وقت أو إجراء أو
-// مرفق"): كانتا موجودتين هنا زخرفياً فقط — لا مسار كتابة حي أنتج قط صفاً
-// بإحداهما (مسار PATCH الوحيد الذي كان يكتبهما حُذف في 401af05 لأنه لم يكن
-// مربوطاً بأي زر إطلاقاً، كود ميت منذ إضافته). قرار صريح من المستخدم بعدم
-// إعادة بناء الميزة — إزالتهما نهائياً بدل تركهما فلاتر لا تُطابق شيئاً أبداً.
+
+// Bug detected and fixed (explicit user request — "REVIEWED and ACTION_TAKEN states
+// appeared in the UI, but their state mutation path was removed; there is no officer,
+// timestamp, action, or attachment"): They existed here purely decoratively — no live write path
+// ever produced a row with either of them (the only PATCH path writing them was removed in 401af05
+// as it wasn't wired to any button, dead code since addition). Explicit user decision not to rebuild
+// the feature — removed permanently instead of leaving them as filters that never match anything.
 type AlertState = 'NEW' | 'CLOSED';
-// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
-// والاحترازي"، راجع migration 202608110020 الكامل): PROTECTIVE_STOP kind
-// مستقل جديد — إيقاف احترازي معلَّق (لم يُؤكَّد بعد)، لا يُعامَل كـSAFETY_BREACH.
+
+// Bug detected and fixed (external code review — "Outbox confuses mandatory and protective stops",
+// see full migration 202608110020): PROTECTIVE_STOP is a new independent kind — pending protective
+// stop (not confirmed yet), not treated as a SAFETY_BREACH.
 type AlertKind =
   | 'BEFORE_2H' | 'BEFORE_1H' | 'BEFORE_START'
   | 'LOW_VISIBILITY' | 'DUST' | 'SAFETY_BREACH' | 'PROTECTIVE_STOP'
@@ -114,20 +116,18 @@ interface AlertItem {
   severity: Severity;
   metrics: { label: string; actual: string; threshold: string } | null;
   recommendedAction: string;
-  // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — منفصل تماماً عن state
-  // (راجع تعليق migration 202608200001_alert_reads.sql الكامل).
+  // Explicit user request: "Enable read/unread feature" — completely separate from state
+  // (see full comment in migration 202608200001_alert_reads.sql).
   isRead: boolean;
 }
 
-// شكل صف مشروع خام كما يُرجعه GET /api/dashboard/alerts-list (تُقرأ منه
-// id/name فقط هنا لبناء projectNameById).
+// Shape of a raw project row as returned by GET /api/dashboard/alerts-list (only id/name are read here to construct projectNameById).
 interface DashboardProjectRow {
   id: string;
   name: string;
 }
 
-// شكل صف تنبيه خام من جدول alerts كما يُرجعه نفس المسار — الحقول المقروءة
-// فعلياً أدناه فقط (باقي أعمدة الجدول غير مستخدمة بهذه الصفحة).
+// Shape of a raw alert row from the alerts table as returned by the same route — only fields actually read below (remaining table columns unused on this page).
 interface DashboardAlertRow {
   id: string;
   timing?: string;
@@ -145,19 +145,18 @@ interface DashboardAlertRow {
   isRead?: boolean;
 }
 
-// شكل عنصر activityLabels (خريطة "source:id" → بيانات خام) كما يُرجعه نفس
-// المسار — راجع تعليق activityLabels في app/api/dashboard/alerts-list/route.ts.
+// Shape of activityLabels item (mapping "source:id" -> raw data) as returned by the same route — see activityLabels comment in app/api/dashboard/alerts-list/route.ts.
 interface ActivityLabelInfo {
   regulatory_activity?: string | null;
 }
 
 // ============================================================
-// دوال الخطورة والتوصيات الاحتياطية
+// Severity Helper & Fallback Recommended Actions
 // ============================================================
 function getSeverity(kind: AlertKind): Severity {
   if (['SAFETY_BREACH', 'COMPLIANCE_VIOLATION'].includes(kind)) return 'CRITICAL';
-  // PROTECTIVE_STOP: النشاط متوقف فعلياً الآن لكن غير مؤكَّد بعد (قد يتحول
-  // إلى ALLOW لاحقاً) — تحذير، لا خطورة عالية قطعية كـSAFETY_BREACH المؤكَّد.
+  // PROTECTIVE_STOP: Activity is currently stopped but not yet confirmed (might change to ALLOW later)
+  // — WARNING, never definitive high critical like confirmed SAFETY_BREACH.
   if (['LOW_VISIBILITY', 'DUST', 'BEFORE_START', 'NO_DECISION_YET', 'PM10_APPROACHING_LIMIT', 'FORECAST_WARNING', 'COMPLIANCE_RESTRICTION', 'COMPLIANCE_ADVISORY', 'PROTECTIVE_STOP'].includes(kind)) return 'WARNING';
   return 'INFO';
 }
@@ -191,8 +190,7 @@ function getFallbackRecommendedAction(kind: AlertKind): string {
 }
 
 // ============================================================
-// قاموس الترجمة ودوال المعالجة — نقطة الحقيقة الواحدة في
-// app/lib/activityLabels.ts، لا نسخة محلية
+// Translation Dictionary & Processing Functions — Single Source of Truth in app/lib/activityLabels.ts, no local copy
 // ============================================================
 function translateAlertMessage(msg: string | null | undefined): string {
   if (!msg) return '';
@@ -206,7 +204,7 @@ function translateAlertMessage(msg: string | null | undefined): string {
 }
 
 // ============================================================
-// المكون الرئيسي للصفحة
+// Main Page Component
 // ============================================================
 export default function AlertsPage() {
   const [isLoading, setIsLoading] = useState(true);
@@ -217,18 +215,14 @@ export default function AlertsPage() {
   const [alertTimingFilter, setAlertTimingFilter] = useState<AlertTiming | 'الكل'>('الكل');
   const [alertProjectFilter, setAlertProjectFilter] = useState<string>('الكل');
   const [alertStateFilterVal, setAlertStateFilterVal] = useState<AlertState | 'الكل'>('الكل');
-  // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — فلتر عرض منفصل تماماً
-  // عن alertStateFilterVal (الحالة NEW/CLOSED).
+  // Explicit user request: "Enable read/unread feature" — display filter completely separate from alertStateFilterVal (NEW/CLOSED state).
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
-  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل الجلب في "غرفة التحكم" هذه
-  // كان يعني "لا توجد تنبيهات نشطة حالياً" — نفس الرسالة تماماً سواء لم
-  // توجد تنبيهات فعلاً أو فشل الجلب، رغم احتمال إخفاء مخالفة تنظيمية نشطة.
+  // Bug detected and fixed (explicit user request — "Network errors often turn into zero numbers or misleading empty states"):
+  // Fetch failure in this "Control Room" meant "No active alerts currently" — identical message whether there were truly no alerts or fetching failed, despite potentially hiding an active regulatory violation.
   const [error, setError] = useState<string | null>(null);
 
   const fetchAlertsData = useCallback(async () => {
-    // await فوري (microtask) قبل أول setState — يفصل الاستدعاء المباشر من
-    // جسم الـEffect عن أول تعديل حالة متزامن، بلا تأخير محسوس.
+    // Immediate await (microtask) before first setState — separates direct call from Effect body from first synchronous state mutation, with no perceptible delay.
     await Promise.resolve();
     setIsLoading(true);
     setError(null);
@@ -241,8 +235,8 @@ export default function AlertsPage() {
       const projectNameById = new Map<string, string>();
       (dbProjects as DashboardProjectRow[]).forEach((p) => projectNameById.set(p.id, p.name));
 
-      // اسم النشاط المعروض = النشاط التنظيمي المختار فعلياً (كسارة/هدم/...)
-      // — activity_type القديم حُذف نهائياً من project_dust_profiles.
+      // Displayed activity name = actual selected regulatory activity (crushing/demolition/...)
+      // — legacy activity_type permanently removed from project_dust_profiles.
       const activityLabelMap = new Map<string, string>();
       Object.entries(activityLabels as Record<string, ActivityLabelInfo>).forEach(([key, raw]) => {
         activityLabelMap.set(key, displayActivityLabel(raw));
@@ -286,8 +280,7 @@ export default function AlertsPage() {
   }, []);
 
   useEffect(() => {
-    // جدولة عبر microtask بدل استدعاء fetchAlertsData مباشرة من جسم
-    // الـEffect — نفس السبب الموثَّق أعلى الدالة (تعديل حالة متزامن داخل Effect).
+    // Scheduled via microtask instead of invoking fetchAlertsData directly from Effect body — same reason documented above the function (synchronous state mutation inside Effect).
     let cancelled = false;
     void Promise.resolve().then(() => { if (!cancelled) fetchAlertsData(); });
     return () => { cancelled = true; };
@@ -301,21 +294,15 @@ export default function AlertsPage() {
         (alertTimingFilter === 'الكل' || a.timing === alertTimingFilter) &&
         (alertProjectFilter === 'الكل' || a.project === alertProjectFilter) &&
         (alertStateFilterVal === 'الكل' || a.state === alertStateFilterVal) &&
-        // طلب مستخدم صريح (بلاغ مباشر: "فيه فلترة على غير المقروء تظهر لكن
-        // لا تفتح"): فتح البطاقة يعلّمها مقروءة فوراً (isRead=true)، فكانت
-        // تختفي من هذه القائمة على الفور بمجرد فتحها — تبقى ظاهرة الآن طالما
-        // هي البطاقة المفتوحة حالياً حتى لو أصبحت مقروءة، وتختفي فقط بعد
-        // إغلاقها (toggleExpand يضبط expandedAlertId=null) أو تحديث الفلتر.
+        // Explicit user request (direct report: "There is an unread filter that appears but won't open"): opening a card marks it as read immediately (isRead=true), so it disappeared from this list instantly upon opening — now remains visible as long as it is the currently expanded card even if read, disappearing only after closing (toggleExpand sets expandedAlertId=null) or filter update.
         (!showUnreadOnly || !a.isRead || a.id === expandedAlertId) &&
         (a.message.includes(searchQuery) || a.activity.includes(searchQuery))
     );
   }, [alertsData, alertTimingFilter, alertProjectFilter, alertStateFilterVal, showUnreadOnly, expandedAlertId, searchQuery]);
 
-  // طلب مستخدم صريح: فتح بطاقة تنبيه غير مقروء يعلّمه مقروءاً تلقائياً —
-  // تحديث متفائل فوري للحالة المحلية (بلا انتظار الشبكة)، والاستدعاء
-  // الفعلي لا يُعاد لو كان مقروءاً أصلاً (لا فائدة إضافية). فشل الشبكة هنا
-  // صامت عمداً — لا يستحق كسر تجربة فتح البطاقة نفسها، والمحاولة التالية
-  // (فتح بطاقة أخرى، أو إعادة تحميل الصفحة) تُصحّح الحالة تلقائياً.
+  // Explicit user request: opening an unread alert card automatically marks it as read —
+  // immediate optimistic local state update (without waiting for network), and actual call is not repeated if already read (no additional benefit).
+  // Network failure here is silently ignored by design — not worth breaking the card expanding user experience itself, and the next attempt (opening another card or refreshing the page) automatically corrects state.
   const toggleExpand = (id: string) => {
     setExpandedAlertId(prev => prev === id ? null : id);
 
@@ -355,7 +342,7 @@ export default function AlertsPage() {
     <div className="min-h-screen bg-[#F4F7FB] p-6 lg:p-8 font-sans" dir="rtl">
       <div className="max-w-[1440px] mx-auto space-y-6">
 
-        {/* الترويسة */}
+        {/* Header */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
           <div className="absolute top-0 right-0 w-2 h-full bg-orange-500"></div>
           <div className="flex items-center gap-4">
@@ -380,7 +367,7 @@ export default function AlertsPage() {
           </div>
         </div>
 
-        {/* الفلاتر والقائمة */}
+        {/* Filters and List */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col min-h-[600px]">
 
           <div className="p-5 border-b border-slate-100 bg-slate-50/80 flex flex-col xl:flex-row gap-6 justify-between items-start xl:items-center">
@@ -435,7 +422,7 @@ export default function AlertsPage() {
                 ))}
               </div>
 
-              {/* طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" */}
+              {/* Explicit user request: "Enable read/unread feature" */}
               <button
                 onClick={() => setShowUnreadOnly((prev) => !prev)}
                 className={`px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all flex items-center gap-1.5 ${
@@ -461,7 +448,7 @@ export default function AlertsPage() {
             </div>
           </div>
 
-          {/* قائمة التنبيهات (Expandable Cards) */}
+          {/* Alerts List (Expandable Cards) */}
           <div className="divide-y divide-slate-100 flex-1 bg-slate-50/30 p-4 space-y-3">
             {filteredAlerts.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-slate-400">
@@ -522,10 +509,7 @@ export default function AlertsPage() {
                       </div>
 
                       <div className="flex items-center gap-4 shrink-0 mt-3 md:mt-0 mr-14 md:mr-0">
-                        {/* طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء" — نقطة
-                            زرقاء منفصلة عن badge الحالة (NEW/CLOSED) أعلاه، لأن
-                            المفهومين مستقلان تماماً (تنبيه CLOSED قديم قد يكون
-                            لم يُقرأ بعد، وتنبيه NEW قد يكون قُرئ للتو). */}
+                        {/* Explicit user request: "Enable read/unread feature" — separate blue dot from status badge (NEW/CLOSED) above, since the two concepts are completely independent (a CLOSED legacy alert might be unread, and a NEW alert might have just been read). */}
                         {!alert.isRead && (
                           <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" title="غير مقروء" />
                         )}
@@ -549,11 +533,7 @@ export default function AlertsPage() {
                               <h4 className="text-xs font-black text-slate-500 mb-2 flex items-center gap-1.5">
                                 <Activity className="w-4 h-4 text-blue-500" /> ما الذي حدث بالضبط
                               </h4>
-                              {/* النص الصريح للمخالفة/الحالة (مثال: "مخالفة تنظيمية: تركيز
-                                  PM10 (1665.2 ميكروجرام/م³) تجاوز حد المخالفة (340
-                                  ميكروجرام/م³)") — يُعرض دائماً بصرف النظر عن توفر metrics،
-                                  فلا يجوز أن تحجبه بطاقة مقياس عامة (كانت المشكلة سابقاً:
-                                  alert.message لا يظهر إطلاقاً متى وُجد alert.metrics). */}
+                              {/* Explicit violation/status text (e.g., "Regulatory violation: PM10 concentration (1665.2 µg/m³) exceeded violation limit (340 µg/m³)") — always displayed regardless of metrics availability, must not be hidden by generic metric card (previous issue: alert.message never showed when alert.metrics was present). */}
                               <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm text-sm font-bold text-[#061B40] leading-relaxed">
                                 {alert.message}
                               </div>

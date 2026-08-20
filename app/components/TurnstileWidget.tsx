@@ -2,16 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — مراجعة كود خارجي: "محدد
-// المعدل غير موزع ومسار التسجيل يحتاج إعادة ضبط"، بند: "CAPTCHA للتسجيل
-// العام"): ودجت Cloudflare Turnstile — يُرسِل الرمز الناتج (token) إلى
-// الخادم (auth/register/route.ts) عبر حقل captchaToken، حيث يتحقق منه
-// app/lib/captcha.ts فعلياً باستخدام TURNSTILE_SECRET_KEY.
+// Detected and fixed bug (explicit user request — external code review: "Rate limiter
+// is not distributed and registration path needs reset", item: "CAPTCHA for public
+// registration"): Cloudflare Turnstile widget — sends the generated token to the server
+// (auth/register/route.ts) via the captchaToken field, where app/lib/captcha.ts validates it
+// using TURNSTILE_SECRET_KEY.
 //
-// سكربت Turnstile يُحمَّل مباشرة من api.js (لا حزمة npm إضافية — الودجت
-// بسيطة بما يكفي لتبرير تجنّب تبعية كاملة لعنصر واحد). NEXT_PUBLIC_
-// TURNSTILE_SITE_KEY علني بتصميم Turnstile نفسه (site key ليس سرّاً — نظير
-// reCAPTCHA site key، يظهر في HTML الصفحة دائماً).
+// Turnstile script is loaded directly from api.js (no extra npm package needed — the widget
+// is simple enough to justify avoiding a full package dependency for a single element).
+// NEXT_PUBLIC_TURNSTILE_SITE_KEY is public by Turnstile's design (site key is not secret — equivalent
+// to reCAPTCHA site key, it always appears in the page's HTML).
 declare global {
   interface Window {
     turnstile?: {
@@ -44,7 +44,7 @@ function loadTurnstileScript(): Promise<void> {
     script.async = true;
     script.defer = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('فشل تحميل سكربت Turnstile'));
+    script.onerror = () => reject(new Error('Failed to load Turnstile script'));
     document.head.appendChild(script);
   });
   return scriptLoadPromise;
@@ -57,9 +57,9 @@ export function TurnstileWidget({ onToken }: { onToken: (token: string | null) =
 
   useEffect(() => {
     const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
-    // بلا site key مُعرَّف: لا نعرض الودجت إطلاقاً (بدل خطأ مربك للمستخدم) —
-    // الخادم نفسه fail-open في هذه الحالة (captcha.ts، TURNSTILE_SECRET_KEY
-    // غائب أيضاً)، فلا حاجة لإجبار الواجهة على عرض شيء لا يتحقق منه أحد.
+    // Without a defined site key: do not render the widget at all (instead of confusing the user with an error) —
+    // the server itself is fail-open in this scenario (captcha.ts, TURNSTILE_SECRET_KEY is also missing),
+    // so there is no need to force the UI to render something that no one is validating.
     if (!siteKey) return;
 
     let cancelled = false;
@@ -71,7 +71,7 @@ export function TurnstileWidget({ onToken }: { onToken: (token: string | null) =
           callback: (token: string) => onToken(token),
           'error-callback': () => {
             onToken(null);
-            setLoadError('تعذّر التحقق — الرجاء إعادة تحميل الصفحة');
+            setLoadError('Verification failed — please reload the page');
           },
           'expired-callback': () => onToken(null),
         });

@@ -2,17 +2,17 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { fetchDustWeather } from '@/app/utils/dust-engine/weather';
 
-// قراءات طقس/جودة هواء حية لموقع واحد (سرعة رياح، اتجاهها، PM10، PM2.5) —
-// يُستخدم من بطاقة الهوفر بخريطة المشاريع (ProjectsMap.tsx) لعرض قراءات
-// لحظية عند مؤشر المشروع. استثناء متعمَّد للقاعدة الصارمة في dust-engine/
-// types.ts ("لا نعرض رقماً خاماً للمستخدم") — هنا نظرة عامة عبر الخريطة،
-// لا شاشة قرار تشغيلي لنشاط محدد، فعرض القراءة الخام مفيد للمراقبة.
-// جلب كسول فقط عند الهوفر (لا يُستدعى دفعة واحدة لكل مشاريع الخريطة) —
-// تجنّباً لإغراق Open-Meteo بعشرات النداءات المتزامنة عند تحميل الخريطة.
+// Live weather/air quality readings for a single location (wind speed, direction, PM10, PM2.5) —
+// used by the hover card in the projects map (ProjectsMap.tsx) to display instantaneous readings
+// at the project marker. Intentional exception to the strict rule in dust-engine/types.ts
+// ("Do not display raw numbers to the user") — this provides a general overview on the map rather
+// than an operational decision screen for a specific activity, making raw readings useful for monitoring.
+// Lazy-fetched on hover only (not called all at once for every map project) — avoiding flooding
+// Open-Meteo with dozens of concurrent requests on initial map load.
 //
-// جُرِّب IQAir بديلاً لـPM10/PM2.5 (مؤشر AQI فقط) لكن أُرجِع: حده المجاني
-// ~2-3 طلبات/دقيقة قبل 429 (تحقّقنا فعلياً)، فكان الهوفر الثاني على أي
-// نقطة يفشل بصمت خلال ثوانٍ من الأول — غير صالح للاستخدام التفاعلي هنا.
+// IQAir was evaluated as an alternative for PM10/PM2.5 (AQI index only) but reverted: its free tier
+// rate limit (~2-3 requests/minute before 429) caused second hovers to fail silently within seconds —
+// unsuitable for interactive map usage.
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;

@@ -5,13 +5,13 @@ import { toast } from 'react-hot-toast';
 import { apiClient } from '@/app/lib/apiClient';
 import { Loader2, SlidersHorizontal, History, RotateCcw, Send, Layers } from 'lucide-react';
 
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
-// لا يوجد نظام حقيقي يدعم إنشاء نسخة قاعدة، النشر الذري، منع تعديل نسخة
-// منشورة، التراجع لنسخة سابقة"): هذه اللوحة تستهلك GET/POST
-// /api/admin/rule-parameters — نسخ/نشر/تراجع حقيقي للعتبات الرقمية القابلة
-// للضبط في rulebook.ts/engine.ts (راجع ruleParameters.ts للنطاق الكامل
-// ولماذا استُبعدت عتبات PM10 صراحة). القواعد النصية (DUST_RULES_CATALOG)
-// تبقى في صفحة page.tsx الأصلية أسفل هذه اللوحة — عرض فقط، بلا تغيير.
+// Bug detected and fixed (External expert review — "Rule management UI is read-only;
+// there is no real system supporting rule version creation, atomic publishing, preventing edits to a
+// published version, or rolling back to a previous version"): This panel consumes GET/POST
+// /api/admin/rule-parameters — real versioning/publishing/rollback for configurable numeric thresholds
+// in rulebook.ts/engine.ts (refer to ruleParameters.ts for the full scope
+// and why PM10 thresholds were explicitly excluded). Textual rules (DUST_RULES_CATALOG)
+// remain on the original page.tsx below this panel — read-only, unchanged.
 
 interface RuleParameterRow {
   code: string;
@@ -84,11 +84,11 @@ function ParameterRow({
 }: {
   row: RuleParameterRow;
   onChanged: () => Promise<void>;
-  // خطأ مكتشَف (مراجعة تدقيق — "ليست حزمة ذرية موحدة"): وضع النشر الجماعي
-  // يُخفي حقل "سبب النشر" وزر "نشر" الفرديين في هذا المكوّن (تفادي الالتباس
-  // بين "انشر هذا الصف وحده" و"انشر كجزء من المجموعة المُختارة") — الحالة
-  // المشتركة (التحديد، القيمة المسودة، السبب المشترك) تعيش في الأب
-  // (RuleParametersPanel) وتُمرَّر هنا فقط عرضاً وتحديثاً.
+  // Bug detected (Audit review — "Not a unified atomic bundle"): Bulk publishing mode
+  // hides the individual "Publish Reason" field and "Publish" button in this component (preventing confusion
+  // between "publish this row alone" vs "publish as part of the selected bundle") — shared state
+  // (selection, draft value, shared reason) lives in the parent
+  // (RuleParametersPanel) and is passed here solely for display and updates.
   bundleMode: boolean;
   selected: boolean;
   onToggleSelect: () => void;
@@ -96,15 +96,15 @@ function ParameterRow({
   onDraftValueChange: (value: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  // خطأ eslint مُصلَح (react-hooks/set-state-in-effect): بدل useEffect
-  // لمزامنة draftValue مع row.currentValue بعد كل نشر ناجح، الأب (RuleParametersPanel)
-  // يُمرِّر key={`${row.code}-${row.currentValue}`} فيُعيد React تركيب هذا
-  // المكوّن بالكامل (state جديد كلياً) تلقائياً عند تغيّر القيمة المنشورة —
-  // لا حاجة لمزامنة يدوية بعد الآن.
+  // Fixed eslint error (react-hooks/set-state-in-effect): Instead of useEffect
+  // to synchronize draftValue with row.currentValue after every successful publish, the parent (RuleParametersPanel)
+  // passes key={`${row.code}-${row.currentValue}`}, causing React to completely remount this
+  // component (a totally new state) automatically whenever the published value changes —
+  // no manual sync needed anymore.
   const [localDraftValue, setLocalDraftValue] = useState(String(row.currentValue));
-  // في وضع النشر الجماعي، القيمة المسودة تعيش في الأب (خريطة code -> value)
-  // بدل هنا محلياً — بلا هذا، اختيار صف ثم كتابة قيمة جديدة كان سيُفقَد عند
-  // تبديل وضع الحزمة لأن الحالة المحلية لا تصل للأب عند بناء طلب النشر.
+  // In bulk publishing mode, the draft value lives in the parent (code -> value map)
+  // instead of locally here — without this, selecting a row and typing a new value would be lost when
+  // toggling bundle mode since local state doesn't reach the parent when building the publish payload.
   const draftValue = bundleMode ? bundleDraftValue : localDraftValue;
   const setDraftValue = bundleMode ? onDraftValueChange : setLocalDraftValue;
   const [changeReason, setChangeReason] = useState('');
@@ -148,11 +148,11 @@ function ParameterRow({
       });
       toast.success('تم نشر القيمة الجديدة');
       setChangeReason('');
-      // onChanged يُعيد جلب القائمة الكاملة من الأب — بعد اكتمالها، الأب
-      // يُمرِّر key جديداً (`${code}-${currentValue}`) فيُعيد React تركيب
-      // هذا المكوّن بالكامل بالقيمة المنشورة الجديدة (راجع تعليق draftValue
-      // أعلاه) — لا حاجة لـloadHistory هنا، سجل النسخ يُعاد جلبه عند فتح
-      // اللوحة من جديد بعد إعادة التركيب.
+      // onChanged refetches the full list from the parent — once complete, the parent
+      // passes a new key (`${code}-${currentValue}`), prompting React to remount
+      // this entire component with the new published value (see draftValue comment
+      // above) — no need for loadHistory here, version history is refetched upon reopening
+      // the panel after remounting.
       await onChanged();
     } catch (error) {
       toast.error(getApiErrorMessage(error) || 'فشل نشر القيمة');
@@ -171,8 +171,8 @@ function ParameterRow({
         changeReasonAr: reason.trim(),
       });
       toast.success('تم التراجع بنجاح');
-      // راجع تعليق onChanged في handlePublish أعلاه — نفس آلية إعادة
-      // التركيب عبر key جديد، لا حاجة لـloadHistory هنا.
+      // See onChanged comment in handlePublish above — same remounting mechanism
+      // via new key, no need for loadHistory here.
       await onChanged();
     } catch (error) {
       toast.error(getApiErrorMessage(error) || 'فشل التراجع');
@@ -327,10 +327,10 @@ export default function RuleParametersPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // خطأ مكتشَف (مراجعة تدقيق — "توجد معاملات قابلة للنشر والتراجع، لكن
-  // ليست حزمة ذرية موحدة"): وضع النشر الجماعي — الافتراضي هو النشر الفردي
-  // كما كان (بلا تغيير سلوكي)؛ التفعيل صريح واختياري، تفادياً لخطر التحديد
-  // الجماعي العرَضي على نظام امتثال تنظيمي.
+  // Bug detected (Audit review — "There are parameters available for publish and rollback, but
+  // not a unified atomic bundle"): Bulk publishing mode — default is single publishing
+  // as before (no behavior change); activation is explicit and optional, preventing the risk of accidental
+  // bulk selection on a regulatory compliance system.
   const [bundleMode, setBundleMode] = useState(false);
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   const [draftValuesByCode, setDraftValuesByCode] = useState<Record<string, string>>({});

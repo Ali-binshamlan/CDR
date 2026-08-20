@@ -12,25 +12,24 @@ import { apiClient } from '@/app/lib/apiClient';
 import { supabase } from '@/app/lib/supabase';
 import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 
-// نفس حدود PM10 التشغيلية في حزمة القواعد النشطة (ACTIVE_RULE_BUNDLE) —
-// تُقرأ من الحزمة مباشرة (لا تُكرَّر كأرقام هنا) فقط لرسم خطوط مرجعية على
-// الرسم البياني، بلا أي تأثير على القرار الفعلي (المحسوب حصراً بالخادم).
+// Operational PM10 thresholds from active rule bundle (ACTIVE_RULE_BUNDLE) —
+// read directly from the bundle (not hardcoded here) solely to draw reference
+// lines on the chart, with zero impact on actual decisions (calculated exclusively on server).
 const PM10_PRECAUTION_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.normalMaxInclusive;
 const PM10_WARNING_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.warningThresholdInclusive;
 const PM10_RED_RESTRICT_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.operational.controlsMaxInclusive;
 const PM10_VIOLATION_STOP_UG_M3 = ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
 
-// خطأ أداء مكتشَف ومُصلَح (تحقيق ضغط Compute/CPU/Disk IO على خطة Free):
-// كانت هذه الصفحة تستطلع (poll) كل دقيقة بصرف النظر عن وجود قراءة جديدة
-// فعلاً أم لا — الآن التحديث الفوري يصل عبر اشتراك Realtime (INSERT على
-// pm10_readings_history مقيَّد بـproject_id، نفس نمط final_decisions في
-// Projects/[id]/page.tsx). REFRESH_INTERVAL_MS يبقى فقط كشبكة أمان احتياطية
-// بطيئة جداً (5 دقائق بدل دقيقة) تغطي حالة نادرة: فشل اتصال WebSocket صامت
-// (شبكة مقيَّدة/بروكسي يحجب Realtime) بلا سقوط ظاهري للمستخدم.
+// Performance bug detected and fixed (addressing Compute/CPU/Disk IO pressure on Free plan):
+// This page used to poll every minute regardless of whether a new reading actually arrived —
+// now instant updates arrive via Realtime subscription (INSERT on pm10_readings_history scoped to project_id,
+// same pattern as final_decisions in Projects/[id]/page.tsx). REFRESH_INTERVAL_MS remains only as a very slow fallback
+// safety net (5 minutes instead of 1 minute) covering edge cases: silent WebSocket connection failure
+// (restricted network/proxy blocking Realtime) without visible UI drop for the user.
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-// نطاقات زمنية جاهزة للاختيار — 6 ساعات افتراضياً (كافية لمتابعة نوبة عمل
-// واحدة)، مع خيار يوم/3 أيام/أسبوع للمراجعة الرجعية.
+// Ready-made selectable time ranges — 6 hours default (sufficient for monitoring a single work shift),
+// with 24 hours / 3 days / 1 week options for historical review.
 const RANGE_OPTIONS: { label: string; hours: number }[] = [
   { label: '6 ساعات', hours: 6 },
   { label: '24 ساعة', hours: 24 },
@@ -51,8 +50,8 @@ interface ActivitySeries {
   readings: ReadingPoint[];
 }
 
-// ألوان مستقرة لكل نشاط — دوّارة على مجموعة ثابتة بدل عشوائية، حتى يحتفظ
-// كل نشاط بنفس لونه بين كل تحديث تلقائي (لا يتبدّل الترتيب بصرياً).
+// Stable colors per activity — rotating over a fixed palette instead of random selection,
+// ensuring each activity retains its color across automatic updates (preventing visual reordering).
 const SERIES_COLORS = ['#3995FF', '#F97316', '#10B981', '#8B5CF6', '#EF4444', '#06B6D4', '#EAB308', '#EC4899'];
 
 const SOURCE_LABEL_AR: Record<string, string> = {
@@ -71,10 +70,10 @@ function formatDateTimeAr(iso: string): string {
   });
 }
 
-// يحوّل مصفوفة الأنشطة (كل نشاط له مصفوفة قراءات مستقلة زمنياً) إلى صفوف
-// موحَّدة بمحور زمني مشترك — recharts يحتاج مصفوفة واحدة بمفتاح لكل خط،
-// لا مصفوفات منفصلة. نقاط القراءة الفعلية فقط (لا تعبئة/استيفاء بين
-// النقاط)، فالخط ينقطع بصرياً في فجوات الانقطاع الحقيقية بدل تمويهها.
+// Converts array of activities (each activity has independent readings over time) into consolidated rows
+// with a shared time axis — recharts requires a single data array with keys per line rather than separate arrays.
+// Plotting actual reading points only (no interpolation between points), allowing lines to visually break across
+// actual data gaps instead of masking them.
 function buildChartRows(activities: ActivitySeries[]): Record<string, number | string | null>[] {
   const timeSet = new Set<string>();
   for (const a of activities) for (const r of a.readings) timeSet.add(r.time);
@@ -101,11 +100,11 @@ export default function ProjectReadingsPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hours, setHours] = useState(6);
-  const [selectedIds, setSelectedIds] = useState<Set<string> | null>(null); // null = الكل
+  const [selectedIds, setSelectedIds] = useState<Set<string> | null>(null); // null = all
 
   const fetchHistory = async (silent = false) => {
-    // await فوري (microtask) قبل أول setState — يفصل الاستدعاء المباشر من
-    // جسم الـEffect عن أول تعديل حالة متزامن، بلا تأخير محسوس.
+    // Immediate microtask await prior to first setState — detaches direct invocation
+    // within Effect body from synchronous state update, preventing React warnings without user-perceptible delay.
     await Promise.resolve();
     try {
       if (!silent) setLoading(true);
@@ -123,8 +122,8 @@ export default function ProjectReadingsPage({
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    // جدولة عبر microtask بدل استدعاء fetchHistory مباشرة من جسم الـEffect —
-    // نفس السبب الموثَّق أعلى fetchHistory (تعديل حالة متزامن داخل Effect).
+    // Scheduled via microtask instead of invoking fetchHistory directly in the Effect body —
+    // same rationale documented above fetchHistory (synchronous state update inside Effect).
     void Promise.resolve().then(() => { if (!cancelled) fetchHistory(); });
 
     const intervalId = window.setInterval(() => { if (!cancelled) fetchHistory(true); }, REFRESH_INTERVAL_MS);
@@ -135,11 +134,10 @@ export default function ProjectReadingsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, hours]);
 
-  // اشتراك Realtime — يستدعي fetchHistory فوراً عند وصول قراءة PM10 جديدة
-  // لهذا المشروع، بدل انتظار دورة الاستطلاع الاحتياطي (5 دقائق أعلاه). نفس
-  // نمط final-decisions في Projects/[id]/page.tsx بالضبط: setAuth عند فتح
-  // القناة + إعادته عند كل تجديد جلسة فعلي (JWT صالح لساعة واحدة فقط، لا
-  // يتجدد تلقائياً على قناة مفتوحة مسبقاً).
+  // Realtime subscription — triggers fetchHistory immediately when a new PM10 reading arrives
+  // for this project, avoiding waiting for the background polling cycle (5 minutes above).
+  // Identical to final-decisions pattern in Projects/[id]/page.tsx: setAuth upon opening channel +
+  // re-binding on every session refresh (JWT is valid for 1 hour, does not auto-refresh existing open channel).
   useEffect(() => {
     if (!id) return;
     let channel: ReturnType<typeof supabase.channel> | null = null;
@@ -176,8 +174,8 @@ export default function ProjectReadingsPage({
       authListener.subscription.unsubscribe();
       if (channel) supabase.removeChannel(channel);
     };
-    // fetchHistory عمداً خارج القائمة — نفس سبب Projects/[id]/page.tsx
-    // (إعادة إنشاء القناة بلا داعٍ في كل render لو أُدرجت).
+    // Intentionally omitting fetchHistory from deps array — same rationale as Projects/[id]/page.tsx
+    // (prevents tearing down and re-subscribing the WebSocket channel unnecessarily on every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -315,8 +313,8 @@ export default function ProjectReadingsPage({
                         wrapperStyle={{ fontSize: 12, direction: 'rtl' }}
                       />
 
-                      {/* خطوط مرجعية للعتبات التنظيمية — إعلامية بحتة، لا تُغيّر
-                          أي بيانات، فقط توضّح أين تقع القراءات نسبةً للحدود. */}
+                      {/* Regulatory threshold reference lines — purely informational, altering
+                          no underlying data, added exclusively to contextualize readings against limits. */}
                       <ReferenceLine y={PM10_PRECAUTION_UG_M3} stroke="#EAB308" strokeDasharray="4 4" label={{ value: `احتراز ${PM10_PRECAUTION_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#CA8A04' }} />
                       <ReferenceLine y={PM10_WARNING_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: `تحذير ${PM10_WARNING_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />
                       <ReferenceLine y={PM10_RED_RESTRICT_UG_M3} stroke="#F97316" strokeDasharray="4 4" label={{ value: `تقييد ${PM10_RED_RESTRICT_UG_M3}`, position: 'insideTopLeft', fontSize: 10, fill: '#EA580C' }} />

@@ -16,17 +16,17 @@ interface ProviderInstance {
   created_at: string;
 }
 
-// إدارة provider_instances (القسم 15.1 من "دليل الإصلاح الجذري لمنظومة
-// مرقاب") — سجل منصات معتمدة من مسؤول النظام فقط؛ المستخدم العادي يختار من
-// هذه القائمة بدل كتابة رابط منصة حر (ConnectProviderModal.tsx).
+// Management of provider_instances (Section 15.1 of "Mirqab System Radical Fix Guide") —
+// Registry of approved platforms managed exclusively by system administrators; regular users select
+// from this list instead of typing a custom platform URL (ConnectProviderModal.tsx).
 export default function AdminProviderInstancesPage() {
   const router = useRouter();
   const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | undefined>(undefined);
   const [instances, setInstances] = useState<ProviderInstance[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
-  // إلى أرقام صفرية أو حالات فارغة مضللة") — نفس نمط admin/projects/page.tsx.
+  // Detected and fixed bug (explicit user request — "Network errors often turn into
+  // misleading zeros or empty states") — same pattern as admin/projects/page.tsx.
   const [error, setError] = useState<string | null>(null);
 
   const [provider, setProvider] = useState('thingsboard');

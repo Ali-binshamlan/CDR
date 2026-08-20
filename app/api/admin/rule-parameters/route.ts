@@ -4,17 +4,18 @@ import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { DEFAULT_RULE_PARAMETERS } from '@/app/utils/dust-compliance-engine';
 
-// خطأ مكتشَف ومُصلَح (مراجعة خبير خارجي — "واجهة إدارة القواعد للعرض فقط؛
-// لا يوجد نظام حقيقي يدعم إنشاء نسخة قاعدة، النشر الذري، منع تعديل نسخة
-// منشورة، التراجع لنسخة سابقة"): هذا المسار يعرض كتالوج المعاملات القابلة
-// للضبط (rule_parameter_definitions) مع القيمة الحالية الفعلية لكل معامل
-// (آخر نسخة PUBLISHED إن وُجدت، وإلا code_default_value) — راجع migration
-// 202608060003_rule_parameter_versioning.sql وapp/utils/dust-compliance-
-// engine/ruleParameters.ts للتصميم الكامل. POST publish/rollback في
-// app/api/admin/rule-parameters/[code]/publish|rollback/route.ts.
-//
-// requireSuperAdmin فقط (لا verifyProjectOwnership — هذه معاملات نظام
-// عامة، لا بيانات مشروع) — نفس حراسة app/api/admin/users/route.ts.
+/*
+ * Bug Fix Note: Addressed external audit finding regarding rules management UI previously being view-only 
+ * lacking version creation, atomic publication, published version immutability, and version rollback.
+ * 
+ * Overview: Returns the catalog of configurable parameters (`rule_parameter_definitions`) mapped to their active value 
+ * (latest `PUBLISHED` version if present, falling back to `code_default_value`).
+ * Refer to `migration 202608060003_rule_parameter_versioning.sql` and `app/utils/dust-compliance-engine/ruleParameters.ts` 
+ * for full system architecture. POST endpoints for `publish` and `rollback` are housed in 
+ * `app/api/admin/rule-parameters/[code]/publish|rollback/route.ts`.
+ * 
+ * Access Control: Strictly guarded by `requireSuperAdmin` (bypasses `verifyProjectOwnership` as these are global system parameters).
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
@@ -75,8 +76,9 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  // للتحقق البصري فقط — تأكيد أن code_default_value في القاعدة لا يزال
-  // مطابقاً لما هو مكتوب فعلياً في ruleParameters.ts وقت هذا الطلب (يُقارَن
-  // في الواجهة، لا خطأً هنا لو اختلف — قد يكون تعديلاً متعمَّداً على الافتراضي).
+  /*
+   * Visual verification payload: Returns `DEFAULT_RULE_PARAMETERS` to confirm DB `code_default_value` 
+   * matches static defaults in `ruleParameters.ts` at request time (compared on client UI; divergence does not throw an error).
+   */
   return NextResponse.json({ data, codeDefaults: DEFAULT_RULE_PARAMETERS });
 }

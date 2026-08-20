@@ -3,37 +3,37 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin, requireViewer } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// كل تنبيهات كل المشاريع — bلا فلترة project_id. alerts.project_id له FK
-// حقيقي لـ projects.id فـ embed !inner صالح هنا (على عكس admin/projects
-// حيث لا FK مباشر بين projects وprofiles). حد 200 صف موثّق كقيد معروف —
-// لا صفحات pagination بهذه المرحلة.
-// يسمح لسوبر أدمن أو جهة مراقبة (requireViewer) — كلاهما قراءة فقط على
-// هذا المسار تحديداً، لا فرق بالصلاحية هنا. مستخدَم من app/dashboard/
-// admin/alerts/page.tsx وapp/dashboard/viewer/alerts/page.tsx معاً.
+/*
+ * Fetches all alerts across all projects without `project_id` filtering.
+ * Relies on the direct FK between `alerts.project_id` and `projects.id` for `!inner` embedding
+ * (unlike `admin/projects` where no direct FK exists between `projects` and `profiles`).
+ * Capped at a hard limit of 200 records without pagination at this stage.
+ * 
+ * Accessible by both Super Admins and Viewers (`requireViewer`), granting read-only permissions for this endpoint.
+ * Shared by `app/dashboard/admin/alerts/page.tsx` and `app/dashboard/viewer/alerts/page.tsx`.
+ */
 export async function GET(request: NextRequest) {
   const adminAuth = await requireSuperAdmin(request);
-  // requireSuperAdmin/requireViewer يُرجعان الآن حقل role صريحاً ('admin'
-  // | 'viewer') عند النجاح — نعتمد عليه مباشرة لمعرفة هوية الطالب الفعلية
-  // بدل استنتاجها من ترتيب فشل/نجاح الاستدعاءين (كان هشاً لأي إعادة ترتيب).
+  /*
+   * Auth Check: `requireSuperAdmin` / `requireViewer` return an explicit `role` field ('admin' | 'viewer') upon success.
+   * Directly checked to identify caller identity rather than relying on brittle execution fallback order.
+   */
   const auth = 'error' in adminAuth ? await requireViewer(request) : adminAuth;
   if ('error' in auth) return auth.error;
   const isViewerCaller = auth.role === 'viewer';
 
-  // جهة الرصد تحديداً تُقصَر على المخالفات التنظيمية الفعلية فقط
-  // (COMPLIANCE_VIOLATION)، بالإضافة إلى تنبيه "تحسّن القراءة" المرتبط بها
-  // (PM10_IMPROVED — طلب صريح من المستخدم: إن تحسّنت القراءة بعد مخالفة
-  // مؤكَّدة وقبل دخول الإيقاف الفعلي، تصلها إشعاراً بالتحسّن أيضاً، لا فقط
-  // نص المخالفة الأصلي). لا تريد كل أنواع التنبيهات الأخرى (استعداد/بدء
-  // نشاط/بلا قرار/تقييد/تنبيه استباقي) ظاهرة لها. السوبر أدمن يبقى يرى كل
-  // الأنواع كالمعتاد.
-  //
-  // خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "Outbox يخلط الإيقاف الإلزامي
-  // والاحترازي"): هذا الفلتر كان صحيحاً منطقياً دائماً، لكن persist_activity_
-  // decision_atomic (راجع migration 202608110020 الكامل) لم تكن تُنتج
-  // kind='COMPLIANCE_VIOLATION' في decision_alert_outbox إطلاقاً — فتبقى
-  // هذه الشاشة فارغة دوماً لجهة الرصد رغم وجود مخالفات تنظيمية مؤكَّدة
-  // فعلياً. لا تغيير مطلوب هنا؛ الإصلاح كان في مصدر البيانات (الدالة التي
-  // تملأ decision_alert_outbox)، لا في هذا الفلتر نفسه.
+  /*
+   * Viewer Role Constraints: Restricts viewer access exclusively to actual regulatory violations (`COMPLIANCE_VIOLATION`) 
+   * and their corresponding reading improvement notifications (`PM10_IMPROVED`).
+   * Explicit user requirement: If readings improve following a confirmed violation and prior to enforcement shutdown, 
+   * viewers must receive an improvement alert alongside the original violation message. 
+   * All other alert categories (readiness, activity start, no decision, restrictions, proactive alerts) are hidden from viewers. 
+   * Super Admins continue to view all alert categories without filtering.
+   *
+   * Bug Fix Note: Fixes an issue where `persist_activity_decision_atomic` (see migration 202608110020) omitted 
+   * `kind='COMPLIANCE_VIOLATION'` in `decision_alert_outbox`, resulting in empty viewer views despite valid violations. 
+   * Filter logic remains unchanged here as the fix was resolved at the data source worker level.
+   */
   let alertsQuery = supabaseAdmin
     .from('alerts')
     .select('*, projects!inner(id, name, city, neighborhood, latitude, longitude, project_manager, user_id)')
@@ -45,10 +45,10 @@ export async function GET(request: NextRequest) {
   const { data: alerts, error: alertsError } = await alertsQuery;
   if (alertsError) return NextResponse.json({ error: safeErrorResponse(alertsError, 'admin/alerts fetch failed') }, { status: 500 });
 
-  // حالة القراءة الخاصة بهذا المستخدم تحديداً (سوبر أدمن أو جهة مراقبة) —
-  // نفس آلية alert_reads المستخدمة في dashboard/alerts-list/route.ts، طلب
-  // مستخدم صريح: "فعل خاصية مقروء/غير مقروء" على كل شاشات التنبيهات، لا
-  // شاشة المالك العادي فقط.
+  /*
+   * User-specific Read State Tracking: Utilizes `alert_reads` (matching `dashboard/alerts-list/route.ts`).
+   * Explicit user requirement: Enable read/unread status across all alert screens, not just for the project owner view.
+   */
   const alertIds = (alerts || []).map((a: { id: string }) => a.id);
   const readAlertIdSet = new Set<string>();
   if (alertIds.length > 0) {
@@ -65,11 +65,12 @@ export async function GET(request: NextRequest) {
     (profiles || []).map((p: { id: string; username: string | null; company_name: string | null; phone_number: string | null }) => [p.id, p])
   );
 
-  // activity_id نص حر يقارَن بـ project_dust_profiles.id (لا FK رسمي، نفس
-  // الاتفاقية المستخدمة في app/api/alerts/generate/route.ts) — نجلب
-  // regulatory_activity (النشاط التنظيمي المختار فعلياً: كسارة/هدم/...)،
-  // المصدر الوحيد لتسمية النشاط الآن (activity_type القديم حُذف نهائياً من
-  // project_dust_profiles، راجع migration 202608190005).
+  /*
+   * Activity Correlation: Maps string `activity_id` to `project_dust_profiles.id` without a formal DB FK constraint 
+   * (consistent with `app/api/alerts/generate/route.ts`).
+   * Fetches `regulatory_activity` as the sole source for activity naming following the permanent removal of `activity_type` 
+   * (see migration 202608190005).
+   */
   const activityIds = [...new Set((alerts || []).map((a: { activity_id: string }) => a.activity_id).filter(Boolean))];
   const { data: dustProfiles } = activityIds.length > 0
     ? await supabaseAdmin.from('project_dust_profiles').select('id, regulatory_activity').in('id', activityIds)
@@ -87,11 +88,11 @@ export async function GET(request: NextRequest) {
     const dustProfile = dustProfileById.get(alert.activity_id);
     return {
       ...alert,
-      // جهة الرصد تحديداً تُعرَض لها viewer_message (النص الرسمي) بدل
-      // message التقني الموجَّه لصاحب المشروع، فقط عندما تكون موجودة فعلاً
-      // (اليوم: COMPLIANCE_VIOLATION وPM10_IMPROVED — راجع deriveAlertMessage
-      // في alert-outbox-worker/route.ts) — غير ذلك يبقى message كما هو (فشل
-      // آمن، لا كسر لأي تنبيه بلا viewer_message).
+      /*
+       * Viewer Message Fallback: Displays `viewer_message` (official text) instead of technical project-owner messages 
+       * when present (`COMPLIANCE_VIOLATION` & `PM10_IMPROVED` via `deriveAlertMessage` in `alert-outbox-worker/route.ts`).
+       * Defaults safely to standard `message` if `viewer_message` is absent.
+       */
       message: isViewerCaller && alert.viewer_message ? alert.viewer_message : alert.message,
       projectName: alert.projects?.name || null,
       projectCity: alert.projects?.city || null,

@@ -3,12 +3,15 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// تراجع عن مجموعة معاملات كاملة دفعة واحدة — يُفوَّض لـ
-// rollback_rule_parameter_bundle (RPC، migration 202608110003): يعيد نشر
-// قيمة كل عضو في البندلة كما كانت قبلها تحديداً (supersedes_version_id
-// الخاص بكل عضو، لا "آخر نسخة الآن")، كنسخ PUBLISHED جديدة ضمن بندلة
-// تراجع جديدة (append-only، لا حذف). فشل لأي عضو (مثال: لا نسخة سابقة له،
-// أو أصبحت خارج المدى الآمن الحالي) يُلغي التراجع بأكمله.
+/*
+ * Rolls back an entire rule parameter bundle in a single atomic transaction.
+ * Delegated to `rollback_rule_parameter_bundle` (RPC, migration 202608110003): Re-publishes 
+ * the exact previous values for every member in the bundle (derived from each member's `supersedes_version_id`, 
+ * rather than current active state) as brand-new `PUBLISHED` versions enclosed within a new rollback bundle (strictly append-only).
+ * 
+ * Atomicity Constraint: If any single member fails rollback validation (e.g., lacks a previous version or 
+ * falls outside current safe range thresholds), the entire bundle rollback transaction aborts.
+ */
 export async function POST(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;

@@ -3,11 +3,13 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// تفاصيل بندلة نشر واحدة — رأس البندلة (rule_parameter_publication_bundles)
-// + كل النسخ الأعضاء (rule_parameter_versions حيث bundle_id يطابق)، مع
-// تسمية المعامل (label_ar) من rule_parameter_definitions للعرض. تُستخدَم
-// لعرض شارة "جزء من مجموعة" في لوحة الإدارة والانتقال لتفاصيل البندلة
-// كاملة، بما فيها زر "تراجع عن المجموعة".
+/*
+ * Fetches details for a single publication bundle—header (`rule_parameter_publication_bundles`)
+ * plus all associated member versions (`rule_parameter_versions` matching `bundle_id`), joined with 
+ * parameter labels (`label_ar`) from `rule_parameter_definitions` for UI rendering.
+ * Used to display the "Part of a Bundle" badge in the admin panel and navigate to full bundle details, 
+ * including the "Rollback Bundle" action button.
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ bundleId: string }> }

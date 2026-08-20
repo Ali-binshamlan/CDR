@@ -101,6 +101,13 @@ export interface DustResultItem {
   // — يلزم لحساب حد النهاية في isActivityLiveForDevice. اختياري: undefined
   // في مصادر أقدم (لا حد نهاية كان موجوداً أصلاً هناك) يعني "بلا حد أعلى".
   durationHours?: number | null;
+  // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام — راجع تعليق isLiveActivity في
+  // computeDustResults): محسوبة مرة واحدة عبر isDustProfileWithinDailyWindow
+  // (واعية بـdaily_duration_hours/الفجوة الليلية) — يُفضَّل قراءتها مباشرة
+  // على استدعاء isActivityLiveForDevice(startIso, ..., durationHours) بلا
+  // وعي بالأيام المتعددة. اختياري: undefined في مصادر أقدم/اختبارية لا
+  // تحسبها (fallback إلى isActivityLiveForDevice البسيطة في تلك الحالات).
+  isLiveForDevice?: boolean;
   compliance?: DustComplianceResult | null;
   unitReceptors?: unknown[];
   complianceHourly?: unknown[];
@@ -234,6 +241,58 @@ export function isDustProfileWithinDailyWindow(
     return nowMs >= dayStartMs && nowMs <= dayEndMs;
   }
   return false; // "الآن" لا يقع في أي يوم عمل ضمن مدى النشاط
+}
+
+// طلب مستخدم صريح ("اريد فصل تماماً" — سؤال مباشر: "لو صار نشاطين بنفس
+// الجهاز، هل تتداخل القراءات؟ بحيث لو واحد بدء الساعة 2 والثاني 4، هل
+// هناك تداخل؟"): نفس منطق المشي اليومي في isDustProfileWithinDailyWindow
+// أعلاه بالضبط، لكن يُرجِع حدود نافذة اليوم الحالي [startMs, endMs] الفعلية
+// بدل true/false فقط — لازمة لتصفية قراءات pm10_readings_history/
+// device_readings_history بمدى زمني دقيق (راجع fetchPm10SustainedStatus
+// أدناه)، لا لمجرد سؤال "هل هو حي الآن؟". null = النشاط ليس ضمن أي نافذة
+// دوام الآن (نفس حالات isDustProfileWithinDailyWindow=false)، أو بيانات
+// ناقصة تماماً (لا planned_date/planned_time — فشل آمن نحو "بلا حد،
+// استخدم كل التاريخ" في المستدعي، لا استبعاد كامل).
+export function computeCurrentDayWindow(
+  row: { planned_date?: string | null; planned_time?: string | null; duration_hours?: number | null; daily_duration_hours?: number | null },
+  workDaysList: string[] | null | undefined,
+  nowMs: number
+): { startMs: number; endMs: number } | null {
+  const { planned_date, planned_time, duration_hours, daily_duration_hours } = row;
+  if (!planned_date || !planned_time || !duration_hours) return null;
+
+  const startIso = riyadhLocalToUtcIso(planned_date, planned_time);
+  if (!startIso) return null;
+  const startMs = new Date(startIso).getTime();
+
+  // نفس fallback isDustProfileWithinDailyWindow بالضبط: فترة متصلة واحدة.
+  if (!daily_duration_hours || daily_duration_hours <= 0 || !Array.isArray(workDaysList) || workDaysList.length === 0) {
+    return { startMs, endMs: startMs + duration_hours * 3600000 };
+  }
+
+  const activeDaysCount = Math.max(1, Math.round(duration_hours / daily_duration_hours));
+  const nowRiyadhDateStr = new Date(nowMs + RIYADH_UTC_OFFSET_MINUTES * 60000).toISOString().slice(0, 10);
+
+  let countedDays = 0;
+  const maxDaysToScan = 370;
+  for (let i = 0; i < maxDaysToScan && countedDays < activeDaysCount; i++) {
+    const dateStr = addDaysToDateStr(planned_date, i);
+    if (!workDaysList.includes(weekDayIdFromDateStr(dateStr))) continue;
+    countedDays++;
+    if (dateStr !== nowRiyadhDateStr) continue;
+    const dayStartIso = riyadhLocalToUtcIso(dateStr, planned_time);
+    if (!dayStartIso) return null;
+    const dayStartMs = new Date(dayStartIso).getTime();
+    const dayEndMs = dayStartMs + daily_duration_hours * 3600000;
+    // خطأ مكتشَف ومُصلَح (اختبار كشفه: 3ص بين يومي عمل — نفس تاريخ اليوم
+    // الثاني بتوقيت الرياض، لكن قبل بدء دوامه بساعات): تطابق تاريخ اليوم
+    // فقط لا يكفي — نفس فحص الحدود المطبَّق في isDustProfileWithinDailyWindow
+    // (nowMs>=dayStartMs && nowMs<=dayEndMs) لازم هنا أيضاً، وإلا تُرجَع
+    // نافذة يوم لم يبدأ دوامه بعد فعلياً.
+    if (nowMs < dayStartMs || nowMs > dayEndMs) return null;
+    return { startMs: dayStartMs, endMs: dayEndMs };
+  }
+  return null; // "الآن" لا يقع في أي يوم عمل ضمن مدى النشاط
 }
 
 // يحسب تاريخ آخر يوم عمل فعلي للنشاط (نهاية مداه الكلي عبر كل الأيام)،
@@ -559,6 +618,13 @@ export function buildDustInput(row: DustActivityRow, project: ProjectRow, freshD
     workDaysList: Array.isArray(project.work_days_list) ? (project.work_days_list as string[]) : undefined,
     workHoursStart: (project.work_hours_start as string | undefined) ?? undefined,
     workHoursEnd: (project.work_hours_end as string | undefined) ?? undefined,
+    // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام) — راجع isActivityLiveNowDailyAware
+    // في dust-engine/engine.ts. لا يؤثر عملياً على المسار المستخدَم من
+    // computeDustResults (يحسب isLiveActivity بنفسه محلياً عبر
+    // isDustProfileWithinDailyWindow قبل استدعاء evaluateDustVisibilityWindow
+    // أصلاً)، لكن يجعل هذه الدالة نفسها صحيحة بمعزل تام عند استدعائها من
+    // أي مسار آخر (مثال: alerts/generate/route.ts).
+    dailyDurationHours: row.daily_duration_hours ?? null,
     shifts: buildEngineShifts(project),
   };
 }
@@ -1108,12 +1174,30 @@ async function logPm10HistoryQueryFailureTelemetry(
   }
 }
 
+// طلب مستخدم صريح ("اريد فصل تماماً" — سؤال مباشر: نشاطان بنفس الجهاز،
+// أحدهما يبدأ الساعة 2 والآخر الساعة 4، هل تتداخل القراءات؟): قبل هذا
+// الإصلاح، قراءات الجهاز الخام (activity_group_id=null — الحالة الوحيدة
+// الفعلية لكل قراءات الأجهزة الحقيقية؛ deviceReadingWriter.ts لا يضبط
+// activity_group_id إطلاقاً) كانت تُطابَق لأي نشاط بمجرد تطابق device_id،
+// بلا أي فحص زمني — نشاطان متداخلان زمنياً بنفس الجهاز كانا "يشتركان" في
+// نفس دقائق استمرار مخالفة PM10 فعلياً. activityWindow (اختياري — راجع
+// دلالة undefined/null/كائن الفعلية في تعليق المعامل أدناه) يقصر قراءات
+// الجهاز على نافذة النشاط الفعلية [بدء اليوم الحالي، نهايته] المحسوبة عبر
+// computeCurrentDayWindow أعلاه — نفس مبدأ العزل المطبَّق أصلاً في
+// device-readings-history/pm10-history routes (الرسم البياني)، الآن
+// مطبَّق على مسار القرار التنظيمي الفعلي أيضاً.
 export async function fetchPm10SustainedStatus(
   supabaseAdmin: SupabaseClient,
   projectId: string,
   activityGroupId: string,
   deviceId?: string | null,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  // undefined = لم يُمرَّر إطلاقاً (استدعاءات قديمة/اختبارية) → بلا تصفية
+  // زمنية، السلوك القديم بلا تغيير. null = المستدعي حسب نافذة النشاط
+  // صراحةً ووجدها غير موجودة الآن (النشاط ليس ضمن أي دوام حالياً) → لا
+  // تُطابَق أي قراءة جهاز خام إطلاقاً (فشل آمن نحو "لا استمرار"، لا "كل
+  // القراءات التاريخية"). كائن {startMs, endMs} = النافذة الفعلية.
+  activityWindow?: { startMs: number; endMs: number } | null
 ): Promise<Pm10SustainedFetchResult> {
   const sinceIso = new Date(nowMs - (PM10_SUSPENSION_MINUTES + 10) * 60000).toISOString();
   const untilIso = new Date(nowMs).toISOString();
@@ -1155,8 +1239,21 @@ export async function fetchPm10SustainedStatus(
       if (row.is_late) return false;
       if (row.activity_group_id === activityGroupId) return true;
       // قراءة جهاز على مستوى المشروع (activity_group_id=null): تخص هذا
-      // النشاط فقط لو device_id يطابق جهازه المحدد فعلياً — لا أي جهاز آخر.
-      if (row.activity_group_id === null) return !!deviceId && row.device_id === deviceId;
+      // النشاط فقط لو device_id يطابق جهازه المحدد فعلياً — لا أي جهاز آخر
+      // — وأيضاً، إن مُرِّرت activityWindow صراحةً، فقط لو recorded_at يقع
+      // ضمن نافذة *هذا* النشاط تحديداً (أو activityWindow=null صراحةً →
+      // رفض كل قراءات الجهاز الخام، النشاط ليس ضمن دوامه الآن). بلا هذا
+      // الفحص الزمني، نشاطان بنفس الجهاز متداخلان زمنياً (مثال: أحدهما
+      // يبدأ الساعة 2 والآخر الساعة 4، والأول لا يزال جارياً) كانا
+      // "يشتركان" في نفس القراءات الخام لحساب استمرار مخالفة PM10 — راجع
+      // تعليق الدالة الكامل أعلاه.
+      if (row.activity_group_id === null) {
+        if (!deviceId || row.device_id !== deviceId) return false;
+        if (activityWindow === undefined) return true; // لم تُطلَب تصفية زمنية — السلوك القديم
+        if (activityWindow === null) return false; // النشاط ليس ضمن نافذة دوام الآن
+        const recordedMs = new Date(row.recorded_at).getTime();
+        return recordedMs >= activityWindow.startMs && recordedMs <= activityWindow.endMs;
+      }
       return false;
     });
     const readings = relevant.map((row) => ({
@@ -1398,15 +1495,27 @@ export async function computeDustResults(
         // القسم 9 من "دليل الإصلاح الجذري لمنظومة مرقاب" — "لا تستدعِ
         // Open-Meteo قبل القرار الحي؛ احفظ قرار الجهاز فوراً، ثم اجلب
         // التوقعات في مسار إثراء منفصل لا يستطيع إسقاط القرار الحي أو
-        // تأخيره". لنشاط حي (LIVE_OPERATIONAL، ضمن هامش ساعتين من بدايته)
-        // مرتبط بجهاز: worst يُبنى فوراً عبر evaluateLiveOperationalDecision
+        // تأخيره". لنشاط حي (LIVE_OPERATIONAL، ضمن نافذته الفعلية) مرتبط
+        // بجهاز: worst يُبنى فوراً عبر evaluateLiveOperationalDecision
         // (دالة نقية، صفر fetch، بلا await)، وshبكة hourly/bestWindow/
         // avoidWindow التوقّعية لا تُجلَب إطلاقاً لهذا المسار — تبقى فارغة/
         // null (نفس شكل buildAwaitingEvaluationWindow)، فلا يوجد أي مسار
         // شبكة يمكن أن يؤخر أو يُسقِط القرار المحفوظ. نشاط توقّعي بحت
         // (PLANNING) أو حي بلا جهاز يبقى بمساره القديم كاملاً
         // (evaluateDustVisibilityWindow، شبكة Open-Meteo الكاملة).
-        const isLiveActivity = isActivityLiveForDevice(startIso, Date.now(), durationHours);
+        //
+        // خطأ مكتشَف ومُصلَح (سؤال مستخدم مباشر: "لو النشاط مستمر يومين كل
+        // يوم 8 ساعات، هل الجهاز يوقف قراءته في هذه الفترة؟"): isActivityLiveForDevice
+        // (بلا daily_duration_hours) كانت تحسب duration_hours الإجمالية
+        // (16 ليومين) كفترة متصلة واحدة بلا وعي بالفجوة الليلية — نفس الخلل
+        // بالضبط الذي حلّته isDustProfileWithinDailyWindow سابقاً في أماكن
+        // أخرى (dashboard/global، evaluateProject)، لكنه بقي غير مُصلَح هنا
+        // تحديداً. الإصلاح: isDustProfileWithinDailyWindow (نفس الدالة
+        // المُختبَرة الموجودة أصلاً، تقرأ row.daily_duration_hours/workDaysList
+        // مباشرة) تحسب isLiveActivity هنا — تُحسَب مرة واحدة فقط وتُخزَّن في
+        // DustResultItem.isLiveForDevice أدناه، فتقرأها كل نقاط الاستدعاء
+        // الأربع الأخرى بلا إعادة حساب مستقلة قد تنحرف عنها.
+        const isLiveActivity = isDustProfileWithinDailyWindow(row, input.workDaysList, Date.now());
         const isLiveWithDevice = isLiveActivity && input.hasDeviceLink;
 
         const windowEval: DustWindowEvaluation = isLiveWithDevice
@@ -1484,6 +1593,12 @@ export async function computeDustResults(
           // لم يكن هذا الحقل مُصدَّراً هنا سابقاً أصلاً (لا حد نهاية كان
           // موجوداً قبل هذا الإصلاح).
           durationHours,
+          // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام — راجع تعليق isLiveActivity
+          // أعلاه الكامل): القيمة الجاهزة الواعية بالفجوة الليلية
+          // (isDustProfileWithinDailyWindow)، محسوبة مرة واحدة هنا فقط —
+          // بقية نقاط الاستدعاء (applyFinalDecisionToAei، persistActivityDecisionsAtomic،
+          // إلخ) تقرأها مباشرة بدل إعادة حسابها بمعزل عن daily_duration_hours.
+          isLiveForDevice: isLiveActivity,
         };
       } catch (error) {
         console.error(`فشل تقييم الغبار للنشاط ${row.id}:`, error);
@@ -1617,6 +1732,8 @@ export interface ComplianceEvaluatableActivity {
   // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
   // — يلزم لحساب حد النهاية في isActivityLiveForDevice.
   durationHours?: number | null;
+  // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام) — راجع تعليق DustResultItem.isLiveForDevice.
+  isLiveForDevice?: boolean;
   windowEval?: Pick<DustWindowEvaluation, 'worst'>;
 }
 
@@ -1804,7 +1921,10 @@ export async function computeDustComplianceResults(
         // الفعلية بدل نص توقّعي عام؛ منع تسجيل أي مخالفة/تقييد ملزم قبل
         // planned_time الفعلي محصور في determineFinalDecisionMode المستخدَمة
         // لاحقاً عند بناء decideFinal (finalDecisionPayload أدناه)، لا هنا.
-        const isLiveForDevice = isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours);
+        // r.isLiveForDevice (إن حُسبت مسبقاً في computeDustResults عبر
+        // isDustProfileWithinDailyWindow، واعية بـdaily_duration_hours لنشاط
+        // متعدد الأيام) تُفضَّل دائماً على إعادة الحساب البسيطة هنا.
+        const isLiveForDevice = r.isLiveForDevice ?? isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours);
         const previousDecision =
           !isLiveForDevice || !r.activityGroupId ? null : previousDecisionsByGroup.get(r.activityGroupId) ?? null;
         // نفس شرط previousDecision أعلاه بالضبط — نشاط غير حي بجهازه/بلا
@@ -1917,12 +2037,26 @@ export async function computeDustComplianceResults(
               }
             }
           }
+          // طلب مستخدم صريح ("اريد فصل تماماً" — نشاطان بنفس الجهاز لا
+          // يجوز أن يتشاركا نفس قراءات استمرار PM10): نافذة النشاط الفعلية
+          // لليوم الحالي (واعية بـdaily_duration_hours/الأيام المتعددة، نفس
+          // منطق isDustProfileWithinDailyWindow) تُحسَب هنا وتُمرَّر لتقصر
+          // قراءات الجهاز الخام على هذا النشاط تحديداً — راجع تعليق
+          // fetchPm10SustainedStatus الكامل. null (النشاط ليس ضمن أي نافذة
+          // دوام الآن) يمرَّر كما هو فلا يُطابَق أي قراءة جهاز خام إطلاقاً
+          // (فشل آمن نحو "لا استمرار" لا "كل القراءات التاريخية").
+          const activityWindow = computeCurrentDayWindow(
+            row,
+            Array.isArray(project.work_days_list) ? (project.work_days_list as string[]) : undefined,
+            pm10SustainedLookupMs
+          );
           const pm10Fetch = await fetchPm10SustainedStatus(
             supabaseAdmin,
             project.id,
             r.activityGroupId,
             row.device_id ?? null,
-            pm10SustainedLookupMs
+            pm10SustainedLookupMs,
+            activityWindow
           );
           pm10Sustained = pm10Fetch.status;
           pm10HistoryQueryFailed = pm10Fetch.queryFailed;
@@ -2329,6 +2463,8 @@ export interface AeiGateableActivity {
   // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
   // — يلزم لحساب حد النهاية في isActivityLiveForDevice.
   durationHours?: number | null;
+  // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام) — راجع تعليق DustResultItem.isLiveForDevice.
+  isLiveForDevice?: boolean;
   aei: AeiEvaluationResult;
   compliance?: DustComplianceResult | null;
   windowEval?: { worst: DviEvaluationResult };
@@ -2371,7 +2507,7 @@ export function applyComplianceGatesToDustAei(
         r.aei,
         mode,
         undefined,
-        isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours)
+        r.isLiveForDevice ?? isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours)
       );
       decision = decideFinal(finalInput);
     }
@@ -2434,7 +2570,12 @@ export function computeUnifiedActivityDecision(
   // طلب مستخدم صريح ("القراءات تبدأ مع بداية النشاط وتقف مع نهاية النشاط")
   // — يلزم لحساب حد النهاية في isActivityLiveForDevice؛ اختياري بنفس مبدأ
   // startIso أعلاه (غيابه = بلا حد أعلى، لا كسر توافقي).
-  durationHours?: number | null
+  durationHours?: number | null,
+  // خطأ مكتشَف ومُصلَح (نشاط متعدد الأيام) — راجع تعليق DustResultItem.isLiveForDevice.
+  // القيمة الجاهزة الواعية بالفجوة الليلية (من computeDustResults) تُفضَّل
+  // دائماً؛ غيابها يسقط إلى isActivityLiveForDevice البسيطة (فشل آمن
+  // للاستدعاءات القديمة/الاختبارية).
+  isLiveForDevice?: boolean
 ): UnifiedActivityDecision {
   const mode = determineFinalDecisionMode(startIso);
   const decision = decideFinal(
@@ -2445,7 +2586,7 @@ export function computeUnifiedActivityDecision(
       aei ?? null,
       mode,
       undefined,
-      isActivityLiveForDevice(startIso, Date.now(), durationHours)
+      isLiveForDevice ?? isActivityLiveForDevice(startIso, Date.now(), durationHours)
     )
   );
 
@@ -2795,7 +2936,7 @@ export async function persistActivityDecisionsAtomic(
             r.aei,
             mode,
             undefined,
-            isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours)
+            r.isLiveForDevice ?? isActivityLiveForDevice(r.startIso, Date.now(), r.durationHours)
           );
           const decision = decideFinal(finalInput);
           finalDecisionPayload = {
@@ -2861,8 +3002,16 @@ export async function persistActivityDecisionsAtomic(
           // تعارض تزامن طبيعي متوقّع الحدوث، تحله دورة التقييم التالية بقراءة
           // الحالة من جديد تلقائياً، وليس فشلاً حقيقياً (شبكة/قيد/إلخ) يستحق
           // نفس درجة الخطورة في السجلات.
+          //
+          // خطأ سباق مُصلَح (migration 202608200003): ACTIVITY_ARCHIVED
+          // (P0001، نفس نمط PROJECT_ARCHIVED الأقدم) يصل حين يُؤرشَف النشاط
+          // عبر DELETE /api/activities بين بداية دورة تقييم متزامنة ووصولها
+          // لهذا الاستدعاء — تعارض تزامن طبيعي متوقّع أيضاً (لا خطأ حقيقي)،
+          // النشاط ببساطة لم يعد مؤهَّلاً لهذه الدورة، سيُستبعَد تلقائياً من
+          // الدورة التالية عبر فحص archived_at IS NULL في evaluateProject.ts.
           const isCasConflict = error?.code === '40001';
-          if (!isCasConflict) {
+          const isArchivedRace = error?.message === 'ACTIVITY_ARCHIVED' || error?.message === 'PROJECT_ARCHIVED';
+          if (!isCasConflict && !isArchivedRace) {
             console.error(
               `فشل حفظ سلسلة القرار الذرية للنشاط ${r.activityId}:`,
               error ? JSON.stringify(error, null, 2) : 'RPC رجعت بلا صفوف (data فارغة)'

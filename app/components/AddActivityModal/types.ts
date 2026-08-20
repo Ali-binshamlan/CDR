@@ -1,20 +1,20 @@
 // AddActivityModal/types.ts
-// أنواع خاصة بمودل إضافة الأنشطة (نسخة DCR: غبار وامتثال تنظيمي + AEI فقط،
-// بلا رافعات ولا إجهاد حراري)
+// Types specific to the Add Activity modal DCR version: Dust & Regulatory Compliance + AEI only
 
-// 'choose': اختيار الأنشطة التنظيمية (اختيار متعدد عبر ActivityTypeStep)
-// 'indicators': شاشة عرض تقييم الغبار للنشاط المختار
+
+// 'choose': Select regulatory activities (multi-selection via ActivityTypeStep)
+// 'indicators': Display screen for dust assessment of the selected activity
 export type ActivityStep =
   | 'choose'
   | 'indicators'
   | 'dust';
 
-// المؤشر الوحيد المتاح في DCR — الغبار فقط (لا رافعة ولا حرارة)
+// The only indicator available in DCR — Dust only (no cranes or heat stress)
 export type IndicatorTab = 'dust';
 
-// شكل مبسّط لمحطة رصد (project_devices) كما يُعرض في قائمة اختيار محطة
-// النشاط — راجع GET /api/projects/[projectId]/devices للشكل الكامل؛ هنا
-// فقط الحقول اللازمة للعرض/اقتراح أقرب محطة (اسم، موقع، حالة التفعيل).
+// Simplified structure for a monitoring device (project_devices) as displayed in the activity
+// device selection list — see GET /api/projects/[projectId]/devices for full shape; here
+// only the required fields for display/suggesting nearest device are included (name, location, active status).
 export interface ProjectDeviceLite {
   id: string;
   name: string;
@@ -23,7 +23,7 @@ export interface ProjectDeviceLite {
   is_active: boolean;
 }
 
-// شكل مبسّط للمشروع كما يُستخدم داخل المودل (الحقول اللي فعليًا محتاجينها هنا فقط)
+// Simplified project structure as used inside the modal (only fields actually needed here)
 export interface ProjectLite {
   id: string;
   latitude: number;
@@ -32,33 +32,32 @@ export interface ProjectLite {
   dust_causing_activities?: string | null;
   exposed_dust_area_size?: string | null;
   dust_mitigation_measures?: string | null;
-  // أوقات دوام المشروع (HH:MM) — يُمنع إدخال نشاط خارجها. تبقى الدوام
-  // الافتراضي/القديم المستخدَم فقط عند غياب ورديات (shifts) فعلية أدناه.
+  // Project working hours (HH:MM) — activity entry outside these hours is restricted. Used as
+  // fallback/legacy default hours only when actual shifts below are absent.
   work_hours_start?: string | null;
   work_hours_end?: string | null;
-  // ورديات عمل حقيقية معرَّفة على مستوى المشروع (project_shifts) — إن
-  // وُجدت، يختار المستخدم أي وردية يتبعها النشاط بدل الاعتماد فقط على
-  // work_hours_start/end كنافذة واحدة. مصفوفة فارغة/undefined = لا ورديات.
+  // Actual working shifts defined at project level (project_shifts) — if present,
+  // user selects which shift the activity belongs to instead of relying solely on
+  // work_hours_start/end as a single window. Empty array/undefined = no shifts.
   shifts?: { id: string; name: string; start_time: string; end_time: string }[] | null;
-  // أيام العمل (معرّفات: sun..sat) — يُمنع إدخال نشاط في يوم خارجها
+  // Work days (identifiers: sun..sat) — activity entry restricted on days outside this list
   work_days_list?: string[] | null;
-  // منطقة المشروع الكاملة (zone) — تُستخدم لقصّ موقع النشاط داخلها فقط.
-  // مشاريع قديمة بلا zone (null) تُعامل كدائرة افتراضية حول latitude/longitude.
+  // Full project area (zone) — used strictly to clamp activity coordinates within bounds.
+  // Legacy projects without zone (null) are treated as a default circle around latitude/longitude.
   zone_type?: 'polygon' | 'circle' | null;
   zone_polygon?: { lat: number; lng: number }[] | null;
   zone_radius_m?: number | null;
-  // حقول إضافية قد تُرفَق من صف المشروع الفعلي (project row) ولا تُستخدم
-  // مباشرة داخل هذا المودال — تبقى قيمتها غير معروفة الشكل مسبقاً (unknown)
-  // بدل any، فأي استخدام فعلي لها يتطلب تضييق النوع (type guard) أولاً.
+  // Additional fields that may be attached from actual project row but not used
+  // directly inside this modal — kept as unknown shape rather than any, requiring
+  // type guard narrowing prior to actual usage.
   [key: string]: unknown;
 }
 
 export interface AddActivityModalProps {
   project: ProjectLite;
-  // يُستدعى بعد إغلاق المودال إثر حفظ ناجح (كل المؤشرات مكتملة) — الصفحة
-  // الأم (Projects/[id]/page.tsx) تجلب بيانات لوحتها بـuseState/useEffect
-  // محلي، لا Server Component، فـrouter.refresh() وحده لا يُحدّث ما يُعرض
-  // فعلياً؛ هذا الاستدعاء يتيح للأب إعادة الجلب فوراً بدل انتظار ريفريش
-  // يدوي للصفحة.
+  // Invoked after modal closes following successful save (all indicators complete) — parent
+  // page (Projects/[id]/page.tsx) fetches dashboard data via local useState/useEffect,
+  // not Server Component, so router.refresh() alone won't trigger re-render;
+  // this callback allows parent to trigger immediate refetch without manual page refresh.
   onActivityCreated?: () => void;
 }

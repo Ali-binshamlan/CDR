@@ -3,20 +3,32 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// true_north_* (migration 202608190002) — راجع تعليق DEVICE_LIST_COLUMNS
-// المطابق في ../route.ts للسبب الكامل.
+/*
+ * Device Management Endpoint (PATCH, DELETE):
+ * Manages device configuration updates and soft-deletion/revocation lifecycle operations for `project_devices`.
+ *
+ * Operational, Security & Architectural Highlights:
+ * 1. Safe Projection: Filters out sensitive key material (`api_key_hash`) via `DEVICE_SAFE_COLUMNS`.
+ * 2. Scope & Ownership Authorization: Validates user session (`requireUserId`), project ownership (`verifyProjectOwnership`), 
+ *    and verifies device assignment to the project (`loadOwnedDevice`) to block cross-tenant modifications.
+ * 3. True North Validation & Reset Logic: Validates required metadata when true north documentation is enabled. When 
+ *    `true_north_alignment_documented` is set to false, all related calibration metadata is explicitly wiped to prevent stale state.
+ * 4. Provider Connection Synchronized Deactivation: Deactivating (`is_active = false`) or revoking a device automatically deactivates 
+ *    associated `provider_connections` records to prevent recurring pull cron failures (`/api/cron/provider-pull`).
+ * 5. Soft Deletion Preserving Evidence Trails: Replaces hard `DELETE` operations with soft-revocation (`is_active = false`, `revoked_at`) 
+ *    to preserve append-only historical telemetry and audit trails (`device_readings_history`).
+ */
+
 const DEVICE_SAFE_COLUMNS =
   'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url';
 
-// يتحقق أن الجهاز المطلوب فعلاً ينتمي للمشروع في الرابط — دفاع إضافي رخيص
-// فوق verifyProjectOwnership: يمنع مالك مشروع A من التأثير على صف جهاز
-// خمّن معرّفه ويتبع فعلياً مشروع B (حتى لو كان سيفشل أصلاً بفحص ملكية B).
 async function loadOwnedDevice(projectId: string, deviceId: string) {
   const { data } = await supabaseAdmin
     .from('project_devices')
     .select('id, project_id')
     .eq('id', deviceId)
     .maybeSingle();
+
   if (!data || data.project_id !== projectId) return null;
   return data;
 }
@@ -29,9 +41,16 @@ export async function PATCH(
   if ('error' in auth) return auth.error;
 
   const { projectId, deviceId } = await params;
+
+  /*
+   * Verify project ownership boundaries
+   */
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  /*
+   * Confirm device belongs to the authorized project scope
+   */
   const device = await loadOwnedDevice(projectId, deviceId);
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
@@ -41,24 +60,22 @@ export async function PATCH(
   if (typeof body?.name === 'string' && body.name.trim()) updates.name = body.name.trim();
   if (typeof body?.lat === 'number' || body?.lat === null) updates.lat = body.lat;
   if (typeof body?.lng === 'number' || body?.lng === null) updates.lng = body.lng;
+
   if (typeof body?.is_active === 'boolean') {
     updates.is_active = body.is_active;
-    // الإلغاء يُسجَّل بطابع زمني (revoked_at)؛ إعادة التفعيل تمسحه — يطابق
-    // دلالة "متى أُلغي آخر مرة"، لا "هل أُلغي يوماً ما".
     updates.revoked_at = body.is_active ? null : new Date().toISOString();
   }
 
-  // توثيق الشمال الحقيقي (migration 202608190002) — نفس تحقق POST في
-  // ../route.ts. عند تحويل الحالة إلى غير موثَّقة (documented=false)، تُصفَّر
-  // كل التفاصيل التابعة صراحة — لا يجوز أن تبقى بيانات معايرة قديمة (نوع/
-  // تاريخ/طريقة) توحي بأن الاتجاه لا يزال موثَّقاً بعد تعطيل التوثيق.
+  /*
+   * True North Orientation Verification Handling
+   */
   if (typeof body?.true_north_alignment_documented === 'boolean') {
     const trueNorthDocumented = body.true_north_alignment_documented;
+
     if (
       trueNorthDocumented &&
       (
-        body?.true_north_alignment_type !== 'TRUE_NORTH' &&
-        body?.true_north_alignment_type !== 'MAGNETIC_NORTH' ||
+        (body?.true_north_alignment_type !== 'TRUE_NORTH' && body?.true_north_alignment_type !== 'MAGNETIC_NORTH') ||
         typeof body?.true_north_verification_method !== 'string' ||
         !body.true_north_verification_method.trim() ||
         typeof body?.true_north_verified_by !== 'string' ||
@@ -93,6 +110,9 @@ export async function PATCH(
     return NextResponse.json({ error: 'لا توجد حقول صالحة للتحديث' }, { status: 400 });
   }
 
+  /*
+   * Update project device attributes
+   */
   const { data, error } = await supabaseAdmin
     .from('project_devices')
     .update(updates)
@@ -102,12 +122,9 @@ export async function PATCH(
 
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device update failed') }, { status: 500 });
 
-  // خطأ مكتشَف ومُصلَح: تعطيل جهاز (is_active=false) كان يترك أي
-  // provider_connections مرتبط به is_active=true — فيستمر /api/cron/
-  // provider-pull بمحاولة سحبه كل دورة، تفشل دائماً بخطأ RPC "device not
-  // found, revoked, or project mismatch" (persist_activity_decision_atomic/
-  // atomic_device_ingest تتحقق من project_devices.is_active صراحة). تعطيل
-  // الاتصال تلقائياً هنا يوقف هذه المحاولات الفاشلة المستمرة بلا داعٍ.
+  /*
+   * Cascade deactivation to provider connections on device deactivation
+   */
   if (updates.is_active === false) {
     await supabaseAdmin
       .from('provider_connections')
@@ -118,13 +135,6 @@ export async function PATCH(
   return NextResponse.json({ device: data });
 }
 
-// خطأ مكتشَف ومُصلَح (مراجعة تصحيح خارجية — "الأرشفة بدل الحذف"): كان هذا
-// المسار يحذف صف project_devices فعلياً. device_readings_history/
-// pm10_readings_history المرتبطة به append-only (trigger forbid_evidence_
-// mutation) فتُحذف بواسطة on delete cascade على device_id — سلسلة أدلة
-// تاريخية كاملة تُمحى نهائياً بحذف جهاز واحد. الإصلاح: إلغاء (نفس منطق
-// PATCH أعلاه: is_active=false + revoked_at) بدل DELETE — القراءات
-// التاريخية تبقى محفوظة ومرتبطة بجهازها الأصلي دائماً.
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string; deviceId: string }> }
@@ -133,20 +143,32 @@ export async function DELETE(
   if ('error' in auth) return auth.error;
 
   const { projectId, deviceId } = await params;
+
+  /*
+   * Verify project ownership boundaries
+   */
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
+  /*
+   * Confirm device belongs to the authorized project scope
+   */
   const device = await loadOwnedDevice(projectId, deviceId);
   if (!device) return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 });
 
+  /*
+   * Perform soft-deletion (revocation) to preserve append-only history
+   */
   const { error } = await supabaseAdmin
     .from('project_devices')
     .update({ is_active: false, revoked_at: new Date().toISOString() })
     .eq('id', deviceId);
+
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'device revoke failed') }, { status: 500 });
 
-  // راجع نفس التعليق في PATCH أعلاه — يمنع محاولات سحب فاشلة مستمرة
-  // لجهاز أُلغي.
+  /*
+   * Deactivate associated provider connections
+   */
   await supabaseAdmin
     .from('provider_connections')
     .update({ is_active: false, updated_at: new Date().toISOString() })

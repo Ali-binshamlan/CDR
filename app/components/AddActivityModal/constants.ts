@@ -31,29 +31,29 @@ export const DUST_FORM_DEFAULTS = {
   onsitePm25: '' as string | number,
 };
 
-// وحدة "محطة خلط خرسانة" واحدة (A6) — يمكن إضافة أكثر من وحدة لنفس النشاط،
-// كل وحدة بموقعها الخاص (batching_lat/batching_lng، منفصل عن موقع الأكوام
-// المشترك stockpileLat/stockpileLng في REGULATORY_ACTIVITY_FIELDS_DEFAULTS)
+// Single concrete batching plant unit (A6) — multiple units can be added to the same activity,
+// each unit having its own location (batching_lat/batching_lng, separate from the shared
+// stockpile location stockpileLat/stockpileLng in REGULATORY_ACTIVITY_FIELDS_DEFAULTS)
 //
-// خطأ مكتشَف ومُصلَح (مراجعة كود خارجي — "يُستخدَم رقم الفهرس بدل معرّف
-// ثابت للوحدة"): كانت crusherPrecheckResults/batchingPrecheckResults في
-// index.tsx تُفهرَس بمفتاح `${itemId}:${index}` — حذف/إضافة وحدة وسط
-// الجلسة يُزحزح كل الفهارس بعدها، فتُطابَق نتيجة فحص قديمة لموقع مختلف
-// تماماً بالخطأ. id ثابت (مولَّد مرة واحدة عند addCrusherUnit/addBatchingUnit
-// عبر crypto.randomUUID، نفس نمط generateActivityItemId) يبقى صحيحاً بصرف
-// النظر عن أي حذف/إضافة لاحقة لوحدات أخرى.
+// Bug detected and fixed (external code review — "using index number instead of a fixed unit ID"):
+// Previously, crusherPrecheckResults/batchingPrecheckResults in index.tsx were indexed by key
+// `${itemId}:${index}` — removing/adding a unit mid-session shifted all indices after it,
+// causing an old precheck result for a completely different location to be incorrectly matched.
+// A fixed id (generated once when addCrusherUnit/addBatchingUnit is called via crypto.randomUUID,
+// following the same pattern as generateActivityItemId) remains correct regardless of any subsequent
+// additions/deletions of other units.
 export const BATCHING_UNIT_DEFAULTS = {
   id: '' as string,
   batchingLat: '' as string | number,
   batchingLng: '' as string | number,
-  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "لو كانت وحدة في الشرق
-  // وأخرى في الغرب، هل كل وحدة سترتبط بجهازها؟"): كان موقع الجهاز يُحسَب
-  // فقط لموقع النشاط العام (item.deviceId، يتبع الوحدة الأولى حصراً)، فكل
-  // وحدات محطة الخلط الأخرى كانت تُعرَض (وقبل إصلاح route.ts، تُحفَظ فعلياً)
-  // مرتبطة بجهاز الوحدة الأولى بصرف النظر عن موقعها الحقيقي الخاص. deviceId
-  // هنا للعرض التوضيحي فقط (نفس مبدأ item.deviceId في index.tsx) — الحساب
-  // الملزم الفعلي عند الحفظ يتم خادمياً في route.ts من batching_lat/lng
-  // الفعليين لهذه الوحدة تحديداً، لا من هذا الحقل.
+  // Critical bug detected and fixed (explicit request from user — "if one unit is in the east
+  // and another in the west, will each unit link to its own device?"): Previously, device location
+  // was calculated only for the general activity location (item.deviceId, following the first unit exclusively),
+  // so all other batching plant units were displayed (and prior to route.ts fix, actually saved)
+  // linked to the first unit's device regardless of their actual specific location.
+  // deviceId here is for display purposes only (same concept as item.deviceId in index.tsx) — the actual
+  // binding calculation upon saving is performed server-side in route.ts using the actual batching_lat/lng
+  // of this specific unit, not from this field.
   deviceId: null as string | null,
   silosSealed: true as boolean | null,
   pm10FilterEfficiencyPercent: '' as string | number,
@@ -63,15 +63,15 @@ export const BATCHING_UNIT_DEFAULTS = {
 };
 export type BatchingUnit = typeof BATCHING_UNIT_DEFAULTS;
 
-// وحدة "كسارة" واحدة (A6) — يمكن إضافة أكثر من وحدة لنفس النشاط، كل وحدة
-// بموقعها الخاص (crusher_lat/crusher_lng لكل صف). مستخرجة من الحقول المسطّحة
-// السابقة في REGULATORY_ACTIVITY_FIELDS_DEFAULTS (كانت كسارة واحدة فقط لكل
-// نشاط تنظيمي) إلى مصفوفة، بنفس نمط BatchingUnit تماماً.
+// Single crusher unit (A6) — multiple units can be added to the same activity, each unit having
+// its own location (crusher_lat/crusher_lng per row). Extracted from the previous flat fields in
+// REGULATORY_ACTIVITY_FIELDS_DEFAULTS (which supported only one crusher per regulatory activity)
+// into an array, following the exact same pattern as BatchingUnit.
 export const CRUSHER_UNIT_DEFAULTS = {
   id: '' as string,
   crusherLat: '' as string | number,
   crusherLng: '' as string | number,
-  // راجع تعليق deviceId في BATCHING_UNIT_DEFAULTS أعلاه — نفس المبدأ بالضبط.
+  // See deviceId comment in BATCHING_UNIT_DEFAULTS above — exact same principle applies.
   deviceId: null as string | null,
   crusherDistanceToReceptorM: '' as string | number,
   crusherUnitsFullyCovered: true as boolean | null,
@@ -84,7 +84,7 @@ export const CRUSHER_UNIT_DEFAULTS = {
 };
 export type CrusherUnit = typeof CRUSHER_UNIT_DEFAULTS;
 
-// وحدة "سطح غير نشط" واحدة (A4) — يمكن إضافة أكثر من وحدة لنفس النشاط
+// Single idle surface unit (A4) — multiple units can be added to the same activity
 export const IDLE_SURFACE_UNIT_DEFAULTS = {
   idleDays: '' as string | number,
   idleSurfaceStabilized: false as boolean | null,
@@ -92,17 +92,16 @@ export const IDLE_SURFACE_UNIT_DEFAULTS = {
 };
 export type IdleSurfaceUnit = typeof IDLE_SURFACE_UNIT_DEFAULTS;
 
-// حقول الامتثال التنظيمي الخاصة بنشاط تنظيمي واحد (regulatoryActivity)،
-// معزولة عن حقول DVI العامة في DUST_FORM_DEFAULTS — تُستخدم لبناء "بطاقة
-// نشاط تنظيمي" واحدة ضمن قائمة يمكن للمستخدم إضافة عدة بطاقات منها قبل
-// الحفظ دفعة واحدة (بدل تكرار فتح نافذة "إضافة أنشطة" لكل نشاط تنظيمي).
+// Regulatory compliance fields specific to a single regulatory activity (regulatoryActivity),
+// isolated from general DVI fields in DUST_FORM_DEFAULTS — used to construct a single "regulatory
+// activity card" within a list where the user can add multiple cards before saving as a batch
+// (instead of repeatedly opening an "Add Activities" modal for each regulatory activity).
 export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
-  // طلب مستخدم صريح (توحيد كامل): ENTRY_EXIT/OTHER حُذفا من RegulatoryDustActivity
-  // بالكامل، فلا قيمة افتراضية "عامة" ممكنة بعد الآن — هذا الحقل يُستبدَل
-  // فوراً دائماً بـactivityKey الفعلي المختار (راجع السطر الذي يستهلك هذا
-  // الكائن في index.tsx: `{ ...REGULATORY_ACTIVITY_FIELDS_DEFAULTS,
-  // regulatoryActivity: activityKey }`)، فالقيمة هنا مجرد إسكات للنوع قبل
-  // الاختيار الفعلي، لا تُقرأ عملياً أبداً.
+  // Explicit user request (full unification): ENTRY_EXIT/OTHER were entirely removed from
+  // RegulatoryDustActivity, so no "generic" default value is possible anymore — this field is
+  // always immediately replaced by the actual chosen activityKey (see the line consuming this
+  // object in index.tsx: `{ ...REGULATORY_ACTIVITY_FIELDS_DEFAULTS, regulatoryActivity: activityKey }`),
+  // so the value here merely silences type errors prior to actual selection and is never read in practice.
   regulatoryActivity: 'EARTHWORKS' as
     | 'EARTHWORKS' | 'SITE_TRAFFIC' | 'MATERIAL_HANDLING_STOCKPILE'
     | 'DEMOLITION' | 'CRUSHER' | 'BATCHING_PLANT' | 'STONE_CUTTING' | 'CD_WASTE_TRANSPORT' | 'IDLE_SURFACE',
@@ -113,7 +112,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   wetCuttingActive: false,
   hepaExtractionActive: false,
   dustSuppressionSystemOperational: true,
-  // A1 — تجهيز الموقع وأعمال الحفر والأعمال الترابية
+  // A1 — Site prep, excavation, and earthworks
   surfaceWatered: true,
   dropHeightM: '' as string | number,
   exposedSoilAreaM2: '' as string | number,
@@ -126,7 +125,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   sprayUsedDuringSoilUnloading: true,
   workAreaPhased: true,
 
-  // A2 — النقل داخل الموقع والطرق الخدمية
+  // A2 — On-site transport and haul roads
   unpavedRoadsWateredDaily: true,
   dustControlMethod: 'WATER_SPRAY' as 'WATER_SPRAY' | 'SUPPRESSANT' | 'BOTH' | 'NONE',
   speedLimitSignsPosted: true,
@@ -147,7 +146,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   pavedSpeedKmh: '' as string | number,
   spillCleanupMinutes: '' as string | number,
 
-  // A3 — الدخول والخروج
+  // A3 — Entry and exit points
   entryPointLat: '' as string | number,
   entryPointLng: '' as string | number,
   exitPointLat: '' as string | number,
@@ -165,7 +164,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   truckPathCleanedWithin15Min: true,
   waterTracesBeyond15mFromGate: false,
 
-  // A4 — تخفيف تطاير الغبار الناتج عن هبوب الرياح
+  // A4 — Windborne dust mitigation
   exposedAreaCurrentlyIdle: false,
   stabilizationMethod: 'POLYMERS' as 'POLYMERS' | 'PROTECTIVE_COVERS' | 'BOTH' | 'OTHER',
   stockpileAreaExists: false,
@@ -173,7 +172,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   windBarriersNearStockpiles: true,
   constructionScheduledImmediatelyAfterPrep: true,
 
-  // A5 — تحميل/تنزيل/تخزين المواد
+  // A5 — Material loading/unloading/storage
   centralizedStorage: true,
   distributedAcrossMultipleLocations: false,
   sprayedImmediatelyAfterUnloading: true,
@@ -192,7 +191,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   stockpileLat: '' as string | number,
   stockpileLng: '' as string | number,
 
-  // مصادر الغبار الأخرى
+  // Other dust sources
   filterMaintenancePerformedRegularly: true,
   leakPreventionInspectedRegularly: true,
   suppressionSystemCheckedDaily: true,
@@ -202,7 +201,7 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   wasteHumidityMaintainedDuringTransport: true,
   wasteLoadsCovered: true,
 
-  // الهدم — استكمال
+  // Demolition — continuation
   sprayCannonRangeBand: 'M20' as 'M20' | 'M30' | 'UNDER_20' | 'UNAVAILABLE',
   crushersCoveredDemolition: true,
   loadingPointsHaveSprinklers: true,
@@ -210,10 +209,10 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
   sandblastingUsed: false,
   sandblastingInEnclosedBox: true,
 
-  // قطع الأحجار — استكمال
+  // Stone cutting — continuation
   cuttingResiduesCleanedAfterCompletion: true,
 
-  // نقل مخلفات الهدم والبناء
+  // Construction & demolition waste transport
   debrisSprayedBeforeLoading: true,
   centralStorageArea: true,
   smallPilesDispersedMultipleLocations: false,
@@ -227,24 +226,23 @@ export const REGULATORY_ACTIVITY_FIELDS_DEFAULTS = {
 };
 export type RegulatoryActivityFields = typeof REGULATORY_ACTIVITY_FIELDS_DEFAULTS;
 
-// طريقة تحديد ساعات العمل اليومية لنشاط تنظيمي واحد — خيار واحد فقط
-// (المستخدم لا يُدخل الاثنين معاً):
-// - 'shift': يختار وردية جاهزة من project.shifts، والوقت يُؤخذ منها
-//   تلقائياً (start_time/end_time الخاصان بها)، بلا إدخال وقت يدوي.
-// - 'custom': يُدخل وقت بداية/نهاية يدوياً، مقيَّد ضمن نطاق دوام المشروع
-//   الكامل (work_hours_start–work_hours_end) عبر min/max على الحقول.
+// Method for specifying daily working hours for a single regulatory activity — single option only
+// (the user does not input both):
+// - 'shift': selects a pre-configured shift from project.shifts, automatically taking the time
+//   from it (its start_time/end_time) without manual time input.
+// - 'custom': manually inputs start/end time, restricted within the full project shift range
+//   (work_hours_start–work_hours_end) via min/max attributes on input fields.
 export type ActivityTimingMode = 'shift' | 'custom';
 
-// عنصر واحد ضمن قائمة الأنشطة التنظيمية المختارة — كل نشاط بطاقة مستقلة
-// (أكورديون) لها موقعها الخاص (على الخريطة الموحدة لكل الأنشطة)، ومداها
-// الزمني الخاص (تاريخ بداية/نهاية قد يمتد لأيام أو أشهر)، وساعات عمل يومية
-// تنطبق على كل يوم ضمن هذا المدى (وردية جاهزة أو وقت مخصص — راجع
-// ActivityTimingMode)، بدل موقع/توقيت/وردية مشتركة واحدة لكل الأنشطة.
-// lat/lng تبدأ null (إلزامية قبل الحفظ، راجع validateRegulatoryActivityLocations
-// في index.tsx) لتفادي حفظ نشاط بموقع افتراضي (مركز المشروع) لم يختره
-// المستخدم فعلياً. لأنشطة الخلاطة/الكسارة: lat/lng تتبع موقع الوحدة الأولى
-// تلقائياً (راجع syncItemLocationFromUnit في index.tsx) بدل أن يحددها
-// المستخدم يدوياً بشكل منفصل.
+// A single item within the list of selected regulatory activities — each activity is an independent
+// card (accordion) having its own location (on the unified map for all activities), its own date
+// range (start/end date which may span days or months), and daily working hours applying to every
+// day within that range (a pre-configured shift or custom time — see ActivityTimingMode), instead
+// of a single shared location/time/shift for all activities.
+// lat/lng start as null (mandatory before saving, see validateRegulatoryActivityLocations in index.tsx)
+// to prevent saving an activity with a default location (project center) that the user didn't actually select.
+// For batching plant / crusher activities: lat/lng follow the first unit's location automatically
+// (see syncItemLocationFromUnit in index.tsx) instead of requiring manual separate specification.
 export interface RegulatoryActivityItem {
   id: string;
   fields: RegulatoryActivityFields;
@@ -253,35 +251,33 @@ export interface RegulatoryActivityItem {
   crusherUnits: CrusherUnit[];
   lat: number | null;
   lng: number | null;
-  // محطة الرصد (project_devices.id) التي ستؤخذ منها قراءات هذا النشاط —
-  // اختيارية: null يعني "بلا محطة"، فيأخذ النشاط قراءاته من API الطقس
-  // (Open-Meteo) بدل الجهاز تلقائياً (نفس أولوية جهاز > API > يدوي
-  // المعتادة). تُقترح تلقائياً كأقرب محطة نشطة لموقع النشاط عند تحديد
-  // lat/lng، وتبقى قابلة للتغيير أو الإلغاء يدوياً من القائمة المنسدلة في
-  // DustStep.tsx.
+  // Monitoring station (project_devices.id) from which readings for this activity will be taken —
+  // optional: null means "no station", taking readings automatically from weather API (Open-Meteo)
+  // instead of the device (same usual device > API > manual priority). Automatically suggested
+  // as the nearest active station to the activity location when setting lat/lng, and remains
+  // manually changeable or clearable via dropdown in DustStep.tsx.
   deviceId: string | null;
   startDate: string;
   endDate: string;
   timingMode: ActivityTimingMode;
-  // null يعني "لم تُختَر وردية بعد" — إلزامي عند timingMode === 'shift'
+  // null means "no shift selected yet" — mandatory when timingMode === 'shift'
   shiftId: string | null;
-  // ساعات يومية مخصصة — تُستخدم فقط عند timingMode === 'custom'
+  // Custom daily hours — used only when timingMode === 'custom'
   customStartTime: string;
   customEndTime: string;
 }
 
-// نوع النشاط التنظيمي (regulatoryActivity في REGULATORY_ACTIVITY_FIELDS_DEFAULTS)
+// Regulatory activity type (regulatoryActivity in REGULATORY_ACTIVITY_FIELDS_DEFAULTS)
 export type RegulatoryActivityKey = RegulatoryActivityFields['regulatoryActivity'];
 
-// خيارات أنشطة الامتثال التنظيمي (Riyadh Dust Compliance) المعروضة في شاشة
-// اختيار النشاط، ويُفعّل مؤشر الغبار (DCR لا يحسب إلا الغبار/AEI — لا حرارة
-// ولا رافعات). label بالعربي مصدر موحّد يُستخدم في شاشة الاختيار وفي
-// DustStep (خريطة الترجمة) معاً.
+// Options for regulatory compliance activities (Riyadh Dust Compliance) displayed on the activity
+// selection screen, activating the dust indicator (DCR only calculates dust/AEI — no heat, no cranes).
+// label in Arabic serves as a single unified source used in both the selection screen and DustStep
+// (translation map) together.
 //
-// طلب مستخدم صريح (توحيد كامل): dviCategory حُذف — كان يربط كل نشاط تنظيمي
-// بفئة ActivityCategory الهندسية العامة (النظام القديم، المحذوف بالكامل من
-// dust-engine الآن). key وحده كافٍ ويُغذّي DustEngineInput.regulatoryActivity
-// مباشرة بلا وسيط.
+// Explicit user request (full unification): dviCategory was removed — it used to bind each regulatory
+// activity to the general engineering ActivityCategory (the legacy system, now fully removed from
+// dust-engine). key alone is sufficient and feeds DustEngineInput.regulatoryActivity directly without an intermediary.
 export interface RegulatoryActivityOption {
   key: RegulatoryActivityKey;
   label: string;
@@ -299,13 +295,12 @@ export const REGULATORY_ACTIVITY_OPTIONS: RegulatoryActivityOption[] = [
   { key: 'IDLE_SURFACE', label: 'سطح غير نشط' },
 ];
 
-// خريطة key النشاط التنظيمي إلى تسميته العربية الكاملة — إعادة تصدير من
-// dust-compliance-engine/rulebook.ts (نفس القاموس المستخدم في كل شاشات
-// العرض: التنبيهات، جداول الأدمن، عناوين البطاقات) بدل نسخة محلية مشتقة من
-// REGULATORY_ACTIVITY_OPTIONS.label — كانتا قاموسين منفصلين بصياغة مختلفة
-// قليلاً لنفس المفاتيح (مثال: "كسارة" هنا مقابل "الكسارة" هناك)، فيظهر
-// النشاط بصياغة مختلفة حسب الشاشة. label في REGULATORY_ACTIVITY_OPTIONS
-// يبقى نصاً مختصراً مخصصاً لأزرار شاشة الاختيار فقط.
+// Map of regulatory activity key to its full Arabic label — re-exported from
+// dust-compliance-engine/rulebook.ts (the exact same dictionary used across all display screens:
+// alerts, admin tables, card titles) instead of a local version derived from REGULATORY_ACTIVITY_OPTIONS.label —
+// previously two separate dictionaries with slightly different wording for the same keys
+// (e.g., "كسارة" here vs "الكسارة" there), making activities display differently across screens.
+// label in REGULATORY_ACTIVITY_OPTIONS remains a concise string dedicated to selection screen buttons only.
 export { REGULATORY_ACTIVITY_LABEL_AR } from '@/app/utils/dust-compliance-engine/rulebook';
 
 // General advisory text (text-only, no decision effect) per regulatory
@@ -379,15 +374,3 @@ export const GENERAL_ALERTS_AR: Record<string, string[]> = {
 export const INDICATOR_LABEL_AR: Record<IndicatorTab, string> = {
   dust: 'تقييم الرؤية والغبار',
 };
-
-export const LOCATION_OPTIONS = [
-  'كامل الموقع',
-  'منطقة مفتوحة',
-  'منطقة محاطة بمبانٍ',
-  'سطح المبنى',
-  'موقع الرافعة',
-  'طريق أو مسار',
-  'منطقة حفر',
-  'أخرى',
-];
-

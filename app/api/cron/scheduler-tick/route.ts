@@ -2,24 +2,19 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 
-// خطأ تشغيلي مكتشَف (القسم 10.1 من "دليل الإصلاح الجذري لمنظومة مرقاب" —
-// "لماذا الجدول الحالي غير كافٍ؟"): كان هذا المسار يستدعي evaluateProject
-// مباشرة داخل حلقة تسلسلية بعد أخذ قفل بسيط (scheduler_locks) — لا Lease
-// قابل للاسترداد (فشل عامل منتصف التنفيذ لا يُسترجَع أبداً)، لا إعادة
-// محاولة بعد فشل، ويتضخم الجدول بلا تنظيف. الإصلاح: هذا المسار الآن ينشئ
-// Job واحداً فقط لكل مشروع لكل نافذة دقيقتين (بدل تنفيذ التقييم مباشرة) —
-// التنفيذ الفعلي انتقل إلى app/api/cron/scheduler-worker/route.ts الذي
-// يطالب بدفعة عبر claim_evaluation_jobs (FOR UPDATE SKIP LOCKED) منفصلاً
-// تماماً عن هذا المسار، فيمكن تشغيلهما بمعدلات مختلفة (tick كل دقيقتين
-// لإنشاء المهام، worker كل دقيقة أو أقل لمعالجتها).
-//
-// مصادقة عبر SCHEDULER_CRON_SECRET — كما كانت (لا تغيير).
-//
-// يُستدعى خارجياً كل دقيقتين عبر خدمة cron مجانية (cron-job.org) — لا إضافة
-// لـvercel.json (خطة Vercel Hobby لا تدعم جدولة أقل من يومية، نفس السبب
-// الموثَّق في provider-pull/route.ts وforecast-refresh/route.ts). راجع
-// scheduler-heartbeat/route.ts للتحقق من أن هذا الاستدعاء الخارجي فعلياً
-// نشط (jobs_due/evaluation_lag_seconds) قبل افتراض أنه يعمل.
+/*
+ * Scheduler Tick Route — Section 10.1 of Mirqab Architecture Optimization Spec:
+ * Decouples job scheduling from execution by creating distinct evaluation tasks
+ * in `project_evaluation_jobs` for each active project per 2-minute bucket window.
+ *
+ * Operational & Concurrency Control Highlights:
+ * 1. Asynchronous Decoupling: Offloads execution to `scheduler-worker`, preventing long-running 
+ *    evaluations from causing HTTP timeouts or lock contention in the scheduler tick.
+ * 2. Early Bucket Lock: Uses `scheduler_tick_run_lock` (bucket-based PK) to short-circuit redundant 
+ *    cron-job.org executions, suppressing wasted DB reads and unnecessary I/O budget consumption.
+ * 3. Idempotent Enqueueing: Relies on unique constraints on `(project_id, dedupe_key)` within 
+ *    `project_evaluation_jobs` (violating `23505` triggers a graceful skipped state).
+ */
 const SCHEDULER_BUCKET_MS = 2 * 60_000;
 
 export async function GET(request: Request) {
@@ -34,12 +29,9 @@ export async function GET(request: Request) {
   const timeBucket = Math.floor(Date.now() / SCHEDULER_BUCKET_MS);
   const dedupeKey = `scheduled:${timeBucket}`;
 
-  // قفل دورة مبكر (202608130001) — cron-job.org يستدعي هذا المسار كل دقيقة
-  // لكن الدورة مصمَّمة لنافذة دقيقتين؛ بلا هذا القفل، نصف الاستدعاءات تقريباً
-  // كانت تُنفّذ SELECT كامل على projects + محاولات INSERT هادرة (ترتطم
-  // بتعارض unique أدناه) قبل اكتشاف أن الدورة عولجت بالفعل. الخروج المبكر
-  // هنا يمنع أي I/O إضافي فور اكتشاف التكرار — راجع تعليق الهجرة للتفصيل
-  // الكامل (سياق: تنبيه Supabase حول استهلاك Disk IO Budget، 2026-08-13).
+  /*
+   * Single-execution window lock check to prevent concurrent I/O overhead
+   */
   const { error: runLockError } = await supabaseAdmin
     .from('scheduler_tick_run_lock')
     .insert({ run_bucket: timeBucket });
@@ -64,12 +56,10 @@ export async function GET(request: Request) {
 
   const results: Array<{ projectId: string; enqueued: boolean; skipped?: boolean; error?: string }> = [];
 
-  // تسلسلي عمداً — نفس مبدأ provider-pull/forecast-refresh: يبسّط تتبع
-  // الفشل الجزئي ويتفادى إغراق قاعدة البيانات بإدراجات متزامنة ضخمة.
+  /*
+   * Sequential Enqueueing: Enforces batch isolation and clear status tracing
+   */
   for (const project of projects || []) {
-    // unique(project_id, dedupe_key) هو القفل نفسه — محاولة إدراج ثانية
-    // لنفس (project_id, نافذة الدقيقتين) ترتطم بتعارض 23505 وتُتجاهَل بأمان
-    // (دورة سابقة أنشأت المهمة بالفعل، أو استدعاء متزامن سبقنا للتو).
     const { error: insertError } = await supabaseAdmin.from('project_evaluation_jobs').insert({
       project_id: project.id,
       dedupe_key: dedupeKey,
@@ -88,9 +78,9 @@ export async function GET(request: Request) {
     results.push({ projectId: project.id, enqueued: true });
   }
 
-  // Heartbeat — يُحدَّث هنا (نجاح إنشاء المهام)، لا انتظاراً لنجاح المعالجة
-  // الفعلية (ذلك heartbeat منفصل عبر last_successful_project_evaluation_at
-  // الذي يُحدِّثه scheduler-worker/route.ts فقط عند نجاح تقييم فعلي).
+  /*
+   * Record Scheduler Dispatch Heartbeat
+   */
   await supabaseAdmin
     .from('scheduler_heartbeat')
     .update({ last_heartbeat_at: new Date().toISOString() })

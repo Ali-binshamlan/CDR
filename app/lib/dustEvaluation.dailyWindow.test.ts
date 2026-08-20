@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDustProfileWithinDailyWindow, hasDustProfileWindowEnded } from './dustEvaluation';
+import { isDustProfileWithinDailyWindow, hasDustProfileWindowEnded, computeCurrentDayWindow } from './dustEvaluation';
 
 // المستخدم سأل: "مشروع مستمر 3 أيام والدوام 8 ساعات، هل يُحتسب من وقت
 // العمل فقط؟" — كشف أن duration_hours الإجمالية (= dailyHours × عدد أيام
@@ -123,5 +123,59 @@ describe('hasDustProfileWindowEnded', () => {
   it('لا يستبعد صفاً بلا duration_hours (بيانات ناقصة — فشل آمن نحو عدم الانتهاء)', () => {
     const row = { planned_date: '2026-08-09', planned_time: '08:00', duration_hours: null, daily_duration_hours: 8 };
     expect(hasDustProfileWindowEnded(row, WORK_DAYS, Date.now())).toBe(false);
+  });
+});
+
+// طلب مستخدم صريح ("اريد فصل تماماً" — نشاطان بنفس الجهاز لا يجوز أن
+// يتشاركا نفس قراءات استمرار PM10): computeCurrentDayWindow ترجع حدود
+// [startMs, endMs] الفعلية بدل true/false فقط — تُستهلَك في
+// fetchPm10SustainedStatus لتصفية قراءات الجهاز الخام بنافذة النشاط
+// الدقيقة. نفس منطق isDustProfileWithinDailyWindow أعلاه بالضبط.
+describe('computeCurrentDayWindow', () => {
+  const THREE_DAY_ROW = {
+    planned_date: '2026-08-09', // أحد
+    planned_time: '08:00',
+    duration_hours: 24,
+    daily_duration_hours: 8,
+  };
+  const WORK_DAYS = ['sun', 'mon', 'tue', 'wed', 'thu'];
+
+  it('أثناء دوام اليوم الأول → يرجع حدود ذلك اليوم تحديداً [08:00, 16:00 بتوقيت الرياض]', () => {
+    const nowMs = new Date('2026-08-09T07:00:00.000Z').getTime(); // 10ص الرياض
+    const window = computeCurrentDayWindow(THREE_DAY_ROW, WORK_DAYS, nowMs);
+    expect(window).not.toBeNull();
+    expect(window!.startMs).toBe(new Date('2026-08-09T05:00:00.000Z').getTime()); // 08:00 الرياض
+    expect(window!.endMs).toBe(new Date('2026-08-09T13:00:00.000Z').getTime()); // 16:00 الرياض
+  });
+
+  it('أثناء دوام اليوم الثاني → يرجع حدود اليوم الثاني تحديداً، لا الأول', () => {
+    const nowMs = new Date('2026-08-10T07:00:00.000Z').getTime(); // 10ص الاثنين
+    const window = computeCurrentDayWindow(THREE_DAY_ROW, WORK_DAYS, nowMs);
+    expect(window).not.toBeNull();
+    expect(window!.startMs).toBe(new Date('2026-08-10T05:00:00.000Z').getTime());
+    expect(window!.endMs).toBe(new Date('2026-08-10T13:00:00.000Z').getTime());
+  });
+
+  it('منتصف الليل بين اليومين (خارج نافذة الدوام) → null', () => {
+    const nowMs = new Date('2026-08-10T00:00:00.000Z').getTime(); // 3ص الرياض بين اليومين
+    expect(computeCurrentDayWindow(THREE_DAY_ROW, WORK_DAYS, nowMs)).toBeNull();
+  });
+
+  it('بعد انتهاء مدى النشاط بالكامل → null', () => {
+    const nowMs = new Date('2026-08-12T07:00:00.000Z').getTime(); // الأربعاء، خارج المدى
+    expect(computeCurrentDayWindow(THREE_DAY_ROW, WORK_DAYS, nowMs)).toBeNull();
+  });
+
+  it('fallback: بلا daily_duration_hours → فترة متصلة واحدة [بداية، بداية+duration]', () => {
+    const row = { planned_date: '2026-08-09', planned_time: '08:00', duration_hours: 24, daily_duration_hours: null };
+    const window = computeCurrentDayWindow(row, WORK_DAYS, Date.now());
+    expect(window).not.toBeNull();
+    expect(window!.startMs).toBe(new Date('2026-08-09T05:00:00.000Z').getTime());
+    expect(window!.endMs).toBe(new Date('2026-08-09T05:00:00.000Z').getTime() + 24 * 3600000);
+  });
+
+  it('بيانات ناقصة (بلا planned_date) → null (فشل آمن نحو "بلا نافذة" لا "نافذة وهمية")', () => {
+    const row = { planned_date: null, planned_time: '08:00', duration_hours: 8, daily_duration_hours: 8 };
+    expect(computeCurrentDayWindow(row, WORK_DAYS, Date.now())).toBeNull();
   });
 });

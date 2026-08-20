@@ -3,10 +3,17 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// أنشطة الغبار المجدولة ضمن نطاق تاريخ (from/to، YYYY-MM-DD) لكل مشاريع
-// المستخدم — يغذي صفحة جدول الأسبوع (تقويم أسبوعي). نفس نمط تحقق
-// dashboard/reports/route.ts (requireUserId + فلترة user_id عبر projects،
-// بلا verifyProjectOwnership الفردي لأنها قائمة لا مشروع واحد).
+/*
+ * Dashboard Schedule Aggregator Endpoint:
+ * Fetches scheduled dust activity profiles across all active user projects within a date range
+ * (`from`/`to`, YYYY-MM-DD) to power the weekly calendar view.
+ *
+ * Operational & Data Scoping Highlights:
+ * 1. Range Validation: Ensures both `from` and `to` query parameters are provided before executing queries.
+ * 2. Scope Isolation: Resolves non-archived projects belonging to `userId` and scopes activity checks strictly to `projectIds`.
+ * 3. Soft-Delete Alignment: Strictly checks `archived_at IS NULL` on `project_dust_profiles` so soft-deleted activities
+ *    do not persist in calendar projections.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -18,24 +25,30 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'from و to مطلوبان' }, { status: 400 });
   }
 
+  /*
+   * Fetch active project inventory for authenticated user
+   */
   const { data: projects, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('id, name')
     .eq('user_id', userId)
     .is('archived_at', null);
-  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/schedule projects fetch failed') }, { status: 500 });
+
+  if (projectsError) {
+    return NextResponse.json(
+      { error: safeErrorResponse(projectsError, 'dashboard/schedule projects fetch failed') },
+      { status: 500 }
+    );
+  }
 
   const projectIds = (projects || []).map((p: { id: string }) => p.id);
   if (projectIds.length === 0) {
     return NextResponse.json({ projects: [], activities: [] });
   }
 
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "اذا سويت نشاط و حذفته لا
-  // زال يظهر في الجدوله"): الاستعلام كان يفلتر المشاريع المؤرشفة فقط
-  // (أعلاه)، لكن لا يفلتر أنشطة الغبار المؤرشفة فردياً (DELETE /api/activities
-  // يُنفِّذ archived_at على project_dust_profiles نفسها — راجع تعليقها
-  // الكامل هناك) — نشاط محذوف ضمن مشروع لا يزال نشطاً كان يبقى ظاهراً في
-  // جدول الأسبوع لأن archived_at لم يُفحَص هنا إطلاقاً.
+  /*
+   * Fetch non-archived dust activities scheduled within requested date interval
+   */
   const { data: activities, error } = await supabaseAdmin
     .from('project_dust_profiles')
     .select('id, project_id, regulatory_activity, planned_date, planned_time, duration_hours')
@@ -45,7 +58,16 @@ export async function GET(request: NextRequest) {
     .lte('planned_date', to)
     .order('planned_date', { ascending: true })
     .order('planned_time', { ascending: true });
-  if (error) return NextResponse.json({ error: safeErrorResponse(error, 'dashboard/schedule activities fetch failed') }, { status: 500 });
 
-  return NextResponse.json({ projects: projects || [], activities: activities || [] });
+  if (error) {
+    return NextResponse.json(
+      { error: safeErrorResponse(error, 'dashboard/schedule activities fetch failed') },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    projects: projects || [],
+    activities: activities || [],
+  });
 }

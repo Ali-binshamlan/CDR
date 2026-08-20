@@ -3,8 +3,8 @@ import { requireUserId } from '@/app/lib/apiAuth';
 import { getConnector } from '@/app/lib/providers/registry';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 
-// جلب قائمة المحطات المتاحة بحساب المستخدم عند الشركة المختارة (بعد نجاح
-// اختبار الاتصال) — لا يحفظ شيئاً، فقط يعرض القائمة ليختار المستخدم منها.
+// Fetches the list of available stations for the user's account with the selected provider
+// (after connection test succeeds) — does not persist anything, only returns the list for selection.
 export async function POST(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -23,8 +23,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `provider غير مسجَّل: ${provider}` }, { status: 400 });
   }
 
-  // خطأ أمني مكتشَف ومُصلَح (القسم 15.1) — نفس فحص الاعتماد المطبَّق عند
-  // اختبار الاتصال والحفظ الفعلي.
+  // Security bug discovered and fixed (Section 15.1) — same verification check applied
+  // during connection test and actual persistence.
   let origin = '';
   if (connector.requiresProviderInstance) {
     if (!providerInstanceId) {

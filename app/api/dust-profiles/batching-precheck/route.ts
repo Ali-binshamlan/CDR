@@ -2,14 +2,21 @@ import { NextResponse } from 'next/server';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { validateDustUnitPlacement } from '@/app/lib/dustPlacementValidation';
 
-// طلب صريح من المستخدم — نفس مبدأ crusher-precheck، لمحطة الخلط (batching_
-// plant): تحقق فوري قبل الحفظ عند تحديد موقع وحدة خلط على الخريطة، بدل
-// انتظار محرك التقييم اللاحق الذي يطبّق فعلياً BATCHING-DISTANCE-200
-// (rulebook.ts) بعد الحفظ. المنطق الفعلي موحَّد في
-// app/lib/dustPlacementValidation.ts (راجع التعليق الكامل في crusher-
-// precheck/route.ts) — لا فئة مشروع لمحطة الخلط (لا مكافئ لـ
-// CRUSHER-CATEGORY-001)، فقط حد مسافة واحد (200م) عن أقرب مستقبل حساس
-// بصرف النظر عن نوعه.
+/*
+ * Batching Plant Placement Precheck Endpoint:
+ * Validates real-time map placement coordinates for a proposed concrete batching plant unit
+ * prior to persistence, enforcing the 200m buffer distance (`BATCHING-DISTANCE-200`) against 
+ * nearby sensitive receptors defined in `rulebook.ts`.
+ *
+ * Operational & Security Highlights:
+ * 1. User & Project Authorization: Enforces session-based authentication (`requireUserId`) 
+ *    and ownership verification (`verifyProjectOwnership`) on the targeted project scope.
+ * 2. Shared Placement Validator: Delegates spatial verification logic to `validateDustUnitPlacement`
+ *    with explicit activity type `BATCHING_PLANT`.
+ * 3. Fail-Safe Error Handling: Returns a HTTP 503 status code when GIS calculations cannot be 
+ *    verified (`!result.verified`), preventing unverified spatial claims from being treated 
+ *    as safe defaults (infinite distance bypass).
+ */
 export async function POST(request: Request) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -29,15 +36,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'lat/lng مطلوبان كأرقام صالحة' }, { status: 400 });
   }
 
+  /*
+   * Verify project ownership boundaries
+   */
   const isOwner = await verifyProjectOwnership(projectId, auth.userId);
   if (!isOwner) {
     return NextResponse.json({ error: 'غير مصرّح بالوصول لهذا المشروع' }, { status: 403 });
   }
 
+  /*
+   * Validate spatial placement against sensitive receptor buffer rules
+   */
   const result = await validateDustUnitPlacement({ projectId, lat, lng, activityType: 'BATCHING_PLANT' });
 
-  // خطأ أمني يجب تجنبه (نفس نمط crusher-precheck): فشل التحقق يجب ألا
-  // يتحول بصمت إلى "لا مستقبِلات" (مسافة Infinity = آمن زوراً).
   if (!result.verified) {
     return NextResponse.json({ error: 'PLACEMENT_NOT_VERIFIED', detail: result.error }, { status: 503 });
   }

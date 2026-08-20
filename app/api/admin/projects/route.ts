@@ -3,10 +3,13 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// كل مشاريع كل المستخدمين — بلا أي فلترة user_id، على عكس
-// /api/dashboard/projects-list (التي تعرض مشاريع المستخدم الحالي فقط).
-// لا FK مباشر من projects إلى profiles (كلاهما يشير إلى auth.users بشكل
-// منفصل)، فلا يمكن استخدام صياغة embed الضمنية لـ PostgREST — دمج بالذاكرة.
+/*
+ * Fetches all projects across all users without `user_id` filtering 
+ * (unlike `/api/dashboard/projects-list` which only fetches the current user's projects).
+ * Since no direct foreign key relationship exists between `projects` and `profiles` 
+ * (both reference `auth.users` independently), PostgREST implicit embedded joins cannot be used;
+ * data is joined manually in memory instead.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
@@ -20,11 +23,12 @@ export async function GET(request: NextRequest) {
     supabaseAdmin.from('projects').select('*').order('created_at', { ascending: false }),
     supabaseAdmin.from('profiles').select('id, username, company_name'),
     supabaseAdmin.from('alerts').select('project_id').neq('state', 'CLOSED'),
-    // decisionsCount كان يُحسَب من decision_records (قرارات موثَّقة يدوياً —
-    // ميزة محذوفة بالكامل، راجع app/lib/finalDecisionStatus.ts). final_decisions
-    // هي القرارات الآلية الفعلية التي يصدرها محرك التقييم — المعنى تحوّل من
-    // "كم مرة أكّد مستخدم قراراً يدوياً" إلى "كم مرة قيّم المحرك هذا المشروع
-    // آلياً"، والعدد سيكون أعلى بكثير (final_decisions تُكتب كل دورة تقييم).
+    /*
+     * Previously, `decisionsCount` was calculated from `decision_records` (manually documented decisions—a fully deprecated feature, 
+     * see `app/lib/finalDecisionStatus.ts`). It now aggregates from `final_decisions`, which holds automated decisions produced by the evaluation engine.
+     * The business meaning shifted from "manual user confirmations" to "total automated engine evaluations," resulting in higher metric counts 
+     * as `final_decisions` writes on every evaluation cycle.
+     */
     supabaseAdmin.from('final_decisions').select('project_id'),
   ]);
   if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'admin/projects fetch failed') }, { status: 500 });

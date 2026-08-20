@@ -13,37 +13,37 @@ import {
 } from 'lucide-react';
 
 // ==========================================
-// 1. تعريف الواجهات (Types)
+// 1. Types Definitions
 // ==========================================
 export interface UserData {
   name: string;
   email: string;
-  avatarUrl?: string; // اختياري إذا كان هناك صورة شخصية
+  avatarUrl?: string; // Optional profile picture
 }
 
 export interface SidebarProps {
-  user?: UserData; // بيانات المستخدم
-  onLogout?: () => void; // دالة تسجيل الخروج
-  // 'user' | 'super_admin' | 'viewer' | undefined (أثناء التحميل) — يحدد
-  // قائمة عناصر السايدبار بالكامل. جهة المراقبة (viewer) قائمة منفصلة
-  // كلياً (3 عناصر: لوحة تحكم/تنبيهات/تقارير فقط، بلا مشاريع ولا إدارة)،
-  // لا نسخة مُصفّاة من قائمة المستخدم العادي.
+  user?: UserData; // User data
+  onLogout?: () => void; // Logout callback function
+  // 'user' | 'super_admin' | 'viewer' | undefined (during loading) — Determines
+  // the entire sidebar menu items. Viewer is an entirely separate list
+  // (3 items: dashboard/alerts/reports only, no projects or admin),
+  // not a filtered version of the regular user menu.
   accountRole?: 'user' | 'super_admin' | 'viewer';
 }
 
 export interface MenuItem {
   id: string;
   name: string;
-  href: string; // الرابط الفعلي للصفحة بدل id داخلي فقط
+  href: string; // The actual page link instead of an internal ID only
   icon: React.ElementType;
   badge?: number;
-  // راجع تعليق alertsCountFetchFailed الكامل في Sidebar — true يعني "لم
-  // نتمكن من التحقق من العدد الفعلي"، لا "العدد صفر فعلياً".
+  // See the full alertsCountFetchFailed comment in Sidebar — true means "failed
+  // to fetch actual count", not "actual count is zero".
   badgeFetchFailed?: boolean;
 }
 
 // ==========================================
-// 2. مكون الشعار (SidebarLogo)
+// 2. Sidebar Logo Component (SidebarLogo)
 // ==========================================
 const SidebarLogo = ({ isCollapsed }: { isCollapsed: boolean }) => (
   <Link href="/dashboard" className="pt-6 pb-4 flex flex-col items-center justify-center shrink-0 min-h-[80px]">
@@ -58,7 +58,7 @@ const SidebarLogo = ({ isCollapsed }: { isCollapsed: boolean }) => (
 );
 
 // ==========================================
-// 3. مكون عنصر القائمة (SidebarNavItem)
+// 3. Navigation Item Component (SidebarNavItem)
 // ==========================================
 const SidebarNavItem = ({
   item,
@@ -102,12 +102,12 @@ const SidebarNavItem = ({
             <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#F97316] rounded-full"></span>
           )}
 
-          {/* لا نعرض "0" مضلِّلة عند فشل الجلب — نقطة رمادية صغيرة تدل على
-              "العدد غير معروف حالياً"، بدل اختفاء أي إشارة كأن لا تنبيهات. */}
+          {/* Do not display misleading "0" on fetch failure — a small gray dot indicates
+              "count currently unknown", instead of hiding any indication as if there are no alerts. */}
           {!item.badge && item.badgeFetchFailed && (
             <span
               className="w-2 h-2 rounded-full bg-slate-300 border border-slate-400"
-              title="تعذّر جلب العدد الفعلي — تحقّق من الاتصال"
+              title="Failed to fetch actual count — check connection"
             ></span>
           )}
 
@@ -126,27 +126,27 @@ const SidebarNavItem = ({
 };
 
 // ==========================================
-// 4. مكون الملف الشخصي للمستخدم (SidebarUserProfile)
+// 4. User Profile Component (SidebarUserProfile)
 // ==========================================
 const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, isCollapsed: boolean, onLogout?: () => void }) => {
   if (!user) return null;
 
-  // استخراج أول حرف من الاسم كصورة افتراضية
-  const initial = user.name ? user.name.charAt(0).toUpperCase() : 'م';
+  // Extract the first letter of the name as a fallback avatar
+  const initial = user.name ? user.name.charAt(0).toUpperCase() : 'M';
 
   return (
     <div className="px-4 py-4 shrink-0 border-t border-slate-100 transition-all duration-300 bg-slate-50/50 mt-2">
       <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'}`}>
 
         <div className="flex items-center gap-3 overflow-hidden" title={isCollapsed ? user.name : undefined}>
-          {/* الصورة الرمزية (Avatar) */}
+          {/* Avatar */}
           <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#fb8801] to-[#ffb766] text-white flex items-center justify-center font-bold shrink-0 shadow-sm">
             {user.avatarUrl ? (
-              // next/image يتطلب تسجيل نطاقات remotePatterns مسبقاً في
-              // next.config — avatarUrl لا مصدر فعلي يملؤه حالياً في أي
-              // استعلام بالمشروع (حقل معرَّف تحسباً لميزة مستقبلية)، فلا
-              // نطاق معروف اليوم لتسجيله. <img> عادي مقبول لصورة أفاتار
-              // صغيرة (36×36) بلا تكلفة LCP فعلية تُذكر.
+              // next/image requires prior registration of remotePatterns in
+              // next.config — avatarUrl has no actual source populating it currently in any
+              // query in the project (field defined in anticipation of a future feature), so
+              // no known domain to register today. Standard <img> is acceptable for a small
+              // avatar image (36x36) with no noticeable LCP cost.
               // eslint-disable-next-line @next/next/no-img-element
               <img src={user.avatarUrl} alt={user.name} className="w-full h-full rounded-full object-cover" />
             ) : (
@@ -154,7 +154,7 @@ const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, 
             )}
           </div>
 
-          {/* تفاصيل المستخدم (تختفي عند التصغير) */}
+          {/* User Details (hidden when collapsed) */}
           {!isCollapsed && (
             <div className="flex flex-col truncate">
               <span className="text-[13px] font-extrabold text-[#061B40] truncate">{user.name}</span>
@@ -163,12 +163,12 @@ const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, 
           )}
         </div>
 
-        {/* زر تسجيل الخروج */}
+        {/* Logout Button */}
         {!isCollapsed && onLogout && (
           <button
             onClick={onLogout}
             className="text-slate-400 hover:text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors shrink-0"
-            title="تسجيل الخروج"
+            title="Log Out"
           >
             <LogOut className="w-[18px] h-[18px]" strokeWidth={2.5} />
           </button>
@@ -179,45 +179,44 @@ const SidebarUserProfile = ({ user, isCollapsed, onLogout }: { user?: UserData, 
 };
 
 // ==========================================
-// 5. المكون الرئيسي (Sidebar Main Container)
+// 5. Sidebar Main Container
 // ==========================================
 export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [alertsCount, setAlertsCount] = useState<number>(0);
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
-  // إلى أرقام صفرية أو حالات فارغة مضللة"): فشل fetchAlertsCount كان يُسجَّل
-  // في console.error فقط، بينما alertsCount يبقى 0 — الشارة البرتقالية
-  // بجانب "التنبيهات" تختفي تماماً (badge يُعرض فقط عند !!count)، فمستخدم
-  // لديه تنبيهات حرجة غير مغلقة يرى القائمة الجانبية "نظيفة" بلا أي إشارة.
-  // alertsCountFetchFailed يعرض نقطة تحذير صغيرة بدل الاختفاء الصامت — بلا
-  // toast متكرر (هذا الجلب يتكرر مع كل حدث Realtime، toast لكل فشل كان
-  // سيُزعج المستخدم).
+  // Detected and fixed bug (explicit user request — "network errors often turn into
+  // misleading zeros or empty states"): fetchAlertsCount failures were only logged
+  // in console.error while alertsCount remained 0 — the orange badge next to
+  // "Alerts" vanished completely (badge is rendered only when !!count), so a user
+  // with unclosed critical alerts saw a "clean" sidebar with no indication.
+  // alertsCountFetchFailed displays a small warning dot instead of silent disappearance — without
+  // repeating toasts (this fetch runs on every Realtime event; toast on each failure would
+  // annoy the user).
   const [alertsCountFetchFailed, setAlertsCountFetchFailed] = useState(false);
   const pathname = usePathname();
 
   // -----------------------------------------------------------
-  // رقم التنبيهات: نجلبه من جدول alerts (عدد التنبيهات غير المغلقة)،
-  // ونشترك بتحديثات Realtime على نفس الجدول عشان الرقم يتحدث فورًا لحظة
-  // ما يضيف مولّد التنبيهات (cron) صفًا جديدًا بالخلفية.
+  // Alerts Count: Fetched from the alerts table (unclosed alerts count),
+  // and subscribes to Realtime updates on the same table so the count updates instantly
+  // whenever the alert generator (cron) inserts a new row in the background.
   //
-  // خطأ أداء جذري مكتشَف ومُصلَح (سياق: تنبيه Supabase حول استهلاك Disk IO
-  // Budget، 2026-08-13 — راجع migration 202608130001/202608130002 لإصلاحات
-  // مماثلة على cron jobs، وmigration 202608130003 لتفاصيل هذا الإصلاح
-  // الكاملة): قياس فعلي عبر pg_stat_statements كشف أن realtime.list_changes
-  // وحدها تستهلك ~131 مليون كتلة I/O — أكثر من 100 ضعف أي استعلام آخر في
-  // كامل قاعدة البيانات، رغم 1-5 مستخدمين متزامنين فقط. السبب الجذري: هذه
-  // القناة كانت تشترك بـevent:'*' بلا أي filter على جدول alerts بأكمله (لا
-  // project_id ولا user_id)، مع RLS تحتوي subquery على projects لكل صف —
-  // يُعاد تقييمها لكل حدث WAL من قِبل كل جلسة مشترِكة، بصرف النظر عن ملاءمة
-  // الصف لتلك الجلسة. بما أن هذا Sidebar مشترَك في كل صفحة (اشتراك دائم
-  // مفتوح طوال الجلسة)، الأثر التراكمي كان ضخماً.
+  // Fundamental performance issue detected and fixed (Context: Supabase alert regarding
+  // Disk IO Budget consumption, 2026-08-13 — see migration 202608130001/202608130002 for
+  // similar fixes on cron jobs, and migration 202608130003 for full details of this fix):
+  // Actual measurement via pg_stat_statements revealed that realtime.list_changes alone
+  // consumed ~131 million I/O blocks — over 100x more than any other query in the entire
+  // database, despite only 1-5 concurrent users. Root cause: this channel subscribed to
+  // event:'*' without any filter on the entire alerts table (no project_id nor user_id),
+  // with RLS containing a subquery on projects for each row — re-evaluated for every WAL event
+  // by each subscribed session, regardless of row relevance. Since this Sidebar is shared
+  // across all pages (permanent subscription open throughout the session), the cumulative impact was huge.
   //
-  // الإصلاح الجذري (لا polling — الحل الدائم): alerts.user_id عمود مباشر
-  // جديد (denormalized من projects.user_id، migration 202608130003) يسمح
-  // بفلترة الاشتراك نفسه على مستوى بروتوكول Realtime (filter: user_id=eq.
-  // <uid>) بدل الاشتراك بالجدول بأكمله — كل جلسة تستقبل فقط أحداثها الخاصة
-  // من الأساس، بلا أي تنازل عن الفورية.
+  // Root fix (no polling — permanent solution): alerts.user_id is a new direct column
+  // (denormalized from projects.user_id, migration 202608130003) allowing the subscription
+  // itself to be filtered at the Realtime protocol level (filter: user_id=eq.<uid>) instead
+  // of subscribing to the whole table — each session receives only its own events from the start,
+  // without sacrificing real-time updates.
   // -----------------------------------------------------------
   useEffect(() => {
     let isMounted = true;
@@ -240,14 +239,14 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
 
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    // setAuth(access_token) ضروري قبل الاشتراك: اتصال WebSocket الخاص
-    // بـRealtime منفصل عن apiClient (axios)، فبدونه تُفتح القناة بلا هوية
-    // مصادَق عليها وتفشل صامتاً إن كانت policy الجدول تشترط "to authenticated".
+    // setAuth(access_token) is necessary before subscribing: Realtime WebSocket connection
+    // is separate from apiClient (axios); without it, the channel opens unauthenticated
+    // and silently fails if the table policy requires "to authenticated".
     //
-    // onAuthStateChange ضروري أيضاً: توكن getSession() صالح لساعة واحدة
-    // فقط؛ بعدها القناة المفتوحة مسبقاً تبقى مصادَقة بتوكن منتهي الصلاحية
-    // (لا تتجدد تلقائياً مع تجديد axios للتوكن)، فتُرفض الأحداث صامتاً رغم
-    // بقاء القناة SUBSCRIBED ظاهرياً — راجع نفس الشرح المفصّل في
+    // onAuthStateChange is also required: getSession() token is valid for one hour only;
+    // after that, the previously opened channel remains authenticated with an expired token
+    // (does not auto-renew with axios token refresh), so events are silently rejected despite
+    // the channel appearing SUBSCRIBED — see detailed explanation in
     // app/dashboard/Projects/[id]/page.tsx.
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -266,12 +265,11 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
             fetchAlertsCount();
           }
         )
-        // طلب مستخدم صريح: "فعل خاصية مقروء/غير مقروء لكي يقل الرقم" —
-        // الرقم مبني على alert_reads أيضاً الآن (راجع alerts/count/route.ts)،
-        // فتعليم تنبيه مقروءاً من صفحة التنبيهات (نافذة/تبويب آخر لنفس
-        // المستخدم، أو نفس الصفحة) يجب أن يُحدِّث الشارة فوراً — نفس فلتر
-        // user_id (alert_reads.user_id، لا alert_id) بنفس منطق قناة alerts
-        // أعلاه بالضبط.
+        // Explicit user request: "Enable read/unread feature so the count decreases" —
+        // The count is now built on alert_reads as well (see alerts/count/route.ts),
+        // so marking an alert as read from the alerts page (another window/tab for the same
+        // user, or same page) must update the badge instantly — same user_id filter
+        // (alert_reads.user_id, not alert_id) following the exact alerts channel logic above.
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'alert_reads', filter: `user_id=eq.${uid}` },
@@ -294,24 +292,22 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
     };
   }, []);
 
-  // طلب صريح من المستخدم — "افصل حساب الادمن في سايدر بار منفصل بحيث يظهر
-  // له فقط ماهو موجود من /admin": حساب super_admin كان يشارك القائمة
-  // الأساسية الكاملة (لوحة تحكم/مشاريع/تنبيهات/جدول/إعدادات) مع رابط
-  // "الإدارة" مُضافاً في آخرها — الآن قائمة منفصلة كلياً، نفس مبدأ عزل
-  // جهة المراقبة (viewer) تماماً: تعرض فقط صفحات /dashboard/admin/**
-  // الموجودة فعلياً (نفس الخمس صفحات الفرعية المُدرجة في admin/page.tsx —
-  // المشاريع/المستخدمون/التنبيهات/قواعد الامتثال/منصات مصادر البيانات)،
-  // بلا أي عنصر من قائمة المستخدم العادي.
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — بلاغ مباشر: "ليش يظهر
-  // سايدبار حق المستخدم العادي ثم يختفي و يظهر الاخر"): accountRole يبدأ
-  // undefined دائماً (لم يُجلَب بعد من dashboard/layout.tsx، جلب غير
-  // متزامن) — كانت سلسلة الشروط تسقط صامتة لفرع "else" الأخير (قائمة
-  // المستخدم العادي) طالما accountRole !== 'viewer' && !== 'super_admin'،
-  // بما في ذلك حالة undefined نفسها. فكل مستخدم (حتى أدمن/مشاهد) كان يرى
-  // قائمة المستخدم العادي فعلياً للحظة قبل أن accountRole يصل ويُصحِّح
-  // القائمة — و"يختفي ثم يظهر الآخر" هو بالضبط هذا الانتقال المرئي. الآن
-  // undefined فرع مستقل صريح (قائمة فارغة، لا افتراض لأي دور) بدل السقوط
-  // الضمني لقائمة المستخدم العادي.
+  // Explicit user request — "Separate the admin account into a distinct sidebar displaying
+  // only what exists under /admin": super_admin account was sharing the complete primary list
+  // (dashboard/projects/alerts/schedule/settings) with an "Admin" link appended at the end —
+  // now it is a completely separate list, exact same principle as isolating viewer role:
+  // renders only the /dashboard/admin/** pages that actually exist (the same 5 subpages listed in
+  // admin/page.tsx — Projects/Users/Alerts/Compliance Rules/Data Source Platforms),
+  // without any item from the regular user menu.
+  //
+  // Detected and fixed bug (explicit user request — direct report: "Why does the regular user sidebar
+  // show up then disappear and the other one appears"): accountRole always starts as undefined
+  // (not yet fetched from dashboard/layout.tsx, asynchronous fetch) — the condition chain silently fell through
+  // to the final "else" branch (regular user list) as long as accountRole !== 'viewer' && !== 'super_admin',
+  // including the undefined state itself. So every user (even admin/viewer) saw the regular user menu
+  // briefly before accountRole arrived and corrected the menu — "disappears then appears" was exactly this visual shift.
+  // Now undefined is an explicit standalone branch (empty menu, no default role assumption) instead of
+  // implicitly falling back to regular user list.
   const menuItems: MenuItem[] = accountRole === undefined
     ? []
     : accountRole === 'viewer'
@@ -337,18 +333,15 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
         { id: 'settings', name: 'الإعدادات', href: '/dashboard/settings', icon: Settings },
       ];
 
-  // تحديد العنصر النشط بناءً على المسار الحالي (route) بدل state داخلي
+  // Determine active item based on current route instead of internal state
   //
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — بلاغ مباشر: "العنصر الاول
-  // يبقى ازرق حتى بعد التنقل لعنصر اخر"): الاستثناء أدناه كان مقصوراً على
-  // '/dashboard' فقط (رابط "لوحة التحكم" لقائمة المستخدم العادي) — لا
-  // يغطي "لوحة الإدارة" (/dashboard/admin) و"لوحة التحكم" لجهة المراقبة
-  // (/dashboard/viewer)، وكلاهما لهما نفس المشكلة بالضبط: مسارهما بادئة
-  // حرفية لكل صفحاتهما الفرعية (/dashboard/admin/users يبدأ بـ
-  // /dashboard/admin/)، فكان startsWith(href + '/') يُبقي العنصر الأول
-  // نشطاً دائماً بصرف النظر عن الصفحة الفرعية الفعلية المفتوحة. الآن أي
-  // رابط "جذر" من الثلاثة (/dashboard، /dashboard/admin، /dashboard/viewer)
-  // يتطلب تطابقاً تاماً، لا مجرد بادئة.
+  // Detected and fixed bug (explicit user request — direct report: "The first item stays blue even after navigating to another item"):
+  // The exception below was limited to '/dashboard' only ("Dashboard" link for regular user menu) —
+  // it did not cover "Admin Dashboard" (/dashboard/admin) and viewer "Dashboard" (/dashboard/viewer),
+  // both of which had the exact same issue: their paths are literal prefixes for all their subpages
+  // (/dashboard/admin/users starts with /dashboard/admin/), so startsWith(href + '/') kept the first item
+  // active permanently regardless of the actual active subpage. Now any of the 3 "root" links
+  // (/dashboard, /dashboard/admin, /dashboard/viewer) requires an exact match, not just a prefix.
   const ROOT_HREFS = new Set(['/dashboard', '/dashboard/admin', '/dashboard/viewer']);
   const isItemActive = (href: string) => {
     if (ROOT_HREFS.has(href)) {
@@ -412,7 +405,7 @@ export default function Sidebar({ user, onLogout, accountRole }: SidebarProps) {
           ))}
         </nav>
 
-        {/* عرض بيانات المستخدم هنا في الأسفل */}
+        {/* Render user profile data here at the bottom */}
         <SidebarUserProfile user={user} isCollapsed={isCollapsed} onLogout={onLogout} />
 
         <div className="text-center py-3 shrink-0 transition-all bg-slate-50 border-t border-slate-100">

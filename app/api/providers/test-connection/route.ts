@@ -3,8 +3,8 @@ import { requireUserId } from '@/app/lib/apiAuth';
 import { getConnector } from '@/app/lib/providers/registry';
 import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 
-// اختبار بيانات اتصال قبل الحفظ — لا يحفظ شيئاً، فقط يستدعي testConnection
-// الخاصة بالـConnector المطلوب ويُعيد النتيجة للواجهة (زر "اختبار الاتصال").
+// Connection credentials test before saving — does not persist anything, only calls
+// testConnection for the requested Connector and returns result to UI ("Test Connection" button).
 export async function POST(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -23,9 +23,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `provider غير مسجَّل: ${provider}` }, { status: 400 });
   }
 
-  // خطأ أمني مكتشَف ومُصلَح (القسم 15.1): نفس فحص الاعتماد المطبَّق عند
-  // الحفظ الفعلي — بلا هذا، اختبار الاتصال كان يبقى طريقاً بديلاً لتمرير
-  // origin حر (حتى لو لم يُحفظ لاحقاً بلا providerInstanceId صالح).
+  // Security bug discovered and fixed (Section 15.1): Same verification check applied as in
+  // actual persistence — without this, testing connection remained a bypass route for passing
+  // an arbitrary origin (even if not subsequently saved without a valid providerInstanceId).
   let origin = '';
   if (connector.requiresProviderInstance) {
     if (!providerInstanceId) {

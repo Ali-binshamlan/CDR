@@ -3,13 +3,16 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// نشر نسخة جديدة لمعامل قابل للضبط — يُفوَّض بالكامل لـ
-// publish_rule_parameter_version (RPC ذرّي، migration 202608060003):
-// يتحقق من المدى الآمن (min/max)، يُنهي (SUPERSEDED) النسخة PUBLISHED
-// الحالية إن وُجدت، وينشئ نسخة PUBLISHED جديدة — كل ذلك ذرياً. لا يؤثر على
-// أي تقييم حي إلا في دورة التقييم التالية (refreshRuleParameters تُستدعى
-// في بداية كل evaluateProject، لا فوراً عند هذا الطلب — نفس مبدأ باقي هذا
-// النظام: لا تحديث حي وسط تقييم قيد التنفيذ).
+/*
+ * Publishes a new version of a configurable rule parameter.
+ * Fully delegated to `publish_rule_parameter_version` (Atomic RPC, migration 202608060003):
+ * Validates the safe range (min/max), marks the current `PUBLISHED` version as `SUPERSEDED`, 
+ * and inserts the new `PUBLISHED` version atomically.
+ * 
+ * Execution timing: Does not alter active evaluations immediately. Changes apply starting from 
+ * the next evaluation cycle (`refreshRuleParameters` is invoked at the start of `evaluateProject`).
+ * This aligns with system core principles: no live configuration shifts mid-evaluation.
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
@@ -38,12 +41,14 @@ export async function POST(
   });
 
   if (error) {
-    // أخطاء التحقق (مدى آمن، معامل غير معروف) من RPC نفسها تُعرَض للمستخدم
-    // كما هي — رسائل عربية واضحة مبنية صراحة داخل publish_rule_parameter_version
-    // (raise exception بمعاملات format() تصف السبب تحديداً، مثال: "القيمة
-    // 500 أعلى من الحد الأقصى الآمن 100")، لا رسالة PostgREST تقنية عامة.
-    // safeErrorResponse (رسالة عامة موحَّدة) تبقى محجوزة لأخطاء حقيقية غير
-    // متوقعة (فشل شبكة/DB)، لا لهذين الكودين المعروفين تحديداً.
+    /*
+     * RPC Validation Errors: Range check and unknown parameter failures raised directly by the RPC 
+     * are exposed to the user as-is. They contain clear Arabic messages formatted inside `publish_rule_parameter_version` 
+     * (e.g., "Value 500 exceeds maximum safe threshold 100") rather than generic PostgREST errors.
+     * 
+     * `safeErrorResponse` remains reserved for unexpected internal DB/network failures, 
+     * bypassing these two explicit validation error codes (`22023`, `23503`).
+     */
     if (error.code === '22023' || error.code === '23503') {
       console.error('rule-parameter publish validation failed:', error.message);
       return NextResponse.json({ error: error.message }, { status: 400 });

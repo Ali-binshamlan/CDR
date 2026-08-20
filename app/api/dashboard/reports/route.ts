@@ -4,7 +4,20 @@ import { requireUserId } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { toReportDecisionRow, dedupeToLatestPerActivity } from '@/app/lib/finalDecisionStatus';
 
-// يستبدل fetchReportData المباشر في dashboard/reports/page.tsx
+/*
+ * Dashboard Reports Aggregator Endpoint:
+ * Replaces direct client queries in `dashboard/reports/page.tsx` by consolidating 
+ * projects, latest activity-level operational decisions, and system alerts for a given date range.
+ *
+ * Operational Highlights:
+ * 1. Single Source of Operational Truth: Queries `final_decisions` directly (where automated engine 
+ *    evaluations reside) rather than deprecated manual record tables (`decision_records`).
+ * 2. Activity-Level Deduplication: Applies `dedupeToLatestPerActivity` across append-only evaluation 
+ *    logs to aggregate unique activities by their latest evaluation state rather than counting raw 
+ *    evaluation ticks.
+ * 3. Temporal Scope Precision: Sets `toDate` boundaries to the end of the specified calendar day 
+ *    (`23:59:59.999`) for comprehensive coverage of the requested interval.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -16,12 +29,21 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'fromDate و toDate مطلوبان' }, { status: 400 });
   }
 
+  /*
+   * Retrieve active project inventory for authenticated user
+   */
   const { data: dbProjects, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('id, name')
     .eq('user_id', userId)
     .is('archived_at', null);
-  if (projectsError) return NextResponse.json({ error: safeErrorResponse(projectsError, 'dashboard/reports projects fetch failed') }, { status: 500 });
+
+  if (projectsError) {
+    return NextResponse.json(
+      { error: safeErrorResponse(projectsError, 'dashboard/reports projects fetch failed') },
+      { status: 500 }
+    );
+  }
 
   const projectIds = (dbProjects || []).map((p: { id: string }) => p.id);
   if (projectIds.length === 0) {
@@ -31,13 +53,9 @@ export async function GET(request: NextRequest) {
   const endOfDay = new Date(toDate);
   endOfDay.setHours(23, 59, 59, 999);
 
-  // خطأ معماري مكتشَف ومُصلَح ("المكوّن الذي يحفظ decision_records مخفي، بينما
-  // التقارير تعتمد عليها؛ لذلك قد تظهر التقارير صفراً رغم وجود قرارات آلية"):
-  // كانت التقارير تُبنى من decision_records — جدول قرارات موثَّقة يدوياً فقط
-  // (زر "قرار ميداني مباشر" في DustWidgetCard، المكوّن نفسه محذوف الآن، كان
-  // معطَّلاً بالفعل خلف {false && ...}). القرارات الآلية الفعلية (من محرك
-  // التقييم عبر device ingest/cron) تُكتب في final_decisions فقط — لا علاقة
-  // لها بـdecision_records. التقارير الآن تُبنى من final_decisions مباشرة.
+  /*
+   * Concurrent retrieval of automated decisions and system alerts within the temporal window
+   */
   const [decisionsRes, alertsRes] = await Promise.all([
     supabaseAdmin
       .from('final_decisions')
@@ -52,13 +70,24 @@ export async function GET(request: NextRequest) {
       .gte('created_at', new Date(fromDate).toISOString())
       .lte('created_at', endOfDay.toISOString()),
   ]);
-  if (decisionsRes.error) return NextResponse.json({ error: safeErrorResponse(decisionsRes.error, 'dashboard/reports decisions fetch failed') }, { status: 500 });
-  if (alertsRes.error) return NextResponse.json({ error: safeErrorResponse(alertsRes.error, 'dashboard/reports alerts fetch failed') }, { status: 500 });
 
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "التقارير تعد كل صف في
-  // final_decisions نشاطاً جديداً... المطلوب العد حسب النشاط الفريد أو آخر
-  // قرار لكل activity_group_id"): final_decisions append-only، صف جديد كل
-  // دورة تقييم — راجع تعليق dedupeToLatestPerActivity الكامل.
+  if (decisionsRes.error) {
+    return NextResponse.json(
+      { error: safeErrorResponse(decisionsRes.error, 'dashboard/reports decisions fetch failed') },
+      { status: 500 }
+    );
+  }
+
+  if (alertsRes.error) {
+    return NextResponse.json(
+      { error: safeErrorResponse(alertsRes.error, 'dashboard/reports alerts fetch failed') },
+      { status: 500 }
+    );
+  }
+
+  /*
+   * Deduplicate append-only evaluation rows to isolate the most recent state per unique activity
+   */
   const latestPerActivity = dedupeToLatestPerActivity(decisionsRes.data || []);
 
   return NextResponse.json({

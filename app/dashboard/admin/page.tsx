@@ -38,11 +38,11 @@ export default function AdminOverviewPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
-  // خطأ حرج مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول
-  // غالباً إلى أرقام صفرية أو حالات فارغة مضللة"): catch كان يميّز 403 فقط
-  // (accessDenied)؛ أي خطأ آخر (500، انقطاع اتصال، timeout) كان يُبتلَع
-  // بصمت تامة — بلا حتى console.error — ويسقط لـ`if (!stats) return null`
-  // فتُعرض صفحة بيضاء تماماً، أسوأ حالة ممكنة (لا تحميل، لا خطأ، لا محتوى).
+  // Critical bug detected and fixed (Explicit user requirement - "Network errors often turn into
+  // zero figures or misleading empty states"): catch previously only distinguished 403
+  // (accessDenied); any other error (500, disconnect, timeout) was silently swallowed
+  // without even a console.error — falling through to `if (!stats) return null`
+  // and rendering a completely blank page, the worst possible state (no loading, no error, no content).
   const [error, setError] = useState<string | null>(null);
 
   const fetchStats = React.useCallback(async () => {

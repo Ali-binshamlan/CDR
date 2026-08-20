@@ -5,10 +5,9 @@ import dynamic from 'next/dynamic';
 import { apiClient } from '@/app/lib/apiClient';
 import type { ProjectPoint } from './ProjectsMap';
 import { dviLevelToDecision } from '@/app/lib/decisionMeta';
-import { ACTIVE_RULE_BUNDLE } from '@/app/utils/rule-bundles/riyadh-dust';
 import { Loader2, Map as MapIcon } from 'lucide-react';
 
-// خريطة Leaflet تحتاج window، فلازم تُحمَّل داخل المتصفح فقط بدون SSR
+// Leaflet map requires `window`, so it must be loaded in the browser only without SSR
 const ProjectsMap = dynamic(() => import('./ProjectsMap'), {
   ssr: false,
   loading: () => (
@@ -19,12 +18,12 @@ const ProjectsMap = dynamic(() => import('./ProjectsMap'), {
 });
 
 interface GlobalDashboardProps {
-  // نقطة البيانات — افتراضياً بيانات المستخدم الحالي فقط. جهة المراقبة
-  // (viewer) تمرر '/viewer/dashboard' (نفس شكل الاستجابة تماماً، بلا فلترة
-  // user_id) لعرض كل المشاريع عبر كل المستخدمين بنفس منطق الخريطة والنقاط.
+  // Data endpoint — defaults to current user data only. The monitoring entity
+  // (viewer) passes '/viewer/dashboard' (exact same response shape, without filtering
+  // user_id) to display all projects across all users with the same map & point logic.
   apiEndpoint?: string;
-  // طلب صريح من المستخدم: جهة الرصد لا تُعرض لها القراءات الحية الخام على
-  // الخريطة (رياح/PM10/PM2.5) — راجع hideRawReadings في ProjectsMap.tsx.
+  // Explicit user request: Monitoring entity is not shown raw live readings on
+  // the map (wind/PM10/PM2.5) — see hideRawReadings in ProjectsMap.tsx.
   hideRawReadings?: boolean;
 }
 
@@ -58,9 +57,9 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
   const [todayActivities, setTodayActivities] = useState<DashboardActivityRow[]>([]);
   const [liveActivityByProjectId, setLiveActivityByProjectId] = useState<Record<string, LiveActivitySummary>>({});
   const [isLoading, setIsLoading] = useState(true);
-  // راجع تعليق IntegratedDashboard.tsx الكامل (نفس الإصلاح) — بلا هذا، فشل
-  // شبكة كان يعني خريطة فارغة برسالة "لا تتوفر إحداثيات للمشاريع بعد" رغم
-  // وجودها فعلياً، لجهة المراقبة الخارجية (viewer) أيضاً.
+  // See full comment in IntegratedDashboard.tsx (same fix) — without this, a network
+  // failure meant an empty map with "No project coordinates available yet" message despite
+  // them actually existing, for external monitoring entity (viewer) as well.
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
 
@@ -85,11 +84,11 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
     fetchDashboardData();
   }, [apiEndpoint, retryTick]);
 
-  // نقاط الخريطة — القرار يأتي حصراً من النشاط الجاري فعلياً الآن (القرار
-  // الموحد للنشاط: DVI + الامتثال التنظيمي، راجع computeUnifiedActivityDecision
-  // في dustEvaluation.ts وliveActivityByProjectId في route.ts). لا يوجد أي
-  // fallback لأخطر تنبيه — مشروع بلا نشاط جارٍ الآن تكون نقطته محايدة بلا
-  // قرار إطلاقاً، بطلب صريح من المستخدم.
+  // Map points — decision comes exclusively from the activity currently in progress (the
+  // unified activity decision: DVI + regulatory compliance, see computeUnifiedActivityDecision
+  // in dustEvaluation.ts and liveActivityByProjectId in route.ts). There is no
+  // fallback for the most critical alert — a project without active ongoing activity will have a neutral point
+  // without any decision, by explicit user request.
   const mapPoints: ProjectPoint[] = useMemo(() => {
     return projects
       .filter((p) => typeof p.latitude === 'number' && typeof p.longitude === 'number')
@@ -97,15 +96,11 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
         const liveActivity = liveActivityByProjectId[p.id];
         const todayActivitiesCount = todayActivities.filter((a) => a.project_id === p.id).length;
         const decision = liveActivity ? dviLevelToDecision(liveActivity.level, liveActivity.mandatoryStop) : null;
-        // جهة المراقبة الخارجية (viewer) لا تُعرض لها صياغة القرار الداخلية
-        // التفصيلية — طلب مستخدم صريح بعد تبسيط Decision لـ3 مستويات
-        // (سماح/مراقبة/إيقاف، راجع decisionMeta.ts): النص يتبع اللون
-        // (decision) مباشرة، لا حالة "مخالفة" ثنائية سابقة. عند إيقاف فعلي
-        // مع PM10 تجاوز حد المخالفة التنظيمي فعلياً (>340، لا مجرد نطاق
-        // تحذير)، يظهر نص محدد "تم تجاوز الحد 340" بدل الصياغة الداخلية.
-        const pm10 = liveActivity?.readingPm10UgM3 ?? null;
-        const isConfirmedPm10Violation =
-          decision === 'stopped' && pm10 !== null && pm10 > ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive;
+        // External monitoring entity (viewer) is not shown detailed internal decision wording
+        // (example: "Regulatory Mandatory Stop") specifically upon stop status —
+        // by explicit user request, it is replaced with simplified regulatory wording, while other statuses
+        // remain with their current text (statusLabel/statusReason as is).
+        const isStopped = decision === 'stopped';
         return {
           id: p.id,
           name: p.name,
@@ -116,10 +111,8 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
           projectStatus: p.project_status,
           todayActivitiesCount,
           hasLiveActivity: !!liveActivity,
-          statusLabel: isConfirmedPm10Violation
-            ? `تم تجاوز الحد ${ACTIVE_RULE_BUNDLE.pm10.regulatory.violationThresholdExclusive}`
-            : liveActivity?.decisionLabelAr,
-          statusReason: isConfirmedPm10Violation ? undefined : liveActivity?.shortReason,
+          statusLabel: isStopped ? 'تم تسجيل مخالفة' : liveActivity?.decisionLabelAr,
+          statusReason: isStopped ? undefined : liveActivity?.shortReason,
           decisionEvaluatedAt: liveActivity?.evaluatedAt ?? null,
           decisionReadingPm10UgM3: liveActivity?.readingPm10UgM3 ?? null,
           decisionReadingWindSpeedKmh: liveActivity?.readingWindSpeedKmh ?? null,
@@ -169,9 +162,9 @@ export default function GlobalDashboard({ apiEndpoint = '/dashboard/global', hid
             لا تتوفر إحداثيات (latitude / longitude) للمشاريع بعد.
           </div>
         ) : (
-          // طلب صريح من المستخدم: جهة المراقبة (viewer) لا تملك صلاحية
-          // الوصول لصفحة تفاصيل المشروع — لا onSelect يُمرَّر هنا إطلاقاً
-          // (بالإضافة لدفاع minimal داخل ProjectsMap نفسه).
+          // Explicit user request: Monitoring entity (viewer) does not have access permission
+          // to project details page — no onSelect is passed here at all
+          // (in addition to minimal defense inside ProjectsMap itself).
           <ProjectsMap points={mapPoints} hideRawReadings={hideRawReadings} minimal />
         )}
       </div>

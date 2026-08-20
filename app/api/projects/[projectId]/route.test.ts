@@ -123,6 +123,34 @@ describe('buildRecentActivities — تجميع وحدات النشاط الوا�
     expect(activities[0].mandatoryStop).toBe(true);
     expect(activities[0].summaries.map((s) => s.riskWeight).sort()).toEqual([0, 4]);
   });
+
+  // خطأ معماري مكتشَف ومُصلَح (مراجعة كود — تدقيق تناسق المحركات الأربعة،
+  // الفئة 4): mandatoryStop للبطاقة الموحّدة كانت تُشتق من riskWeight===4
+  // (أي level==='BLACK') بدل الحقل الحقيقي mandatory_stop المخزَّن. AEI
+  // CLOSED يُترجَم في decideFinal إلى PROTECTIVE_STOP عمداً (mandatoryStop=
+  // false — إغلاق احترازي إرشادي، لا مخالفة تنظيمية) بينما level قد يبقى
+  // 'BLACK' (موروث من aei.color) — فكانت البطاقة الموحّدة تعرض خطأً "إيقاف
+  // إلزامي نظامي" بينما بطاقة AEI لنفس النشاط/اللحظة تعرض إغلاقاً احترازياً
+  // غير إلزامي، تناقض مباشر بين سطحين لنفس اللحظة.
+  it('mandatoryStop للبطاقة الموحّدة = false حين level=BLACK لكن mandatory_stop المخزَّن=false (إغلاق AEI احترازي غير إلزامي)', () => {
+    const rows: DustActivityRow[] = [makeRow({ id: 1, activity_group_id: 'base' })];
+    const aeiClosedButNotMandatory: StoredFinalDecisionRow = {
+      activity_group_id: 'base',
+      decision_label_ar: 'إغلاق احترازي (AEI)',
+      level: 'BLACK',
+      operational_decision: 'PROTECTIVE_STOP',
+      pending_confirmation: false,
+      mandatory_stop: false,
+    };
+    const finalDecisionsByGroup = new Map<string, StoredFinalDecisionRow>([
+      [activityDecisionKey('project-1', 'base'), aeiClosedButNotMandatory],
+    ]);
+
+    const activities = buildRecentActivities('project-1', rows, new Map(), finalDecisionsByGroup);
+
+    expect(activities[0].summaries[0].riskWeight).toBe(4);
+    expect(activities[0].mandatoryStop).toBe(false);
+  });
 });
 
 // خطأ معماري مكتشَف ومُصلَح (مراجعة كود خارجي — P1، الملاحظة #13: "الواجهة

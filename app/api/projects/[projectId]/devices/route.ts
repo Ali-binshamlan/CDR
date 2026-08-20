@@ -4,19 +4,19 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// إدارة أجهزة الرصد المرتبطة بمشروع (project_devices) — يديرها صاحب
-// المشروع عبر جلسته العادية (requireUserId + verifyProjectOwnership)، لا
-// عبر مفتاح الجهاز نفسه (ذاك مسار منفصل: POST /api/devices/ingest).
+// Monitoring devices endpoint for a project (project_devices) — managed by the project
+// owner via standard session auth (requireUserId + verifyProjectOwnership), NOT via
+// device API key itself (that belongs to a dedicated route: POST /api/devices/ingest).
 
-// true_north_* (migration 202608190002 — استعادة توثيق الشمال الحقيقي):
-// حقول توثيق معايرة اتجاه الرياح لكل جهاز على حدة — راجع تعليق الحقل
-// windDirectionEvidence في dustEvaluation.ts للسبب الكامل لعدم استخدام
-// last_wind_direction_deg مباشرة في تحليل الانتشار المكاني بلا هذا التوثيق.
+// true_north_* (migration 202608190002 — restoring True North documentation):
+// Per-device wind direction calibration documentation fields — see field comment for
+// windDirectionEvidence in dustEvaluation.ts for full details on why last_wind_direction_deg
+// cannot be used directly in spatial propagation analysis without this documentation.
 const DEVICE_LIST_COLUMNS =
   'id, name, lat, lng, api_key_prefix, is_active, last_reading_at, last_wind_speed_kmh, last_wind_gust_kmh, last_wind_direction_deg, last_pm10, last_pm25, last_visibility_m, created_at, revoked_at, true_north_alignment_documented, true_north_alignment_type, true_north_verification_method, true_north_verified_by, true_north_verified_at, true_north_deviation_deg, true_north_evidence_url';
 
-// أعمدة آمنة للعرض — credentials مُستبعَد دائماً عمداً (نفس فلسفة
-// api_key_hash أعلاه)، يطابق CONNECTION_SAFE_COLUMNS في provider-connection/route.ts.
+// Safe projection columns — credentials are always intentionally excluded (same philosophy as
+// api_key_hash above), matching CONNECTION_SAFE_COLUMNS in provider-connection/route.ts.
 const CONNECTION_SAFE_COLUMNS =
   'id, device_id, project_id, provider, vendor_station_id, vendor_station_name, is_active, last_pull_at, last_pull_success, last_pull_error, created_at, updated_at';
 
@@ -31,8 +31,8 @@ export async function GET(
   const owns = await verifyProjectOwnership(projectId, auth.userId);
   if (!owns) return NextResponse.json({ error: 'لا تملك هذا المشروع' }, { status: 403 });
 
-  // استعلام أعمدة صريح — لا select('*') أبداً على هذا الجدول لأنه يحمل
-  // api_key_hash (سر لا يجوز أن يغادر السيرفر تحت أي ظرف).
+  // Explicit column selection — NEVER select('*') on this table because it contains
+  // api_key_hash (a secret that must never leave the server under any circumstance).
   const { data, error } = await supabaseAdmin
     .from('project_devices')
     .select(DEVICE_LIST_COLUMNS)
@@ -41,10 +41,10 @@ export async function GET(
 
   if (error) return NextResponse.json({ error: safeErrorResponse(error, 'devices list fetch failed') }, { status: 500 });
 
-  // خطأ أداء مكتشَف — مراجعة صفحة settings/page.tsx: كانت تجلب هذه القائمة
-  // ثم تُطلق طلب GET منفصل لكل جهاز على حدة (N+1) لجلب حالة اتصال المزوّد
-  // الخارجي الخاص به (provider-connection/route.ts) — استعلام واحد مجمَّع هنا
-  // (project_id بدل device_id) يستبدل كل تلك الطلبات المنفصلة بطلب شبكة واحد.
+  // Performance issue discovered — review of settings/page.tsx: it previously fetched this list
+  // then fired a separate GET request per device (N+1) to retrieve external provider connection state
+  // (provider-connection/route.ts) — a single aggregated query here (project_id instead of device_id)
+  // replaces all those individual network requests with a single query.
   const { data: connections } = await supabaseAdmin
     .from('provider_connections')
     .select(CONNECTION_SAFE_COLUMNS)
@@ -73,29 +73,28 @@ export async function POST(
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
   if (!name) return NextResponse.json({ error: 'اسم الجهاز مطلوب' }, { status: 400 });
 
-  // إحداثيات الجهاز إجبارية (طلب صريح: الربط التلقائي بأقرب جهاز عند إنشاء
-  // نشاط — resolveNearestActiveDeviceId في dust-profiles/route.ts — يحتاج
-  // موقعاً فعلياً لكل جهاز، وإلا يبقى مستبعداً من الحساب صامتاً). لا نقبل
-  // بعد الآن قيمة غير رقمية تتحول لـnull بصمت.
+  // Device coordinates are mandatory (Explicit requirement: auto-linking nearest active device during
+  // activity creation — resolveNearestActiveDeviceId in dust-profiles/route.ts — requires a physical
+  // location for every device, otherwise it remains silently excluded from calculation). We no longer
+  // accept non-numeric values that silently convert to null.
   const lat = typeof body?.lat === 'number' ? body.lat : NaN;
   const lng = typeof body?.lng === 'number' ? body.lng : NaN;
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
     return NextResponse.json({ error: 'إحداثيات الجهاز (خط العرض وخط الطول) مطلوبة وبمدى صالح' }, { status: 400 });
   }
 
-  // المفتاح الخام يُنشأ هنا فقط ويُعاد مرة واحدة في هذه الاستجابة — لا
-  // يُخزَّن أبداً، فقط هاشه (نفس أسلوب GitHub/Stripe لعرض مفاتيح API).
+  // The raw API key is generated here once and returned only in this response — it is
+  // NEVER stored, only its hash (following standard GitHub/Stripe API key security pattern).
   const rawKey = `dcr_${randomBytes(32).toString('hex')}`;
   const apiKeyHash = createHash('sha256').update(rawKey).digest('hex');
   const apiKeyPrefix = rawKey.slice(0, 12);
 
-  // توثيق الشمال الحقيقي (migration 202608190002) — اختياري تماماً عند
-  // الإنشاء (السماح بإنشاء الجهاز دون توثيق، حالته حينها UNVERIFIED ضمنياً
-  // — راجع resolveWindDirectionEvidence في dustEvaluation.ts). لو أُرسل
-  // true_north_alignment_documented=true، يجب أن تصل بيانات التوثيق
-  // الأساسية الأربعة معاً — نفس قيد الاتساق المطبَّق على القاعدة نفسها
-  // (project_devices_true_north_documentation_chk)، مُتحقَّق هنا أيضاً
-  // لإرجاع رسالة خطأ عربية واضحة بدل خطأ قيد SQL خام للمستخدم.
+  // True North documentation (migration 202608190002) — completely optional on
+  // creation (allowing device registration without documentation, implicitly UNVERIFIED status
+  // — see resolveWindDirectionEvidence in dustEvaluation.ts). If true_north_alignment_documented=true
+  // is passed, all four core documentation fields must be present — same consistency constraint
+  // enforced at DB level (project_devices_true_north_documentation_chk), checked here to return
+  // a clear, friendly Arabic error message instead of a raw database SQL error.
   const trueNorthDocumented = body?.true_north_alignment_documented === true;
   if (
     trueNorthDocumented &&

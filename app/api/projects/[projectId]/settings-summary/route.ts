@@ -3,16 +3,15 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// مسار GET خفيف مخصص لصفحة إعدادات المشروع (settings/page.tsx) — مشكلة
-// أداء مكتشَفة: تلك الصفحة كانت تستدعي GET /api/projects/[projectId] نفسه
-// المُستخدَم في لوحة المشروع، الذي يشغّل computeDustResults/
-// computeDustComplianceResults/computeUnitReceptors/computeDustComplianceHourly
-// بالكامل (DVI فيزيائي + امتثال تنظيمي + طلبات شبكة خارجية لـOpen-Meteo
-// وOverpass/OSM لكل نشاط) — حساب ثقيل جداً لصفحة لا تعرض أياً من هذه
-// النتائج في واجهتها إطلاقاً، فقط حقول نموذج بسيطة (اسم/موقع/أوقات دوام/
-// إلخ). هذا المسار يجلب فقط صف projects الخام + project_shifts، بلا أي
-// حساب DVI/امتثال/OSM — يقلّص زمن فتح صفحة الإعدادات من ثوانٍ (بانتظار
-// حسابات لا تحتاجها الصفحة) إلى استعلامي قاعدة بيانات بسيطين فقط.
+// Dedicated lightweight GET endpoint for project settings page (settings/page.tsx) — performance issue
+// discovered: that page previously called GET /api/projects/[projectId] which is used
+// in project dashboard and runs computeDustResults/computeDustComplianceResults/computeUnitReceptors/computeDustComplianceHourly
+// completely (physical DVI + regulatory compliance + external network requests to Open-Meteo
+// and Overpass/OSM per activity) — extremely heavy computation for a page that does not display any of these
+// results in its UI at all, only simple form fields (name/location/shifts/
+// etc). This endpoint fetches only the raw projects row + project_shifts, without any
+// DVI/compliance/OSM computation — reducing settings page load time from seconds (waiting for
+// unnecessary calculations) down to two simple database queries.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> }
@@ -39,9 +38,9 @@ export async function GET(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    // نفس اسم الحقل المُلحَق في GET الثقيل (route.ts) — settings/page.tsx
-    // يقرأ project.shifts بنفس الشكل بالضبط، فلا تعديل مطلوب في الواجهة
-    // غير تغيير الرابط المُستدعى.
+    // Same attached field name as in heavy GET (route.ts) — settings/page.tsx
+    // reads project.shifts in the exact same format, so no UI modifications required
+    // other than updating the requested URL endpoint.
     project.shifts = projectShifts || [];
 
     return NextResponse.json({ project });

@@ -23,8 +23,6 @@ export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
-  // خطأ مكتشَف ومُصلَح (طلب صريح من المستخدم — "أخطاء الشبكة تتحول غالباً
-  // إلى أرقام صفرية أو حالات فارغة مضللة") — نفس نمط admin/projects/page.tsx.
   const [error, setError] = useState<string | null>(null);
 
   const fetchUsers = React.useCallback(async () => {

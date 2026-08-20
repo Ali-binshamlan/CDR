@@ -4,14 +4,17 @@ import { requireUserId, verifyProjectOwnership } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 import { isActivityTimeWithinWorkHours } from '@/app/lib/shiftValidation';
 
-// تعديل زمن نشاط غبار (تاريخ/وقت البداية اليومي/المدة) — يُستدعى من
-// MultiIndicatorActivityBox.tsx (handleSaveEdit). جسم الطلب:
-// { targets: [{ projectId, activityId }, ...], plannedDate, plannedTime,
-// durationHours } — targets هي نفس decisionTargets (صف project_dust_profiles
-// واحد لكل وحدة: محطة خلط/كسارة/سطح)، فتُحدَّث كل الصفوف المشتركة في نفس
-// النشاط دفعة واحدة بنفس القيم الجديدة، حتى لا "ينفصل" توقيت وحدة عن
-// أخرى ضمن نفس النشاط. لا تعديل لأي حقل آخر (موقع/ضوابط/نوع) — طلب صريح
-// من المستخدم: "التعديل يكون على زمن النشاط" فقط.
+/*
+ * Updates dust activity schedule (planned date, start time, duration hours).
+ * Invoked from MultiIndicatorActivityBox.tsx (handleSaveEdit).
+ *
+ * Payload: { targets: [{ projectId, activityId }, ...], plannedDate, plannedTime, durationHours }
+ * 
+ * Note: `targets` mirrors `decisionTargets` (one row per facility unit in `project_dust_profiles`).
+ * All associated rows update in bulk to ensure synchronized timing across units.
+ * Modifies timing fields ONLY—location, controls, and type remain untouched.
+ */
+
 export async function PATCH(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -29,8 +32,11 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'plannedDate وplannedTime وdurationHours (رقم موجب) مطلوبة' }, { status: 400 });
   }
 
-  // نفس منع الجدولة الماضية المطبَّق عند الإنشاء (POST /api/dust-profiles)
-  // — بتوقيت الرياض حتى لا يختلف يوم "اليوم" حسب منطقة السيرفر الزمنية.
+/*
+ * Enforces past-date scheduling prevention (same rule as POST /api/dust-profiles).
+ * Uses Riyadh timezone (Asia/Riyadh) to define "today" consistently, 
+ * regardless of the server's local timezone.
+ */
   const todayRiyadh = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
   if (String(plannedDate) < todayRiyadh) {
     return NextResponse.json({ error: 'لا يمكن جدولة نشاط في تاريخ سابق لليوم.' }, { status: 400 });
@@ -44,16 +50,20 @@ export async function PATCH(request: NextRequest) {
     if (!owns) return NextResponse.json({ error: 'لا تملك أحد هذه المشاريع' }, { status: 403 });
   }
 
-  // خطأ مكتشَف ومُصلَح (طلب مستخدم صريح — "زر التعديل الموجود في الأنشطة
-  // هو المشكلة بذاتها": يسمح بضبط وقت خارج أوقات دوام المشروع، بعكس نموذج
-  // الإنشاء الذي يمنع ذلك فعلاً): المحاولة الأولى هنا استخدمت خطأً
-  // project_shifts (ورديات فرعية اختيارية، منفصلة تماماً) بدل المصدر
-  // الحقيقي لهذا القيد فعلياً — عمودا work_hours_start/work_hours_end على
-  // projects نفسه، وهما نفس ما يتحقق منه AddActivityModal/index.tsx (بناء
-  // validateSchedule) عند إنشاء نشاط جديد. مشروع بلا work_hours_start/end
-  // مُعرَّفين (أعمدة nullable) لا يُقيَّد إطلاقاً — نفس فشل آمن مطابق لمنطق
-  // الإنشاء. المشاريع المستهدَفة قد تختلف بأوقات دوامها — نتحقق لكل مشروع
-  // فريد بمجموعة targets على حدة بدل افتراض أنها كلها لنفس المشروع.
+  /*
+ * Bug Fix: Resolves issue where the activity edit button bypassed project working hours validation 
+ * (unlike the creation modal which strictly enforced it).
+ *
+ * Previous Attempt Flaw: Incorrectly checked `project_shifts` (optional sub-shifts), whereas the true 
+ * restriction source is `work_hours_start` / `work_hours_end` directly on the `projects` table 
+ * (matching `AddActivityModal/index.tsx` -> `validateSchedule`).
+ *
+ * Business Rules & Constraints:
+ * - Projects with undefined work hours (nullable columns) bypass validation (fail-safe fallback matching creation logic).
+ * - Target projects may have distinct working hours; validation is executed per unique project in the `targets` set 
+ *   rather than assuming a uniform project context.
+ */
+
   const uniqueProjectIds = Array.from(new Set(targets.map((t: { projectId: string }) => String(t.projectId))));
   for (const projectId of uniqueProjectIds) {
     const { data: projectRow } = await supabaseAdmin
@@ -72,11 +82,12 @@ export async function PATCH(request: NextRequest) {
   }
 
   for (const t of targets) {
-    // daily_duration_hours تُحدَّث بنفس durationHours دائماً هنا — هذا
-    // المسار يعدّل توقيت يوم واحد فقط (editStartTime/editEndTime لنفس
-    // اليوم، لا endDate)، فـdurationHours المحسوبة هي بالتعريف ساعات
-    // الدوام اليومي نفسها، لا مدة إجمالية متعددة الأيام (راجع تعليق
-    // daily_duration_hours الكامل في migration 202608110012).
+  /*
+ * Always updates `daily_duration_hours` with `durationHours` here.
+ * This flow modifies schedule settings for a single day only (editStartTime/editEndTime for that day, without changing endDate).
+ * Thus, the calculated `durationHours` represents daily working hours rather than a multi-day total duration.
+ * (See comprehensive `daily_duration_hours` documentation in migration 202608110012).
+ */
     const { error } = await supabaseAdmin
       .from('project_dust_profiles')
       .update({ planned_date: plannedDate, planned_time: plannedTime, duration_hours: durationHours, daily_duration_hours: durationHours })
@@ -90,25 +101,25 @@ export async function PATCH(request: NextRequest) {
   return NextResponse.json({ success: true });
 }
 
-// أرشفة نشاط غبار واحد (صف project_dust_profiles) —
-// يُستدعى من MultiIndicatorActivityBox.tsx (handleDelete)، جسم الطلب:
-// { targets: [{ projectId, activityId, source: 'dust' }, ...] } — دايماً
-// عنصر واحد فعلياً (مؤشر الغبار وحده في DCR)، لكن الشكل مصفوفة لمرونة
-// مستقبلية (توافقاً مع UnifiedDecisionTarget[] في MultiIndicatorActivityBox).
-//
-// خطأ مكتشَف ومُصلَح سابقاً: بعد تطبيق append-only على جداول الأدلة
-// (dust_evaluations/dust_compliance_evaluations/alerts/decision_records)،
-// كان هذا المسار يحاول حذف صفوف منها صراحة فيفشل بخطأ 500 — تم التوقف عن
-// ذلك، تبقى محفوظة دون حذف كما هي.
-//
-// خطأ ثانٍ مكتشَف ومُصلَح (مراجعة تصحيح خارجية — "الأرشفة بدل الحذف"):
-// حذف project_dust_profiles نفسه فعلياً (delete()) كان يُصفّر dust_profile_id
-// على dust_evaluations/dust_compliance_evaluations المرتبطة به (on delete
-// set null) — الأدلة التاريخية تبقى موجودة لكن تفقد رابطها المرئي بأي
-// نشاط أنتجها، فيصعب التدقيق لاحقاً على "أي نشاط كان هذا القرار؟". الإصلاح:
-// UPDATE archived_at بدل DELETE — الصف يبقى موجوداً وقابلاً للربط دائماً،
-// فقط مستبعَد من دورات التقييم الحية الجديدة (راجع archived_at is null في
-// app/lib/evaluateProject.ts وapp/api/alerts/generate/route.ts).
+/*
+ * Archives a single dust activity (a `project_dust_profiles` record).
+ * Invoked from MultiIndicatorActivityBox.tsx (handleDelete).
+ *
+ * Payload: { targets: [{ projectId, activityId, source: 'dust' }, ...] }
+ * Note: Contains a single target element for dust indicators in DCR, structured as an array for future scalability 
+ * (aligning with `UnifiedDecisionTarget[]` in MultiIndicatorActivityBox).
+ *
+ * Bug Fix 1: Post append-only migration on evidence tables (dust_evaluations, dust_compliance_evaluations, 
+ * alerts, decision_records), explicit row deletions caused 500 internal server errors. Explicit deletes were removed; 
+ * historical evidence rows are strictly preserved.
+ *
+ * Bug Fix 2 (Archival vs. Deletion): Hard deleting `project_dust_profiles` triggered Foreign Key `ON DELETE SET NULL` 
+ * constraints on linked `dust_evaluations` and `dust_compliance_evaluations`. While audit records remained in DB, 
+ * they lost their association to the originating activity, breaking historical traceability.
+ * Solution: Set `archived_at` timestamp instead of executing a `DELETE`. The activity record remains permanently queryable for audit, 
+ * while being excluded from live evaluation cycles (see `archived_at IS NULL` checks in `app/lib/evaluateProject.ts` 
+ * and `app/api/alerts/generate/route.ts`).
+ */
 export async function DELETE(request: NextRequest) {
   const auth = await requireUserId(request);
   if ('error' in auth) return auth.error;
@@ -143,11 +154,12 @@ export async function DELETE(request: NextRequest) {
     }
 
     const groupId = profileRow.activity_group_id || `dust-${activityId}`;
-
-    // current_dust_decisions/current_dust_compliance_decisions ليسا جدولي
-    // أدلة (مجرد "آخر قرار حالي" مرجعي يُعاد بناؤه من دورة التقييم القادمة
-    // لأي نشاط غير مؤرشَف) — حذفهما يبقى صحيحاً؛ نشاط مؤرشَف لا يجب أن يظهر
-    // في أي "قرار حالي" بعد الآن.
+/*
+ * Deleting records from `current_dust_decisions` and `current_dust_compliance_decisions` remains valid.
+ * These are transient reference tables holding only the "latest current decision" state, which is automatically 
+ * rebuilt during the next evaluation cycle for all non-archived activities.
+ * Archived activities must be removed immediately so they no longer reflect in active decision states.
+ */
     const { error: currentDecisionsError } = await supabaseAdmin
       .from('current_dust_decisions')
       .delete()
@@ -166,12 +178,25 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: safeErrorResponse(currentComplianceError, `فشل حذف current_dust_compliance_decisions للنشاط ${activityId}`) }, { status: 500 });
     }
 
-    const { error: archiveError } = await supabaseAdmin
+    // خطأ سباق مكتشَف (مراجعة كود — طلبا أرشفة متزامنان لنفس النشاط):
+    // .is('archived_at', null) هنا يمنع ثاني طلب أرشفة متزامن من "النجاح"
+    // صامتاً على صف أُرشِف بالفعل بين قراءة profileRow أعلاه وهذا التحديث —
+    // بلا هذا الشرط، كلا الطلبين كانا يعيدان success رغم أن الحذف من
+    // current_dust_decisions/current_dust_compliance_decisions تكرَّر بلا
+    // ضرر فعلي، لكن archived_by كان يُستبدَل صامتاً بمستخدم الطلب الثاني
+    // (تناقض تدقيقي: من أرشف النشاط فعلياً؟). .select('id') يلزم لمعرفة
+    // عدد الصفوف المتأثرة فعلياً (Supabase لا يُرجعه بلا select صريح).
+    const { data: archivedRows, error: archiveError } = await supabaseAdmin
       .from('project_dust_profiles')
       .update({ archived_at: new Date().toISOString(), archived_by: auth.userId })
-      .eq('id', activityId);
+      .eq('id', activityId)
+      .is('archived_at', null)
+      .select('id');
     if (archiveError) {
       return NextResponse.json({ error: safeErrorResponse(archiveError, `فشل أرشفة صف project_dust_profiles ${activityId}`) }, { status: 500 });
+    }
+    if (!archivedRows || archivedRows.length === 0) {
+      return NextResponse.json({ error: `النشاط ${activityId} أُرشِف بالفعل بواسطة طلب متزامن آخر` }, { status: 409 });
     }
   }
 

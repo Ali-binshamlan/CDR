@@ -3,34 +3,18 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { timingSafeStringEqual } from '@/app/lib/timingSafe';
 import { refreshForecastSnapshots, type DustActivityRow } from '@/app/lib/dustEvaluation';
 
-// Forecast Worker — القسم 9.2 من "دليل الإصلاح الجذري لمنظومة مرقاب":
-// يجلب Open-Meteo لشبكة توقعات ساعات الدوام (hourlyForecasts) لكل نشاط
-// دوام قادم ويخزّنها في forecast_snapshots، بمعزل تام عن مسار القرار الحي
-// (evaluateProject/computeDustResults لا تستدعيان الشبكة إطلاقاً للأنشطة
-// الحية بعد الإصلاح — راجع evaluateLiveOperationalDecision في dust-engine).
-// فشل هذا المسار أو تأخره لا يمكن أن يؤثر على أي قرار مُخزَّن في
-// final_decisions إطلاقاً — إثراء عرض توعوي فقط.
-//
-// مصادقة عبر FORECAST_REFRESH_CRON_SECRET — متغير بيئة منفصل عن باقي أسرار
-// الـcron (CRON_SECRET/PROVIDER_PULL_CRON_SECRET/SCHEDULER_CRON_SECRET)، بنفس
-// مبدأ الفصل الموثَّق في provider-pull/route.ts وscheduler-tick/route.ts.
-// يُستدعى خارجياً كل 15-30 دقيقة عبر خدمة cron مجانية (cron-job.org) — لا
-// إضافة لـvercel.json (خطة Vercel Hobby لا تدعم جدولة أقل من يومية).
-//
-// خطأ أداء مكتشَف ومُصلَح (سياق: تنبيه Supabase حول استهلاك Disk IO Budget،
-// 2026-08-13 — راجع migration 202608130001 لإصلاح مماثل على scheduler-tick):
-// (1) لا قفل تداخل دورة هنا إطلاقاً — على عكس provider-pull/scheduler-tick/
-//     db-cleanup-worker، فلو تأخرت دورة (طلبات Open-Meteo الخارجية بطيئة تحت
-//     حمل)، دورة تالية من cron-job.org تبدأ فوقها بلا أي حماية. أُضيف قفل
-//     forecast_refresh_run_lock (نفس نمط provider_pull_run_lock حرفياً).
-// (2) نمط N+1 استعلام: SELECT * على project_dust_profiles وSELECT * على
-//     project_shifts كانا يُنفَّذان منفصلين *لكل مشروع* داخل الحلقة — لو 50
-//     مشروعاً نشطاً، هذا 100 استعلام إضافي في كل تشغيلة (كل 15-30 دقيقة)
-//     بصرف النظر عن وجود نشاط غبار فعلي يستحق التحديث. استُبدلا باستعلامين
-//     مُجمَّعين واحدين (IN على كل project_ids دفعة واحدة) خارج الحلقة، ثم
-//     تجميع النتائج محلياً بـMap — نفس البيانات بالضبط، عدد استعلامات ثابت
-//     (2) بدل O(عدد المشاريع).
-const RUN_BUCKET_SECONDS = 900; // 15 دقيقة — أقصر نافذة معلنة لتكرار هذا المسار
+/*
+ * Forecast Worker — Section 9.2 of the Mirqab Outbox & Forecast Specification:
+ * Fetches hourly weather predictions (Open-Meteo API) for active shift windows and persists them
+ * into `forecast_snapshots`.
+ *
+ * Operational Decoupling & Performance Optimizations:
+ * 1. Isolation: Runs completely out-of-band relative to live decision evaluations (`evaluateLiveOperationalDecision`).
+ * 2. Overlap Prevention: Employs `forecast_refresh_run_lock` with a 15-minute bucket window to block concurrent execution spikes.
+ * 3. Query Optimization: Replaces per-project N+1 query patterns with batch `IN` queries for dust profiles and shifts,
+ *    reducing database round-trips to O(1) regardless of total active projects.
+ */
+const RUN_BUCKET_SECONDS = 900; // 15-minute bucket window
 
 export async function GET(request: Request) {
   if (!process.env.FORECAST_REFRESH_CRON_SECRET) {
@@ -41,6 +25,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
+  // Single-worker execution window lock
   const runBucket = Math.floor(Date.now() / (RUN_BUCKET_SECONDS * 1000));
   const { error: lockError } = await supabaseAdmin
     .from('forecast_refresh_run_lock')
@@ -55,6 +40,9 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: lockError.message }, { status: 500 });
   }
 
+  /*
+   * Batch Data Fetching: Retrieve all active projects, profiles, and shifts in unified batch queries
+   */
   const { data: projects, error: fetchError } = await supabaseAdmin
     .from('projects')
     .select('*')
@@ -81,6 +69,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: shiftsError.message }, { status: 500 });
   }
 
+  // Local lookup indexing by project_id
   const dustProfilesByProject = new Map<string, DustActivityRow[]>();
   for (const row of allDustProfiles || []) {
     const key = (row as DustActivityRow).project_id as string;
@@ -101,8 +90,9 @@ export async function GET(request: Request) {
 
   const results: Array<{ projectId: string; refreshed: number; failed: number; error?: string }> = [];
 
-  // تسلسلي عمداً — نفس مبدأ provider-pull/scheduler-tick: يبسّط تتبع الفشل
-  // الجزئي ويتفادى إغراق Open-Meteo بطلبات متزامنة ضخمة عبر كل المشاريع.
+  /*
+   * Sequential Processing Loop: Refreshes forecast data per project to avoid hitting external API rate limits
+   */
   for (const project of projects || []) {
     try {
       const dustProfiles = dustProfilesByProject.get(project.id) ?? [];

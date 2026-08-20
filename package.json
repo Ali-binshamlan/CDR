@@ -15,12 +15,10 @@
     "verify": "npm run typecheck && npm run lint && npm run test && npm run test:db && npm run test:e2e && npm run build"
   },
   "dependencies": {
-    "@geoman-io/leaflet-geoman-free": "^2.20.0",
     "@hookform/resolvers": "^5.4.0",
     "@supabase/supabase-js": "^2.108.2",
     "@upstash/redis": "^1.38.2",
     "axios": "^1.18.1",
-    "date-fns": "^4.4.0",
     "framer-motion": "^12.40.0",
     "leaflet": "^1.9.4",
     "libphonenumber-js": "^1.13.9",
@@ -45,6 +43,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "knip": "^6.32.2",
     "pg": "^8.22.0",
     "tailwindcss": "^4",
     "typescript": "^5",

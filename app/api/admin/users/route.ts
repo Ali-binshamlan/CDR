@@ -3,9 +3,15 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// كل المستخدمين المسجَّلين (profiles) + البريد (من auth.users، لا FK مباشر)
-// + عدد مشاريع كل مستخدم — بلا N+1: نداء واحد لـ listUsers (بحلقة تصفّح
-// احتياطية لو تجاوز عدد المستخدمين 1000)، واستعلام واحد خفيف لعدّ المشاريع.
+/*
+ * Fetches all registered users (`profiles`) with email addresses (retrieved from `auth.users` without a direct FK join) 
+ * and active project counts per user.
+ * 
+ * Optimized to prevent N+1 queries:
+ * 1. Single paginated call loop to `supabaseAdmin.auth.admin.listUsers` (handles >1000 users).
+ * 2. Single aggregated query to fetch authorization levels (`user_authorizations`).
+ * 3. Lightweight query to count non-archived projects mapped by user ID.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
@@ -16,9 +22,10 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false });
   if (profilesError) return NextResponse.json({ error: safeErrorResponse(profilesError, 'admin/users profiles fetch failed') }, { status: 500 });
 
-  // is_super_admin منفصل تماماً عن profiles الآن (user_authorizations، راجع
-  // apiAuth.ts) — نداء واحد إضافي بدل JOIN عبر PostgREST بين جدولين لا FK
-  // مباشرة بينهما هنا (كلاهما يشير لـ auth.users فقط).
+  /*
+   * `is_super_admin` flag is decoupled from `profiles` (managed via `user_authorizations`; see `apiAuth.ts`).
+   * Fetched in a separate query to avoid direct PostgREST joins between tables lacking foreign keys.
+   */
   const { data: authzRows, error: authzError } = await supabaseAdmin
     .from('user_authorizations')
     .select('user_id, is_super_admin');
@@ -40,8 +47,10 @@ export async function GET(request: NextRequest) {
     page++;
   }
 
-  // archived_at is null: عدد المشاريع المعروض لكل مستخدم يعكس مشاريعه
-  // النشطة فقط — إدراج المؤرشفة كان سيضخّم العدد بلا معنى تشغيلي.
+  /*
+   * Filter (`archived_at IS NULL`): Project count reflects active operational projects only.
+   * Including archived projects inflates figures without operational value.
+   */
   const { data: projectRows, error: projectsError } = await supabaseAdmin
     .from('projects')
     .select('user_id')

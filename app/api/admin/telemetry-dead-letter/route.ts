@@ -3,19 +3,24 @@ import { supabaseAdmin } from '@/app/lib/supabaseAdmin';
 import { requireSuperAdmin } from '@/app/lib/apiAuth';
 import { safeErrorResponse } from '@/app/lib/apiError';
 
-// إدارة telemetry_dead_letter (migration 202608120002) — قراءات جهاز فشلت
-// نهائياً في الكتابة (device_readings_history/pm10_readings_history) بعد
-// استنفاد كل المحاولات في telemetry-worker، ونُقلت هنا بدل حذفها المباشر
-// (راجع تعليق db-cleanup-worker/route.ts الكامل للسياق). سوبر أدمن فقط —
-// نفس نمط admin/provider-instances، لا وصول لمالك مشروع عادي (هذا سجل
-// تشغيلي عابر للمشاريع، لا بيانات مشروع واحد).
+/*
+ * Management of `telemetry_dead_letter` table (migration 202608120002).
+ * Contains IoT telemetry readings that permanently failed ingestion (`device_readings_history`/`pm10_readings_history`) 
+ * after exhausting retries in `telemetry-worker`. Records are redirected here rather than being permanently deleted 
+ * (see `db-cleanup-worker/route.ts` for context).
+ * 
+ * Access Control: Super Admin only (`requireSuperAdmin`), consistent with `admin/provider-instances`. 
+ * Project owners cannot access this route as it serves as a cross-project operational log.
+ */
 export async function GET(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;
 
   const { searchParams } = new URL(request.url);
-  // resolved=false (افتراضي) — الصفوف التي لا تزال تنتظر قراراً (لا replay
-  // ولا اعتماد بشري بعد). resolved=true يعرض ما اكتمل التعامل معه.
+  /*
+   * Filter constraint: `resolved=false` (default) selects pending records awaiting decision (neither replayed nor acknowledged).
+   * `resolved=true` displays records where resolution action has been completed.
+   */
   const showResolved = searchParams.get('resolved') === 'true';
 
   let query = supabaseAdmin
@@ -33,15 +38,15 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ data });
 }
 
-// action='replay': يعيد إدراج الحمولة في telemetry_ingestion_queue بحالة
-// PENDING عبر replay_dead_telemetry_letter — telemetry-worker يعالجها في
-// دورته التالية كأي قراءة جديدة. الصف هنا يبقى موجوداً دائماً (لا حذف)،
-// فقط replayed_at/replayed_by/replay_queue_id يُضبطان.
-//
-// action='acknowledge': اعتماد بشري موثَّق أن القراءة مفقودة نهائياً —
-// reason إلزامي (يُرفَض فارغاً من الدالة الذرية نفسها، لا فقط هنا). لا حذف
-// أبداً — فقط توثيق القرار (من/متى/لماذا) على الصف نفسه، فيبقى سجلاً
-// تاريخياً دائماً لماذا فُقدت هذه القراءة تحديداً.
+/*
+ * `action='replay'`: Re-inserts payload into `telemetry_ingestion_queue` with status `PENDING` via RPC `replay_dead_telemetry_letter`.
+ * `telemetry-worker` processes it in the next execution cycle as a new reading.
+ * Dead letter record is permanently preserved (append-only architecture); `replayed_at`, `replayed_by`, and `replay_queue_id` are updated.
+ * 
+ * `action='acknowledge'`: Human acknowledgment documenting that the reading is permanently unrecoverable.
+ * `reason` is required (enforced both here and at the RPC level). Records are never deleted; 
+ * audit details (who/when/why) are stamped on the row to maintain auditability.
+ */
 export async function POST(request: NextRequest) {
   const auth = await requireSuperAdmin(request);
   if ('error' in auth) return auth.error;

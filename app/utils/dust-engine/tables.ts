@@ -131,16 +131,6 @@ export function dviLevelFromScore(score: number): DviLevel {
   return 'BLACK';
 }
 
-// جدول 9: ترجمة مستويات الخطر اللونية إلى نصوص واضحة ومباشرة للموقع
-export const DVI_LEVEL_LABEL_AR: Record<DviLevel, string> = {
-  GREEN: 'تشغيل آمن وطبيعي',
-  YELLOW: 'مراقبة وتيقظ ميداني',
-  ORANGE: 'تطبيق ضوابط تقليل الغبار',
-  RED: 'تقييد الأنشطة الحساسة للرؤية',
-  DARK_RED: 'خطر وغبار كثيف',
-  BLACK: 'إيقاف العمليات إجبارياً',
-};
-
 // جدول 10: تصنيف الثقة الميدانية في القرار بناءً على اكتمال المعطيات
 export function confidenceLabel(confidenceScore: number): string {
   if (confidenceScore >= 90) return 'قرار قوي ومطابق ميدانياً';
